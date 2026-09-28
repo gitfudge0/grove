@@ -627,6 +627,69 @@ impl WorktreeLauncher {
         cx.notify();
     }
 
+    fn agent_selector(
+        &self,
+        cx: &mut Context<Self>,
+        id_prefix: &'static str,
+    ) -> impl IntoElement {
+        div()
+            .id(id_prefix)
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_XS))
+            .children(Agent::ALL.into_iter().enumerate().map(|(agent_index, agent)| {
+                let selected = self.agent_selected == agent_index;
+                let available = agent.available();
+                let label = if available {
+                    agent.label().to_string()
+                } else {
+                    format!("{} (not installed)", agent.label())
+                };
+                let icon_name = match agent {
+                    Agent::Claude => "claude",
+                    Agent::Codex => "codex",
+                    Agent::OpenCode => "opencode",
+                    Agent::Terminal => "terminal",
+                };
+                let button_id = format!("{id_prefix}-{agent_index}");
+                div()
+                    .id(gpui::SharedString::from(button_id.clone()))
+                    .debug_selector(move || button_id.clone())
+                    .role(gpui::Role::Button)
+                    .aria_label(label.clone())
+                    .size(rpx(ICON_BTN_W))
+                    .rounded(rpx(RADIUS_CONTROL))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(selected && self.agent_focus, |button| button.bg(c::BG_HL()))
+                    .when(selected, |button| button.border_1().border_color(c::BORDER_STRONG()))
+                    .hover(|button| button.bg(c::BG_HOVER()))
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx)
+                    })
+                    .child(icon(
+                        icon_name,
+                        ICON_MD,
+                        if available { c::MAGENTA() } else { c::FG_MUTE() },
+                    ))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        if available {
+                            this.agent_selected = agent_index;
+                            this.agent_touched = true;
+                            this.agent_focus = true;
+                            this.error = None;
+                            this.focus.focus(window, cx);
+                        } else {
+                            this.error = Some(format!("{} is not installed.", agent.label()));
+                        }
+                        cx.notify();
+                    }))
+            }))
+    }
+
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if !self.open {
             return;
@@ -720,13 +783,20 @@ impl Focusable for WorktreeLauncher {
 
 impl Render for WorktreeLauncher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let store = &cx.global::<SettingsState>().store;
+        let project_names = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .map(|project| project.name.clone())
+            .collect::<Vec<_>>();
         let rows = self.rows(cx);
         let selected_count = self.selected_worktrees.count();
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let viewport_w = f32::from(window.viewport_size().width) / scale;
         let viewport_h = f32::from(window.viewport_size().height) / scale;
         let panel_w = MODAL_W_LG.min((viewport_w - SPACE_LG * 2.0).max(0.0));
+        let narrow = panel_w < 440.0;
         let top = OVERLAY_TOP.min((viewport_h - PANEL_MIN_H - SPACE_LG).max(SPACE_LG));
         let panel_h = PANEL_MAX_H.min((viewport_h - top - SPACE_LG).max(0.0));
         let compact = panel_h < PANEL_MIN_H + APPBAR_H;
@@ -813,7 +883,7 @@ impl Render for WorktreeLauncher {
                             .children(rows.into_iter().enumerate().map(|(index, row)| {
                                 let (label, detail, icon_name, suffix) = match &row {
                                     PaletteRow::Recent { proj, wt_path, agent } | PaletteRow::Combo { proj, wt_path, agent } => {
-                                        let project = store.projects.get(*proj).map_or("", |p| p.name.as_str());
+                                        let project = project_names.get(*proj).map_or("", |name| name.as_str());
                                         (format!("{} / {}", project, worktree_name(wt_path)), wt_path.clone(), "git-branch", agent.label().to_string())
                                     }
                                     PaletteRow::NewSession => ("New session".into(), "Choose a worktree".into(), "plus", String::new()),
@@ -828,8 +898,13 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::Setting(setting) => (setting.label().into(), setting.section().into(), setting.icon_name(), String::new()),
                                 };
                                 let identity = launcher::row_identity(&row);
-                                let show_agent_selector =
-                                    self.agent_focus && index == self.selected;
+                                let show_agent_selector = self.mode != PaletteMode::Multi
+                                    && self.agent_focus
+                                    && index == self.selected;
+                                let is_worktree_row = matches!(
+                                    &row,
+                                    PaletteRow::Recent { .. } | PaletteRow::Combo { .. }
+                                );
                                 let checked = self.mode == PaletteMode::Multi && match &row {
                                     PaletteRow::Recent { wt_path, .. } | PaletteRow::Combo { wt_path, .. } => fs_err::canonicalize(wt_path)
                                         .ok().is_some_and(|path| self.selected_worktrees.contains(&path.to_string_lossy())),
@@ -839,7 +914,11 @@ impl Render for WorktreeLauncher {
                                     .id(gpui::SharedString::from(format!("launcher-row-{index}")))
                                     .debug_selector(move || format!("launcher-row-{index}"))
                                     .role(gpui::Role::Button)
-                                    .aria_label(if checked { format!("Selected: {label}") } else { label.clone() })
+                                    .aria_label(if self.mode == PaletteMode::Multi && is_worktree_row {
+                                        format!("{label}, {}", if checked { "selected" } else { "not selected" })
+                                    } else {
+                                        label.clone()
+                                    })
                                     .h(rpx(ROW_H))
                                     .px(rpx(SPACE_2XL))
                                     .rounded(rpx(RADIUS_GROUP))
@@ -849,7 +928,6 @@ impl Render for WorktreeLauncher {
                                     .gap(rpx(SPACE_LG))
                                     .when(index == self.selected, |row| row.bg(c::BG_HL()))
                                     .hover(|row| row.bg(c::BG_HOVER()))
-                                    .when(checked, |row| row.border_l_2().border_color(c::SEL_RING()))
                                     .child(
                                         div().flex().items_start().gap(rpx(SPACE_2XL)).min_w_0()
                                             .child(
@@ -866,59 +944,25 @@ impl Render for WorktreeLauncher {
                                                 .child(div().line_height(rpx(SPACE_3XL)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE()).truncate().child(detail)))
                                     )
                                     .when(show_agent_selector, |row| row.child(
+                                        self.agent_selector(cx, "launcher-agent-selector")
+                                    ))
+                                    .when(!show_agent_selector && !(self.mode == PaletteMode::Multi && is_worktree_row) && !suffix.is_empty(), |row| row.child(
+                                        div().flex_shrink_0().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
+                                            .child(suffix)
+                                    ))
+                                    .when(self.mode == PaletteMode::Multi && is_worktree_row, |row| row.child(
                                         div()
-                                            .id("launcher-agent-selector")
+                                            .debug_selector(move || format!("launcher-row-{index}-selection"))
+                                            .size(rpx(CONTROL_H * 0.72))
                                             .flex_shrink_0()
+                                            .rounded(rpx(RADIUS_CONTROL))
+                                            .border_1()
+                                            .border_color(if checked { c::SEL_RING() } else { c::BORDER_STRONG() })
+                                            .bg(if checked { c::SEL_RING() } else { c::FIELD_FILL() })
                                             .flex()
                                             .items_center()
-                                            .gap(rpx(SPACE_XS))
-                                            .children(Agent::ALL.into_iter().enumerate().map(|(agent_index, agent)| {
-                                                let selected = self.agent_selected == agent_index;
-                                                let available = agent.available();
-                                                let label = if available {
-                                                    agent.label().to_string()
-                                                } else {
-                                                    format!("{} (not installed)", agent.label())
-                                                };
-                                                let icon_name = match agent {
-                                                    Agent::Claude => "claude",
-                                                    Agent::Codex => "codex",
-                                                    Agent::OpenCode => "opencode",
-                                                    Agent::Terminal => "terminal",
-                                                };
-                                                div()
-                                                    .id(gpui::SharedString::from(format!("launcher-agent-{agent_index}")))
-                                                    .debug_selector(move || format!("launcher-agent-{agent_index}"))
-                                                    .role(gpui::Role::Button)
-                                                    .aria_label(label.clone())
-                                                    .size(rpx(ICON_BTN_W))
-                                                    .rounded(rpx(RADIUS_CONTROL))
-                                                    .flex()
-                                                    .items_center()
-                                                    .justify_center()
-                                                    .when(selected, |button| button.bg(c::BG_HL()))
-                                                    .when(selected, |button| button.border_1().border_color(c::SEL_RING()))
-                                                    .hover(|button| button.bg(c::BG_HOVER()))
-                                                    .tooltip(move |window, cx| gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx))
-                                                    .child(icon(icon_name, ICON_MD, if available { c::MAGENTA() } else { c::FG_MUTE() }))
-                                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                                        cx.stop_propagation();
-                                                        if available {
-                                                            this.agent_selected = agent_index;
-                                                            this.agent_touched = true;
-                                                            this.agent_focus = true;
-                                                            this.error = None;
-                                                            this.focus.focus(window, cx);
-                                                        } else {
-                                                            this.error = Some(format!("{} is not installed.", agent.label()));
-                                                        }
-                                                        cx.notify();
-                                                    }))
-                                            })),
-                                    ))
-                                    .when(!show_agent_selector && (!suffix.is_empty() || checked), |row| row.child(
-                                        div().flex_shrink_0().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                                            .child(if checked { "Selected".to_string() } else { suffix })
+                                            .justify_center()
+                                            .when(checked, |checkbox| checkbox.child(icon("check", ICON_SM, c::FG())))
                                     ))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         let rows = this.rows(cx);
@@ -942,17 +986,18 @@ impl Render for WorktreeLauncher {
                         )
                     ))
                     .when(self.mode == PaletteMode::Multi && !self.loading_worktrees, |panel| panel.child(
-                        div()
-                            .px(rpx(SPACE_3XL))
-                            .pb(rpx(if compact { SPACE_SM } else { SPACE_LG }))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(rpx(SPACE_LG))
-                            .child(div().debug_selector(|| "worktree-launcher-selected-count".into())
-                                .min_w_0().text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE())
-                                .child(format!("{selected_count} selected")))
-                            .child(div()
+                        {
+                            let count_text = if narrow {
+                                format!("{selected_count} selected")
+                            } else {
+                                format!("{selected_count} worktrees selected")
+                            };
+                            let count = div().debug_selector(|| "worktree-launcher-selected-count".into())
+                                .min_w_0().text_size(rpx(TEXT_SMALL)).text_color(c::FG())
+                                .child(count_text);
+                            let selector = div()
+                                .child(self.agent_selector(cx, "launcher-multi-agent-selector"));
+                            let launch = div()
                                 .id("worktree-launcher-launch-selected")
                                 .debug_selector(|| "worktree-launcher-launch-selected".into())
                                 .role(gpui::Role::Button)
@@ -967,11 +1012,33 @@ impl Render for WorktreeLauncher {
                                 .gap(rpx(SPACE_SM))
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG())
-                                .hover(|button| button.bg(c::BG_HOVER()))
+                                .when(selected_count == 0, |button| button.opacity(OPACITY_DISABLED))
+                                .when(selected_count > 0, |button| button.hover(|button| button.bg(c::BG_HOVER())))
                                 .focus_visible(|button| button.border_1().border_color(c::FG()))
                                 .child(div().w(rpx(ICON_SM)).flex_shrink_0().child(icon("play", ICON_SM, c::FG())))
                                 .child("Launch selected")
-                                .on_click(cx.listener(|this, _, window, cx| this.activate(window, cx))))
+                                .on_click(cx.listener(|this, _, window, cx| this.activate(window, cx)));
+                            if narrow {
+                                div()
+                                    .px(rpx(SPACE_3XL))
+                                    .pb(rpx(if compact { SPACE_SM } else { SPACE_LG }))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(rpx(SPACE_SM))
+                                    .child(div().flex().justify_end().child(selector))
+                                    .child(div().flex().items_center().justify_between().gap(rpx(SPACE_LG)).child(count).child(launch))
+                            } else {
+                                div()
+                                    .px(rpx(SPACE_3XL))
+                                    .pb(rpx(if compact { SPACE_SM } else { SPACE_LG }))
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap(rpx(SPACE_LG))
+                                    .child(count)
+                                    .child(div().flex().items_center().gap(rpx(SPACE_LG)).child(selector).child(launch))
+                            }
+                        }
                     ))
                     .child(
                         div()
@@ -997,10 +1064,10 @@ impl Render for WorktreeLauncher {
                                 _ if self.loading_worktrees && compact => "Loading worktrees… · Esc back",
                                 _ if self.loading_worktrees => "Loading worktrees… · Search is ready · Esc back",
                                 PaletteMode::Single if compact => "↑↓ · Tab tools · Enter start · Esc",
-                                PaletteMode::Multi if compact => "↑↓ · ⇧Space · Tab · Enter · Esc",
+                                PaletteMode::Multi if compact => "↑↓ move · ⇧Space select · Tab tools · ←→ tool · Enter launch · Esc back",
                                 PaletteMode::Root => "↑↓ rows · Tab tools · Enter activate · Esc close",
                                 PaletteMode::Single => "↑↓ worktrees · Tab tools · Enter start session · Esc back",
-                                PaletteMode::Multi => "↑↓ worktrees · Shift+Space select · Tab tools · Enter launch selected · Esc back",
+                                PaletteMode::Multi => "↑↓ worktrees · Shift+Space select · Tab tools · ←→ change tool · Enter launch selected · Esc back",
                             })),
                     ),
             );
