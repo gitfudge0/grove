@@ -3425,7 +3425,6 @@ impl Sidebar {
                     .flex()
                     .flex_shrink_0()
                     .items_center()
-                    .bg(rail_background(cx))
                     .opacity(if focused { 1.0 } else { 0.0 })
                     .group_hover("worktree-row", |s| s.opacity(1.0));
                 if let Some(project_path) = project_path.filter(|_| has_run_script) {
