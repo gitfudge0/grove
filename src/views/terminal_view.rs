@@ -64,7 +64,23 @@ impl Render for TerminalView {
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                     this.focus.focus(window, cx);
-                    this.selection = this.cell(event.position, cx).map(|cell| (cell, cell));
+                    if this.session.read(cx).mouse_reporting() {
+                        let zoom = cx.global::<ZoomState>();
+                        let bounds = this.bounds.get();
+                        let (col, row) = mouse::cell_at(
+                            f32::from(event.position.x - bounds.origin.x),
+                            f32::from(event.position.y - bounds.origin.y),
+                            zoom.cell_w(),
+                            zoom.cell_h(),
+                        );
+                        this.selection = None;
+                        this.session.update(cx, |term, cx| {
+                            term.click(col, row);
+                            cx.notify();
+                        });
+                    } else {
+                        this.selection = this.cell(event.position, cx).map(|cell| (cell, cell));
+                    }
                     cx.notify();
                 }),
             )

@@ -1,9 +1,9 @@
-//! gpui `Keystroke` → PTY bytes, plus chord predicates. Port of `src/gui/keys.rs:5-45`/`pty_input.rs:400-449`; iced is the oracle, so modified arrows stay plain and DECCKM never affects encoding.
+//! gpui `Keystroke` → PTY bytes, plus chord predicates. Plain arrows respect DECCKM; modified keys retain the existing encoding.
 
 use gpui::Keystroke;
 
 /// `src/gui/keys.rs:5-45`, adapted to gpui's `(key, key_char, modifiers)` shape. Returns `None` when the key produces no PTY bytes.
-pub fn key_to_bytes(keystroke: &Keystroke, _app_cursor: bool) -> Option<Vec<u8>> {
+pub fn key_to_bytes(keystroke: &Keystroke, app_cursor: bool) -> Option<Vec<u8>> {
     // `modifiers.platform` is Super/Cmd: app chords never reach the PTY (findings §S1 Step 4).
     if keystroke.modifiers.platform || keystroke.modifiers.function {
         return None;
@@ -43,6 +43,25 @@ pub fn key_to_bytes(keystroke: &Keystroke, _app_cursor: bool) -> Option<Vec<u8>>
             }
             let b = (ch.to_ascii_uppercase() as u8).wrapping_sub(0x40);
             out.push(b & 0x1f);
+            return Some(out);
+        }
+    }
+
+    if app_cursor
+        && !keystroke.modifiers.alt
+        && !keystroke.modifiers.control
+        && !keystroke.modifiers.shift
+    {
+        let arrow = match keystroke.key.as_str() {
+            "up" => Some(b'A'),
+            "down" => Some(b'B'),
+            "right" => Some(b'C'),
+            "left" => Some(b'D'),
+            _ => None,
+        };
+        if let Some(arrow) = arrow {
+            out.extend_from_slice(b"\x1bO");
+            out.push(arrow);
             return Some(out);
         }
     }
@@ -87,7 +106,7 @@ fn named_key_bytes(key: &str) -> Option<&'static [u8]> {
     })
 }
 
-/// Synthesize arrow bytes for caret movement (`session.rs:1041-1060`). Horizontal only — Up/Down recall shell history instead. The one place DECCKM matters: `app_cursor` selects SS3 vs. CSI.
+/// Synthesize arrow bytes for caret movement (`session.rs:1041-1060`). Horizontal only — Up/Down recall shell history instead. `app_cursor` selects SS3 vs. CSI.
 pub fn arrow_moves(cur_col: u16, t_col: u16, app_cursor: bool) -> Vec<u8> {
     let prefix: &[u8] = if app_cursor { b"\x1bO" } else { b"\x1b[" };
     let mut out = Vec::new();
@@ -329,15 +348,23 @@ mod tests {
         );
     }
 
-    /// DECCKM must NOT change keypress encoding: `keys.rs` is app-cursor unaware.
+    /// Plain arrows use SS3 when the terminal app enables DECCKM.
     #[test]
-    fn app_cursor_does_not_change_keypresses() {
+    fn plain_arrows_respect_app_cursor_mode() {
         for app_cursor in [false, true] {
-            assert_eq!(
-                key_to_bytes(&ks("up", none()), app_cursor).as_deref(),
-                Some(&b"\x1b[A"[..]),
-                "plain Up must be CSI in both cursor modes (app_cursor={app_cursor})"
-            );
+            for (key, direction) in [
+                ("up", b'A'),
+                ("down", b'B'),
+                ("right", b'C'),
+                ("left", b'D'),
+            ] {
+                let expected = [0x1b, if app_cursor { b'O' } else { b'[' }, direction];
+                assert_eq!(
+                    key_to_bytes(&ks(key, none()), app_cursor).as_deref(),
+                    Some(expected.as_slice()),
+                    "{key} (app_cursor={app_cursor})"
+                );
+            }
         }
     }
 

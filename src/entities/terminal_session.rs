@@ -538,6 +538,10 @@ impl TerminalSession {
         self.term.app_cursor()
     }
 
+    pub fn mouse_reporting(&self) -> bool {
+        self.term.mouse_mode() != MouseMode::None
+    }
+
     pub fn backend(&self) -> &Backend {
         &self.backend
     }

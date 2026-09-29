@@ -137,11 +137,13 @@ pub fn selection_rects(
     let (r1, c1, r2, c2) = normalize_selection(a, head);
     let r1 = r1.min(rows - 1);
     let r2 = r2.min(rows - 1);
-    let c1 = c1.min(cols);
-    let c2 = c2.min(cols);
+    // The endpoint cell is inclusive (matching `selection_text`), while
+    // rectangles use an exclusive right edge. Keep both endpoints in-grid.
+    let c1 = c1.min(cols - 1);
+    let c2 = c2.min(cols - 1);
 
     if r1 == r2 {
-        let w = (c2.saturating_sub(c1)).max(1) as f32 * cell_w;
+        let w = (c2.saturating_sub(c1) + 1) as f32 * cell_w;
         return vec![(c1 as f32 * cell_w, r1 as f32 * cell_h, w, cell_h)];
     }
 
@@ -156,7 +158,7 @@ pub fn selection_rects(
             (r2 - r1 - 1) as f32 * cell_h,
         ));
     }
-    let w2 = c2 as f32 * cell_w;
+    let w2 = (c2 + 1) as f32 * cell_w;
     if w2 > 0.0 {
         out.push((0.0, r2 as f32 * cell_h, w2, cell_h));
     }
@@ -346,7 +348,7 @@ mod tests {
         );
         assert_eq!(
             rects,
-            vec![(3.0 * CELL_W, 2.0 * CELL_H, 4.0 * CELL_W, CELL_H)]
+            vec![(3.0 * CELL_W, 2.0 * CELL_H, 5.0 * CELL_W, CELL_H)]
         );
     }
 
@@ -372,8 +374,8 @@ mod tests {
             vec![
                 // first row, from col 70 to end of line
                 (70.0 * CELL_W, CELL_H, 10.0 * CELL_W, CELL_H),
-                // last row, from beginning of line to col 4
-                (0.0, 2.0 * CELL_H, 4.0 * CELL_W, CELL_H),
+                // last row, from beginning of line through col 4
+                (0.0, 2.0 * CELL_H, 5.0 * CELL_W, CELL_H),
             ]
         );
     }
@@ -393,7 +395,7 @@ mod tests {
             vec![
                 (10.0 * CELL_W, CELL_H, 70.0 * CELL_W, CELL_H),
                 (0.0, 2.0 * CELL_H, 80.0 * CELL_W, 3.0 * CELL_H),
-                (0.0, 5.0 * CELL_H, 2.0 * CELL_W, CELL_H),
+                (0.0, 5.0 * CELL_H, 3.0 * CELL_W, CELL_H),
             ]
         );
     }

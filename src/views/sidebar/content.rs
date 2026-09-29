@@ -468,9 +468,9 @@ impl Sidebar {
     ) {
         self.pending_new_worktree = None;
         self.project_return_path = match &page {
-            super::projects::Page::Edit(path) | super::projects::Page::Remove(path) => {
-                Some(path.clone())
-            }
+            super::projects::Page::Edit(path)
+            | super::projects::Page::Remove(path)
+            | super::projects::Page::Move(path) => Some(path.clone()),
             super::projects::Page::Archived => None,
         };
         self.project_return_focus = self.menu_return_focus.take().or_else(|| window.focused(cx));
@@ -516,6 +516,26 @@ impl Sidebar {
                         this.project_return_path = None;
                         this.focus.focus(window, cx);
                         this.selection = None;
+                    }
+                    super::projects::ProjectPanelEvent::Moved {
+                        name,
+                        workspace,
+                        path,
+                        open_destination,
+                    } => {
+                        this.project_panel = None;
+                        this.project_decision = false;
+                        this.project_return_focus = None;
+                        this.project_return_path = None;
+                        if *open_destination {
+                            this.finish_project_selection(path, window, cx);
+                        } else {
+                            this.sync(window, cx);
+                            this.focus.focus(window, cx);
+                        }
+                        this.runtime.read(cx).toast.clone().update(cx, |toast, cx| {
+                            toast.set_toast(format!("Moved {name} to {workspace}."), cx);
+                        });
                     }
                     super::projects::ProjectPanelEvent::Decision(value) => {
                         this.project_decision = *value;
@@ -651,6 +671,10 @@ impl Sidebar {
         let close_name = format!("Close {agent} session {task} in {context}");
         let close = self.canvas_close_button(id, home, close_name, cx);
         let title_tooltip = accessible_label.clone();
+        let active = matches!(
+            self.selection,
+            Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id
+        );
         let mut header = div()
             .id(gpui::SharedString::from(format!(
                 "terminal-header-{}",
@@ -659,22 +683,31 @@ impl Sidebar {
             .debug_selector(move || format!("terminal-header-{}", id.raw()))
             .aria_label(accessible_label.clone())
             .relative()
-            .child(gpui::canvas(move |rect,_,_|bounds.set(rect),|_,(),_,_|{}).absolute().inset_0())
+            .child(
+                gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
             .min_w_0()
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap(rpx(SPACE_MD))
             .px(rpx(SPACE_3XL))
-            .bg(if grid && matches!(self.selection,Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) { c::BG_HOVER() } else { c::BG_STRIP() })
-            .when(!grid, |header| header.border_b_1().border_color(c::BORDER()))
+            .bg(if grid && active {
+                c::BG_HOVER()
+            } else {
+                c::BG_STRIP()
+            })
+            .when(!grid || !active, |header| {
+                header.border_b_1().border_color(c::BORDER())
+            })
             .tooltip(move |window, cx| {
                 gpui_component::tooltip::Tooltip::new(title_tooltip.clone())
                     .bg(c::BG_STRIP())
                     .text_color(c::FG())
                     .build(window, cx)
-            })
-;
+            });
         let agent_icon = div()
             .w(rpx(SESSION_ICON_SLOT))
             .flex_shrink_0()

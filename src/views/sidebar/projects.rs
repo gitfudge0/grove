@@ -27,11 +27,18 @@ pub(super) enum ProjectPanelEvent {
     Selected(String),
     Decision(bool),
     Archived,
+    Moved {
+        name: String,
+        workspace: String,
+        path: String,
+        open_destination: bool,
+    },
 }
 #[derive(Clone, PartialEq)]
 pub(super) enum Page {
     Edit(String),
     Remove(String),
+    Move(String),
     Archived,
 }
 #[derive(Clone, PartialEq)]
@@ -47,6 +54,8 @@ pub(super) struct ProjectPanel {
     fields: Vec<Entity<InputState>>,
     archive_overflow: Option<String>,
     error: Option<String>,
+    destination: Option<u64>,
+    open_destination: bool,
     decision: Option<Decision>,
     delete_worktrees: bool,
     worktree_count: Option<usize>,
@@ -67,7 +76,7 @@ impl ProjectPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let project = match &page {
-            Page::Edit(path) | Page::Remove(path) => cx
+            Page::Edit(path) | Page::Remove(path) | Page::Move(path) => cx
                 .global::<SettingsState>()
                 .store
                 .projects
@@ -118,6 +127,8 @@ impl ProjectPanel {
             fields,
             archive_overflow: None,
             error: None,
+            destination: None,
+            open_destination: false,
             decision: None,
             delete_worktrees: false,
             worktree_count: None,
@@ -207,6 +218,33 @@ impl ProjectPanel {
             service.update_project(&path, values[0].clone(), scripts, cx)
         }) {
             Ok(()) => cx.emit(ProjectPanelEvent::Selected(path)),
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+    fn move_project(&mut self, cx: &mut Context<Self>) {
+        let Page::Move(path) = &self.page else { return };
+        let path = path.clone();
+        let Some(destination) = self.destination else {
+            return;
+        };
+        let store = &cx.global::<SettingsState>().store;
+        let name = store
+            .projects
+            .iter()
+            .find(|project| project.path == path)
+            .map_or_else(|| path.clone(), |project| project.name.clone());
+        let workspace = store.workspaces.name(destination).to_owned();
+        self.error = None;
+        match self.service.update(cx, |service, cx| {
+            service.move_project_to_workspace(&path, destination, self.open_destination, cx)
+        }) {
+            Ok(()) => cx.emit(ProjectPanelEvent::Moved {
+                name,
+                workspace,
+                path,
+                open_destination: self.open_destination,
+            }),
             Err(error) => self.error = Some(error),
         }
         cx.notify();
@@ -386,6 +424,7 @@ impl Render for ProjectPanel {
         let title = match page {
             Page::Edit(_) => "Edit project",
             Page::Remove(_) => "Remove project",
+            Page::Move(_) => "Move project",
             Page::Archived => "Archived projects",
         };
         let edit_page = matches!(page, Page::Edit(_));
@@ -407,6 +446,9 @@ impl Render for ProjectPanel {
         let mut description: String = match page {
             Page::Edit(_) => "Update the project name and lifecycle scripts.".into(),
             Page::Remove(_) => "Review what Grove will remove before continuing.".into(),
+            Page::Move(_) => {
+                "The project folder and worktrees stay in place. Open sessions keep running.".into()
+            }
             Page::Archived => "Restore a project to the sidebar or remove its registration.".into(),
         };
         if let Some(decision) = self.decision.clone() {
@@ -654,6 +696,201 @@ impl Render for ProjectPanel {
                                 cx,
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                        );
+                }
+                Page::Move(path) => {
+                    let store = &cx.global::<SettingsState>().store;
+                    let name = store
+                        .projects
+                        .iter()
+                        .find(|project| project.path == path)
+                        .map_or(path.as_str(), |project| project.name.as_str());
+                    heading = format!("Move {name}");
+                    let source = store.project_workspace_id(&path);
+                    let current = store.workspaces.name(source).to_owned();
+                    let destinations: Vec<_> = store
+                        .workspaces
+                        .rows
+                        .iter()
+                        .filter(|workspace| workspace.id != source)
+                        .cloned()
+                        .collect();
+                    let valid_destination = self
+                        .destination
+                        .is_some_and(|id| destinations.iter().any(|workspace| workspace.id == id));
+                    content = content
+                        .child(readonly_path("Current workspace", current))
+                        .child(panel_section("Destination workspace"));
+                    if destinations.is_empty() {
+                        content = content.child(
+                            div()
+                                .text_color(c::FG_DIM())
+                                .child("Create another workspace to move this project."),
+                        );
+                    }
+                    for workspace in destinations {
+                        let id = workspace.id;
+                        let selected = self.destination == Some(id);
+                        let full_name = workspace.name.clone();
+                        let tooltip_name = full_name.clone();
+                        content = content.child(
+                            div()
+                                .id(("project-move-destination", id))
+                                .debug_selector(move || format!("project-move-destination-{id}"))
+                                .role(gpui::Role::Button)
+                                .aria_label(full_name.clone())
+                                .aria_selected(selected)
+                                .tooltip(move |window, cx| {
+                                    gpui_component::tooltip::Tooltip::new(tooltip_name.clone())
+                                        .build(window, cx)
+                                })
+                                .tab_index(0)
+                                .w_full()
+                                .min_w_0()
+                                .h(rpx(44.))
+                                .px(rpx(SPACE_2XL))
+                                .rounded(rpx(RADIUS_PANEL))
+                                .border_1()
+                                .border_color(c::BORDER_SOFT())
+                                .bg(if selected { c::BG_HOVER() } else { c::BG() })
+                                .hover(|style| style.bg(c::BG_HOVER()))
+                                .focus_visible(|style| style.border_color(c::FG()))
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_LG))
+                                .child(div().w(rpx(16.)).flex_shrink_0().child(if selected {
+                                    "✓"
+                                } else {
+                                    ""
+                                }))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(full_name),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.destination = Some(id);
+                                    this.error = None;
+                                    cx.notify();
+                                }))
+                                .on_key_down(cx.listener(
+                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                        {
+                                            this.destination = Some(id);
+                                            this.error = None;
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        }
+                                    },
+                                )),
+                        );
+                    }
+                    content = content.child(
+                        div()
+                            .id("project-move-open-destination")
+                            .debug_selector(|| "project-move-open-destination".into())
+                            .role(gpui::Role::Switch)
+                            .aria_label("Open destination workspace after moving")
+                            .aria_toggled(if self.open_destination {
+                                gpui::Toggled::True
+                            } else {
+                                gpui::Toggled::False
+                            })
+                            .tab_index(0)
+                            .w_full()
+                            .min_h(rpx(70.))
+                            .py(rpx(SPACE_2XL))
+                            .border_t_1()
+                            .border_color(c::BORDER_SOFT())
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_2XL))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child("Open destination workspace after moving"),
+                            )
+                            .child(
+                                div()
+                                    .w(rpx(48.))
+                                    .h(rpx(28.))
+                                    .flex_shrink_0()
+                                    .p(rpx(3.))
+                                    .rounded(rpx(RADIUS_FULL))
+                                    .flex()
+                                    .items_center()
+                                    .bg(if self.open_destination {
+                                        c::GREEN()
+                                    } else {
+                                        c::BORDER_STRONG()
+                                    })
+                                    .when(self.open_destination, gpui::Styled::justify_end)
+                                    .child(
+                                        div()
+                                            .size(rpx(22.))
+                                            .rounded(rpx(RADIUS_FULL))
+                                            .bg(gpui::hsla(0., 0., 1., 1.)),
+                                    ),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_destination = !this.open_destination;
+                                cx.notify();
+                            }))
+                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    this.open_destination = !this.open_destination;
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            })),
+                    );
+                    footer = footer
+                        .child(
+                            project_action(
+                                "project-panel-cancel".into(),
+                                "Cancel",
+                                None,
+                                ProjectActionStyle::Quiet,
+                                window,
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.close(cx)))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        this.close(cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            )),
+                        )
+                        .child(
+                            project_action(
+                                "project-move-submit".into(),
+                                "Move project",
+                                Some("icons/check.svg"),
+                                ProjectActionStyle::Primary,
+                                window,
+                                cx,
+                            )
+                            .disabled(!valid_destination)
+                            .on_click(cx.listener(|this, _, _, cx| this.move_project(cx)))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if valid_destination
+                                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                    {
+                                        this.move_project(cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            )),
                         );
                 }
                 Page::Remove(path) => {
@@ -1065,7 +1302,9 @@ impl Render for ProjectPanel {
                         this.close(cx);
                     }
                     cx.stop_propagation();
-                } else if event.keystroke.key == "tab" && this.is_decision() {
+                } else if event.keystroke.key == "tab"
+                    && (this.is_decision() || matches!(this.page, Page::Move(_)))
+                {
                     window.prevent_default();
                     for _ in 0..FOCUS_SCAN_LIMIT {
                         if event.keystroke.modifiers.shift {
@@ -1151,6 +1390,166 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+    }
+    #[gpui::test]
+    fn project_move_picker_cancel_keyboard_and_persistence(cx: &mut gpui::TestAppContext) {
+        if std::env::var_os("GROVE_MOVE_PANEL_TEST_CHILD").is_none() {
+            let root = std::env::temp_dir().join(format!(
+                "grove-move-panel-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs_err::create_dir_all(&root).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "views::sidebar::projects::tests::project_move_picker_cancel_keyboard_and_persistence", "--nocapture"])
+                .env("GROVE_MOVE_PANEL_TEST_CHILD", "1").env("GROVE_CONFIG_DIR", &root).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let path = format!("{}/repository", std::env::var("GROVE_CONFIG_DIR").unwrap());
+        fs_err::create_dir_all(&path).unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let mut store = grove_core::storage::Store::default();
+            store.projects.push(grove_core::storage::Project {
+                name: "Move example".into(),
+                path: path.clone(),
+                scripts: ProjectScripts::default(),
+                archived: false,
+                worktree_dir: None,
+            });
+            store.assign_project_to_active_workspace(&path);
+            cx.set_global(SettingsState::new(store));
+        });
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let registry = cx.new(|_| SessionRegistry::new());
+            let state = cx.new(|cx| {
+                crate::entities::workspace_state::WorkspaceState::new(
+                    &cx.global::<SettingsState>().store,
+                    MODAL_W_LG,
+                )
+            });
+            let service = cx.new(|_| ProjectService::new(registry.clone(), state));
+            ProjectPanel::new(Page::Move(path.clone()), service, registry, window, cx)
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("project-move-destination-2").is_none());
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.move_project(cx);
+                assert_eq!(
+                    cx.global::<SettingsState>()
+                        .store
+                        .project_workspace_id(&path),
+                    1
+                );
+                assert!(panel.error.is_none());
+                cx.global_mut::<SettingsState>()
+                    .store
+                    .workspaces
+                    .create("A destination workspace with a very long name for geometry checks")
+                    .unwrap();
+                cx.global_mut::<SettingsState>().store.workspaces.select(1);
+            });
+        });
+        draw(cx);
+        for (width, height) in [(320., 480.), (768., 560.), (1280., 800.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            draw(cx);
+            let bounds = cx.debug_bounds("project-move-destination-2").unwrap();
+            assert!(f32::from(bounds.left()) >= 0.);
+            assert!(f32::from(bounds.right()) <= width);
+            let footer = cx.debug_bounds("project-panel-footer").unwrap();
+            assert!(f32::from(footer.bottom()) <= height);
+        }
+        cx.simulate_resize(gpui::size(gpui::px(768.), gpui::px(560.)));
+        draw(cx);
+        cx.simulate_keystrokes("tab enter");
+        draw(cx);
+        assert_eq!(panel.read_with(cx, |panel, _| panel.destination), Some(2));
+        assert!(!panel.read_with(cx, |panel, _| panel.open_destination));
+        cx.simulate_keystrokes("tab space");
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.open_destination));
+        let toggle = cx.debug_bounds("project-move-open-destination").unwrap();
+        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(!panel.read_with(cx, |panel, _| panel.open_destination));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert_eq!(
+            cx.read(|cx| cx
+                .global::<SettingsState>()
+                .store
+                .project_workspace_id(&path)),
+            1
+        );
+        // A standalone panel isn't removed by its parent here. Reopen focus, then activate
+        // destination and explicit submit via the same keyboard route as the real panel.
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.destination = None;
+                panel.focus.focus(window, cx);
+                cx.notify();
+            });
+        });
+        draw(cx);
+        cx.simulate_keystrokes("tab space");
+        draw(cx);
+        assert_eq!(panel.read_with(cx, |panel, _| panel.destination), Some(2));
+        cx.simulate_keystrokes("tab tab tab enter");
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.error.is_none()));
+        cx.read(|cx| {
+            let store = &cx.global::<SettingsState>().store;
+            assert_eq!(store.project_workspace_id(&path), 2);
+            assert_eq!(store.workspaces.active, 1);
+            assert_eq!(store.projects[0].path, path);
+        });
+        assert_eq!(
+            grove_core::storage::load()
+                .unwrap()
+                .project_workspace_id(&path),
+            2
+        );
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.destination = Some(1);
+                panel.open_destination = true;
+                cx.global_mut::<SettingsState>().store.workspaces.select(2);
+                panel.move_project(cx);
+                assert!(panel.error.is_none());
+                assert_eq!(
+                    cx.global::<SettingsState>()
+                        .store
+                        .project_workspace_id(&path),
+                    1
+                );
+                assert_eq!(cx.global::<SettingsState>().store.workspaces.active, 1);
+            });
+        });
+        // A vanished choice is revalidated at submission and leaves the panel retryable.
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.destination = Some(9999);
+                panel.move_project(cx);
+                assert!(panel.error.is_some());
+                assert_eq!(
+                    cx.global::<SettingsState>()
+                        .store
+                        .project_workspace_id(&path),
+                    1
+                );
+            });
         });
     }
     #[gpui::test]

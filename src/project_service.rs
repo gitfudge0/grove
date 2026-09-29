@@ -167,6 +167,58 @@ impl ProjectService {
         Ok(idx)
     }
 
+    /// Reassigns a registration without touching its repository or live sessions.
+    pub fn move_project_to_workspace(
+        &mut self,
+        path: &str,
+        destination: u64,
+        open_destination: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let store = &cx.global::<SettingsState>().store;
+        project_index(&store.projects, path)
+            .ok_or_else(|| "Project no longer exists.".to_string())?;
+        if !store
+            .workspaces
+            .rows
+            .iter()
+            .any(|row| row.id == destination)
+        {
+            return Err("The selected workspace no longer exists.".into());
+        }
+        self.ensure_not_removing(path)?;
+        if self.is_worktree_removing(path)
+            || self.removals.values().any(|removal| {
+                !removal.finished
+                    && removal.current_target.as_deref().is_some_and(|target| {
+                        path_within_worktree(
+                            path,
+                            target,
+                            Path::new(target).canonicalize().ok().as_deref(),
+                        )
+                    })
+            })
+        {
+            return Err(
+                "Wait for the worktree removal to finish before moving this project.".into(),
+            );
+        }
+        if store.project_workspace_id(path) == destination {
+            return Err("This project is already in the selected workspace.".into());
+        }
+        let ((), saved) = SettingsState::update_and_flush_checked(cx, |store| {
+            store
+                .project_workspaces
+                .insert(path.to_string(), destination);
+            if open_destination {
+                store.workspaces.select(destination);
+            }
+        });
+        saved.map_err(|error| format!("Could not move project: {error}"))?;
+        cx.emit(ProjectEvent::TreeInvalidated);
+        Ok(())
+    }
+
     pub fn update_project(
         &mut self,
         path: &str,
@@ -1043,6 +1095,187 @@ mod tests {
             archived: false,
             worktree_dir: None,
         }
+    }
+
+    #[gpui::test]
+    fn workspace_move_persists_preserves_sessions_and_rolls_back(cx: &mut gpui::TestAppContext) {
+        // Every write stays in a subprocess-local config directory.
+        if std::env::var_os("GROVE_WORKSPACE_MOVE_TEST_CHILD").is_none() {
+            let config = std::env::temp_dir().join(format!(
+                "grove-workspace-move-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&config).unwrap();
+            let fixture = GitFixture(config.clone());
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "project_service::tests::workspace_move_persists_preserves_sessions_and_rolls_back",
+                    "--nocapture",
+                ])
+                .env("GROVE_WORKSPACE_MOVE_TEST_CHILD", "1")
+                .env("GROVE_CONFIG_DIR", &config)
+                .output()
+                .unwrap();
+            drop(fixture);
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        cx.update(|cx| {
+            let config = storage::config_dir().unwrap();
+            let repo = config.join("repo");
+            fs::create_dir_all(&repo).unwrap();
+            let path = repo.to_str().unwrap();
+            let mut store = storage::Store {
+                projects: vec![project("moving", path), project("other", "/other")],
+                appearance: Some(storage::AppearancePreference::Dark),
+                grid_order: vec![format!("moving::{path}::session")],
+                recent_launches: vec![storage::RecentLaunch {
+                    project: "moving".into(),
+                    wt_path: path.into(),
+                    agent: grove_core::agent::Agent::Terminal,
+                }],
+                ..Default::default()
+            };
+            store.projects[1].archived = true;
+            store.projects[0].scripts.run = Some("echo retained".into());
+            store.projects[0].worktree_dir = Some("original-directory".into());
+            let source = store.workspaces.active;
+            store.workspaces.create("Destination").unwrap();
+            let destination = store.workspaces.active;
+            store.workspaces.select(source);
+            store.normalize_workspaces();
+            storage::save(&store).unwrap();
+            let original = serde_json::to_value(&store).unwrap();
+            let config_path = storage::config_path().unwrap();
+            let saved_before = fs::read(&config_path).unwrap();
+            cx.set_global(SettingsState::new(store));
+            let registry = cx.new(|_| SessionRegistry::new());
+            let state = cx.new(|_| WorkspaceState::default());
+            let service = cx.new(|_| ProjectService::new(registry.clone(), state.clone()));
+            let session = cx.new(|cx| TerminalSession::spawn_script("sleep 60", path, cx));
+            assert!(session.read(cx).spawn_error().is_none());
+            let pid = session.read(cx).root_pid().unwrap();
+            let id = registry.update(cx, |registry, _| {
+                let id = registry.insert_meta(
+                    "moving".into(),
+                    path.into(),
+                    grove_core::agent::Agent::Terminal,
+                );
+                registry.attach(id, session.clone(), None);
+                id
+            });
+            let spawned_at = registry.read(cx).meta(id).unwrap().spawned_at;
+            service.update(cx, |service, cx| {
+                assert!(service
+                    .move_project_to_workspace("/missing", destination, false, cx)
+                    .is_err());
+                assert!(service
+                    .move_project_to_workspace(path, u64::MAX, false, cx)
+                    .is_err());
+                assert!(service
+                    .move_project_to_workspace(path, source, false, cx)
+                    .is_err());
+                service
+                    .removals
+                    .insert(path.into(), ProjectRemoval::default());
+                assert!(service
+                    .move_project_to_workspace(path, destination, false, cx)
+                    .is_err());
+                service.removals.clear();
+                service.worktree_removals.insert(
+                    path.into(),
+                    WorktreeRemoval {
+                        stage: WorktreeRemovalStage::RunningScript,
+                        error: None,
+                        project_path: path.into(),
+                        canonical_path: repo.clone(),
+                    },
+                );
+                assert!(service
+                    .move_project_to_workspace(path, destination, false, cx)
+                    .is_err());
+                service.worktree_removals.clear();
+            });
+            assert_eq!(fs::read(&config_path).unwrap(), saved_before);
+            assert_eq!(
+                serde_json::to_value(&cx.global::<SettingsState>().store).unwrap(),
+                original
+            );
+            service.update(cx, |service, cx| {
+                service
+                    .move_project_to_workspace(path, destination, false, cx)
+                    .unwrap();
+            });
+            let store = &cx.global::<SettingsState>().store;
+            assert_eq!(store.workspaces.active, source);
+            assert_eq!(store.project_workspace_id(path), destination);
+            assert_eq!(store.workspaces.rows[0].projects, 1);
+            assert_eq!(store.workspaces.rows[1].projects, 1);
+            let mut expected = original;
+            expected["project_workspaces"][path] = destination.into();
+            assert_eq!(serde_json::to_value(store).unwrap(), expected);
+            assert_eq!(
+                serde_json::to_value(storage::load().unwrap()).unwrap(),
+                expected
+            );
+            assert_eq!(registry.read(cx).meta(id).unwrap().spawned_at, spawned_at);
+            assert_eq!(registry.read(cx).meta(id).unwrap().project, "moving");
+            assert_eq!(registry.read(cx).meta(id).unwrap().wt_path, path);
+            assert_eq!(registry.read(cx).session(id), Some(&session));
+            assert_eq!(session.read(cx).root_pid(), Some(pid));
+            assert!(session.update(cx, |session, _| session.alive()));
+            assert!(repo.is_dir());
+
+            // Opening the destination persists its selection and MRU with membership.
+            service.update(cx, |service, cx| {
+                service
+                    .move_project_to_workspace(path, source, false, cx)
+                    .unwrap();
+                service
+                    .move_project_to_workspace(path, destination, true, cx)
+                    .unwrap();
+            });
+            expected["workspaces"]["active"] = destination.into();
+            expected["workspaces"]["mru"] = serde_json::json!([destination, source]);
+            assert_eq!(
+                serde_json::to_value(&cx.global::<SettingsState>().store).unwrap(),
+                expected
+            );
+            assert_eq!(
+                serde_json::to_value(storage::load().unwrap()).unwrap(),
+                expected
+            );
+
+            // A directory at the save target makes the atomic rename fail reliably.
+            fs::rename(&config_path, config.join("saved-before-failure.json")).unwrap();
+            fs::create_dir(&config_path).unwrap();
+            service.update(cx, |service, cx| {
+                assert!(service
+                    .move_project_to_workspace(path, source, true, cx)
+                    .unwrap_err()
+                    .contains("Could not move project"));
+            });
+            let restored = &cx.global::<SettingsState>().store;
+            assert_eq!(serde_json::to_value(restored).unwrap(), expected);
+            assert_eq!(restored.workspaces.rows[0].projects, 1);
+            assert_eq!(restored.workspaces.rows[1].projects, 1);
+            assert_eq!(restored.workspaces.active, destination);
+            assert!(!cx.global::<SettingsState>().is_dirty());
+            assert_eq!(registry.read(cx).meta(id).unwrap().spawned_at, spawned_at);
+            assert_eq!(registry.read(cx).session(id), Some(&session));
+            assert_eq!(session.read(cx).root_pid(), Some(pid));
+            assert!(session.update(cx, |session, _| session.alive()));
+        });
     }
 
     fn git_fixture() -> Option<(GitFixture, String, String)> {

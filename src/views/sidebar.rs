@@ -264,6 +264,7 @@ enum Action {
     InitializeGit(String),
     RefreshGit(String),
     EditProject(String),
+    MoveProject(String),
     AddProject,
     ArchivedProjects,
     Reveal(String),
@@ -2148,10 +2149,15 @@ impl Sidebar {
             Action::AddProject => self.add_project(window, cx),
             Action::ToggleProject(path) => {
                 if self.project_path_is_active(&path, cx) {
+                    let leaving_project_panel = self.project_panel.is_some();
+                    self.dismiss_project_panel_for_navigation();
                     if !self.collapsed_projects.insert(path.clone()) {
                         self.collapsed_projects.remove(&path);
                     }
                     cx.notify();
+                    if leaving_project_panel && self.project_panel.is_none() {
+                        self.focus.focus(window, cx);
+                    }
                 }
             }
             Action::ArchivedProjects => {
@@ -2167,6 +2173,12 @@ impl Sidebar {
                     return;
                 }
                 self.open_project_panel(projects::Page::Edit(path), window, cx);
+            }
+            Action::MoveProject(path) => {
+                if !self.project_path_is_active(&path, cx) {
+                    return;
+                }
+                self.open_project_panel(projects::Page::Move(path), window, cx);
             }
             Action::Select(s) => {
                 let leaving_project_panel = self.project_panel.is_some();
@@ -3103,7 +3115,14 @@ impl Sidebar {
             .worktree_readiness
             .get(&path)
             .and_then(|(_, value)| *value);
-        let mut actions = vec![("Edit project", "edit", Action::EditProject(path.clone()))];
+        let mut actions = vec![
+            ("Edit project", "edit", Action::EditProject(path.clone())),
+            (
+                "Move to workspace…",
+                "folder",
+                Action::MoveProject(path.clone()),
+            ),
+        ];
         if readiness == Some(WorktreeReadiness::Ready) {
             actions.push(("New worktree", "plus", Action::NewWorktree(path.clone())));
         } else if readiness == Some(WorktreeReadiness::NeedsGit) {
@@ -3249,10 +3268,28 @@ impl Sidebar {
                 })
                 .unwrap_or_else(|| format!("missing-project-{idx}"));
             let expanded = !self.collapsed_projects.contains(&project_path);
+            let previous_collapsed = project_position > 0
+                && self
+                    .snapshot
+                    .projects
+                    .get(project_position - 1)
+                    .is_some_and(|previous| {
+                        self.project_paths
+                            .get(&previous.idx)
+                            .is_some_and(|path| self.collapsed_projects.contains(path))
+                    });
             let mut group = div().flex().flex_col().when(project_position > 0, |group| {
                 group
-                    .mt(rpx(PROJECT_GROUP_GAP))
-                    .pt(rpx(SPACE_LG))
+                    .mt(rpx(if previous_collapsed {
+                        SPACE_SM
+                    } else {
+                        PROJECT_GROUP_GAP
+                    }))
+                    .pt(rpx(if previous_collapsed {
+                        SPACE_XS
+                    } else {
+                        SPACE_LG
+                    }))
                     .border_t_1()
                     .border_color(c::alpha(c::FG(), 0.08))
             });
@@ -3261,7 +3298,7 @@ impl Sidebar {
                     format!("project-{idx}"),
                     format!("{} project", project.name),
                     false,
-                    Action::Select(Selection::Project(idx)),
+                    Action::ToggleProject(project_path.clone()),
                     cx,
                 )
                 .h(rpx(PROJECT_ROW_H))
@@ -3411,6 +3448,7 @@ impl Sidebar {
                 let action_count = WORKTREE_LAUNCH_AGENTS.len()
                     + has_run_script as usize
                     + (!worktree.is_main) as usize;
+                let launch_width = WORKTREE_ACTION_W * action_count as f32;
                 let selection = Selection::Worktree(idx, path.clone());
                 let selected = self.selection == Some(selection.clone());
                 let focused = self
@@ -3420,7 +3458,7 @@ impl Sidebar {
                 let mut launches = div()
                     .absolute()
                     .right_0()
-                    .w(rpx(WORKTREE_ACTION_W * action_count as f32))
+                    .w(rpx(launch_width))
                     .h(rpx(CHROME_CONTROL_H))
                     .flex()
                     .flex_shrink_0()
@@ -3553,20 +3591,27 @@ impl Sidebar {
                                 let path = path.clone();
                                 move || format!("worktree-title-{path}")
                             })
+                            .group_hover("worktree-row", move |s| {
+                                s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
+                            })
+                            .when(focused, move |s| {
+                                s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
+                            })
                             .child(
                                 div()
                                     .min_w_0()
+                                    .flex_1()
                                     .truncate()
-                                    .when(worktree.is_main, gpui::Styled::flex_shrink_0)
-                                    .when(!worktree.is_main, gpui::Styled::flex_1)
+                                    .text_ellipsis_middle()
                                     .child(worktree_name.to_owned()),
                             )
-                            .when(worktree.is_main && !worktree.branch.is_empty(), |title| {
+                            .when(!worktree.branch.is_empty(), |title| {
                                 title.child(
                                     div()
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
+                                        .text_ellipsis_middle()
                                         .text_size(rpx(HIERARCHY_META_TEXT))
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(c::FG_DIM())
@@ -3960,7 +4005,7 @@ impl Render for Sidebar {
                                 )
                                 .debug_selector(|| "projects-archive".into())
                                 .child(icon(
-                                    "folder",
+                                    "archive",
                                     ICON_SM,
                                     c::FG_DIM(),
                                 )),
@@ -5327,7 +5372,9 @@ mod tests {
         }
     }
     #[gpui::test]
-    fn project_title_selects_context_without_hiding_sessions(cx: &mut gpui::TestAppContext) {
+    fn project_title_toggles_without_selecting_or_preserving_descendants(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(|cx| {
             gpui_component::init(cx);
             let projects = ["one", "two"]
@@ -5367,14 +5414,15 @@ mod tests {
         assert!(cx.debug_bounds("project-count-0").is_none());
         assert!(cx.debug_bounds("project-count-1").is_none());
         assert!(cx.debug_bounds("session-1").is_some());
+        let initial_selection = sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
         let title = cx.debug_bounds("project-title-0").unwrap().center();
         cx.simulate_click(title, gpui::Modifiers::default());
         draw(cx);
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            Some(Selection::Project(0))
+            initial_selection
         );
-        assert!(cx.debug_bounds("session-1").is_some());
+        assert!(cx.debug_bounds("session-1").is_none());
         assert!(cx.debug_bounds("project-1").is_some());
     }
 
@@ -5450,8 +5498,8 @@ mod tests {
         cx.simulate_click(title, gpui::Modifiers::default());
         draw(cx);
         sidebar.read_with(cx, |sidebar, _| {
-            assert_eq!(sidebar.selection, Some(Selection::Project(0)));
-            assert!(sidebar.collapsed_projects.contains(paths[0]));
+            assert_eq!(sidebar.selection, initial);
+            assert!(!sidebar.collapsed_projects.contains(paths[0]));
         });
         cx.update(|_, cx| cx.global_mut::<SettingsState>().store.workspaces.select(2));
         draw(cx);
@@ -5460,7 +5508,7 @@ mod tests {
         draw(cx);
         assert!(cx
             .debug_bounds("worktree-/grove-folder-toggle-one")
-            .is_none());
+            .is_some());
         cx.update(|window, cx| {
             let handle = sidebar.read(cx).project_toggle_focus[paths[0]].clone();
             handle.focus(window, cx);
@@ -5469,17 +5517,17 @@ mod tests {
         draw(cx);
         assert!(cx
             .debug_bounds("worktree-/grove-folder-toggle-one")
-            .is_some());
-        assert!(cx.debug_bounds("session-1").is_some());
+            .is_none());
+        assert!(cx.debug_bounds("session-1").is_none());
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            Some(Selection::Project(0))
+            initial
         );
         cx.simulate_keystrokes("space");
         draw(cx);
         assert!(cx
             .debug_bounds("worktree-/grove-folder-toggle-one")
-            .is_none());
+            .is_some());
         cx.update(|_, cx| {
             sidebar.update(cx, |sidebar, _| sidebar.selection = None);
             cx.global_mut::<SettingsState>().store.workspaces.select(2);
@@ -5489,7 +5537,7 @@ mod tests {
         draw(cx);
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            Some(Selection::Session(SessionId::from_raw(2)))
+            Some(Selection::Session(SessionId::from_raw(1)))
         );
         cx.update(|window, cx| {
             cx.global_mut::<SettingsState>().store.projects.remove(0);
@@ -6748,6 +6796,185 @@ mod tests {
     }
 
     #[gpui::test]
+    fn project_move_preserves_session_and_source_navigation(cx: &mut gpui::TestAppContext) {
+        if std::env::var_os("GROVE_MOVE_SIDEBAR_TEST_CHILD").is_none() {
+            let root = std::env::temp_dir().join(format!(
+                "grove-move-sidebar-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs_err::create_dir_all(&root).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "views::sidebar::tests::project_move_preserves_session_and_source_navigation",
+                    "--nocapture",
+                ])
+                .env("GROVE_MOVE_SIDEBAR_TEST_CHILD", "1")
+                .env("GROVE_CONFIG_DIR", &root)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let repo = ChangedGitRepo::new();
+        let path = repo
+            .0
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let mut store = grove_core::storage::Store::default();
+            store.projects.push(grove_core::storage::Project {
+                name: "Moving".into(),
+                path: path.clone(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                archived: false,
+                worktree_dir: None,
+            });
+            store.assign_project_to_active_workspace(&path);
+            store.workspaces.create("Destination").unwrap();
+            store.workspaces.select(1);
+            cx.set_global(SettingsState::new(store));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        let id = cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let registry = sidebar.runtime.read(cx).registry.clone();
+                let id = registry.update(cx, |registry, cx| {
+                    let id = registry.insert_meta("Moving".into(), path.clone(), Agent::Codex);
+                    cx.notify();
+                    id
+                });
+                sidebar.sync(window, cx);
+                sidebar.act(Action::Select(Selection::Session(id)), window, cx);
+                sidebar.act(Action::Menu(0), window, cx);
+                sidebar.act(Action::MoveProject(path.clone()), window, cx);
+                id
+            })
+        });
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                assert!(sidebar.project_panel.is_none());
+                assert_eq!(sidebar.selection, Some(Selection::Session(id)));
+                assert!(sidebar.project_menu_focus[&0].is_focused(window));
+                assert_eq!(
+                    cx.global::<SettingsState>()
+                        .store
+                        .project_workspace_id(&path),
+                    1
+                );
+                sidebar.act(Action::Menu(0), window, cx);
+                sidebar.act(Action::MoveProject(path.clone()), window, cx);
+            });
+        });
+        draw(cx);
+        // Pointer chooses the destination; keyboard traverses to the explicit primary action.
+        let destination = cx.debug_bounds("project-move-destination-2").unwrap();
+        cx.simulate_click(destination.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("tab tab tab enter");
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                assert!(sidebar.project_panel.is_none());
+                assert_eq!(sidebar.selection, None);
+                assert_eq!(cx.global::<SettingsState>().store.workspaces.active, 1);
+                assert_eq!(
+                    cx.global::<SettingsState>()
+                        .store
+                        .project_workspace_id(&path),
+                    2
+                );
+                assert_eq!(
+                    sidebar
+                        .runtime
+                        .read(cx)
+                        .toast
+                        .read(cx)
+                        .current()
+                        .unwrap()
+                        .message,
+                    "Moved Moving to Destination."
+                );
+                assert!(sidebar
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .meta(id)
+                    .is_some());
+                assert!(!sidebar
+                    .snapshot
+                    .projects
+                    .iter()
+                    .any(|project| project.sessions.contains(&id)));
+                cx.global_mut::<SettingsState>().store.workspaces.select(2);
+                sidebar.sync(window, cx);
+                assert!(sidebar
+                    .snapshot
+                    .projects
+                    .iter()
+                    .any(|project| project.sessions.contains(&id)));
+            });
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(Action::MoveProject(path.clone()), window, cx);
+            });
+        });
+        draw(cx);
+        let destination = cx.debug_bounds("project-move-destination-1").unwrap();
+        cx.simulate_click(destination.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("tab space tab tab enter");
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                assert!(sidebar.project_panel.is_none());
+                assert_eq!(cx.global::<SettingsState>().store.workspaces.active, 1);
+                assert_eq!(
+                    cx.global::<SettingsState>()
+                        .store
+                        .project_workspace_id(&path),
+                    1
+                );
+                assert_eq!(sidebar.selection, Some(Selection::Project(0)));
+                assert!(sidebar.project_menu_focus[&0].is_focused(window));
+                assert!(sidebar
+                    .snapshot
+                    .projects
+                    .iter()
+                    .any(|project| project.sessions.contains(&id)));
+                assert!(sidebar
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .meta(id)
+                    .is_some());
+            });
+        });
+    }
+    #[gpui::test]
     fn project_popup_preserves_rows_and_restores_focus_on_dismiss(cx: &mut gpui::TestAppContext) {
         let repo = ChangedGitRepo::new();
         let one_path = repo
@@ -6928,7 +7155,7 @@ mod tests {
             sidebar.update(cx, |sidebar, cx| sidebar.act(Action::Menu(0), window, cx));
         });
         draw(cx);
-        cx.simulate_keystrokes("down down down enter");
+        cx.simulate_keystrokes("down down down down enter");
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.confirmation_open()));
         for _ in 0..5 {
@@ -6963,7 +7190,7 @@ mod tests {
             cx.update(|window, _| window.viewport_size())
         );
         assert!(popup.top() >= gpui::px(0.0) && popup.bottom() <= gpui::px(200.0));
-        cx.simulate_keystrokes("down enter");
+        cx.simulate_keystrokes("down down enter");
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.pending_new_worktree == Some(0)));
         assert!(
