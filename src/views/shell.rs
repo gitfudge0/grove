@@ -222,6 +222,7 @@ impl Shell {
         };
         let traffic = |id, label, color, glyph| {
             header_control(id, label)
+                .debug_selector(move || id.into())
                 .on_mouse_down(MouseButton::Left, |_, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
@@ -245,6 +246,8 @@ impl Shell {
                 )
         };
         let grid = self.sidebar.read(cx).is_grid() && !self.settings.read(cx).is_open();
+        let rail_visible = self.sidebar.read(cx).rail_visible(window, cx);
+        let collapsed = rail_visible && self.sidebar.read(cx).is_collapsed(cx);
         let solid_sidebar = cx
             .global::<crate::settings::SettingsState>()
             .store
@@ -269,7 +272,13 @@ impl Shell {
                     .flex_shrink_0()
                     .when(!grid, |segment| {
                         segment
-                            .w(rpx(self.sidebar.read(cx).rail_width(window, cx)))
+                            .w(rpx(self.sidebar.read(cx).rail_width(window, cx).max(
+                                if rail_visible {
+                                    0.0
+                                } else {
+                                    TRAFFIC_CONTROL_W * 3.0 + SPACE_2XL * 2.0
+                                },
+                            )))
                             .border_r_1()
                             .border_color(c::BORDER())
                             .when(solid_sidebar, |segment| segment.bg(c::BG_RAIL()))
@@ -283,38 +292,41 @@ impl Shell {
                     })
                     .flex()
                     .items_center()
-                    .child(
-                        traffic("window-close", "Close window", c::WINDOW_CLOSE(), "close")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.flush(cx);
-                                window.remove_window();
-                            })),
-                    )
-                    .child(
-                        traffic(
-                            "window-minimize",
-                            "Minimize window",
-                            c::WINDOW_MINIMIZE(),
-                            "minus",
-                        )
-                        .on_click(|_, window, cx| {
-                            cx.stop_propagation();
-                            window.minimize_window();
-                        }),
-                    )
-                    .child(
-                        traffic(
-                            "window-fullscreen",
-                            fullscreen_label,
-                            c::WINDOW_FULLSCREEN(),
-                            "plus",
-                        )
-                        .on_click(|_, window, cx| {
-                            cx.stop_propagation();
-                            window.toggle_fullscreen();
-                        }),
-                    ),
+                    .when(!collapsed, |segment| {
+                        segment
+                            .child(
+                                traffic("window-close", "Close window", c::WINDOW_CLOSE(), "close")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.flush(cx);
+                                        window.remove_window();
+                                    })),
+                            )
+                            .child(
+                                traffic(
+                                    "window-minimize",
+                                    "Minimize window",
+                                    c::WINDOW_MINIMIZE(),
+                                    "minus",
+                                )
+                                .on_click(|_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.minimize_window();
+                                }),
+                            )
+                            .child(
+                                traffic(
+                                    "window-fullscreen",
+                                    fullscreen_label,
+                                    c::WINDOW_FULLSCREEN(),
+                                    "plus",
+                                )
+                                .on_click(|_, window, cx| {
+                                    cx.stop_propagation();
+                                    window.toggle_fullscreen();
+                                }),
+                            )
+                    }),
             )
             .child(
                 div()
@@ -1699,6 +1711,183 @@ mod tests {
             );
             assert!(shell.runtime.read(cx).registry.read(cx).is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn sidebar_collapse_restores_width_and_header_controls(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            init(cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .sidebar_width = Some(300.0);
+        });
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        assert_rail_alignment(cx, 300.0);
+        let settings = cx.debug_bounds("sidebar-settings").unwrap();
+        let toggle = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
+        assert!(toggle.left() >= settings.right());
+        assert_eq!(toggle.center().y, settings.center().y);
+        assert!(cx.debug_bounds("window-close").is_some());
+        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        draw(cx);
+        let rail = cx.debug_bounds("sidebar-rail").unwrap();
+        let header = cx.debug_bounds("header-rail-segment").unwrap();
+        let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
+        assert_eq!(f32::from(rail.size.width), 52.0);
+        assert_eq!(header.right(), rail.right());
+        assert_eq!(canvas.left(), rail.right());
+        assert!(cx.debug_bounds("sidebar-divider").is_none());
+        for selector in [
+            "window-close",
+            "window-minimize",
+            "window-fullscreen",
+            "workspace-picker",
+        ] {
+            assert!(cx.debug_bounds(selector).is_none(), "{selector}");
+        }
+        let workspace_header = cx.debug_bounds("sidebar-workspace-header").unwrap();
+        let settings = cx.debug_bounds("sidebar-settings").unwrap();
+        assert!(settings.top() >= workspace_header.bottom());
+        assert_eq!(
+            cx.debug_bounds("sidebar-collapse-toggle")
+                .unwrap()
+                .center()
+                .y,
+            workspace_header.center().y
+        );
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_width,
+                Some(300.0)
+            );
+            assert!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_collapsed
+            );
+        });
+        // The replacement Expand control retains focus and activates with Space.
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert_rail_alignment(cx, 300.0);
+        assert!(cx.debug_bounds("window-close").is_some());
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
+            52.0
+        );
+        cx.update(|window, cx| {
+            shell
+                .read(cx)
+                .sidebar
+                .clone()
+                .update(cx, |sidebar, cx| sidebar.toggle_grid(window, cx));
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
+        assert!(cx.debug_bounds("window-close").is_some());
+        cx.update(|window, cx| {
+            shell
+                .read(cx)
+                .sidebar
+                .clone()
+                .update(cx, |sidebar, cx| sidebar.toggle_grid(window, cx));
+        });
+        draw(cx);
+        assert_eq!(
+            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
+            52.0
+        );
+        assert!(cx.debug_bounds("window-close").is_none());
+        // Workspace switching stays available as a compact icon and opens the full selector.
+        let workspace = cx.debug_bounds("sidebar-workspaces").unwrap().center();
+        cx.simulate_click(workspace, gpui::Modifiers::default());
+        draw(cx);
+        assert_rail_alignment(cx, 300.0);
+        assert!(cx.debug_bounds("workspace-popup").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        let point = cx.debug_bounds("sidebar-collapse-toggle").unwrap().center();
+        cx.simulate_click(point, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(600.0)));
+        draw(cx);
+        let point = cx.debug_bounds("projects-archive").unwrap().center();
+        cx.simulate_click(point, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
+        let header = cx.debug_bounds("header-rail-segment").unwrap();
+        for selector in ["window-close", "window-minimize", "window-fullscreen"] {
+            assert!(
+                header.contains(&cx.debug_bounds(selector).unwrap().center()),
+                "{selector}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn sidebar_compact_grid_control_returns_from_grid_while_settings_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            init(cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .sidebar_collapsed = true;
+        });
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        cx.update(|window, cx| {
+            shell
+                .read(cx)
+                .sidebar
+                .clone()
+                .update(cx, |sidebar, cx| sidebar.toggle_grid(window, cx));
+            shell
+                .read(cx)
+                .settings
+                .clone()
+                .update(cx, |settings, cx| settings.open(window, cx));
+        });
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        assert!(cx.debug_bounds("sidebar-rail").is_some());
+        let point = cx.debug_bounds("sidebar-grid").unwrap().center();
+        cx.simulate_click(point, gpui::Modifiers::default());
+        draw(cx);
+        assert!(!cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        assert_eq!(
+            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
+            52.0
+        );
+    }
+
+    #[gpui::test]
+    fn sidebar_initial_collapsed_workspace_picker_uses_visible_anchor(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            init(cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .sidebar_collapsed = true;
+        });
+        let (_, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        let workspace = cx.debug_bounds("sidebar-workspaces").unwrap().center();
+        cx.simulate_click(workspace, gpui::Modifiers::default());
+        draw(cx);
+        let popup = cx.debug_bounds("workspace-popup").unwrap();
+        let picker = cx.debug_bounds("workspace-picker").unwrap();
+        assert_eq!(popup.left(), picker.left());
+        assert!(popup.top() >= picker.bottom());
     }
 
     fn assert_rail_alignment(cx: &mut gpui::VisualTestContext, expected: f32) {

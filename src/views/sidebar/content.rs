@@ -702,6 +702,14 @@ impl Sidebar {
             .when(!grid || !active, |header| {
                 header.border_b_1().border_color(c::BORDER())
             })
+            .when(grid, |header| {
+                header.cursor_grab().on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                        this.begin_grid_session_drag((id, home), event.position, window, cx);
+                    }),
+                )
+            })
             .tooltip(move |window, cx| {
                 gpui_component::tooltip::Tooltip::new(title_tooltip.clone())
                     .bg(c::BG_STRIP())
@@ -1853,6 +1861,236 @@ mod tests {
             .unwrap()
             .contains("executable was not found"));
         assert!(!CanvasState::Exited.message(None).unwrap().contains("code"));
+    }
+    #[gpui::test]
+    fn grid_header_drag_swaps_tiles_and_cancels_without_affecting_controls(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "demo".into(),
+                    path: "/grove-drag-fixture".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            runtime.read(cx).registry.clone().update(cx, |registry, _| {
+                for _ in 0..3 {
+                    registry.insert_meta("demo".into(), "/grove-drag-fixture".into(), Agent::Codex);
+                }
+            });
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.mode = ViewMode::Grid;
+            sidebar
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        let original = sidebar.read_with(cx, Sidebar::active_canvas_sessions);
+        let header = cx.debug_bounds("terminal-header-1").unwrap().center();
+        let destination = cx.debug_bounds("terminal-pane-2").unwrap().center();
+        cx.simulate_mouse_down(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            original
+        );
+        cx.simulate_mouse_up(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        let mut swapped = original.clone();
+        swapped.swap(0, 1);
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            swapped
+        );
+        assert!(sidebar.read_with(cx, |sidebar, _| matches!(sidebar.selection, Some(Selection::Session(id)) if id == original[0].0)));
+        assert!(
+            cx.debug_bounds("terminal-header-1").unwrap().left()
+                > cx.debug_bounds("terminal-header-2").unwrap().left()
+        );
+
+        // Body selection and the close control never initiate a reorder.
+        for start in [
+            cx.debug_bounds("terminal-pane-1").unwrap().center(),
+            cx.debug_bounds("canvas-close-1").unwrap().center(),
+        ] {
+            let destination = cx.debug_bounds("terminal-pane-3").unwrap().center();
+            cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_none()));
+            cx.simulate_mouse_move(
+                destination,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            cx.simulate_mouse_up(
+                destination,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            assert_eq!(
+                sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+                swapped
+            );
+        }
+
+        // A release without movement, an outside drop, and a lost button all cancel.
+        let header = cx.debug_bounds("terminal-header-1").unwrap().center();
+        let destination = cx.debug_bounds("terminal-pane-3").unwrap().center();
+        cx.simulate_mouse_down(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            swapped
+        );
+        let outside = gpui::point(gpui::px(-10.0), gpui::px(-10.0));
+        cx.simulate_mouse_down(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_none()));
+        cx.simulate_mouse_up(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_down(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(destination, None, gpui::Modifiers::default());
+        cx.simulate_mouse_up(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            swapped
+        );
+
+        // Leaving grid clears the pending drag before returning to the same tiles.
+        cx.simulate_mouse_down(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.mode = ViewMode::List;
+            cx.notify();
+        });
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_none()));
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.mode = ViewMode::Grid;
+            cx.notify();
+        });
+        draw(cx);
+        cx.simulate_mouse_up(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            swapped
+        );
+        // Separator resizing remains a distinct gesture and preserves order.
+        let divider = cx.debug_bounds("grid-divider-columns-0").unwrap().center();
+        let width = cx.debug_bounds("grid-tile-0").unwrap().size.width;
+        let destination = gpui::point(divider.x + gpui::px(30.0), divider.y);
+        cx.simulate_mouse_down(divider, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert!(cx.debug_bounds("grid-tile-0").unwrap().size.width > width);
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            swapped
+        );
+        cx.simulate_resize(gpui::size(gpui::px(900.0), gpui::px(800.0)));
+        draw(cx);
+        let header = cx.debug_bounds("terminal-header-2").unwrap().center();
+        let destination = cx.debug_bounds("terminal-pane-3").unwrap().center();
+        assert!(destination.y > header.y);
+        cx.simulate_mouse_down(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        swapped.swap(0, 2);
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            swapped
+        );
+        let header = cx.debug_bounds("terminal-header-2").unwrap().center();
+        cx.simulate_mouse_down(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_none()));
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            swapped
+        );
+
+        cx.simulate_mouse_down(header, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.update(|_, cx| {
+            SettingsState::update(cx, |store| {
+                store.workspaces.create("Other").unwrap();
+            });
+        });
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_none()));
+        assert!(sidebar.read_with(cx, |sidebar, cx| sidebar
+            .active_canvas_sessions(cx)
+            .is_empty()));
+        cx.update(|_, cx| SettingsState::update(cx, |store| store.workspaces.select(1)));
+        draw(cx);
+        cx.simulate_mouse_up(
+            destination,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert_eq!(
+            sidebar.read_with(cx, Sidebar::active_canvas_sessions),
+            swapped
+        );
     }
     #[gpui::test]
     fn metadata_without_attached_terminal_renders_loading_header(cx: &mut gpui::TestAppContext) {

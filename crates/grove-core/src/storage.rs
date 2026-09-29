@@ -406,6 +406,9 @@ pub struct Store {
     /// Logical pixels; `None` falls back to the default `RAIL_W`.
     #[serde(default)]
     pub sidebar_width: Option<f32>,
+    /// Compact icon rail; kept separately so expanding restores the resized width.
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
     /// `false` = project → worktree → session tree, `true` = flat cross-project session list.
     #[serde(default)]
     pub rail_sessions: bool,
@@ -730,6 +733,7 @@ pub(crate) mod tests {
             tmux_enabled: Some(true),
             ui_zoom: Some(1.25),
             sidebar_width: Some(360.0),
+            sidebar_collapsed: true,
             rail_sessions: true,
             onboarded: true,
             last_update_check: None,
@@ -770,6 +774,7 @@ pub(crate) mod tests {
         assert_eq!(recovered.tmux_enabled, Some(true));
         assert!((recovered.ui_zoom.unwrap() - 1.25).abs() < f32::EPSILON);
         assert!((recovered.sidebar_width.unwrap() - 360.0).abs() < f32::EPSILON);
+        assert!(recovered.sidebar_collapsed);
         assert!(recovered.onboarded);
         assert_eq!(recovered.dangerously_skip_permissions_enabled, Some(false));
         assert!(!recovered.theme_follow_system);
@@ -806,6 +811,7 @@ pub(crate) mod tests {
         assert!(store.tmux_enabled.is_none());
         assert!(store.ui_zoom.is_none());
         assert!(store.sidebar_width.is_none());
+        assert!(!store.sidebar_collapsed);
         assert!(!store.theme_follow_system);
         assert!(store.theme_dark.is_none());
         assert!(store.theme_light.is_none());

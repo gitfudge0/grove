@@ -40,6 +40,13 @@ pub(super) struct GridDrag {
     initial: Vec<f32>,
 }
 
+pub(super) struct GridSessionDrag {
+    workspace: u64,
+    session: (SessionId, bool),
+    origin: gpui::Point<gpui::Pixels>,
+    moved: bool,
+}
+
 fn columns(count: usize, width: f32) -> usize {
     let available = (width - GRID_PADDING * 2.0 + GRID_GAP).max(0.0);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -157,6 +164,61 @@ impl WorkspaceGrid {
     }
 }
 impl Sidebar {
+    pub(super) fn begin_grid_session_drag(
+        &mut self,
+        session: (SessionId, bool),
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mode != super::ViewMode::Grid || self.is_zen() || !self.navigation_available() {
+            return;
+        }
+        self.grid_drag = None;
+        self.select(
+            if session.1 {
+                super::Selection::Home(session.0)
+            } else {
+                super::Selection::Session(session.0)
+            },
+            cx,
+        );
+        let view = if session.1 {
+            self.home_terminal_views.get(&session.0)
+        } else {
+            self.terminal_views.get(&session.0)
+        };
+        if let Some(view) = view {
+            view.focus_handle(cx).focus(window, cx);
+        } else {
+            self.pending_canvas_focus = Some(session.0);
+            self.pending_grid_workspace_focus = Some(session.0);
+            self.focus.focus(window, cx);
+        }
+        self.grid_session_drag = Some(GridSessionDrag {
+            workspace: self.active_workspace,
+            session,
+            origin: position,
+            moved: false,
+        });
+        cx.stop_propagation();
+    }
+
+    fn grid_session_drag_available(&self, cx: &Context<Self>) -> bool {
+        self.mode == super::ViewMode::Grid
+            && !self.is_zen()
+            && self.navigation_available()
+            && self.grid_session_drag.as_ref().is_some_and(|drag| {
+                drag.workspace == self.active_workspace
+                    && drag.workspace
+                        == cx
+                            .global::<crate::settings::SettingsState>()
+                            .store
+                            .workspaces
+                            .active
+            })
+    }
+
     fn grid_target(
         &self,
         index: usize,
@@ -366,6 +428,7 @@ impl Sidebar {
                         return;
                     }
                     focus.focus(window, cx);
+                    this.grid_session_drag = None;
                     let initial = this
                         .grid_layouts
                         .get_mut(&this.active_workspace)
@@ -436,6 +499,13 @@ impl Sidebar {
         let mut tiles: Vec<_> = tiles.into_iter().map(Some).collect();
         let bounds = self.grid_bounds.clone();
         let sidebar = cx.entity().downgrade();
+        let drag_sidebar = sidebar.clone();
+        let sessions = self.active_canvas_sessions(cx);
+        let tile_bounds = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let drop_bounds = tile_bounds.clone();
+        let frame_bounds = tile_bounds.clone();
+        let drop_region = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
+        let painted_region = drop_region.clone();
         let mut layout = div()
             .id("session-grid-layout")
             .debug_selector(|| "session-grid-layout".into())
@@ -451,12 +521,76 @@ impl Sidebar {
             .child(
                 gpui::canvas(
                     move |rect, _, cx| {
+                        frame_bounds.borrow_mut().clear();
                         let previous = bounds.replace(rect);
                         if previous.size != rect.size {
                             let _ = sidebar.update(cx, |_, cx| cx.notify());
                         }
                     },
-                    |_, (), _, _| {},
+                    move |_, (), window, _| {
+                        let sidebar = drag_sidebar.clone();
+                        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, _, cx| {
+                            if phase != gpui::DispatchPhase::Capture {
+                                return;
+                            }
+                            let _ = sidebar.update(cx, |this, cx| {
+                                if !event.dragging() || !this.grid_session_drag_available(cx) {
+                                    this.grid_session_drag = None;
+                                    return;
+                                }
+                                if let Some(drag) = this.grid_session_drag.as_mut() {
+                                    let delta = event.position - drag.origin;
+                                    drag.moved |=
+                                        f32::from(delta.x).hypot(f32::from(delta.y)) >= 4.0;
+                                    cx.stop_propagation();
+                                }
+                            });
+                        });
+                        let sidebar = drag_sidebar.clone();
+                        let drop_bounds = drop_bounds.clone();
+                        let drop_region = drop_region.clone();
+                        window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _, cx| {
+                            if phase != gpui::DispatchPhase::Capture
+                                || event.button != MouseButton::Left
+                            {
+                                return;
+                            }
+                            let _ = sidebar.update(cx, |this, cx| {
+                                let available = this.grid_session_drag_available(cx);
+                                let Some(drag) = this.grid_session_drag.take() else {
+                                    return;
+                                };
+                                cx.stop_propagation();
+                                if !available
+                                    || !drag.moved
+                                    || !drop_region.get().contains(&event.position)
+                                {
+                                    return;
+                                }
+                                let target = drop_bounds.borrow().iter().find_map(
+                                    |(session, bounds): &(
+                                        (SessionId, bool),
+                                        gpui::Bounds<gpui::Pixels>,
+                                    )| {
+                                        bounds.contains(&event.position).then_some(*session)
+                                    },
+                                );
+                                let mut sessions = this.active_canvas_sessions(cx);
+                                if let Some((source, target)) = sessions
+                                    .iter()
+                                    .position(|session| *session == drag.session)
+                                    .zip(target.and_then(|target| {
+                                        sessions.iter().position(|session| *session == target)
+                                    }))
+                                {
+                                    sessions.swap(source, target);
+                                    this.grid_layouts.entry(drag.workspace).or_default().order =
+                                        sessions;
+                                    cx.notify();
+                                }
+                            });
+                        });
+                    },
                 )
                 .absolute()
                 .inset_0(),
@@ -492,6 +626,8 @@ impl Sidebar {
                 }
                 let index = row * columns + column;
                 if let Some(tile) = tiles.get_mut(index).and_then(Option::take) {
+                    let tile_bounds = tile_bounds.clone();
+                    let session = sessions.get(index).copied();
                     column_el = column_el.child(
                         div()
                             .id(("grid-tile", index))
@@ -508,6 +644,19 @@ impl Sidebar {
                             })
                             .border_color(c::BORDER_SOFT())
                             .overflow_hidden()
+                            .child(
+                                gpui::canvas(
+                                    move |bounds, _, _| {
+                                        if let Some(session) = session {
+                                            tile_bounds.borrow_mut().push((session, bounds));
+                                        }
+                                    },
+                                    |_, (), _, _| {},
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                            .relative()
                             .child(tile),
                     );
                 }
@@ -523,7 +672,16 @@ impl Sidebar {
             .border_t_1()
             .border_color(c::BORDER_SOFT())
             .overflow_y_scroll()
+            .relative()
             .p(rpx(GRID_PADDING))
+            .child(
+                gpui::canvas(
+                    move |bounds, _, _| painted_region.set(bounds),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .child(layout)
             .on_mouse_move(
                 cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {

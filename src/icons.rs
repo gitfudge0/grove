@@ -82,6 +82,17 @@ fn svg_for(name: &str) -> String {
         "arrow-left" => r#"<path d="M13 8H3M7 4 3 8l4 4"/>"#,
         "arrow-right" => r#"<path d="M3 8h10M9 4l4 4-4 4"/>"#,
         // Chevron pointing into a vertical bar — "collapse panel to the right".
+        "sidebar-collapse" => {
+            r#"<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M6 2.5v11M10 6l-2 2 2 2"/>"#
+        }
+        "sidebar-expand" => {
+            r#"<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M6 2.5v11M9 6l2 2-2 2"/>"#
+        }
+        "workspaces" => r#"<path d="M2 5V3.5h3.5L7 5h5v2M4 7.5h3l1.2 1H14V13H4z"/>"#,
+        "add-project" => r#"<path d="M2 4.5h4l1.2 1.5H14v7H2zM10 7.5v4M8 9.5h4"/>"#,
+        "add-terminal" => {
+            r#"<rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M4 6.5l2 2-2 2M10 7v4M8 9h4"/>"#
+        }
         "collapse-right" => r#"<path d="M6 4l4 4-4 4"/><path d="M13 3v10"/>"#,
         // Two stacked open chevrons + label hatches — "everything is open".
         "expand-all" => {
@@ -211,6 +222,11 @@ mod tests {
         // The names the sidebar rows and header actually ask for.
         for name in [
             "plus",
+            "sidebar-collapse",
+            "sidebar-expand",
+            "add-project",
+            "workspaces",
+            "add-terminal",
             "chev-down",
             "chev-right",
             "collapse-all",

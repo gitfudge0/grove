@@ -52,6 +52,10 @@ impl WorkspaceManager {
         self.panel != Panel::Closed
     }
 
+    pub(crate) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open(Panel::Menu, window, cx);
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Platform"));
         let subscription = cx.subscribe_in(
