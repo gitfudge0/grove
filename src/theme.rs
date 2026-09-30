@@ -105,9 +105,9 @@ pub fn BG_RAIL_GLASS() -> Hsla {
     alpha(
         BG_RAIL(),
         if CHROME_LIGHT.load(Ordering::Relaxed) {
-            0.84
+            0.54
         } else {
-            0.80
+            0.50
         },
     )
 }
