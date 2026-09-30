@@ -217,7 +217,12 @@ impl Sidebar {
             .into_any_element()
     }
 
-    fn compact_session(&self, meta: &SessionMeta, cx: &mut Context<Self>) -> AnyElement {
+    fn compact_session(
+        &self,
+        meta: &SessionMeta,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id = meta.id;
         let registry = self.runtime.read(cx).registry.read(cx);
         let session = registry.session(id).map(|session| session.read(cx));
@@ -253,37 +258,85 @@ impl Sidebar {
                 )
             },
         );
-        self.compact_item(
-            format!("session-{}", id.raw()),
-            format!(
-                "{title} · {} · {context} · {} · {status}",
-                meta.project,
-                meta.agent.label()
-            ),
-            meta.agent.icon_name(),
-            self.selection == Some(Selection::Session(id)),
-            Action::Select(Selection::Session(id)),
-            cx,
-        )
-        .child(
-            div()
-                .id(("compact-session-status", id.raw()))
-                .debug_selector(move || format!("compact-session-status-{}", id.raw()))
+        let mut row = self
+            .compact_item(
+                format!("session-{}", id.raw()),
+                format!(
+                    "{title} · {} · {context} · {} · {status}",
+                    meta.project,
+                    meta.agent.label()
+                ),
+                meta.agent.icon_name(),
+                self.selection == Some(Selection::Session(id)),
+                Action::Select(Selection::Session(id)),
+                cx,
+            )
+            .child(
+                div()
+                    .id(("compact-session-status", id.raw()))
+                    .debug_selector(move || format!("compact-session-status-{}", id.raw()))
+                    .absolute()
+                    .right(rpx(1.0))
+                    .bottom(rpx(1.0))
+                    .size(rpx(11.0))
+                    .rounded_full()
+                    .bg(rail_background(cx))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(compact_status_glyph(status), 11.0, color)),
+            )
+            .group("compact-session-row")
+            .child(
+                self.control(
+                    ("compact-close-session", id.raw()),
+                    format!("Close {} in {}", meta.label, meta.project),
+                    Action::Close(id),
+                    cx,
+                )
+                .debug_selector(move || format!("compact-close-session-{}", id.raw()))
                 .absolute()
-                .right(rpx(1.0))
-                .bottom(rpx(1.0))
-                .size(rpx(11.0))
-                .rounded_full()
-                .bg(rail_background(cx))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(icon(compact_status_glyph(status), 11.0, color)),
-        )
-        .into_any_element()
+                .right_0()
+                .top_0()
+                .w(rpx(SPACE_20))
+                .h(rpx(ICON_MD))
+                .opacity(0.0)
+                .group_hover("compact-session-row", |button| button.opacity(1.0))
+                .focus_visible(|button| button.opacity(1.0))
+                .when_some(
+                    self.session_close_bounds.get(&id).cloned(),
+                    |button, bounds| {
+                        button.child(
+                            gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                                .absolute()
+                                .inset_0(),
+                        )
+                    },
+                )
+                .child(icon("close", ICON_XS, c::FG_DIM())),
+            );
+        if self.pending_close == Some(id) && self.canvas_close_anchor.is_none() {
+            if let Some(bounds) = self.session_close_bounds.get(&id) {
+                row = row.child(gpui::deferred(self.confirmation_popup(
+                    &format!(
+                        "Close {} in {}? Its process will stop. The worktree stays on disk.",
+                        meta.label, meta.project
+                    ),
+                    Action::ConfirmClose(id),
+                    bounds.get(),
+                    window,
+                    cx,
+                )));
+            }
+        }
+        row.into_any_element()
     }
 
-    pub(super) fn collapsed_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn collapsed_navigation(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut body = div()
             .id("sidebar-compact-navigation")
             .debug_selector(|| "sidebar-compact-navigation".into())
@@ -305,7 +358,7 @@ impl Sidebar {
                 );
                 for id in ids {
                     if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(id).cloned() {
-                        body = body.child(self.compact_session(&meta, cx));
+                        body = body.child(self.compact_session(&meta, window, cx));
                     }
                 }
             }
@@ -384,7 +437,7 @@ impl Sidebar {
                             if let Some(meta) =
                                 self.runtime.read(cx).registry.read(cx).meta(*id).cloned()
                             {
-                                group = group.child(self.compact_session(&meta, cx));
+                                group = group.child(self.compact_session(&meta, window, cx));
                             }
                         }
                     }
@@ -395,7 +448,11 @@ impl Sidebar {
         body.into_any_element()
     }
 
-    pub(super) fn collapsed_terminals(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn collapsed_terminals(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut panel = div()
             .id("sidebar-compact-terminals")
             .debug_selector(|| "sidebar-compact-terminals".into())
@@ -488,6 +545,7 @@ impl Sidebar {
                         Action::Select(Selection::Home(id)),
                         cx,
                     )
+                    .group("compact-home-row")
                     .child(
                         div()
                             .absolute()
@@ -508,7 +566,27 @@ impl Sidebar {
                                     _ => c::FG_DIM(),
                                 },
                             )),
-                    ),
+                    )
+                    .child(
+                        self.control(("compact-close-home", id.raw()), format!("Close {}", meta.label), Action::CloseHome(id), cx)
+                            .debug_selector(move || format!("compact-close-home-{}", id.raw()))
+                            .absolute().right_0().top_0().w(rpx(SPACE_20)).h(rpx(ICON_MD))
+                            .opacity(0.0)
+                            .group_hover("compact-home-row", |button| button.opacity(1.0))
+                            .focus_visible(|button| button.opacity(1.0))
+                            .when_some(self.home_close_bounds.get(&id).cloned(), |button, bounds| {
+                                button.child(gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {}).absolute().inset_0())
+                            })
+                            .child(icon("close", ICON_XS, c::FG_DIM())),
+                    )
+                    .when(self.pending_home_close == Some(id) && self.canvas_close_anchor.is_none(), |row| {
+                        if let Some(bounds) = self.home_close_bounds.get(&id) {
+                            row.child(gpui::deferred(self.confirmation_popup(
+                                &format!("Close {}? Its shell and running commands will stop. Files remain on disk.", meta.label),
+                                Action::ConfirmHome(id), bounds.get(), window, cx,
+                            )))
+                        } else { row }
+                    }),
                 );
             }
         }

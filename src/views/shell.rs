@@ -2457,6 +2457,106 @@ mod tests {
     }
 
     #[gpui::test]
+    fn collapsed_close_shortcut_confirms_from_terminal_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        cx.update(|cx| {
+            cx.bind_keys(k::shell_bindings());
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .sidebar_collapsed = true;
+        });
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        let selected = cx.update(|_, cx| {
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            let terminal = cx.new(|cx| {
+                crate::entities::terminal_session::TerminalSession::spawn_script(
+                    "\0",
+                    "/grove-shell-navigation-test",
+                    cx,
+                )
+            });
+            registry.update(cx, |registry, cx| {
+                let id = registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    Agent::Terminal,
+                );
+                registry.attach(id, terminal, None);
+                cx.notify();
+                id
+            })
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        cx.update(|window, cx| {
+            shell.read(cx).sidebar.clone().update(cx, |sidebar, cx| {
+                sidebar.select_session_id(selected, window, cx);
+            });
+        });
+        draw(cx);
+        let prior = cx.update(|window, cx| {
+            let prior = shell
+                .read(cx)
+                .sidebar
+                .read(cx)
+                .canvas_terminal_focus(selected, false, cx)
+                .expect("selected terminal");
+            prior.focus(window, cx);
+            prior
+        });
+        let rail = cx.debug_bounds("sidebar-rail").unwrap();
+        cx.simulate_keystrokes(&format!("{}w", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-confirmation").is_some());
+        assert_eq!(cx.debug_bounds("sidebar-rail").unwrap(), rail);
+        assert!(cx.debug_bounds("canvas-confirmation").is_none());
+        let cancel = cx.debug_bounds("cancel-close").unwrap();
+        let confirm = cx.debug_bounds("confirm-close").unwrap();
+        assert_eq!(cancel.top(), confirm.top());
+        assert!(cancel.right() <= confirm.left());
+        assert!(f32::from(cancel.size.height) >= 24.0);
+        assert!(f32::from(confirm.size.height) >= 24.0);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(prior.is_focused(window));
+            assert!(!shell.read(cx).sidebar.read(cx).confirmation_open());
+            assert!(shell
+                .read(cx)
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .meta(selected)
+                .is_some());
+        });
+        let disclosure = cx.debug_bounds("project-0").unwrap().center();
+        cx.simulate_click(disclosure, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("session-1").is_none());
+        cx.update(|window, cx| prior.focus(window, cx));
+        cx.simulate_keystrokes(&format!("{}w", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-confirmation").is_some());
+        for zoom in [1.0, 1.5] {
+            cx.update(|_, cx| cx.set_global(crate::zoom::ZoomState::new(zoom)));
+            cx.simulate_resize(gpui::size(gpui::px(420.0), gpui::px(640.0)));
+            draw(cx);
+            let popup = cx.debug_bounds("sidebar-confirmation").unwrap();
+            assert!(popup.left() >= gpui::px(0.0));
+            assert!(popup.right() <= gpui::px(420.0));
+            let cancel = cx.debug_bounds("cancel-close").unwrap();
+            let confirm = cx.debug_bounds("confirm-close").unwrap();
+            assert_eq!(cancel.top(), confirm.top());
+            assert!(cancel.left() >= popup.left());
+            assert!(confirm.right() <= popup.right());
+        }
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, _| assert!(prior.is_focused(window)));
+    }
+
+    #[gpui::test]
     fn settings_shortcut_opens_panel_and_escape_restores_focus(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         cx.update(|cx| cx.bind_keys(k::shell_bindings()));

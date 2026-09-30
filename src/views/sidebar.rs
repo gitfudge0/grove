@@ -365,6 +365,9 @@ pub struct Sidebar {
     project_toggle_focus: HashMap<String, FocusHandle>,
     menu_return_focus: Option<FocusHandle>,
     project_menu_bounds: HashMap<usize, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
+    session_close_bounds:
+        HashMap<SessionId, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
+    home_close_bounds: HashMap<SessionId, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
     menu_trigger_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     menu_popup_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     confirm_focus: FocusHandle,
@@ -517,6 +520,8 @@ impl Sidebar {
             menu_trigger_bounds: std::rc::Rc::default(),
             menu_popup_bounds: std::rc::Rc::default(),
             project_menu_bounds: HashMap::new(),
+            session_close_bounds: HashMap::new(),
+            home_close_bounds: HashMap::new(),
             confirm_focus: cx.focus_handle(),
             cancel_focus: cx.focus_handle(),
             confirmation_return_focus: None,
@@ -752,6 +757,17 @@ impl Sidebar {
             self.project_menu_focus
                 .entry(project.idx)
                 .or_insert_with(|| cx.focus_handle());
+        }
+        for id in self
+            .snapshot
+            .projects
+            .iter()
+            .flat_map(|project| &project.sessions)
+        {
+            self.session_close_bounds.entry(*id).or_default();
+        }
+        for meta in self.runtime.read(cx).registry.read(cx).home_terminals() {
+            self.home_close_bounds.entry(meta.id).or_default();
         }
         for path in self
             .snapshot
@@ -1842,6 +1858,18 @@ impl Sidebar {
                 if canvas_visible {
                     self.request_canvas_close(id, false, window, cx);
                 } else {
+                    if let Some(project) = self.snapshot.projects.iter().find(|project| {
+                        project
+                            .worktrees
+                            .iter()
+                            .any(|worktree| worktree.sessions.contains(&id))
+                    }) {
+                        if let Some(stored) =
+                            cx.global::<SettingsState>().store.projects.get(project.idx)
+                        {
+                            self.collapsed_projects.remove(&stored.path);
+                        }
+                    }
                     self.act(Action::Close(id), window, cx);
                 }
             }
@@ -1849,6 +1877,7 @@ impl Sidebar {
                 if canvas_visible {
                     self.request_canvas_close(id, true, window, cx);
                 } else {
+                    self.terminals_collapsed = false;
                     self.act(Action::CloseHome(id), window, cx);
                 }
             }
@@ -2192,11 +2221,7 @@ impl Sidebar {
         if self.is_collapsed(cx)
             && matches!(
                 action,
-                Action::Close(_)
-                    | Action::CloseHome(_)
-                    | Action::Menu(_)
-                    | Action::RemoveProject(_)
-                    | Action::RemoveWorktree(..)
+                Action::Menu(_) | Action::RemoveProject(_) | Action::RemoveWorktree(..)
             )
             && self.canvas_close_anchor.is_none()
             && self.mode != ViewMode::Grid
@@ -2710,6 +2735,16 @@ impl Sidebar {
     }
     fn confirmation(&self, label: &str, action: Action, cx: &mut Context<Self>) -> AnyElement {
         let session_close = matches!(&action, Action::ConfirmClose(_));
+        let wrap_context = |text: &str| {
+            text.chars()
+                .map(|character| character.to_string())
+                .collect::<Vec<_>>()
+                .join("\u{200b}")
+        };
+        let session_meta = match &action {
+            Action::ConfirmClose(id) => self.runtime.read(cx).registry.read(cx).meta(*id).cloned(),
+            _ => None,
+        };
         let verb = match &action {
             Action::ConfirmClose(_) => "Close session",
             Action::ConfirmHome(_) => "Close terminal",
@@ -2722,17 +2757,37 @@ impl Sidebar {
             .w_auto()
             .px(rpx(SPACE_LG))
             .text_color(c::RED())
+            .when(session_close, |button| {
+                button
+                    .text_size(rpx(TEXT_SMALL))
+                    .min_h(rpx(CONTROL_H))
+                    .border_1()
+                    .border_color(c::alpha(c::RED(), 0.35))
+                    .bg(c::alpha(c::RED(), 0.1))
+                    .gap(rpx(SPACE_SM))
+                    .child(icon("check", ICON_XS, c::RED()))
+            })
             .child(verb);
         let cancel_button = self
             .control("cancel-close", "Cancel", Action::Cancel, cx)
             .debug_selector(|| "cancel-close".into())
             .w_auto()
             .px(rpx(SPACE_LG))
+            .when(session_close, |button| {
+                button
+                    .text_size(rpx(TEXT_SMALL))
+                    .min_h(rpx(CONTROL_H))
+                    .border_1()
+                    .border_color(c::BORDER())
+                    .bg(c::SURFACE_RAISED())
+                    .gap(rpx(SPACE_SM))
+                    .child(icon("close", ICON_XS, c::FG_DIM()))
+            })
             .child("Cancel");
         let action_row = div()
             .flex()
-            .when(self.compact_rail, gpui::Styled::flex_col)
             .min_w_0()
+            .when(session_close, gpui::Styled::justify_end)
             .flex_wrap()
             .when(!session_close, |row| row.mt(rpx(SPACE_SM)))
             .gap(rpx(if session_close { SPACE_MD } else { SPACE_LG }));
@@ -2743,6 +2798,7 @@ impl Sidebar {
         };
         let confirmation = div()
             .id("sidebar-confirmation")
+            .debug_selector(|| "sidebar-confirmation".into())
             .role(gpui::Role::Dialog)
             .aria_label(verb)
             .aria_description(label.to_string())
@@ -2758,9 +2814,64 @@ impl Sidebar {
             .border_1()
             .border_color(c::BORDER())
             .bg(c::SURFACE_RAISED())
-            .child(label.replace('/', "/\u{200b}"))
+            .child(if let Some(meta) = session_meta {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_SM))
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_TITLE))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(format!("Close {}?", wrap_context(&meta.label))),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(wrap_context(&meta.project)),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_BODY))
+                            .text_color(c::FG_DIM())
+                            .child("Its process will stop. The worktree stays on disk."),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .child(label.replace('/', "/\u{200b}"))
+                    .into_any_element()
+            })
             .child(action_row);
         motion::slow(confirmation, format!("sidebar-confirmation-{verb}"), cx)
+    }
+    fn confirmation_popup(
+        &self,
+        label: &str,
+        action: Action,
+        trigger: gpui::Bounds<gpui::Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+        let preferred_width = if matches!(&action, Action::ConfirmClose(_)) {
+            SESSION_CLOSE_W
+        } else {
+            SIDEBAR_W
+        };
+        let width = preferred_width
+            .min((f32::from(window.viewport_size().width) / scale - SPACE_LG * 2.0).max(0.0));
+        gpui::anchored()
+            .position_mode(gpui::AnchoredPositionMode::Window)
+            .position(gpui::point(trigger.right(), trigger.top()))
+            .snap_to_window_with_margin(gpui::px(SPACE_LG * scale))
+            .child(
+                div()
+                    .w(rpx(width))
+                    .child(self.confirmation(label, action, cx)),
+            )
+            .into_any_element()
     }
     fn session_row(
         &self,
@@ -2768,6 +2879,7 @@ impl Sidebar {
         list: bool,
         number: Option<usize>,
         diff_focused: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (status, color) = self.status(meta, cx);
@@ -2904,6 +3016,19 @@ impl Sidebar {
                                     cx,
                                 )
                                 .debug_selector(move || format!("close-session-{}", id.raw()))
+                                .when_some(
+                                    self.session_close_bounds.get(&id).cloned(),
+                                    |button, bounds| {
+                                        button.child(
+                                            gpui::canvas(
+                                                move |rect, _, _| bounds.set(rect),
+                                                |_, (), _, _| {},
+                                            )
+                                            .absolute()
+                                            .inset_0(),
+                                        )
+                                    },
+                                )
                                 .child(icon(
                                     "close",
                                     ICON_XS,
@@ -3138,6 +3263,16 @@ impl Sidebar {
                 .opacity(0.0)
                 .group_hover("session-row", |button| button.opacity(1.0))
                 .focus_visible(|button| button.opacity(1.0))
+                .when_some(
+                    self.session_close_bounds.get(&id).cloned(),
+                    |button, bounds| {
+                        button.child(
+                            gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                                .absolute()
+                                .inset_0(),
+                        )
+                    },
+                )
                 .child(icon("close", ICON_XS, c::FG_DIM())),
             )
         };
@@ -3176,20 +3311,18 @@ impl Sidebar {
             );
         }
         if self.pending_close == Some(id) && self.canvas_close_anchor.is_none() {
-            result = result.child(
-                div()
-                    .w_full()
-                    .max_w(rpx(SESSION_CLOSE_W))
-                    .px(rpx(SPACE_2XL))
-                    .child(self.confirmation(
-                        &format!(
-                            "Close {} in {}? Its process will stop. The worktree stays on disk.",
-                            meta.label, meta.project
-                        ),
-                        Action::ConfirmClose(id),
-                        cx,
-                    )),
-            );
+            if let Some(bounds) = self.session_close_bounds.get(&id) {
+                result = result.child(gpui::deferred(self.confirmation_popup(
+                    &format!(
+                        "Close {} in {}? Its process will stop. The worktree stays on disk.",
+                        meta.label, meta.project
+                    ),
+                    Action::ConfirmClose(id),
+                    bounds.get(),
+                    window,
+                    cx,
+                )));
+            }
         }
         result.into_any_element()
     }
@@ -3760,6 +3893,7 @@ impl Sidebar {
                                         self.session_diff_focus
                                             .get(id)
                                             .is_some_and(|focus| focus.is_focused(window)),
+                                        window,
                                         cx,
                                     ),
                                 ),
@@ -3771,7 +3905,7 @@ impl Sidebar {
         }
         body.into_any_element()
     }
-    fn list(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn list(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let groups = self.list_session_groups(cx);
         let mut body = div().flex().flex_col().gap(rpx(SPACE_SM));
         let mut number = 0;
@@ -3788,7 +3922,8 @@ impl Sidebar {
             for id in items {
                 if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(*id).cloned() {
                     number += 1;
-                    body = body.child(self.session_row(&meta, true, Some(number), false, cx));
+                    body =
+                        body.child(self.session_row(&meta, true, Some(number), false, window, cx));
                 }
             }
         }
@@ -3802,7 +3937,7 @@ impl Sidebar {
         }
         body.into_any_element()
     }
-    fn terminals(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn terminals(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let mut panel = div()
             .flex()
             .flex_col()
@@ -3964,15 +4099,29 @@ impl Sidebar {
                             cx,
                         )
                         .debug_selector(move || format!("close-home-{}", id.raw()))
+                        .when_some(
+                            self.home_close_bounds.get(&id).cloned(),
+                            |button, bounds| {
+                                button.child(
+                                    gpui::canvas(
+                                        move |rect, _, _| bounds.set(rect),
+                                        |_, (), _, _| {},
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                            },
+                        )
                         .child(icon("close", ICON_XS, c::FG_DIM())),
                     ),
                 );
                 if self.pending_home_close == Some(id) && self.canvas_close_anchor.is_none() {
-                    panel = panel.child(self.confirmation(
-                        &format!("Close {}? Its shell and running commands will stop. Files remain on disk.",meta.label),
-                        Action::ConfirmHome(id),
-                        cx,
-                    ));
+                    if let Some(bounds) = self.home_close_bounds.get(&id) {
+                        panel = panel.child(gpui::deferred(self.confirmation_popup(
+                            &format!("Close {}? Its shell and running commands will stop. Files remain on disk.", meta.label),
+                            Action::ConfirmHome(id), bounds.get(), window, cx,
+                        )));
+                    }
                 }
             }
         }
@@ -3998,18 +4147,18 @@ impl Render for Sidebar {
                 .w_full()
                 .min_h_full()
                 .child(self.collapsed_controls(cx))
-                .child(self.collapsed_navigation(cx))
-                .child(self.collapsed_terminals(cx))
+                .child(self.collapsed_navigation(window, cx))
+                .child(self.collapsed_terminals(window, cx))
                 .child(div().flex_1().min_h(rpx(SPACE_LG)))
                 .child(self.collapsed_utilities(cx))
                 .into_any_element()
         } else if self.mode == ViewMode::List {
-            self.list(cx)
+            self.list(window, cx)
         } else {
             self.tree(window, cx)
         };
         let settings_control = self.settings_control(cx);
-        let terminals = (!collapsed).then(|| self.terminals(cx));
+        let terminals = (!collapsed).then(|| self.terminals(window, cx));
         let empty = self.snapshot.projects.is_empty();
         let rail = div()
             .id("sidebar-rail")
@@ -4584,6 +4733,11 @@ mod tests {
             }));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
             cx.set_global(crate::zoom::ZoomState::new(1.0));
+            cx.set_global(crate::theme::ThemeState::new(
+                false,
+                "tokyonight".into(),
+                "tokyonight-day".into(),
+            ));
         });
         let (sidebar, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(Runtime::new);
@@ -4665,7 +4819,7 @@ mod tests {
         draw(cx);
         assert_eq!(
             f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
-            300.0
+            52.0
         );
         assert!(cx.debug_bounds("confirm-close").is_some());
         assert!(cx.debug_bounds("cancel-close").is_some());
