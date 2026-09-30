@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "releases": [
+    {
+      "version": "1.0.2",
+      "enabled": false,
+      "title": "What's new in Grove",
+      "slides": [
+        {
+          "id": "compact-sidebar",
+          "title": "More room for your work",
+          "description": "Collapse the sidebar into a compact rail. Your projects, sessions, and workspace controls stay within reach.",
+          "media": {
+            "kind": "image",
+            "src": "highlights/1.0.2/compact-sidebar.png",
+            "alt": "The Grove sidebar collapsed into a compact rail beside a Cedar terminal."
+          }
+        },
+        {
+          "id": "move-workspace",
+          "title": "Move projects between workspaces",
+          "description": "Move a project to another workspace without rebuilding its setup. Keep its worktrees and sessions together.",
+          "media": {
+            "kind": "image",
+            "src": "highlights/1.0.2/move-workspace.png",
+            "alt": "Move to workspace dialog showing Experiments selected for Cedar."
+          }
+        },
+        {
+          "id": "close-session",
+          "title": "Close sessions with confidence",
+          "description": "Closing a running session asks for confirmation, even from the compact sidebar or keyboard shortcut. Its worktree stays on disk.",
+          "media": {
+            "kind": "image",
+            "src": "highlights/1.0.2/close-session.png",
+            "alt": "Grove asks for confirmation before closing a running terminal session."
+          }
+        }
+      ]
+    }
+  ]
+}

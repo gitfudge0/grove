@@ -154,6 +154,24 @@ each agent must be installed and available on your `PATH`. grove does not bundle
 
 grove uses fixed light and dark palettes. In settings, choose System to follow your OS, or select Dark or Light. The choice persists across launches.
 
+## release highlights
+
+Release carousels are authored in `assets/highlights/manifest.json` and bundled with Grove; release notes are not converted into slides at runtime. Each release entry uses the exact installed version (for example `1.0.2`). Set `enabled: true` only for releases you want to show automatically. A disabled entry is a draft and does not interrupt normal launches.
+
+For an enabled release, Grove opens the media-first carousel once on first launch of that version and records that version as seen. You can dismiss it at any time. Other versions do not inherit that release's carousel. You can replay an enabled carousel from Settings → Changelog → View highlights.
+
+Choose two to four user-visible changes, write a benefit-led title and a short description, and capture the released UI using clean demo projects. Keep media under `assets/highlights/<version>/`; each slide needs a stable `id`, `title`, `description`, and `media` with `kind`, `src`, and descriptive `alt` text. Supported kinds are `image`, `gif`, and `video`. GIFs and videos require a `poster` image. GIFs are user-controlled; reduced motion keeps them still. Videos open in the system player from Play video. Keep screenshots and posters legible at the carousel size.
+
+To test a draft without consuming its first-launch state, use a debug build:
+
+```sh
+GROVE_HIGHLIGHTS_DEBUG=1 GROVE_HIGHLIGHTS_VERSION=1.0.2 cargo run
+```
+
+`GROVE_HIGHLIGHTS_DEBUG=1` opens the selected carousel at every launch of a debug build, including disabled drafts. `GROVE_HIGHLIGHTS_VERSION` selects an authored version for preview; it does not change normal release selection. Settings → Changelog → Preview release highlights reopens it as often as needed; in a debug build, `cmd+shift+h` on macOS (`ctrl+shift+h` elsewhere) also opens the preview. Release builds ignore the debug override. Use `GROVE_CONFIG_DIR=/tmp/grove-highlights-test` and `GROVE_TELEMETRY=off` for an isolated review workspace.
+
+The `1.0.2` entry is a disabled draft of changes since published `v1.0.1`: the compact sidebar, moving projects between workspaces, and confirmation before closing running sessions. Enable it when those highlights are ready to ship.
+
 ## requirements
 
 - rust toolchain (`cargo`) for installation from source

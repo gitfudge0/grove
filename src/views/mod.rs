@@ -13,6 +13,7 @@ pub fn rpx(v: f32) -> Rems {
 }
 
 pub mod motion;
+pub mod release_highlights;
 pub mod settings_panel;
 pub mod shell;
 pub mod tokens;

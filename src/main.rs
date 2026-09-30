@@ -88,6 +88,16 @@ fn main() {
                 .unwrap_or(false);
             cx.set_reduce_motion(reduce_motion);
             cx.bind_keys(keymap::shell_bindings());
+            #[cfg(debug_assertions)]
+            cx.bind_keys([gpui::KeyBinding::new(
+                if cfg!(target_os = "macos") {
+                    "cmd-shift-h"
+                } else {
+                    "ctrl-shift-h"
+                },
+                views::shell::PreviewReleaseHighlights,
+                None,
+            )]);
             cx.bind_keys([
                 gpui::KeyBinding::new(
                     &format!("{}q", keymap::platform_mod_prefix()),

@@ -53,7 +53,7 @@ fn switcher_matches(query: &str, title: &str, context: Option<&str>) -> bool {
         || context.is_some_and(|context| context.to_lowercase().contains(&query))
 }
 
-actions!(shell, [Quit, CloseWindow]);
+actions!(shell, [Quit, CloseWindow, PreviewReleaseHighlights]);
 
 /// Bubble only unconsumed navigation keys. Mounting component Root would also
 /// install its Copy action context, which can steal PTY Ctrl+C. TerminalView
@@ -77,6 +77,10 @@ fn traverse_unhandled_tab(event: &gpui::KeyDownEvent, window: &mut Window, cx: &
 }
 
 pub struct Shell {
+    highlights: Option<Entity<super::release_highlights::ReleaseCarousel>>,
+    highlights_events: Option<gpui::Subscription>,
+    highlights_startup_checked: bool,
+    highlights_startup_scheduled: bool,
     focus: FocusHandle,
     runtime: Entity<Runtime>,
     workspaces: Entity<super::workspace_manager::WorkspaceManager>,
@@ -156,6 +160,11 @@ impl Shell {
                 window,
                 |this, _, event, window, cx| match event {
                     SettingsPanelEvent::Closed => cx.notify(),
+                    SettingsPanelEvent::OpenHighlights { debug } => {
+                        this.settings
+                            .update(cx, |panel, cx| panel.close(window, cx));
+                        this.open_highlights(*debug, window, cx);
+                    }
                     SettingsPanelEvent::OpenArchivedProjects => {
                         this.sidebar.update(cx, |sidebar, cx| {
                             sidebar.open_archived_projects(window, cx);
@@ -184,6 +193,10 @@ impl Shell {
             });
         let backend_choice_focus = cx.focus_handle();
         Self {
+            highlights: None,
+            highlights_events: None,
+            highlights_startup_checked: cfg!(test),
+            highlights_startup_scheduled: false,
             statusbar,
             launcher,
             settings,
@@ -211,6 +224,74 @@ impl Shell {
             runtime,
             workspaces,
             window_observers: None,
+        }
+    }
+
+    fn open_highlights(&mut self, debug: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(release) = super::release_highlights::selected(debug) else {
+            return;
+        };
+        self.open_highlights_release(release, window, cx);
+    }
+
+    fn open_highlights_release(
+        &mut self,
+        release: grove_core::release_highlights::ReleaseHighlights,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shortcut_blocked(cx)
+            || self.sidebar.read(cx).highlights_blocked()
+            || release.slides.is_empty()
+        {
+            return;
+        }
+        let carousel =
+            cx.new(|cx| super::release_highlights::ReleaseCarousel::new(release, window, cx));
+        self.highlights_events = Some(cx.subscribe(
+            &carousel,
+            |this, _, _: &super::release_highlights::Closed, cx| {
+                this.highlights = None;
+                this.highlights_events = None;
+                cx.notify();
+            },
+        ));
+        self.highlights = Some(carousel);
+        cx.notify();
+    }
+
+    fn check_startup_highlights(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.highlights_startup_checked
+            || self.shortcut_blocked(cx)
+            || self.sidebar.read(cx).highlights_blocked()
+        {
+            return;
+        }
+        self.highlights_startup_checked = true;
+        let debug =
+            cfg!(debug_assertions) && std::env::var("GROVE_HIGHLIGHTS_DEBUG").as_deref() == Ok("1");
+        let Some(release) = super::release_highlights::selected(debug) else {
+            return;
+        };
+        if !debug
+            && !release.should_auto_open(
+                env!("CARGO_PKG_VERSION"),
+                &cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .seen_highlights_versions,
+            )
+        {
+            return;
+        }
+        self.open_highlights(debug, window, cx);
+        if self.highlights.is_some() && !debug {
+            let ((), result) =
+                crate::settings::SettingsState::update_and_flush_checked(cx, |store| {
+                    release.mark_seen(&mut store.seen_highlights_versions);
+                });
+            if let Err(error) = result {
+                eprintln!("Could not remember release highlights: {error}");
+            }
         }
     }
 
@@ -451,7 +532,8 @@ impl Shell {
     }
 
     fn shortcut_blocked(&self, cx: &App) -> bool {
-        self.backend_choice_open
+        self.highlights.is_some()
+            || self.backend_choice_open
             || self.launcher.read(cx).is_open()
             || self.settings.read(cx).is_open()
             || self.switcher_open
@@ -1237,8 +1319,10 @@ impl Shell {
 }
 
 impl Focusable for Shell {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        if self.backend_choice_open {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if let Some(carousel) = &self.highlights {
+            carousel.read(cx).focus_handle(cx)
+        } else if self.backend_choice_open {
             self.backend_choice_focus.clone()
         } else {
             self.focus.clone()
@@ -1248,6 +1332,21 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.highlights_startup_checked
+            && !self.highlights_startup_scheduled
+            && !self.shortcut_blocked(cx)
+            && !self.sidebar.read(cx).highlights_blocked()
+        {
+            self.highlights_startup_scheduled = true;
+            let shell = cx.entity().downgrade();
+            window.defer(cx, move |window, cx| {
+                // Deferred after the first rendered frame; retry once other panels close.
+                let _ = shell.update(cx, |this, cx| {
+                    this.highlights_startup_scheduled = false;
+                    this.check_startup_highlights(window, cx);
+                });
+            });
+        }
         if self.backend_choice_open && !self.backend_choice_focus.is_focused(window) {
             self.backend_choice_focus.focus(window, cx);
         }
@@ -1310,6 +1409,13 @@ impl Render for Shell {
             .relative()
             .flex()
             .flex_col()
+            .on_action(
+                cx.listener(|this, _: &PreviewReleaseHighlights, window, cx| {
+                    if cfg!(debug_assertions) {
+                        this.open_highlights(true, window, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &Quit, _, cx| {
                 this.flush(cx);
                 cx.quit();
@@ -1478,12 +1584,121 @@ impl Render for Shell {
             .when(self.backend_choice_open, |root| {
                 root.child(gpui::deferred(self.backend_choice(window, cx)))
             })
+            .when_some(self.highlights.clone(), |root, carousel| {
+                root.child(gpui::deferred(carousel))
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn highlights_fixture() -> grove_core::release_highlights::ReleaseHighlights {
+        use grove_core::release_highlights::{
+            HighlightMedia, HighlightSlide, MediaKind, ReleaseHighlights,
+        };
+        ReleaseHighlights {
+            version: "99.0.0".into(),
+            enabled: false,
+            title: "Test highlights".into(),
+            slides: vec![HighlightSlide {
+                id: "fixture".into(),
+                title: "An example improvement".into(),
+                description: "A fixture independent of release authoring.".into(),
+                media: HighlightMedia {
+                    kind: MediaKind::Image,
+                    src: "highlights/test-missing.png".into(),
+                    alt: "Test preview".into(),
+                    poster: None,
+                    captions: None,
+                },
+            }],
+        }
+    }
+
+    #[gpui::test]
+    fn debug_highlights_replay_blocks_commands_without_marking_seen(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        let seen = cx.update(|_, cx| {
+            cx.global::<crate::settings::SettingsState>()
+                .store
+                .seen_highlights_versions
+                .clone()
+        });
+        for _ in 0..2 {
+            cx.update(|window, cx| {
+                shell.update(cx, |this, cx| {
+                    this.open_highlights_release(highlights_fixture(), window, cx);
+                });
+            });
+            draw(cx);
+            cx.update(|window, cx| {
+                assert!(shell.read(cx).highlights.is_some());
+                assert!(shell.read(cx).shortcut_blocked(cx));
+                window.dispatch_action(Box::new(k::NewSession), cx);
+                assert!(!shell.read(cx).launcher.read(cx).is_open());
+            });
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            cx.update(|_, cx| {
+                assert!(shell.read(cx).highlights.is_none());
+                assert_eq!(
+                    cx.global::<crate::settings::SettingsState>()
+                        .store
+                        .seen_highlights_versions,
+                    seen
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn startup_highlights_wait_for_settings_backend_and_sidebar_panels(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        cx.update(|window, cx| {
+            shell.update(cx, |this, cx| {
+                cx.global_mut::<crate::settings::SettingsState>()
+                    .store
+                    .seen_highlights_versions
+                    .push(env!("CARGO_PKG_VERSION").into());
+                this.highlights_startup_checked = false;
+                this.backend_choice_open = true;
+                this.check_startup_highlights(window, cx);
+                assert!(!this.highlights_startup_checked);
+                assert!(this.highlights.is_none());
+                this.backend_choice_open = false;
+                this.settings.update(cx, |panel, cx| panel.open(window, cx));
+                this.check_startup_highlights(window, cx);
+                assert!(!this.highlights_startup_checked);
+                this.settings
+                    .update(cx, |panel, cx| panel.close(window, cx));
+                this.sidebar
+                    .update(cx, |sidebar, cx| sidebar.open_archived_projects(window, cx));
+                assert!(this.sidebar.read(cx).highlights_blocked());
+                this.check_startup_highlights(window, cx);
+                assert!(!this.highlights_startup_checked);
+            });
+        });
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            shell.update(cx, |this, cx| {
+                assert!(!this.sidebar.read(cx).highlights_blocked());
+                this.check_startup_highlights(window, cx);
+                assert!(this.highlights_startup_checked);
+                // Already seen installed releases remain closed after setup completes.
+                assert!(this.highlights.is_none());
+            });
+        });
+    }
 
     #[gpui::test]
     fn zen_shows_one_terminal_and_restores_the_previous_view(cx: &mut gpui::TestAppContext) {

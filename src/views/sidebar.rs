@@ -1885,6 +1885,10 @@ impl Sidebar {
         }
     }
 
+    pub(crate) fn highlights_blocked(&self) -> bool {
+        !self.navigation_available()
+    }
+
     fn navigation_available(&self) -> bool {
         !self.confirmation_open()
             && self.diff_viewer.is_none()

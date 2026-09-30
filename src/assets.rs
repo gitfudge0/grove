@@ -10,6 +10,7 @@ use rust_embed::RustEmbed;
 // `$CARGO_MANIFEST_DIR` interpolation would need rust-embed's `interpolate-folder-path` feature; a plain relative path needs nothing.
 #[folder = "assets"]
 #[include = "fonts/*"]
+#[include = "highlights/**"]
 pub struct Assets;
 
 impl AssetSource for Assets {

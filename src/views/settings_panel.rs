@@ -26,6 +26,7 @@ const FOCUS_SCAN_LIMIT: usize = 128;
 pub enum SettingsPanelEvent {
     Closed,
     OpenArchivedProjects,
+    OpenHighlights { debug: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -822,6 +823,29 @@ impl SettingsPanel {
         let upgrade = self.runtime.read(cx).upgrade.clone();
         let upgrade = upgrade.read(cx);
         let mut body = div().flex().flex_col().gap(rpx(SPACE_2XL));
+        if super::release_highlights::selected(false).is_some() {
+            body = body.child(
+                self.button("settings-view-highlights", "View highlights", false, true)
+                    .child("View highlights")
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.emit(SettingsPanelEvent::OpenHighlights { debug: false });
+                    })),
+            );
+        }
+        if cfg!(debug_assertions) && super::release_highlights::selected(true).is_some() {
+            body = body.child(
+                self.button(
+                    "settings-preview-highlights",
+                    "Preview release highlights",
+                    false,
+                    true,
+                )
+                .child("Preview release highlights")
+                .on_click(cx.listener(|_, _, _, cx| {
+                    cx.emit(SettingsPanelEvent::OpenHighlights { debug: true });
+                })),
+            );
+        }
         match upgrade.changelog() {
             ChangelogState::Idle | ChangelogState::Loading => {
                 body = body.child("Loading changelog…");

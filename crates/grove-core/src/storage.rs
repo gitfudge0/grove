@@ -420,6 +420,9 @@ pub struct Store {
     /// While the latest release equals this, no update notice is shown.
     #[serde(default)]
     pub skipped_version: Option<String>,
+    /// Installed releases whose highlights have already been presented.
+    #[serde(default)]
+    pub seen_highlights_versions: Vec<String>,
     /// None is treated as `true` (bypass enabled), preserving pre-existing upgrade behavior.
     #[serde(default)]
     pub dangerously_skip_permissions_enabled: Option<bool>,
@@ -738,6 +741,7 @@ pub(crate) mod tests {
             onboarded: true,
             last_update_check: None,
             skipped_version: None,
+            seen_highlights_versions: vec![],
             dangerously_skip_permissions_enabled: Some(false),
             chrome_enabled: Some(true),
             telemetry_enabled: Some(true),
@@ -874,6 +878,7 @@ pub(crate) mod tests {
         let store: Store = serde_json::from_str("{}").unwrap();
         assert!(store.last_update_check.is_none());
         assert!(store.skipped_version.is_none());
+        assert!(store.seen_highlights_versions.is_empty());
     }
 
     #[test]
@@ -881,12 +886,17 @@ pub(crate) mod tests {
         let store = Store {
             last_update_check: Some(1_700_000_000),
             skipped_version: Some("v0.25.0".to_string()),
+            seen_highlights_versions: vec!["0.24.0".into(), "0.25.0".into()],
             ..Default::default()
         };
         let json = serde_json::to_string(&store).unwrap();
         let back: Store = serde_json::from_str(&json).unwrap();
         assert_eq!(back.last_update_check, Some(1_700_000_000));
         assert_eq!(back.skipped_version.as_deref(), Some("v0.25.0"));
+        assert_eq!(
+            back.seen_highlights_versions,
+            store.seen_highlights_versions
+        );
     }
 
     #[test]
