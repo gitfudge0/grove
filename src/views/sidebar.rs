@@ -63,7 +63,9 @@ const PROJECT_GROUP_GAP: f32 = 14.0;
 const PROJECT_ROW_H: f32 = 35.0;
 const PROJECT_TEXT: f32 = 15.0;
 const PROJECT_TITLE_LINE_H: f32 = 21.0;
-const WORKTREE_ROW_H: f32 = 30.0;
+const WORKTREE_ROW_H: f32 = 40.0;
+const WORKTREE_TITLE_LINE_H: f32 = 17.0;
+const WORKTREE_META_LINE_H: f32 = 14.0;
 const WORKTREE_ACTION_W: f32 = 22.0;
 const SESSION_ROW_H: f32 = 43.0;
 const SESSION_TITLE_LINE_H: f32 = 17.0;
@@ -3676,6 +3678,7 @@ impl Sidebar {
                 let mut launches = div()
                     .absolute()
                     .right_0()
+                    .top_0()
                     .w(rpx(launch_width))
                     .h(rpx(CHROME_CONTROL_H))
                     .flex()
@@ -3801,36 +3804,37 @@ impl Sidebar {
                         div()
                             .flex_1()
                             .min_w_0()
+                            .h(rpx(WORKTREE_TITLE_LINE_H + SPACE_XS + WORKTREE_META_LINE_H))
                             .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_SM))
+                            .flex_col()
+                            .gap(rpx(SPACE_XS))
                             .id(SharedString::from(format!("worktree-title-{path}")))
                             .debug_selector({
                                 let path = path.clone();
                                 move || format!("worktree-title-{path}")
                             })
-                            .group_hover("worktree-row", move |s| {
-                                s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
-                            })
-                            .when(focused, move |s| {
-                                s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
-                            })
                             .child(
                                 div()
                                     .min_w_0()
-                                    .flex_1()
                                     .truncate()
                                     .text_ellipsis_middle()
+                                    .line_height(rpx(WORKTREE_TITLE_LINE_H))
+                                    .group_hover("worktree-row", move |s| {
+                                        s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
+                                    })
+                                    .when(focused, move |s| {
+                                        s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
+                                    })
                                     .child(worktree_name.to_owned()),
                             )
                             .when(!worktree.branch.is_empty(), |title| {
                                 title.child(
                                     div()
-                                        .flex_1()
                                         .min_w_0()
                                         .truncate()
                                         .text_ellipsis_middle()
                                         .text_size(rpx(HIERARCHY_META_TEXT))
+                                        .line_height(rpx(WORKTREE_META_LINE_H))
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(c::FG_DIM())
                                         .child(worktree.branch.clone()),

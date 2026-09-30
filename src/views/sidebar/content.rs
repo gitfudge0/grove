@@ -30,7 +30,6 @@ const SESSION_ICON_SLOT: f32 = 24.;
 const EMPTY_CARD_W: f32 = 430.;
 const EMPTY_CARD_PAD: f32 = 24.;
 const EMPTY_TITLE_SIZE: f32 = 18.;
-const PROMPT_INSET: f32 = 40.;
 
 impl Sidebar {
     fn render_worktree_removal(
@@ -1087,7 +1086,7 @@ impl Sidebar {
         } else {
             "Start a session in this worktree."
         };
-        let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_LG));
+        let mut actions = div().flex().flex_wrap().justify_center().gap(rpx(SPACE_LG));
         let codex_available = self.available[0];
         for (id, label, agent, primary) in [
             (
@@ -1135,6 +1134,8 @@ impl Sidebar {
             .p(rpx(EMPTY_CARD_PAD))
             .flex()
             .flex_col()
+            .items_center()
+            .text_center()
             .gap(rpx(SPACE_2XL))
             .child(
                 div()
@@ -1161,11 +1162,10 @@ impl Sidebar {
         if main {
             card = card.child(
                 div()
-                    .border_t_1()
-                    .border_color(c::BORDER_SOFT())
                     .pt(rpx(SPACE_2XL))
                     .flex()
                     .flex_col()
+                    .items_center()
                     .gap(rpx(SPACE_LG))
                     .child(div().font_weight(FontWeight::MEDIUM).child("New worktree"))
                     .child(div().text_color(c::FG_DIM()).child(guidance))
@@ -1468,15 +1468,23 @@ impl Sidebar {
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .p(rpx(SPACE_3XL))
-                            .child(self.render_start_panel(
-                                project.idx,
-                                &project.name,
-                                &path,
-                                true,
-                                window,
-                                cx,
-                            )),
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_h_full()
+                                    .p(rpx(SPACE_3XL))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(self.render_start_panel(
+                                        project.idx,
+                                        &project.name,
+                                        &path,
+                                        true,
+                                        window,
+                                        cx,
+                                    )),
+                            ),
                     );
             }
         } else if let Some((project, selected_worktree)) = selected_worktree {
@@ -1493,15 +1501,23 @@ impl Sidebar {
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .p(rpx(SPACE_3XL))
-                            .child(self.render_start_panel(
-                                project.idx,
-                                &project.name,
-                                &path,
-                                selected_worktree.is_main,
-                                window,
-                                cx,
-                            )),
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_h_full()
+                                    .p(rpx(SPACE_3XL))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(self.render_start_panel(
+                                        project.idx,
+                                        &project.name,
+                                        &path,
+                                        selected_worktree.is_main,
+                                        window,
+                                        cx,
+                                    )),
+                            ),
                     );
             } else {
                 let title = selected_worktree.name.clone();
@@ -1512,10 +1528,37 @@ impl Sidebar {
                     selected_worktree.branch,
                     selected_worktree.sessions.len()
                 );
-                section=section.child(canvas_section_header(title)).child(div().id("worktree-prompt-scroll").flex_1().min_h_0().overflow_y_scroll().p(rpx(SPACE_3XL))
-                .child(div().w_full().min_w_0().max_w(rpx(MODAL_W_XL)).mx_auto().mt(rpx(PROMPT_INSET-SPACE_3XL)).p(rpx(EMPTY_CARD_PAD)).border_1().border_dashed().border_color(c::BORDER_STRONG()).rounded(rpx(RADIUS_CHROME)).flex().flex_col().gap(rpx(SPACE_LG)).text_size(rpx(TEXT_BODY)).text_color(c::FG_DIM())
+                let prompt = div()
+                    .w_full()
+                    .min_w_0()
+                    .max_w(rpx(MODAL_W_XL))
+                    .p(rpx(EMPTY_CARD_PAD))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .text_center()
+                    .gap(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_BODY))
+                    .text_color(c::FG_DIM())
                     .child(details)
-                    .child("Choose a session in the sidebar, or hover or focus a worktree to reveal Codex, Claude Code, and Terminal launch actions.")));
+                    .child("Choose a session in the sidebar, or hover or focus a worktree to reveal Codex, Claude Code, and Terminal launch actions.");
+                section = section.child(canvas_section_header(title)).child(
+                    div()
+                        .id("worktree-prompt-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(
+                            div()
+                                .w_full()
+                                .min_h_full()
+                                .p(rpx(SPACE_3XL))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(prompt),
+                        ),
+                );
             }
         } else {
             let (title, description) = if no_projects {
