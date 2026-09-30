@@ -5,6 +5,7 @@ use gpui::{
     div, img, prelude::*, App, Context, EventEmitter, FocusHandle, FontWeight, MouseButton,
     StyledImage, Window,
 };
+use gpui_component::Sizable;
 use grove_core::release_highlights::{Manifest, MediaKind, ReleaseHighlights};
 
 pub fn manifest() -> Option<Manifest> {
@@ -218,7 +219,7 @@ impl Render for ReleaseCarousel {
                 let image_source = self.image_source_override.clone().unwrap_or(image_source);
                 let retry_source = image_source.clone();
                 let carousel = cx.entity().downgrade();
-                img(image_source).id(format!("highlights-image-{}-{}", self.index, animated)).debug_selector(|| "highlights-image".into()).absolute().inset_0().w(rpx((width - 2.0).max(0.0))).h(rpx(media_height)).object_fit(gpui::ObjectFit::Contain)
+                img(image_source).id(format!("highlights-image-{}-{}", self.index, animated)).debug_selector(|| "highlights-image".into()).absolute().inset_0().w(rpx((width - 2.0).max(0.0))).h(rpx(media_height)).rounded(rpx(RADIUS_CHROME)).object_fit(gpui::ObjectFit::Contain)
                     .with_fallback(move || {
                         let source = retry_source.clone(); let key_source = retry_source.clone(); let key_carousel = carousel.clone(); let carousel = carousel.clone();
                         div().size_full().flex().flex_col().gap(rpx(SPACE_LG)).items_center().justify_center().text_color(c::FG_DIM())
@@ -356,9 +357,14 @@ impl Render for ReleaseCarousel {
                                 "{} · {}",
                                 self.release.title, self.release.version
                             )))
-                            .child(button("highlights-close", "Close", window, cx).on_click(
-                                cx.listener(|this, _, window, cx| this.close(window, cx)),
-                            )),
+                            .child(
+                                button("highlights-close", "Close", window, cx)
+                                    .small()
+                                    .compact()
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.close(window, cx)),
+                                    ),
+                            ),
                     )
                     .child(media)
                     .child(
