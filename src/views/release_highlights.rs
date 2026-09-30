@@ -51,7 +51,7 @@ impl ReleaseCarousel {
         Self {
             release,
             index: 0,
-            playing: false,
+            playing: true,
             focus,
             return_focus,
             media_error: None,
@@ -69,17 +69,24 @@ impl ReleaseCarousel {
         if self.index + 1 == self.release.slides.len() {
             self.close(window, cx);
         } else {
-            self.index += 1;
-            self.playing = false;
-            self.media_error = None;
-            cx.notify();
+            self.select(self.index + 1, cx);
         }
     }
     fn back(&mut self, cx: &mut Context<Self>) {
-        self.index = self.index.saturating_sub(1);
-        self.playing = false;
+        self.select(self.index.saturating_sub(1), cx);
+    }
+    fn select(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.index = index;
+        self.playing = true;
         self.media_error = None;
         cx.notify();
+    }
+    fn toggle_animation(&mut self, cx: &mut Context<Self>) {
+        self.playing = !self.playing;
+        cx.notify();
+    }
+    fn animation_enabled(&self, cx: &App) -> bool {
+        self.playing && !cx.reduce_motion()
     }
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
@@ -195,7 +202,7 @@ impl Render for ReleaseCarousel {
         let width = MODAL_W_XL
             .min((f32::from(window.viewport_size().width) / scale - SPACE_LG * 2.0).max(0.0));
         let height = (f32::from(window.viewport_size().height) / scale - SPACE_LG * 2.0).max(0.0);
-        let animated = self.playing && !cx.reduce_motion();
+        let animated = self.animation_enabled(cx);
         let source = match slide.media.kind {
             MediaKind::Image => Some(slide.media.src.clone()),
             MediaKind::Gif if animated => Some(slide.media.src.clone()),
@@ -283,8 +290,7 @@ impl Render for ReleaseCarousel {
                                 cx,
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.playing = !this.playing;
-                                cx.notify();
+                                this.toggle_animation(cx);
                             })),
                         ),
                 );
@@ -303,15 +309,11 @@ impl Render for ReleaseCarousel {
             }
             _ => {}
         }
-        let mut dots = div()
-            .id("highlights-progress")
-            .flex()
-            .gap(rpx(SPACE_SM))
-            .aria_label(format!(
-                "Highlight {} of {}",
-                self.index + 1,
-                self.release.slides.len()
-            ));
+        let mut dots = div().id("highlights-progress").flex().aria_label(format!(
+            "Highlight {} of {}",
+            self.index + 1,
+            self.release.slides.len()
+        ));
         for index in 0..self.release.slides.len() {
             dots = dots.child(
                 div()
@@ -324,17 +326,12 @@ impl Render for ReleaseCarousel {
                     .items_center()
                     .justify_center()
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.index = index;
-                        this.playing = false;
-                        this.media_error = None;
-                        cx.notify();
+                        this.select(index, cx);
                     }))
                     .on_key_down(cx.listener(
                         move |this, event: &gpui::KeyDownEvent, window, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.index = index;
-                                this.playing = false;
-                                this.media_error = None;
+                                this.select(index, cx);
                                 window.prevent_default();
                                 cx.stop_propagation();
                                 cx.notify();
@@ -432,18 +429,7 @@ impl Render for ReleaseCarousel {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(SPACE_LG))
-                                    .child(dots)
-                                    .child(format!(
-                                        "{} / {}",
-                                        self.index + 1,
-                                        self.release.slides.len()
-                                    )),
-                            )
+                            .child(dots)
                             .child(
                                 div()
                                     .flex()
@@ -538,8 +524,51 @@ mod tests {
                 this.close(window, cx);
                 *this = ReleaseCarousel::new(release(), window, cx);
                 assert_eq!(this.index, 0);
-                assert!(!this.playing);
+                assert!(this.playing);
                 assert!(this.focus.is_focused(window));
+            });
+        });
+    }
+    #[gpui::test]
+    fn gif_autoplays_can_pause_and_restarts_on_navigation(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let release = manifest().unwrap().release("1.0.2").unwrap().clone();
+        assert_eq!(release.slides[0].media.kind, MediaKind::Gif);
+        let (carousel, cx) =
+            cx.add_window_view(|window, cx| ReleaseCarousel::new(release, window, cx));
+        cx.update(|window, cx| {
+            carousel.update(cx, |this, cx| {
+                assert!(
+                    this.animation_enabled(cx),
+                    "GIF should start playing on open"
+                );
+                this.toggle_animation(cx);
+                assert!(!this.animation_enabled(cx));
+                this.toggle_animation(cx);
+                assert!(this.animation_enabled(cx));
+                this.toggle_animation(cx);
+                this.next(window, cx);
+                this.back(cx);
+                assert_eq!(this.index, 0);
+                assert!(
+                    this.animation_enabled(cx),
+                    "returning to GIF starts playback"
+                );
+                this.toggle_animation(cx);
+                this.select(0, cx);
+                assert!(
+                    this.animation_enabled(cx),
+                    "selecting a dot starts playback"
+                );
+                cx.set_reduce_motion(true);
+                assert!(
+                    !this.animation_enabled(cx),
+                    "reduced motion must retain poster"
+                );
+                this.select(0, cx);
+                assert!(!this.animation_enabled(cx));
+                cx.set_reduce_motion(false);
+                assert!(this.animation_enabled(cx));
             });
         });
     }
@@ -636,7 +665,6 @@ mod tests {
         let (_, cx) = cx.add_window_view(move |window, cx| {
             let mut carousel = ReleaseCarousel::new(release, window, cx);
             carousel.image_source_override = Some(image_for_view.into());
-            carousel.playing = true;
             carousel
         });
         for (width, height) in [(707.0, 629.0), (1280.0, 800.0), (360.0, 480.0)] {
