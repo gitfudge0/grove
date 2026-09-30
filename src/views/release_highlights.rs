@@ -37,6 +37,8 @@ pub struct ReleaseCarousel {
     focus: FocusHandle,
     return_focus: Option<FocusHandle>,
     media_error: Option<String>,
+    #[cfg(test)]
+    image_source_override: Option<gpui::ImageSource>,
 }
 impl EventEmitter<Closed> for ReleaseCarousel {}
 
@@ -52,6 +54,8 @@ impl ReleaseCarousel {
             focus,
             return_focus,
             media_error: None,
+            #[cfg(test)]
+            image_source_override: None,
         }
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -196,19 +200,25 @@ impl Render for ReleaseCarousel {
             MediaKind::Gif if animated => Some(slide.media.src.clone()),
             MediaKind::Gif | MediaKind::Video => slide.media.poster.clone(),
         };
+        let media_height = (width * 9.0 / 16.0).min(height * 0.52);
         let mut media = div()
             .id("highlights-media")
+            .debug_selector(|| "highlights-media".into())
             .w_full()
-            .h(rpx((width * 9.0 / 16.0).min(height * 0.52)))
+            .h(rpx(media_height))
+            .flex_shrink_0()
+            .overflow_hidden()
             .bg(c::BG())
             .relative()
             .aria_label(slide.media.alt.clone());
         media = media.child(match source {
             Some(source) if Assets::get(&source).is_some() => {
                 let image_source = gpui::ImageSource::from(gpui::SharedString::from(source));
+                #[cfg(test)]
+                let image_source = self.image_source_override.clone().unwrap_or(image_source);
                 let retry_source = image_source.clone();
                 let carousel = cx.entity().downgrade();
-                img(image_source).id(format!("highlights-image-{}-{}", self.index, animated)).size_full().object_fit(gpui::ObjectFit::Contain)
+                img(image_source).id(format!("highlights-image-{}-{}", self.index, animated)).debug_selector(|| "highlights-image".into()).absolute().inset_0().w(rpx((width - 2.0).max(0.0))).h(rpx(media_height)).object_fit(gpui::ObjectFit::Contain)
                     .with_fallback(move || {
                         let source = retry_source.clone(); let key_source = retry_source.clone(); let key_carousel = carousel.clone(); let carousel = carousel.clone();
                         div().size_full().flex().flex_col().gap(rpx(SPACE_LG)).items_center().justify_center().text_color(c::FG_DIM())
@@ -322,6 +332,7 @@ impl Render for ReleaseCarousel {
             .child(
                 div()
                     .id("release-highlights")
+                    .debug_selector(|| "release-highlights".into())
                     .track_focus(&self.focus)
                     .w(rpx(width))
                     .max_h(rpx(height))
@@ -335,6 +346,7 @@ impl Render for ReleaseCarousel {
                     .text_color(c::FG())
                     .child(
                         div()
+                            .flex_shrink_0()
                             .px(rpx(SPACE_2XL))
                             .py(rpx(SPACE_LG))
                             .flex()
@@ -351,6 +363,8 @@ impl Render for ReleaseCarousel {
                     .child(media)
                     .child(
                         div()
+                            .debug_selector(|| "highlights-copy".into())
+                            .flex_shrink_0()
                             .p(rpx(SPACE_2XL))
                             .flex()
                             .flex_col()
@@ -373,6 +387,8 @@ impl Render for ReleaseCarousel {
                     )
                     .child(
                         div()
+                            .debug_selector(|| "highlights-footer".into())
+                            .flex_shrink_0()
                             .px(rpx(SPACE_2XL))
                             .pb(rpx(SPACE_2XL))
                             .flex()
@@ -507,6 +523,56 @@ mod tests {
         assert!(cx.update(|window, cx| carousel.read(cx).focus.contains_focused(window, cx)));
         cx.simulate_keystrokes("escape");
     }
+    #[gpui::test]
+    fn decoded_screenshot_stays_inside_media_and_before_copy(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let release = manifest().unwrap().release("1.0.2").unwrap().clone();
+        let bytes = Assets::get(&release.slides[0].media.src)
+            .unwrap()
+            .data
+            .into_owned();
+        let image = std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes));
+        let image_for_view = image.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let mut carousel = ReleaseCarousel::new(release, window, cx);
+            // TestAppContext has no embedded asset source. Supply the same bundled bytes
+            // directly so this regression exercises decoded intrinsic image dimensions.
+            carousel.image_source_override = Some(image_for_view.into());
+            carousel
+        });
+        for (width, height) in [(707.0, 629.0), (1280.0, 800.0), (360.0, 480.0)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+                assert!(
+                    image.clone().get_render_image(window, cx).is_some(),
+                    "screenshot must be decoded"
+                );
+            });
+            let panel = cx.debug_bounds("release-highlights").unwrap();
+            let media = cx.debug_bounds("highlights-media").unwrap();
+            let screenshot = cx.debug_bounds("highlights-image").unwrap();
+            let copy = cx.debug_bounds("highlights-copy").unwrap();
+            let footer = cx.debug_bounds("highlights-footer").unwrap();
+            assert!(panel.top() >= gpui::px(0.0) && panel.bottom() <= gpui::px(height));
+            assert!(panel.left() >= gpui::px(0.0) && panel.right() <= gpui::px(width));
+            assert!(screenshot.top() >= media.top() && screenshot.bottom() <= media.bottom(), "decoded screenshot overflows media at {width}x{height}: {screenshot:?} / {media:?}");
+            assert!(screenshot.left() >= media.left() && screenshot.right() <= media.right());
+            assert!(
+                media.bottom() <= copy.top(),
+                "media overlaps copy at {width}x{height}"
+            );
+            assert!(
+                copy.bottom() <= footer.top(),
+                "copy overlaps controls at {width}x{height}"
+            );
+        }
+    }
+
     #[test]
     fn authored_manifest_media_are_bundled() {
         let manifest = manifest().expect("bundled manifest must parse");
