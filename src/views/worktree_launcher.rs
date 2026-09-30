@@ -627,67 +627,76 @@ impl WorktreeLauncher {
         cx.notify();
     }
 
-    fn agent_selector(
-        &self,
-        cx: &mut Context<Self>,
-        id_prefix: &'static str,
-    ) -> impl IntoElement {
+    fn agent_selector(&self, cx: &mut Context<Self>, id_prefix: &'static str) -> impl IntoElement {
         div()
             .id(id_prefix)
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap(rpx(SPACE_XS))
-            .children(Agent::ALL.into_iter().enumerate().map(|(agent_index, agent)| {
-                let selected = self.agent_selected == agent_index;
-                let available = agent.available();
-                let label = if available {
-                    agent.label().to_string()
-                } else {
-                    format!("{} (not installed)", agent.label())
-                };
-                let icon_name = match agent {
-                    Agent::Claude => "claude",
-                    Agent::Codex => "codex",
-                    Agent::OpenCode => "opencode",
-                    Agent::Terminal => "terminal",
-                };
-                let button_id = format!("{id_prefix}-{agent_index}");
-                div()
-                    .id(gpui::SharedString::from(button_id.clone()))
-                    .debug_selector(move || button_id.clone())
-                    .role(gpui::Role::Button)
-                    .aria_label(label.clone())
-                    .size(rpx(ICON_BTN_W))
-                    .rounded(rpx(RADIUS_CONTROL))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(selected && self.agent_focus, |button| button.bg(c::BG_HL()))
-                    .when(selected, |button| button.border_1().border_color(c::BORDER_STRONG()))
-                    .hover(|button| button.bg(c::BG_HOVER()))
-                    .tooltip(move |window, cx| {
-                        gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx)
-                    })
-                    .child(icon(
-                        icon_name,
-                        ICON_MD,
-                        if available { c::MAGENTA() } else { c::FG_MUTE() },
-                    ))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        if available {
-                            this.agent_selected = agent_index;
-                            this.agent_touched = true;
-                            this.agent_focus = true;
-                            this.error = None;
-                            this.focus.focus(window, cx);
+            .children(
+                Agent::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(agent_index, agent)| {
+                        let selected = self.agent_selected == agent_index;
+                        let available = agent.available();
+                        let label = if available {
+                            agent.label().to_string()
                         } else {
-                            this.error = Some(format!("{} is not installed.", agent.label()));
-                        }
-                        cx.notify();
-                    }))
-            }))
+                            format!("{} (not installed)", agent.label())
+                        };
+                        let icon_name = match agent {
+                            Agent::Claude => "claude",
+                            Agent::Codex => "codex",
+                            Agent::OpenCode => "opencode",
+                            Agent::Terminal => "terminal",
+                        };
+                        let button_id = format!("{id_prefix}-{agent_index}");
+                        div()
+                            .id(gpui::SharedString::from(button_id.clone()))
+                            .debug_selector(move || button_id.clone())
+                            .role(gpui::Role::Button)
+                            .aria_label(label.clone())
+                            .size(rpx(ICON_BTN_W))
+                            .rounded(rpx(RADIUS_CONTROL))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(selected && self.agent_focus, |button| button.bg(c::BG_HL()))
+                            .when(selected, |button| {
+                                button.border_1().border_color(c::BORDER_STRONG())
+                            })
+                            .hover(|button| button.bg(c::BG_HOVER()))
+                            .tooltip(move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(label.clone())
+                                    .build(window, cx)
+                            })
+                            .child(icon(
+                                icon_name,
+                                ICON_MD,
+                                if available {
+                                    c::MAGENTA()
+                                } else {
+                                    c::FG_MUTE()
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                if available {
+                                    this.agent_selected = agent_index;
+                                    this.agent_touched = true;
+                                    this.agent_focus = true;
+                                    this.error = None;
+                                    this.focus.focus(window, cx);
+                                } else {
+                                    this.error =
+                                        Some(format!("{} is not installed.", agent.label()));
+                                }
+                                cx.notify();
+                            }))
+                    }),
+            )
     }
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -830,22 +839,22 @@ impl Render for WorktreeLauncher {
                     .child(
                         div()
                             .px(rpx(SPACE_3XL))
-                            .pt(rpx(if compact { SPACE_LG } else { SPACE_3XL }))
-                            .pb(rpx(if compact { SPACE_SM } else { SPACE_2XL }))
+                            .pt(rpx(if compact { 0.0 } else { SPACE_3XL }))
+                            .pb(rpx(if compact { SPACE_XS } else { SPACE_2XL }))
                             .flex()
                             .flex_col()
                             .gap(rpx(if compact { SPACE_SM } else { SPACE_2XL }))
-                            .child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(match self.mode {
+                            .when(!compact, |header| header.child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(match self.mode {
                                 PaletteMode::Root => "Command palette",
                                 PaletteMode::Single => "New session",
                                 PaletteMode::Multi => "New multi-project session",
-                            }))
+                            })))
                             .child(
                                 div()
                                     .id("worktree-launcher-search")
                                     .debug_selector(|| "worktree-launcher-search".into())
                                     .h(rpx(if compact {
-                                        ICON_BTN_W + SPACE_SM
+                                        ICON_BTN_W
                                     } else {
                                         APPBAR_H
                                     }))
@@ -946,7 +955,7 @@ impl Render for WorktreeLauncher {
                                     .when(show_agent_selector, |row| row.child(
                                         self.agent_selector(cx, "launcher-agent-selector")
                                     ))
-                                    .when(!show_agent_selector && !(self.mode == PaletteMode::Multi && is_worktree_row) && !suffix.is_empty(), |row| row.child(
+                                    .when(!(show_agent_selector || suffix.is_empty() || self.mode == PaletteMode::Multi && is_worktree_row), |row| row.child(
                                         div().flex_shrink_0().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
                                             .child(suffix)
                                     ))
@@ -1024,7 +1033,7 @@ impl Render for WorktreeLauncher {
                                     .pb(rpx(if compact { SPACE_SM } else { SPACE_LG }))
                                     .flex()
                                     .flex_col()
-                                    .gap(rpx(SPACE_SM))
+                                    .gap(rpx(if compact { SPACE_XS } else { SPACE_SM }))
                                     .child(div().flex().justify_end().child(selector))
                                     .child(div().flex().items_center().justify_between().gap(rpx(SPACE_LG)).child(count).child(launch))
                             } else {
@@ -1047,7 +1056,7 @@ impl Render for WorktreeLauncher {
                             .border_t_1()
                             .border_color(c::BORDER_SOFT())
                             .px(rpx(SPACE_3XL))
-                            .py(rpx(if compact { SPACE_SM } else { SPACE_LG }))
+                            .py(rpx(if compact { SPACE_XS } else { SPACE_LG }))
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_MUTE())
                             .when_some(self.error.clone().filter(|_| compact), |footer, error| footer.child(
@@ -1064,7 +1073,7 @@ impl Render for WorktreeLauncher {
                                 _ if self.loading_worktrees && compact => "Loading worktrees… · Esc back",
                                 _ if self.loading_worktrees => "Loading worktrees… · Search is ready · Esc back",
                                 PaletteMode::Single if compact => "↑↓ · Tab tools · Enter start · Esc",
-                                PaletteMode::Multi if compact => "↑↓ move · ⇧Space select · Tab tools · ←→ tool · Enter launch · Esc back",
+                                PaletteMode::Multi if compact => "⇧Space select · Tab tools · Enter · Esc",
                                 PaletteMode::Root => "↑↓ rows · Tab tools · Enter activate · Esc close",
                                 PaletteMode::Single => "↑↓ worktrees · Tab tools · Enter start session · Esc back",
                                 PaletteMode::Multi => "↑↓ worktrees · Shift+Space select · Tab tools · ←→ change tool · Enter launch selected · Esc back",
@@ -1507,7 +1516,7 @@ mod tests {
             assert!(launcher.focus.is_focused(window));
         });
         draw(cx);
-        assert!(cx.debug_bounds("launcher-agent-0").is_some());
+        assert!(cx.debug_bounds("launcher-agent-selector-0").is_some());
         cx.update(|window, cx| {
             launcher.update(cx, |launcher, cx| {
                 launcher.close(window, cx);
@@ -1681,10 +1690,10 @@ mod tests {
         cx.update(|window, cx| launcher.update(cx, |launcher, cx| launcher.open(window, cx)));
         draw(cx);
         let icon_names = [
-            "launcher-agent-0",
-            "launcher-agent-1",
-            "launcher-agent-2",
-            "launcher-agent-3",
+            "launcher-agent-selector-0",
+            "launcher-agent-selector-1",
+            "launcher-agent-selector-2",
+            "launcher-agent-selector-3",
         ];
         for name in icon_names {
             assert!(
@@ -2180,7 +2189,9 @@ mod tests {
             let panel = cx
                 .debug_bounds("worktree-launcher-panel")
                 .expect("agent panel");
-            let agent = cx.debug_bounds("launcher-agent-0").expect("first agent");
+            let agent = cx
+                .debug_bounds("launcher-agent-selector-0")
+                .expect("first agent");
             let footer = cx
                 .debug_bounds("worktree-launcher-footer")
                 .expect("agent footer");

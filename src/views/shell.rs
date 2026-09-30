@@ -2399,7 +2399,7 @@ mod tests {
         cx.simulate_mouse_down(menu, MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(menu, MouseButton::Left, gpui::Modifiers::default());
         draw(cx);
-        cx.simulate_keystrokes("down enter");
+        cx.simulate_keystrokes("down down enter");
         draw(cx);
         let mut fields = Vec::new();
         for selector in [
@@ -2626,7 +2626,7 @@ mod tests {
         assert!(cx.debug_bounds("launcher-row-0").is_some());
         cx.simulate_keystrokes("tab");
         draw(cx);
-        assert!(cx.debug_bounds("launcher-agent-0").is_some());
+        assert!(cx.debug_bounds("launcher-agent-selector-0").is_some());
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|_, cx| assert!(!shell.read(cx).launcher.read(cx).is_open()));
