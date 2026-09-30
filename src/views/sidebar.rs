@@ -343,6 +343,7 @@ pub struct Sidebar {
     focus: FocusHandle,
     shell_focus: Option<FocusHandle>,
     collapse_focus: FocusHandle,
+    compact_workspace_focus: FocusHandle,
     selection: Option<Selection>,
     initial_selection_pending: bool,
     pending_canvas_focus: Option<SessionId>,
@@ -497,6 +498,7 @@ impl Sidebar {
             focus: cx.focus_handle(),
             shell_focus: None,
             collapse_focus: cx.focus_handle(),
+            compact_workspace_focus: cx.focus_handle(),
             selection: None,
             initial_selection_pending: true,
             pending_canvas_focus: None,
@@ -1576,7 +1578,7 @@ impl Sidebar {
                 }
             })
             .tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx)
+                crate::views::components::tooltip(label.clone(), window).build(window, cx)
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
@@ -2221,18 +2223,6 @@ impl Sidebar {
         {
             return;
         }
-        // Inline rail confirmations and project actions need the remembered full width.
-        if self.is_collapsed(cx)
-            && matches!(
-                action,
-                Action::Menu(_) | Action::RemoveProject(_) | Action::RemoveWorktree(..)
-            )
-            && self.canvas_close_anchor.is_none()
-            && self.mode != ViewMode::Grid
-            && !self.is_zen()
-        {
-            SettingsState::update(cx, |store| store.sidebar_collapsed = false);
-        }
         match action {
             Action::ToggleSidebar => {
                 let collapsed = !self.is_collapsed(cx);
@@ -2245,10 +2235,12 @@ impl Sidebar {
                 cx.notify();
             }
             Action::OpenWorkspaces => {
-                SettingsState::update(cx, |store| store.sidebar_collapsed = false);
                 if let Some(selector) = self.workspace_selector.clone() {
+                    let return_focus = self.compact_workspace_focus.clone();
                     cx.defer_in(window, move |_, window, cx| {
-                        selector.update(cx, |selector, cx| selector.open_menu(window, cx));
+                        selector.update(cx, |selector, cx| {
+                            selector.open_compact_menu(return_focus, window, cx);
+                        });
                     });
                 }
                 cx.notify();
@@ -3196,7 +3188,8 @@ impl Sidebar {
                     .tooltip({
                         let label = format!("{} session", meta.agent.label());
                         move |window, cx| {
-                            gpui_component::tooltip::Tooltip::new(label.clone()).build(window, cx)
+                            crate::views::components::tooltip(label.clone(), window)
+                                .build(window, cx)
                         }
                     })
                     .w(rpx(HIERARCHY_ICON_SLOT))
@@ -3586,8 +3579,9 @@ impl Sidebar {
                                     .size(rpx(ICON_MD))
                                     .flex_shrink_0()
                                     .tooltip(|window, cx| {
-                                        gpui_component::tooltip::Tooltip::new(
+                                        crate::views::components::tooltip(
                                             "Not a Git repository",
+                                            window,
                                         )
                                         .build(window, cx)
                                     })
@@ -4180,7 +4174,16 @@ impl Render for Sidebar {
             .line_height(rpx(SPACE_3XL))
             .font_weight(gpui::FontWeight::NORMAL)
             .text_color(c::alpha(c::FG(), 0.88))
-            .child(div().h(rpx(APPBAR_H)).flex_shrink_0())
+            .when(collapsed, |rail| rail.pt(rpx(SPACE_LG)))
+            .when(!collapsed, |rail| {
+                rail.child(
+                    div()
+                        .id("sidebar-appbar-spacer")
+                        .debug_selector(|| "sidebar-appbar-spacer".into())
+                        .h(rpx(APPBAR_H))
+                        .flex_shrink_0(),
+                )
+            })
             .child(
                 div()
                     .id("sidebar-workspace-header")
@@ -4716,6 +4719,68 @@ mod tests {
         assert!(cx.debug_bounds("start-terminal").is_some());
     }
 
+    fn assert_compact_column(
+        cx: &mut gpui::VisualTestContext,
+        items: &[(&'static str, &'static str)],
+    ) {
+        let rail = cx.debug_bounds("sidebar-rail").unwrap();
+        let expand = cx
+            .debug_bounds("compact-glyph-sidebar-collapse-toggle")
+            .unwrap();
+        assert!((f32::from(expand.center().x - rail.center().x)).abs() <= 0.5);
+        for &(row_selector, glyph_selector) in items {
+            let row = cx.debug_bounds(row_selector).unwrap();
+            let glyph = cx.debug_bounds(glyph_selector).unwrap();
+            assert_eq!(f32::from(row.size.width), 36.0, "{row_selector}");
+            assert_eq!(f32::from(row.size.height), 32.0, "{row_selector}");
+            assert_eq!(row.center().x, expand.center().x, "{row_selector}");
+            assert_eq!(glyph.center().x, expand.center().x, "{glyph_selector}");
+            assert_eq!(glyph.center().y, row.center().y, "{glyph_selector}");
+            assert!(
+                row.left() >= rail.left() && row.right() <= rail.right(),
+                "{row_selector}"
+            );
+            assert!(
+                glyph.left() >= row.left() && glyph.right() <= row.right(),
+                "{glyph_selector}"
+            );
+        }
+    }
+
+    fn assert_compact_overlay(
+        cx: &mut gpui::VisualTestContext,
+        row_selector: &'static str,
+        overlay_selector: &'static str,
+    ) {
+        let row = cx.debug_bounds(row_selector).unwrap();
+        let overlay = cx.debug_bounds(overlay_selector).unwrap();
+        assert!(
+            overlay.left() >= row.left() && overlay.right() <= row.right(),
+            "{overlay_selector}"
+        );
+        assert!(
+            overlay.top() >= row.top() && overlay.bottom() <= row.bottom(),
+            "{overlay_selector}"
+        );
+    }
+
+    fn assert_compact_disclosure(
+        cx: &mut gpui::VisualTestContext,
+        row_selector: &'static str,
+        glyph_selector: &'static str,
+        disclosure_selector: &'static str,
+    ) {
+        assert_compact_overlay(cx, row_selector, disclosure_selector);
+        let row = cx.debug_bounds(row_selector).unwrap();
+        let glyph = cx.debug_bounds(glyph_selector).unwrap();
+        let disclosure = cx.debug_bounds(disclosure_selector).unwrap();
+        assert!(
+            (f32::from(disclosure.center().y - row.center().y)).abs() <= 0.5,
+            "{disclosure_selector}: row={row:?}, disclosure={disclosure:?}"
+        );
+        assert!(disclosure.left() >= glyph.right(), "{disclosure_selector}");
+    }
+
     #[gpui::test]
     fn collapsed_tree_and_list_preserve_session_selection_and_safe_close(
         cx: &mut gpui::TestAppContext,
@@ -4750,6 +4815,25 @@ mod tests {
                 [Agent::Codex, Agent::Claude]
                     .map(|agent| registry.insert_meta("demo".into(), path.into(), agent))
             });
+            let home_terminal = cx.new(|cx| {
+                crate::entities::terminal_session::TerminalSession::attach_existing(
+                    "grove_compact_alignment_test",
+                    24,
+                    80,
+                    cx,
+                )
+            });
+            registry.update(cx, |registry, _| {
+                let mut home = registry.meta(ids[0]).unwrap().clone();
+                home.id = SessionId::from_raw(3);
+                home.project.clear();
+                home.wt_path = "/".into();
+                home.agent = Agent::Terminal;
+                home.label = "Terminal 3".into();
+                home.context_roots.clear();
+                home.attention = None;
+                registry.push_home(home, home_terminal);
+            });
             runtime.read(cx).tree.clone().update(cx, |tree, _| {
                 tree.set_active_worktrees(
                     0,
@@ -4769,6 +4853,27 @@ mod tests {
         });
         cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
         draw(cx);
+        let rail = cx.debug_bounds("sidebar-rail").unwrap();
+        let header = cx.debug_bounds("sidebar-workspace-header").unwrap();
+        assert_eq!(header.top(), rail.top() + gpui::px(SPACE_LG));
+        let toggle = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
+        assert!(
+            (f32::from(toggle.top() - rail.top()) - f32::from(toggle.left() - rail.left())).abs()
+                <= 1.0
+        );
+        assert!(cx.debug_bounds("sidebar-appbar-spacer").is_none());
+        assert_compact_disclosure(
+            cx,
+            "project-0",
+            "compact-glyph-project-0",
+            "compact-project-disclosure-0",
+        );
+        assert_compact_disclosure(
+            cx,
+            "fold-terminals",
+            "compact-glyph-fold-terminals",
+            "compact-terminals-disclosure",
+        );
         let project = cx.debug_bounds("project-0").unwrap();
         let worktree = cx
             .debug_bounds("worktree-/grove-sidebar-collapse-test")
@@ -4784,16 +4889,109 @@ mod tests {
             assert_eq!(f32::from(bounds.size.width), 36.0);
             assert_eq!(f32::from(bounds.size.height), 32.0);
         }
-        assert!(cx.debug_bounds("compact-session-status-2").is_some());
+        assert_compact_column(
+            cx,
+            &[
+                ("project-0", "compact-glyph-project-0"),
+                (
+                    "worktree-/grove-sidebar-collapse-test",
+                    "compact-glyph-worktree-/grove-sidebar-collapse-test",
+                ),
+                ("session-1", "compact-glyph-session-1"),
+                ("session-2", "compact-glyph-session-2"),
+                ("home-3", "compact-glyph-home-3"),
+                ("sidebar-view", "compact-glyph-sidebar-view"),
+                ("sidebar-grid", "compact-glyph-sidebar-grid"),
+                ("fold-terminals", "compact-glyph-fold-terminals"),
+                ("add-terminal", "compact-glyph-add-terminal"),
+                ("projects-add", "compact-glyph-projects-add"),
+            ],
+        );
+        assert_compact_overlay(cx, "session-2", "compact-session-status-2");
+        assert_compact_overlay(cx, "home-3", "compact-home-status-3");
+        let canvas_left = cx.debug_bounds("sidebar-canvas").unwrap().left();
+        let project_menu = cx.debug_bounds("compact-project-menu-0").unwrap();
+        cx.simulate_click(project_menu.center(), gpui::Modifiers::default());
+        draw(cx);
+        let popup = cx.debug_bounds("project-actions-popup").unwrap();
+        assert!(popup.right() > cx.debug_bounds("sidebar-rail").unwrap().right());
+        assert_eq!(
+            cx.debug_bounds("sidebar-canvas").unwrap().left(),
+            canvas_left
+        );
+        assert_eq!(
+            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
+            52.0
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        let home_close = cx.debug_bounds("compact-close-home-3").unwrap();
+        cx.simulate_click(home_close.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.pending_home_close
+                == Some(SessionId::from_raw(3)))
+        );
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.canvas_close_anchor.is_none()));
+        assert!(cx.debug_bounds("compact-close-home-3").is_some());
+        assert!(cx.debug_bounds("confirm-close").is_some());
+        assert!(
+            cx.debug_bounds("sidebar-confirmation").unwrap().right()
+                > cx.debug_bounds("sidebar-rail").unwrap().right()
+        );
+        assert_eq!(
+            cx.debug_bounds("sidebar-canvas").unwrap().left(),
+            canvas_left
+        );
+        cx.simulate_resize(gpui::size(gpui::px(240.0), gpui::px(800.0)));
+        draw(cx);
+        let narrow_confirmation = cx.debug_bounds("sidebar-confirmation").unwrap();
+        assert!(narrow_confirmation.left() >= gpui::px(0.0));
+        assert!(narrow_confirmation.right() <= gpui::px(240.0));
+        assert_eq!(
+            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
+            52.0
+        );
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
         assert!(cx.debug_bounds("fold-terminals").is_some());
         assert!(cx.debug_bounds("add-terminal").is_some());
         assert!(cx.debug_bounds("projects-add").is_some());
+        let disclosure = cx
+            .debug_bounds("compact-project-disclosure-0")
+            .unwrap()
+            .center();
+        cx.simulate_click(disclosure, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx
+            .debug_bounds("worktree-/grove-sidebar-collapse-test")
+            .is_none());
+        assert_compact_disclosure(
+            cx,
+            "project-0",
+            "compact-glyph-project-0",
+            "compact-project-disclosure-0",
+        );
+        let disclosure = cx
+            .debug_bounds("compact-project-disclosure-0")
+            .unwrap()
+            .center();
+        cx.simulate_click(disclosure, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx
+            .debug_bounds("worktree-/grove-sidebar-collapse-test")
+            .is_some());
+        let second = cx.debug_bounds("session-2").unwrap();
         cx.simulate_click(second.center(), gpui::Modifiers::default());
         draw(cx);
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
             Some(Selection::Session(SessionId::from_raw(2)))
         );
+        assert_compact_column(cx, &[("session-2", "compact-glyph-session-2")]);
+        assert_compact_overlay(cx, "session-2", "compact-session-status-2");
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
         });
@@ -4825,6 +5023,13 @@ mod tests {
             f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
             52.0
         );
+        let rail = cx.debug_bounds("sidebar-rail").unwrap();
+        assert!(cx.debug_bounds("sidebar-appbar-spacer").is_none());
+        assert_eq!(
+            cx.debug_bounds("sidebar-canvas").unwrap().left(),
+            canvas_left
+        );
+        assert!(cx.debug_bounds("sidebar-confirmation").unwrap().right() > rail.right());
         assert!(cx.debug_bounds("confirm-close").is_some());
         assert!(cx.debug_bounds("cancel-close").is_some());
         cx.simulate_keystrokes("escape");
@@ -4834,6 +5039,25 @@ mod tests {
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
             Some(Selection::Session(SessionId::from_raw(2)))
         );
+        let toggle = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
+        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        draw(cx);
+        let expanded_rail = cx.debug_bounds("sidebar-rail").unwrap();
+        let expanded_canvas_left = cx.debug_bounds("sidebar-canvas").unwrap().left();
+        let session_row_top = cx.debug_bounds("session-2").unwrap().top();
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.request_close_focused(window, cx));
+        });
+        draw(cx);
+        assert_eq!(cx.debug_bounds("sidebar-rail").unwrap(), expanded_rail);
+        assert_eq!(
+            cx.debug_bounds("sidebar-canvas").unwrap().left(),
+            expanded_canvas_left
+        );
+        assert_eq!(cx.debug_bounds("session-2").unwrap().top(), session_row_top);
+        assert!(cx.debug_bounds("sidebar-confirmation").unwrap().right() > expanded_rail.right());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
     }
 
     #[gpui::test]
@@ -4893,6 +5117,27 @@ mod tests {
         let toggle = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
         let rail = cx.debug_bounds("sidebar-rail").unwrap();
         assert!(rail.contains(&toggle.center()));
+        assert_eq!(
+            cx.debug_bounds("sidebar-workspace-header").unwrap().top(),
+            rail.top() + gpui::px(SPACE_LG)
+        );
+        assert_compact_disclosure(
+            cx,
+            "fold-terminals",
+            "compact-glyph-fold-terminals",
+            "compact-terminals-disclosure",
+        );
+        assert_compact_column(
+            cx,
+            &[
+                ("sidebar-view", "compact-glyph-sidebar-view"),
+                ("fold-terminals", "compact-glyph-fold-terminals"),
+                ("home-12", "compact-glyph-home-12"),
+                ("add-terminal", "compact-glyph-add-terminal"),
+                ("projects-add", "compact-glyph-projects-add"),
+            ],
+        );
+        assert_compact_overlay(cx, "home-12", "compact-home-status-12");
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.scroll.max_offset().y) > gpui::px(0.0));
         sidebar.update(cx, |sidebar, cx| {
             sidebar.scroll.scroll_to_bottom();
@@ -4914,11 +5159,58 @@ mod tests {
         assert!(scroll.contains(&cx.debug_bounds("add-terminal").unwrap().center()));
         let terminal = cx.debug_bounds("home-12").unwrap();
         assert!(scroll.contains(&terminal.center()));
+        assert_compact_column(
+            cx,
+            &[
+                ("home-12", "compact-glyph-home-12"),
+                ("add-terminal", "compact-glyph-add-terminal"),
+            ],
+        );
+        assert_compact_overlay(cx, "home-12", "compact-home-status-12");
         cx.simulate_click(terminal.center(), gpui::Modifiers::default());
         draw(cx);
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
             Some(Selection::Home(SessionId::from_raw(12)))
+        );
+        assert_compact_column(
+            cx,
+            &[
+                ("home-12", "compact-glyph-home-12"),
+                ("fold-terminals", "compact-glyph-fold-terminals"),
+            ],
+        );
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.scroll.offset().x),
+            gpui::px(0.0)
+        );
+        cx.update(|window, cx| {
+            let focus = sidebar.read(cx).focus.clone();
+            focus.focus(window, cx);
+        });
+        let fold = cx.debug_bounds("fold-terminals").unwrap();
+        sidebar.update(cx, |sidebar, cx| {
+            let mut offset = sidebar.scroll.offset();
+            offset.y += scroll.top() - fold.top() + gpui::px(SPACE_SM);
+            sidebar.scroll.set_offset(offset);
+            cx.notify();
+        });
+        draw(cx);
+        let fold = cx.debug_bounds("fold-terminals").unwrap().center();
+        cx.simulate_click(fold, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("tab shift-tab");
+        draw(cx);
+        assert_compact_column(cx, &[("fold-terminals", "compact-glyph-fold-terminals")]);
+        assert_compact_disclosure(
+            cx,
+            "fold-terminals",
+            "compact-glyph-fold-terminals",
+            "compact-terminals-disclosure",
+        );
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.scroll.offset().x),
+            gpui::px(0.0)
         );
     }
 

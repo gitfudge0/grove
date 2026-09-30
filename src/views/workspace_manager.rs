@@ -46,6 +46,8 @@ pub struct WorkspaceManager {
     menu_scroll: gpui::ScrollHandle,
     trigger_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     popup_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    compact: bool,
+    return_focus: Option<FocusHandle>,
 }
 impl WorkspaceManager {
     pub(crate) fn is_open(&self) -> bool {
@@ -54,6 +56,29 @@ impl WorkspaceManager {
 
     pub(crate) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open(Panel::Menu, window, cx);
+    }
+
+    pub(crate) fn set_compact(&mut self, compact: bool) {
+        self.compact = compact;
+        if !compact {
+            self.return_focus = None;
+        }
+    }
+
+    pub(crate) fn compact_trigger_bounds(
+        &self,
+    ) -> std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>> {
+        self.trigger_bounds.clone()
+    }
+
+    pub(crate) fn open_compact_menu(
+        &mut self,
+        return_focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.return_focus = Some(return_focus);
+        self.open_menu(window, cx);
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -90,6 +115,8 @@ impl WorkspaceManager {
             trigger_bounds: std::rc::Rc::default(),
             popup_bounds: std::rc::Rc::default(),
             menu_scroll: gpui::ScrollHandle::new(),
+            compact: false,
+            return_focus: None,
         }
     }
     fn persist(&mut self, cx: &mut Context<Self>) -> bool {
@@ -110,7 +137,10 @@ impl WorkspaceManager {
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.panel = Panel::Closed;
         self.error = None;
-        self.focus.focus(window, cx);
+        self.return_focus
+            .as_ref()
+            .unwrap_or(&self.focus)
+            .focus(window, cx);
         cx.notify();
     }
     fn open(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
@@ -651,6 +681,9 @@ impl Render for WorkspaceManager {
             .tab_group()
             .relative()
             .min_w_0()
+            .when(self.compact, |el| {
+                el.absolute().size_0().track_focus(&self.focus)
+            })
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -704,62 +737,64 @@ impl Render for WorkspaceManager {
                     _ => {}
                 }
             }))
-            .child(
-                div()
-                    .id("workspace-picker")
-                    .debug_selector(|| "workspace-picker".into())
-                    .track_focus(&self.focus)
-                    .role(gpui::Role::Button)
-                    .aria_label(format!(
-                        "Switch workspace, {} selected",
-                        self.state.name(self.state.active)
-                    ))
-                    .h(rpx(SELECTOR_H))
-                    .px(rpx(SPACE_2XL))
-                    .relative()
-                    .min_w_0()
-                    .max_w(rpx(MENU_W))
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_MD))
-                    .rounded(rpx(RADIUS_PANEL))
-                    .hover(|s| s.bg(c::BG_HOVER()))
-                    .focus_visible(|s| s.bg(c::BG_HOVER()))
-                    .when(self.panel != Panel::Closed, |el| el.bg(c::BG_HOVER()))
-                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        gpui::canvas(
-                            move |bounds, _, _| trigger_bounds.set(bounds),
-                            |_, (), _, _| {},
+            .when(!self.compact, |el| {
+                el.child(
+                    div()
+                        .id("workspace-picker")
+                        .debug_selector(|| "workspace-picker".into())
+                        .track_focus(&self.focus)
+                        .role(gpui::Role::Button)
+                        .aria_label(format!(
+                            "Switch workspace, {} selected",
+                            self.state.name(self.state.active)
+                        ))
+                        .h(rpx(SELECTOR_H))
+                        .px(rpx(SPACE_2XL))
+                        .relative()
+                        .min_w_0()
+                        .max_w(rpx(MENU_W))
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_MD))
+                        .rounded(rpx(RADIUS_PANEL))
+                        .hover(|s| s.bg(c::BG_HOVER()))
+                        .focus_visible(|s| s.bg(c::BG_HOVER()))
+                        .when(self.panel != Panel::Closed, |el| el.bg(c::BG_HOVER()))
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            gpui::canvas(
+                                move |bounds, _, _| trigger_bounds.set(bounds),
+                                |_, (), _, _| {},
+                            )
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
                         )
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full(),
-                    )
-                    .child(motion::fast(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rpx(TEXT_BRAND))
-                            .line_height(rpx(CHROME_CONTROL_H))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(self.state.name(self.state.active).to_string()),
-                        format!("workspace-current-name-{}", self.state.active),
-                        cx,
-                    ))
-                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.panel == Panel::Closed {
-                            this.open(Panel::Menu, window, cx);
-                        } else {
-                            this.close(window, cx);
-                        }
-                    })),
-            )
+                        .child(motion::fast(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rpx(TEXT_BRAND))
+                                .line_height(rpx(CHROME_CONTROL_H))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(self.state.name(self.state.active).to_string()),
+                            format!("workspace-current-name-{}", self.state.active),
+                            cx,
+                        ))
+                        .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.panel == Panel::Closed {
+                                this.open(Panel::Menu, window, cx);
+                            } else {
+                                this.close(window, cx);
+                            }
+                        })),
+                )
+            })
             .when(self.panel != Panel::Closed, |el| {
                 el.child(gpui::deferred(self.popup(window, cx)))
             })

@@ -1,6 +1,9 @@
 //! Compact navigation uses the same snapshots, actions and ordering as the full rail.
 use super::*;
 
+const COMPACT_ROW_H: f32 = 32.0;
+const DISCLOSURE_D: f32 = 8.0;
+
 impl Sidebar {
     pub(super) fn collapse_control(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let collapsed = self.is_collapsed(cx);
@@ -16,15 +19,25 @@ impl Sidebar {
         )
         .debug_selector(|| "sidebar-collapse-toggle".into())
         .track_focus(&self.collapse_focus)
-        .child(icon(
-            if collapsed {
-                "sidebar-expand"
-            } else {
-                "sidebar-collapse"
-            },
-            ICON_MD,
-            c::FG_DIM(),
-        ))
+        .child(
+            div()
+                .id("compact-glyph-sidebar-collapse-toggle")
+                .debug_selector(|| "compact-glyph-sidebar-collapse-toggle".into())
+                .size(rpx(16.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(
+                    if collapsed {
+                        "sidebar-expand"
+                    } else {
+                        "sidebar-collapse"
+                    },
+                    ICON_MD,
+                    c::FG_DIM(),
+                )),
+        )
     }
 
     fn compact_item(
@@ -36,11 +49,10 @@ impl Sidebar {
         action: Action,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let hierarchy_inset = match action {
-            Action::Select(Selection::Worktree(..)) => 4.0,
-            Action::Select(Selection::Session(_)) if self.mode == ViewMode::Project => 8.0,
-            _ => 0.0,
-        };
+        let hierarchy_child = matches!(action, Action::Select(Selection::Worktree(..)))
+            || (self.mode == ViewMode::Project
+                && matches!(action, Action::Select(Selection::Session(_))));
+        let glyph_id = format!("compact-glyph-{id}");
         let agent_identity = matches!(action, Action::Select(Selection::Session(_)));
         let selection_bar =
             selected && matches!(action, Action::Select(_) | Action::ToggleProject(_));
@@ -48,7 +60,7 @@ impl Sidebar {
             .debug_selector(move || id.clone())
             .relative()
             .w(rpx(36.0))
-            .h(rpx(32.0))
+            .h(rpx(COMPACT_ROW_H))
             .rounded(rpx(RADIUS_CHROME))
             .aria_selected(selected)
             .when(selected, |item| item.bg(c::alpha(c::FG(), 0.14)))
@@ -64,13 +76,13 @@ impl Sidebar {
                         .bg(c::FG()),
                 )
             })
-            .when(hierarchy_inset > 0.0, |item| {
+            .when(hierarchy_child, |item| {
                 item.child(
                     div()
                         .absolute()
-                        .left(rpx(hierarchy_inset))
+                        .left(rpx(4.0))
                         .top(rpx(9.0))
-                        .w(rpx(4.0))
+                        .w(rpx(3.0))
                         .h(rpx(8.0))
                         .border_l_1()
                         .border_b_1()
@@ -78,18 +90,25 @@ impl Sidebar {
                 )
             })
             .child(
-                icon(
-                    glyph,
-                    16.0,
-                    if agent_identity {
-                        c::MAGENTA()
-                    } else if selected {
-                        c::FG()
-                    } else {
-                        c::FG_DIM()
-                    },
-                )
-                .ml(rpx(hierarchy_inset * 2.0)),
+                div()
+                    .id(SharedString::from(glyph_id.clone()))
+                    .debug_selector(move || glyph_id.clone())
+                    .size(rpx(16.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(
+                        glyph,
+                        16.0,
+                        if agent_identity {
+                            c::MAGENTA()
+                        } else if selected {
+                            c::FG()
+                        } else {
+                            c::FG_DIM()
+                        },
+                    )),
             )
     }
 
@@ -111,6 +130,8 @@ impl Sidebar {
         div()
             .id("sidebar-compact-controls")
             .debug_selector(|| "sidebar-compact-controls".into())
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .items_center()
@@ -120,15 +141,29 @@ impl Sidebar {
             .mb(rpx(SPACE_SM))
             .border_b_1()
             .border_color(c::BORDER_SOFT())
-            .when(self.workspace_selector.is_some(), |controls| {
-                controls.child(self.compact_item(
-                    "sidebar-workspaces".into(),
-                    format!("Switch workspace · {workspace_name} · Expands sidebar"),
-                    "workspaces",
-                    false,
-                    Action::OpenWorkspaces,
-                    cx,
-                ))
+            .when_some(self.workspace_selector.clone(), |controls, selector| {
+                let trigger_bounds = selector.read(cx).compact_trigger_bounds();
+                controls
+                    .child(
+                        self.compact_item(
+                            "sidebar-workspaces".into(),
+                            format!("Switch workspace · {workspace_name}"),
+                            "workspaces",
+                            false,
+                            Action::OpenWorkspaces,
+                            cx,
+                        )
+                        .track_focus(&self.compact_workspace_focus)
+                        .child(
+                            gpui::canvas(
+                                move |bounds, _, _| trigger_bounds.set(bounds),
+                                |_, (), _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
+                        ),
+                    )
+                    .child(selector)
             })
             .child(
                 self.compact_item(
@@ -181,6 +216,8 @@ impl Sidebar {
         div()
             .id("sidebar-compact-utilities")
             .debug_selector(|| "sidebar-compact-utilities".into())
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .items_center()
@@ -340,6 +377,8 @@ impl Sidebar {
         let mut body = div()
             .id("sidebar-compact-navigation")
             .debug_selector(|| "sidebar-compact-navigation".into())
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .items_center()
@@ -370,6 +409,9 @@ impl Sidebar {
                 };
                 let expanded = !self.collapsed_projects.contains(path);
                 let mut group = div()
+                    .w_full()
+                    .min_w_0()
+                    .flex_shrink_0()
                     .flex()
                     .flex_col()
                     .items_center()
@@ -398,17 +440,81 @@ impl Sidebar {
                             Action::ToggleProject(path.clone()),
                             cx,
                         )
+                        .group("compact-project-row")
                         .when_some(
                             self.project_toggle_focus.get(path),
                             gpui::InteractiveElement::track_focus,
                         )
                         .when(!project.worktrees.is_empty(), |item| {
-                            item.child(div().absolute().right_0().bottom(rpx(1.0)).child(icon(
-                                if expanded { "chev-down" } else { "chev-right" },
-                                8.0,
-                                c::FG_DIM(),
-                            )))
-                        }),
+                            item.child(
+                                div()
+                                    .absolute()
+                                    .right(rpx(1.0))
+                                    .top_0()
+                                    .h_full()
+                                    .w(rpx(DISCLOSURE_D))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "compact-project-disclosure-{idx}"
+                                            )))
+                                            .debug_selector(move || {
+                                                format!("compact-project-disclosure-{idx}")
+                                            })
+                                            .size(rpx(DISCLOSURE_D))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(icon(
+                                                if expanded { "chev-down" } else { "chev-right" },
+                                                DISCLOSURE_D,
+                                                c::FG_DIM(),
+                                            )),
+                                    ),
+                            )
+                        })
+                        .child(
+                            self.control(
+                                ("project-menu", idx),
+                                format!("Actions for {}", project.name),
+                                Action::Menu(idx),
+                                cx,
+                            )
+                            .debug_selector(move || format!("compact-project-menu-{idx}"))
+                            .relative()
+                            .absolute()
+                            .right_0()
+                            .top_0()
+                            .w(rpx(SPACE_20))
+                            .h(rpx(ICON_MD))
+                            .opacity(0.0)
+                            .group_hover("compact-project-row", |button| button.opacity(1.0))
+                            .focus_visible(|button| button.opacity(1.0))
+                            .when_some(
+                                self.project_menu_focus.get(&idx),
+                                gpui::InteractiveElement::track_focus,
+                            )
+                            .when_some(
+                                self.project_menu_bounds.get(&idx).cloned(),
+                                |button, bounds| {
+                                    button.child(
+                                        gpui::canvas(
+                                            move |rect, _, _| bounds.set(rect),
+                                            |_, (), _, _| {},
+                                        )
+                                        .absolute()
+                                        .inset_0(),
+                                    )
+                                },
+                            )
+                            .child(icon("more", ICON_SM, c::FG_DIM()))
+                            .when(self.menu == Some(idx), |button| {
+                                button.child(gpui::deferred(self.project_popup(idx, window, cx)))
+                            }),
+                        ),
                     );
                 if expanded {
                     for worktree in &project.worktrees {
@@ -456,6 +562,8 @@ impl Sidebar {
         let mut panel = div()
             .id("sidebar-compact-terminals")
             .debug_selector(|| "sidebar-compact-terminals".into())
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .items_center()
@@ -479,15 +587,35 @@ impl Sidebar {
                     Action::FoldTerminals,
                     cx,
                 )
-                .child(div().absolute().right_0().bottom(rpx(1.0)).child(icon(
-                    if self.terminals_collapsed {
-                        "chev-right"
-                    } else {
-                        "chev-down"
-                    },
-                    8.0,
-                    c::FG_DIM(),
-                ))),
+                .child(
+                    div()
+                        .absolute()
+                        .right(rpx(1.0))
+                        .top_0()
+                        .h_full()
+                        .w(rpx(DISCLOSURE_D))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("compact-terminals-disclosure")
+                                .debug_selector(|| "compact-terminals-disclosure".into())
+                                .size(rpx(DISCLOSURE_D))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(
+                                    if self.terminals_collapsed {
+                                        "chev-right"
+                                    } else {
+                                        "chev-down"
+                                    },
+                                    DISCLOSURE_D,
+                                    c::FG_DIM(),
+                                )),
+                        ),
+                ),
             );
         if !self.terminals_collapsed {
             let terminals = self
@@ -548,6 +676,8 @@ impl Sidebar {
                     .group("compact-home-row")
                     .child(
                         div()
+                            .id(("compact-home-status", id.raw()))
+                            .debug_selector(move || format!("compact-home-status-{}", id.raw()))
                             .absolute()
                             .right(rpx(1.0))
                             .bottom(rpx(1.0))

@@ -741,7 +741,7 @@ impl Render for ProjectPanel {
                                 .aria_label(full_name.clone())
                                 .aria_selected(selected)
                                 .tooltip(move |window, cx| {
-                                    gpui_component::tooltip::Tooltip::new(tooltip_name.clone())
+                                    crate::views::components::tooltip(tooltip_name.clone(), window)
                                         .build(window, cx)
                                 })
                                 .tab_index(0)

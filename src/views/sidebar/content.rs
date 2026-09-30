@@ -711,10 +711,7 @@ impl Sidebar {
                 )
             })
             .tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(title_tooltip.clone())
-                    .bg(c::BG_STRIP())
-                    .text_color(c::FG())
-                    .build(window, cx)
+                crate::views::components::tooltip(title_tooltip.clone(), window).build(window, cx)
             });
         let agent_icon = div()
             .w(rpx(SESSION_ICON_SLOT))
@@ -1041,10 +1038,7 @@ impl Sidebar {
             .hover(|style| style.bg(c::BG_HOVER()))
             .focus(|style| style.bg(c::BG_HOVER()))
             .tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(label.clone())
-                    .bg(c::BG_STRIP())
-                    .text_color(c::FG())
-                    .build(window, cx)
+                crate::views::components::tooltip(label.clone(), window).build(window, cx)
             })
             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                 focus.focus(window, cx);

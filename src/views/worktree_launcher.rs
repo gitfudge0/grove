@@ -669,7 +669,7 @@ impl WorktreeLauncher {
                             })
                             .hover(|button| button.bg(c::BG_HOVER()))
                             .tooltip(move |window, cx| {
-                                gpui_component::tooltip::Tooltip::new(label.clone())
+                                crate::views::components::tooltip(label.clone(), window)
                                     .build(window, cx)
                             })
                             .child(icon(

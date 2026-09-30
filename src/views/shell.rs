@@ -341,6 +341,9 @@ impl Shell {
             .items_center()
             .flex_shrink_0()
             .h(rpx(APPBAR_H))
+            .when(collapsed, |header| {
+                header.pl(rpx(self.sidebar.read(cx).rail_width(window, cx)))
+            })
             .when(grid, |header| header.pr(rpx(SPACE_2XL)))
             .when(grid, |header| header.bg(c::BG_STRIP()))
             .child(
@@ -351,7 +354,8 @@ impl Shell {
                     .h_full()
                     .px(rpx(SPACE_2XL))
                     .flex_shrink_0()
-                    .when(!grid, |segment| {
+                    .when(collapsed, |segment| segment.w(rpx(0.0)).px(rpx(0.0)))
+                    .when(!grid && !collapsed, |segment| {
                         segment
                             .w(rpx(self.sidebar.read(cx).rail_width(window, cx).max(
                                 if rail_visible {
@@ -364,12 +368,14 @@ impl Shell {
                             .border_color(c::BORDER())
                             .when(solid_sidebar, |segment| segment.bg(c::BG_RAIL()))
                     })
-                    .on_mouse_down(MouseButton::Left, |event, window, _| {
-                        if event.click_count == 2 {
-                            window.titlebar_double_click();
-                        } else {
-                            window.start_window_move();
-                        }
+                    .when(!collapsed, |segment| {
+                        segment.on_mouse_down(MouseButton::Left, |event, window, _| {
+                            if event.click_count == 2 {
+                                window.titlebar_double_click();
+                            } else {
+                                window.start_window_move();
+                            }
+                        })
                     })
                     .flex()
                     .items_center()
@@ -1347,6 +1353,11 @@ impl Render for Shell {
                 });
             });
         }
+        let compact_workspace_picker = self.sidebar.read(cx).rail_visible(window, cx)
+            && self.sidebar.read(cx).is_collapsed(cx);
+        self.workspaces.update(cx, |manager, _| {
+            manager.set_compact(compact_workspace_picker);
+        });
         if self.backend_choice_open && !self.backend_choice_focus.is_focused(window) {
             self.backend_choice_focus.focus(window, cx);
         }
@@ -1953,6 +1964,7 @@ mod tests {
         let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
         assert_eq!(f32::from(rail.size.width), 52.0);
         assert_eq!(header.right(), rail.right());
+        assert_eq!(f32::from(header.size.width), 0.0);
         assert_eq!(canvas.left(), rail.right());
         assert!(cx.debug_bounds("sidebar-divider").is_none());
         for selector in [
@@ -1997,6 +2009,24 @@ mod tests {
             f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
             52.0
         );
+        let expand = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
+        let workspace_header = cx.debug_bounds("sidebar-workspace-header").unwrap();
+        assert_eq!(
+            workspace_header.top(),
+            cx.debug_bounds("sidebar-rail").unwrap().top() + gpui::px(SPACE_LG)
+        );
+        assert!(expand.center().y < gpui::px(APPBAR_H));
+        cx.simulate_click(expand.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert_rail_alignment(cx, 300.0);
+        assert!(cx.debug_bounds("window-close").is_some());
+        let collapse = cx.debug_bounds("sidebar-collapse-toggle").unwrap().center();
+        cx.simulate_click(collapse, gpui::Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
+            52.0
+        );
         cx.update(|window, cx| {
             shell
                 .read(cx)
@@ -2020,11 +2050,25 @@ mod tests {
             52.0
         );
         assert!(cx.debug_bounds("window-close").is_none());
-        // Workspace switching stays available as a compact icon and opens the full selector.
-        let workspace = cx.debug_bounds("sidebar-workspaces").unwrap().center();
-        cx.simulate_click(workspace, gpui::Modifiers::default());
+        // Workspace switching stays available in the compact rail.
+        let workspace = cx.debug_bounds("sidebar-workspaces").unwrap();
+        cx.simulate_click(workspace.center(), gpui::Modifiers::default());
         draw(cx);
-        assert_rail_alignment(cx, 300.0);
+        let rail = cx.debug_bounds("sidebar-rail").unwrap();
+        assert_eq!(f32::from(rail.size.width), 52.0);
+        assert_eq!(
+            cx.debug_bounds("sidebar-canvas").unwrap().left(),
+            rail.right()
+        );
+        assert!(cx.debug_bounds("workspace-picker").is_none());
+        let popup = cx.debug_bounds("workspace-popup").unwrap();
+        assert!((f32::from(popup.left() - workspace.left())).abs() <= SPACE_LG);
+        assert!(popup.top() >= workspace.bottom());
+        assert!(popup.right() > cx.debug_bounds("sidebar-rail").unwrap().right());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.simulate_keystrokes("space");
+        draw(cx);
         assert!(cx.debug_bounds("workspace-popup").is_some());
         cx.simulate_keystrokes("escape");
         draw(cx);
@@ -2100,10 +2144,20 @@ mod tests {
         let workspace = cx.debug_bounds("sidebar-workspaces").unwrap().center();
         cx.simulate_click(workspace, gpui::Modifiers::default());
         draw(cx);
+        assert_eq!(
+            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
+            52.0
+        );
         let popup = cx.debug_bounds("workspace-popup").unwrap();
-        let picker = cx.debug_bounds("workspace-picker").unwrap();
-        assert_eq!(popup.left(), picker.left());
-        assert!(popup.top() >= picker.bottom());
+        let trigger = cx.debug_bounds("sidebar-workspaces").unwrap();
+        assert!(cx.debug_bounds("workspace-picker").is_none());
+        assert!((f32::from(popup.left() - trigger.left())).abs() <= SPACE_LG);
+        assert!(popup.top() >= trigger.bottom());
+        assert!(popup.right() > cx.debug_bounds("sidebar-rail").unwrap().right());
+        let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
+        cx.simulate_click(canvas.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("workspace-popup").is_none());
     }
 
     fn assert_rail_alignment(cx: &mut gpui::VisualTestContext, expected: f32) {
@@ -2746,7 +2800,10 @@ mod tests {
                 .meta(selected)
                 .is_some());
         });
-        let disclosure = cx.debug_bounds("project-0").unwrap().center();
+        let disclosure = cx
+            .debug_bounds("compact-project-disclosure-0")
+            .unwrap()
+            .center();
         cx.simulate_click(disclosure, gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("session-1").is_none());

@@ -227,6 +227,10 @@ Workspace switching is appbar content and owns no separate width token.
 | border-medium | 2px | verified: `.border_2()` — Two unscaled logical pixels; CSS px border stays unscaled by app rem zoom. Apply semantic border color separately. |
 | focus-ring | 2px total | add: `Add shared focus-ring composition: 1 logical px border + 1 logical px outer ring` — Do not substitute a 2px layout border: preserve outside ring and content geometry. Neutral c::SEL_RING also needs migration. |
 
+## Tooltips
+
+App tooltips use the shared `views::components::tooltip` helper: IBM Plex Sans at the existing `TEXT_SMALL` (12 design px), 16px line height, 8px horizontal and 5px vertical padding, and `RADIUS_GROUP` (6px). Tooltips always use an inverse dark surface, regardless of the app theme: background `#1b1b1b`, text `#f7f7f8`, border `#34343a`, and a subtle black shadow at .36 alpha with a 2px offset and 8px blur. Text wraps within a 320-design-pixel surface, including long names. Dimensions scale with app rem zoom; the one-pixel border remains a logical hairline. Existing hover delay, margins, placement, and animation remain owned by the tooltip component, and accessible labels stay on the triggers.
+
 ## Shadows
 
 | Token | Dark | Light | Rust / GPUI mapping |
