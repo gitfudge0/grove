@@ -11,9 +11,16 @@
           "title": "More room for your work",
           "description": "Collapse the sidebar into a compact rail. Your projects, sessions, and workspace controls stay within reach.",
           "media": {
-            "kind": "image",
-            "src": "highlights/1.0.2/compact-sidebar.png",
-            "alt": "The Grove sidebar collapsed into a compact rail beside a Cedar terminal."
+            "kind": "gif",
+            "src": "highlights/1.0.2/compact-sidebar.gif",
+            "alt": "Grove expands its sidebar to show project names, then collapses it into a compact rail. The sidebar toggle is outlined in each state.",
+            "frame": {
+              "zoom": 2.8,
+              "aspect_ratio": 1.5980024968789013,
+              "position_x": 0.0,
+              "position_y": 0.0
+            },
+            "poster": "highlights/1.0.2/compact-sidebar.png"
           }
         },
         {

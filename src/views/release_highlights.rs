@@ -217,9 +217,21 @@ impl Render for ReleaseCarousel {
                 let image_source = gpui::ImageSource::from(gpui::SharedString::from(source));
                 #[cfg(test)]
                 let image_source = self.image_source_override.clone().unwrap_or(image_source);
+                let image_width = (width - 2.0).max(0.0);
+                let (image_width, image_height, image_left, image_top) = match &slide.media.frame {
+                    Some(frame) => {
+                        let image_width = image_width * frame.zoom;
+                        let image_height = image_width / frame.aspect_ratio;
+                        (image_width, image_height,
+                            -(image_width - (width - 2.0)).max(0.0) * frame.position_x,
+                            -(image_height - media_height).max(0.0) * frame.position_y)
+                    }
+                    None => (image_width, media_height, 0.0, 0.0),
+                };
+                let image_radius = RADIUS_CHROME * slide.media.frame.as_ref().map_or(1.0, |frame| frame.zoom);
                 let retry_source = image_source.clone();
                 let carousel = cx.entity().downgrade();
-                img(image_source).id(format!("highlights-image-{}-{}", self.index, animated)).debug_selector(|| "highlights-image".into()).absolute().inset_0().w(rpx((width - 2.0).max(0.0))).h(rpx(media_height)).rounded(rpx(RADIUS_CHROME)).object_fit(gpui::ObjectFit::Contain)
+                img(image_source).id(format!("highlights-image-{}-{}", self.index, animated)).debug_selector(|| "highlights-image".into()).absolute().left(rpx(image_left)).top(rpx(image_top)).w(rpx(image_width)).h(rpx(image_height)).rounded(rpx(image_radius)).object_fit(gpui::ObjectFit::Contain)
                     .with_fallback(move || {
                         let source = retry_source.clone(); let key_source = retry_source.clone(); let key_carousel = carousel.clone(); let carousel = carousel.clone();
                         div().size_full().flex().flex_col().gap(rpx(SPACE_LG)).items_center().justify_center().text_color(c::FG_DIM())
@@ -232,6 +244,26 @@ impl Render for ReleaseCarousel {
             },
             _ => unavailable(),
         });
+        if let Some(frame) = &slide.media.frame {
+            if let Some([left, top, marker_width, marker_height]) = frame.highlight {
+                let image_width = (width - 2.0).max(0.0) * frame.zoom;
+                let image_height = image_width / frame.aspect_ratio;
+                let image_left = -(image_width - (width - 2.0)).max(0.0) * frame.position_x;
+                let image_top = -(image_height - media_height).max(0.0) * frame.position_y;
+                media = media.child(
+                    div()
+                        .debug_selector(|| "highlights-image-focus".into())
+                        .absolute()
+                        .left(rpx(image_left + image_width * left))
+                        .top(rpx(image_top + image_height * top))
+                        .w(rpx(image_width * marker_width))
+                        .h(rpx(image_height * marker_height))
+                        .rounded(rpx(RADIUS_CONTROL))
+                        .border_2()
+                        .border_color(c::FG()),
+                );
+            }
+        }
         match slide.media.kind {
             MediaKind::Gif if !cx.reduce_motion() => {
                 media = media.child(
@@ -467,6 +499,7 @@ mod tests {
                         alt: "Feature preview".into(),
                         poster: None,
                         captions: None,
+                        frame: None,
                     },
                 })
                 .collect(),
@@ -532,11 +565,18 @@ mod tests {
     #[gpui::test]
     fn decoded_screenshot_stays_inside_media_and_before_copy(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
-        let release = manifest().unwrap().release("1.0.2").unwrap().clone();
-        let bytes = Assets::get(&release.slides[0].media.src)
-            .unwrap()
-            .data
-            .into_owned();
+        let mut release = manifest().unwrap().release("1.0.2").unwrap().clone();
+        release.slides[0].media.frame = None;
+        let bytes = Assets::get(
+            release.slides[0]
+                .media
+                .poster
+                .as_ref()
+                .unwrap_or(&release.slides[0].media.src),
+        )
+        .unwrap()
+        .data
+        .into_owned();
         let image = std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes));
         let image_for_view = image.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -576,6 +616,63 @@ mod tests {
                 copy.bottom() <= footer.top(),
                 "copy overlaps controls at {width}x{height}"
             );
+        }
+    }
+
+    #[gpui::test]
+    fn authored_zoom_keeps_expand_control_visible_without_overlapping_copy(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let release = manifest().unwrap().release("1.0.2").unwrap().clone();
+        let image = std::sync::Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Gif,
+            Assets::get(&release.slides[0].media.src)
+                .unwrap()
+                .data
+                .into_owned(),
+        ));
+        let image_for_view = image.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let mut carousel = ReleaseCarousel::new(release, window, cx);
+            carousel.image_source_override = Some(image_for_view.into());
+            carousel.playing = true;
+            carousel
+        });
+        for (width, height) in [(707.0, 629.0), (1280.0, 800.0), (360.0, 480.0)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+                let decoded = image
+                    .clone()
+                    .get_render_image(window, cx)
+                    .expect("authored GIF must decode");
+                assert_eq!(decoded.frame_count(), 2);
+            });
+            let media = cx.debug_bounds("highlights-media").unwrap();
+            let screenshot = cx.debug_bounds("highlights-image").unwrap();
+
+            let copy = cx.debug_bounds("highlights-copy").unwrap();
+            assert!(
+                screenshot.size.width > media.size.width * 2.0,
+                "authored zoom must magnify screenshot"
+            );
+            // Real capture coordinates of the expand and collapse controls. Both must
+            // stay visible in the authored crop as the two-state animation alternates.
+            for (x, y) in [
+                (50.0 / 2560.0, 50.0 / 1602.0),
+                (486.0 / 2560.0, 116.0 / 1602.0),
+            ] {
+                let x = screenshot.left() + screenshot.size.width * x;
+                let y = screenshot.top() + screenshot.size.height * y;
+                assert!(x >= media.left() && x <= media.right());
+                assert!(y >= media.top() && y <= media.bottom());
+            }
+            assert!(media.bottom() <= copy.top());
         }
     }
 

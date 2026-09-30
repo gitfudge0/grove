@@ -35,6 +35,20 @@ pub struct HighlightMedia {
     pub poster: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub captions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<ImageFrame>,
+}
+/// Authored screenshot framing; positions and highlight bounds use normalized coordinates.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageFrame {
+    pub zoom: f32,
+    pub aspect_ratio: f32,
+    pub position_x: f32,
+    pub position_y: f32,
+    /// Optional [left, top, width, height] in the original image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<[f32; 4]>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -108,6 +122,26 @@ impl Manifest {
                 {
                     return Err(invalid("media paths must be relative asset paths"));
                 }
+                if let Some(frame) = &media.frame {
+                    let normalized = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
+                    if media.kind == MediaKind::Video
+                        || !frame.zoom.is_finite()
+                        || !(1.0..=8.0).contains(&frame.zoom)
+                        || !frame.aspect_ratio.is_finite()
+                        || !(0.1..=10.0).contains(&frame.aspect_ratio)
+                        || !normalized(frame.position_x)
+                        || !normalized(frame.position_y)
+                        || frame.highlight.is_some_and(|[x, y, w, h]| {
+                            ![x, y, w, h].into_iter().all(normalized)
+                                || w == 0.0
+                                || h == 0.0
+                                || x + w > 1.0
+                                || y + h > 1.0
+                        })
+                    {
+                        return Err(invalid("invalid image framing"));
+                    }
+                }
                 if (media.kind != MediaKind::Image && media.poster.is_none())
                     || (media.kind != MediaKind::Video && media.captions.is_some())
                 {
@@ -171,6 +205,34 @@ mod tests {
         v["releases"][0]["enabled"] = false.into();
         let m = parse(&v).unwrap();
         assert!(!m.release("1.0.2").unwrap().should_auto_open("1.0.2", &[]));
+    }
+    #[test]
+    fn validates_optional_image_framing() {
+        let mut v = value();
+        let frame = serde_json::json!({"zoom":2.8,"aspect_ratio":1.597,"position_x":0.0,"position_y":0.0,"highlight":[0.009,0.014,0.022,0.035]});
+        v["releases"][0]["slides"][0]["media"]["frame"] = frame.clone();
+        assert!(parse(&v).is_ok());
+        for (field, bad) in [
+            ("zoom", 0.5),
+            ("zoom", 9.0),
+            ("aspect_ratio", 0.0),
+            ("position_x", -0.1),
+            ("position_y", 1.1),
+        ] {
+            let mut invalid = v.clone();
+            invalid["releases"][0]["slides"][0]["media"]["frame"][field] = bad.into();
+            assert!(parse(&invalid).is_err(), "accepted {field}={bad}");
+        }
+        v["releases"][0]["slides"][0]["media"]["frame"]["highlight"] =
+            serde_json::json!([0.9, 0.0, 0.2, 0.1]);
+        assert!(parse(&v).is_err());
+        v["releases"][0]["slides"][0]["media"]["frame"] = frame;
+        v["releases"][0]["slides"][0]["media"]["kind"] = "gif".into();
+        v["releases"][0]["slides"][0]["media"]["poster"] = "highlights/poster.png".into();
+        assert!(parse(&v).is_ok());
+        v["releases"][0]["slides"][0]["media"]["kind"] = "video".into();
+        v["releases"][0]["slides"][0]["media"]["poster"] = "highlights/poster.png".into();
+        assert!(parse(&v).is_err());
     }
     #[test]
     fn rejects_unsafe_paths() {

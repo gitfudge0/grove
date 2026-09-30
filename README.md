@@ -160,7 +160,7 @@ Release carousels are authored in `assets/highlights/manifest.json` and bundled 
 
 For an enabled release, Grove opens the media-first carousel once on first launch of that version and records that version as seen. You can dismiss it at any time. Other versions do not inherit that release's carousel. You can replay an enabled carousel from Settings → Changelog → View highlights.
 
-Choose two to four user-visible changes, write a benefit-led title and a short description, and capture the released UI using clean demo projects. Keep media under `assets/highlights/<version>/`; each slide needs a stable `id`, `title`, `description`, and `media` with `kind`, `src`, and descriptive `alt` text. Supported kinds are `image`, `gif`, and `video`. GIFs and videos require a `poster` image. GIFs are user-controlled; reduced motion keeps them still. Videos open in the system player from Play video. Keep screenshots and posters legible at the carousel size.
+Choose two to four user-visible changes, write a benefit-led title and a short description, and capture the released UI using clean demo projects. Keep media under `assets/highlights/<version>/`; each slide needs a stable `id`, `title`, `description`, and `media` with `kind`, `src`, and descriptive `alt` text. Supported kinds are `image`, `gif`, and `video`. GIFs and videos require a `poster` image. GIFs are user-controlled; reduced motion keeps them still. Videos open in the system player from Play video. Keep screenshots and posters legible at the carousel size. Images and GIFs may optionally include `frame` with `zoom` (1–8), the source `aspect_ratio`, and `position_x` / `position_y` (0–1, from left/top to right/bottom). An optional `highlight: [left, top, width, height]` outlines a feature using normalized coordinates in the source image. Framed images and GIFs zoom within the clipped media area; omitted framing preserves the full image. GIF posters must use the same dimensions and framing as the animation.
 
 To test a draft without consuming its first-launch state, use a debug build:
 
@@ -169,6 +169,8 @@ GROVE_HIGHLIGHTS_DEBUG=1 GROVE_HIGHLIGHTS_VERSION=1.0.2 cargo run
 ```
 
 `GROVE_HIGHLIGHTS_DEBUG=1` opens the selected carousel at every launch of a debug build, including disabled drafts. `GROVE_HIGHLIGHTS_VERSION` selects an authored version for preview; it does not change normal release selection. Settings → Changelog → Preview release highlights reopens it as often as needed; in a debug build, `cmd+shift+h` on macOS (`ctrl+shift+h` elsewhere) also opens the preview. Release builds ignore the debug override. Use `GROVE_CONFIG_DIR=/tmp/grove-highlights-test` and `GROVE_TELEMETRY=off` for an isolated review workspace.
+
+The first `1.0.2` slide uses a two-state GIF captured from the native app, with a 1.5-second hold on the expanded and collapsed sidebar. The outlined toggle follows its real position in each state; Play animation starts the loop.
 
 The `1.0.2` entry is a disabled draft of changes since published `v1.0.1`: the compact sidebar, moving projects between workspaces, and confirmation before closing running sessions. Enable it when those highlights are ready to ship.
 

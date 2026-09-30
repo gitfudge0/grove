@@ -1612,6 +1612,7 @@ mod tests {
                     alt: "Test preview".into(),
                     poster: None,
                     captions: None,
+                    frame: None,
                 },
             }],
         }
