@@ -9,11 +9,15 @@ impl Sidebar {
         let collapsed = self.is_collapsed(cx);
         self.control(
             "sidebar-collapse-toggle",
-            if collapsed {
-                "Expand sidebar"
-            } else {
-                "Collapse sidebar"
-            },
+            format!(
+                "{} ({}+b)",
+                if collapsed {
+                    "Expand sidebar"
+                } else {
+                    "Collapse sidebar"
+                },
+                crate::keymap::platform_mod_label(),
+            ),
             Action::ToggleSidebar,
             cx,
         )

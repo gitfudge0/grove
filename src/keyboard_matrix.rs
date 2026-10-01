@@ -139,6 +139,7 @@ fn dispatch_on_screen(def: &ShortcutDef, screen: Screen) -> Target {
             GlobalShortcut::ToggleTerminal => "ToggleTerminal",
             GlobalShortcut::ToggleTermPanel => "ToggleTermPanel",
             GlobalShortcut::ToggleRailMode => "ToggleRailMode",
+            GlobalShortcut::ToggleSidebar => "ToggleSidebar",
             GlobalShortcut::JumpToWaitingSession => "JumpToWaitingSession",
             GlobalShortcut::GridMove(..) => "GridMove",
             GlobalShortcut::GridSwap(..) => "GridSwap",

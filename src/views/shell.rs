@@ -1497,6 +1497,12 @@ impl Render for Shell {
                     }
                 }),
             )
+            .on_action(cx.listener(|this, _: &k::ToggleSidebar, window, cx| {
+                if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, |sidebar, cx| sidebar.toggle_sidebar(window, cx));
+                }
+            }))
             .on_action(cx.listener(|this, _: &k::ToggleRailMode, window, cx| {
                 if !this.shortcut_blocked(cx) {
                     this.sidebar
@@ -1562,16 +1568,14 @@ impl Render for Shell {
                             })
                             .child(self.header(window, cx))
                             .when(self.sidebar.read(cx).confirmation_open(), |header| {
-                                header.child(
-                                    div()
-                                        .absolute()
-                                        .inset_0()
-                                        .occlude()
-                                        .bg(c::alpha(c::BG(), 0.4))
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation();
-                                        }),
-                                )
+                                // Block header controls without tinting the transparent
+                                // titlebar above the frosted sidebar.
+                                header.child(div().absolute().inset_0().occlude().on_mouse_down(
+                                    MouseButton::Left,
+                                    |_, _, cx| {
+                                        cx.stop_propagation();
+                                    },
+                                ))
                             });
                         if grid {
                             header.into_any_element()
@@ -1937,6 +1941,76 @@ mod tests {
                 None
             );
             assert!(shell.runtime.read(cx).registry.read(cx).is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn sidebar_collapse_shortcut_toggles_and_respects_blocking(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            init(cx);
+            cx.bind_keys(k::shell_bindings());
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .sidebar_width = Some(300.0);
+        });
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        let shortcut = k::SHORTCUTS
+            .iter()
+            .find(|def| def.action == Some(k::GlobalShortcut::ToggleSidebar))
+            .expect("sidebar shortcut registry row");
+        let chord = k::keystrokes_for(shortcut).remove(0);
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).focus.clone();
+            focus.focus(window, cx);
+        });
+        cx.simulate_keystrokes(&chord);
+        draw(cx);
+        assert_eq!(
+            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
+            52.0
+        );
+        assert!(cx.debug_bounds("sidebar-divider").is_none());
+        cx.update(|_, cx| {
+            let settings = &cx.global::<crate::settings::SettingsState>().store;
+            assert!(settings.sidebar_collapsed);
+            assert_eq!(settings.sidebar_width, Some(300.0));
+        });
+        cx.simulate_keystrokes(&chord);
+        draw(cx);
+        assert_rail_alignment(cx, 300.0);
+        cx.update(|window, cx| {
+            assert!(
+                !cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_collapsed
+            );
+            let settings = shell.read(cx).settings.clone();
+            settings.update(cx, |settings, cx| settings.open(window, cx));
+            assert!(shell.read(cx).shortcut_blocked(cx));
+        });
+        draw(cx);
+        cx.simulate_keystrokes(&chord);
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(
+                !cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_collapsed
+            );
+            window.dispatch_action(Box::new(k::ToggleSidebar), cx);
+            assert!(
+                !cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_collapsed
+            );
+            assert_eq!(
+                cx.global::<crate::settings::SettingsState>()
+                    .store
+                    .sidebar_width,
+                Some(300.0)
+            );
         });
     }
 

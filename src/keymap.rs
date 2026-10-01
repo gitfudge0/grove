@@ -53,6 +53,7 @@ pub enum GlobalShortcut {
     /// Grid never renders the panel; the handler gates on grid view itself.
     ToggleTermPanel,
     ToggleRailMode,
+    ToggleSidebar,
     JumpToWaitingSession,
     #[allow(dead_code)]
     GridMove(i32, i32),
@@ -266,13 +267,26 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         literal: false,
     },
     ShortcutDef {
-        action: Some(GlobalShortcut::ToggleRailMode),
+        action: Some(GlobalShortcut::ToggleSidebar),
         triggers: &["b", "B"],
         display_keys: "b",
-        description: "toggle sidebar tree / sessions",
+        description: "Toggle sidebar collapse",
         scopes: G,
         requires_alt: false,
         literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::ToggleRailMode),
+        triggers: &["b", "B"],
+        display_keys: if cfg!(target_os = "macos") {
+            "cmd+shift+b"
+        } else {
+            "ctrl+shift+alt+b"
+        },
+        description: "toggle sidebar tree / sessions",
+        scopes: G,
+        requires_alt: false,
+        literal: true,
     },
     ShortcutDef {
         action: Some(GlobalShortcut::NewHomeTerminal),
@@ -468,7 +482,13 @@ pub fn keystrokes_for(def: &ShortcutDef) -> Vec<String> {
     if def.action.is_none() {
         return Vec::new();
     }
-    let prefix = if def.requires_alt {
+    let prefix = if def.action == Some(GlobalShortcut::ToggleRailMode) {
+        if cfg!(target_os = "macos") {
+            "cmd-shift-"
+        } else {
+            "ctrl-shift-alt-"
+        }
+    } else if def.requires_alt {
         alt_chord_prefix()
     } else {
         platform_mod_prefix()
@@ -534,6 +554,7 @@ actions!(
         ToggleTerminal,
         ToggleTermPanel,
         ToggleRailMode,
+        ToggleSidebar,
         NewHomeTerminal,
         JumpToWaitingSession,
         ScrollHalfPageUp,
@@ -757,6 +778,7 @@ fn binding_for(keystroke: &str, sc: GlobalShortcut, ctx: Option<&str>) -> Option
         S::ToggleTerminal => KeyBinding::new(keystroke, ToggleTerminal, ctx),
         S::ToggleTermPanel => KeyBinding::new(keystroke, ToggleTermPanel, ctx),
         S::ToggleRailMode => KeyBinding::new(keystroke, ToggleRailMode, ctx),
+        S::ToggleSidebar => KeyBinding::new(keystroke, ToggleSidebar, ctx),
         S::NewHomeTerminal => KeyBinding::new(keystroke, NewHomeTerminal, ctx),
         S::JumpToWaitingSession => KeyBinding::new(keystroke, JumpToWaitingSession, ctx),
         S::ScrollHalfPage(true) => KeyBinding::new(keystroke, ScrollHalfPageUp, ctx),
@@ -809,6 +831,7 @@ pub fn shell_bindings() -> Vec<KeyBinding> {
                 | S::ShortcutOverlay
                 | S::CloseFocusedSession
                 | S::ToggleRailMode
+                | S::ToggleSidebar
                 | S::NewHomeTerminal
                 | S::JumpToWaitingSession
         )
@@ -852,6 +875,7 @@ mod tests {
             "SelectSession",
             "JumpToWaitingSession",
             "ToggleRailMode",
+            "ToggleSidebar",
             "ToggleGrid",
             "ToggleZen",
             "NewHomeTerminal",
@@ -916,6 +940,42 @@ mod tests {
                 .ends_with("GridSwap"));
             assert!(winner(&format!("{swap_prefix}right"), &[]).is_none());
         }
+    }
+
+    #[test]
+    fn sidebar_collapse_has_a_distinct_global_binding() {
+        let def = SHORTCUTS
+            .iter()
+            .find(|def| def.action == Some(GlobalShortcut::ToggleSidebar))
+            .expect("sidebar shortcut registry row");
+        assert_eq!(def.scopes, G);
+        let keymap = gpui::Keymap::new(shell_bindings());
+        for chord in keystrokes_for(def) {
+            let key = gpui::Keystroke::parse(&chord).unwrap();
+            let (bindings, _) = keymap.bindings_for_input(&[key], &[]);
+            assert_eq!(bindings.len(), 1, "ambiguous sidebar shortcut: {chord}");
+            assert!(bindings[0].action().name().ends_with("ToggleSidebar"));
+        }
+        let rail = SHORTCUTS
+            .iter()
+            .find(|def| def.action == Some(GlobalShortcut::ToggleRailMode))
+            .unwrap();
+        let rail_chord = if cfg!(target_os = "macos") {
+            "cmd-shift-b"
+        } else {
+            "ctrl-shift-alt-b"
+        };
+        assert_eq!(
+            keystrokes_for(def),
+            vec![format!("{}b", platform_mod_prefix())]
+        );
+        assert_eq!(keystrokes_for(rail), vec![rail_chord.to_string()]);
+        assert!(rail.literal);
+        assert_eq!(rail.display_keys, rail_chord.replace('-', "+"));
+        let key = gpui::Keystroke::parse(rail_chord).unwrap();
+        let (bindings, _) = keymap.bindings_for_input(&[key], &[]);
+        assert_eq!(bindings.len(), 1, "ambiguous rail mode shortcut");
+        assert!(bindings[0].action().name().ends_with("ToggleRailMode"));
     }
 
     #[test]

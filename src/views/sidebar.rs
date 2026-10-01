@@ -253,8 +253,6 @@ pub(crate) enum SidebarEvent {
 #[derive(Default)]
 struct Navigation {
     selection: Option<Selection>,
-    mode: ViewMode,
-    last_mode: ViewMode,
     scroll: ScrollHandle,
     terminals_collapsed: bool,
 }
@@ -670,26 +668,17 @@ impl Sidebar {
             self.focus.focus(window, cx);
         }
         if active != self.active_workspace {
-            let retain_grid = self.mode == ViewMode::Grid;
             self.zen_return = None;
             self.saved.insert(
                 self.active_workspace,
                 Navigation {
                     selection: self.selection.take(),
-                    mode: self.mode,
-                    last_mode: self.last_mode,
                     scroll: self.scroll.clone(),
                     terminals_collapsed: self.terminals_collapsed,
                 },
             );
             let next = self.saved.remove(&active).unwrap_or_default();
             self.selection = next.selection;
-            self.mode = if retain_grid {
-                ViewMode::Grid
-            } else {
-                next.mode
-            };
-            self.last_mode = next.last_mode;
             self.scroll = next.scroll;
             self.terminals_collapsed = next.terminals_collapsed;
             self.active_workspace = active;
@@ -2190,6 +2179,10 @@ impl Sidebar {
         self.content_error = None;
         cx.notify();
     }
+    pub(crate) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.act(Action::ToggleSidebar, window, cx);
+    }
+
     fn act(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(removal) = &self.pending_worktree_removal {
             let finished = removal.started
@@ -4622,6 +4615,127 @@ fn change_mode(mode: &mut ViewMode, last: &mut ViewMode, next: ViewMode) {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    fn assert_workspace_switches_retain_view_mode(
+        cx: &mut gpui::TestAppContext,
+        sidebar_mode: ViewMode,
+    ) {
+        let paths = [
+            "/grove-view-workspace-a",
+            "/grove-view-workspace-b",
+            "/grove-view-workspace-c",
+        ];
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let mut store = grove_core::storage::Store {
+                projects: paths
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| grove_core::storage::Project {
+                        name: format!("project-{index}"),
+                        path: (*path).into(),
+                        scripts: grove_core::storage::ProjectScripts::default(),
+                        archived: false,
+                        worktree_dir: None,
+                    })
+                    .collect(),
+                sidebar_width: Some(310.0),
+                ..Default::default()
+            };
+            store.assign_project_to_active_workspace(paths[0]);
+            store.workspaces.create("B").unwrap();
+            store.assign_project_to_active_workspace(paths[1]);
+            store.workspaces.create("C").unwrap();
+            store.assign_project_to_active_workspace(paths[2]);
+            store.workspaces.select(1);
+            cx.set_global(SettingsState::new(store));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.sync(window, cx);
+                sidebar.act(Action::Mode(sidebar_mode), window, cx);
+                sidebar.selection = Some(Selection::Project(0));
+                sidebar.terminals_collapsed = true;
+                sidebar
+                    .scroll
+                    .set_offset(gpui::point(gpui::px(0.0), gpui::px(-40.0)));
+            });
+            // A -> B retains the explicitly selected project/list organization.
+            cx.global_mut::<SettingsState>().store.workspaces.select(2);
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.sync(window, cx);
+                assert_eq!(sidebar.mode, sidebar_mode);
+                assert_eq!(sidebar.last_mode, sidebar_mode);
+                assert_eq!(sidebar.selection, Some(Selection::Project(1)));
+                assert!(!sidebar.terminals_collapsed);
+                assert_eq!(sidebar.scroll.offset().y, gpui::px(0.0));
+                sidebar
+                    .scroll
+                    .set_offset(gpui::point(gpui::px(0.0), gpui::px(-80.0)));
+                sidebar.toggle_grid(window, cx);
+            });
+            // B -> C retains grid, including its global return organization.
+            cx.global_mut::<SettingsState>().store.workspaces.select(3);
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.sync(window, cx);
+                assert_eq!(sidebar.mode, ViewMode::Grid);
+                assert_eq!(sidebar.last_mode, sidebar_mode);
+                sidebar.toggle_sidebar(window, cx);
+                assert_eq!(sidebar.mode, ViewMode::Grid);
+                assert!(sidebar.is_collapsed(cx));
+                assert_eq!(
+                    cx.global::<SettingsState>().store.sidebar_width,
+                    Some(310.0)
+                );
+            });
+            // C -> A restores A's navigation without restoring its former mode.
+            cx.global_mut::<SettingsState>().store.workspaces.select(1);
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.sync(window, cx);
+                assert_eq!(sidebar.mode, ViewMode::Grid);
+                // Grid selects a canvas session; this fixture has no sessions.
+                assert_eq!(sidebar.selection, None);
+                assert!(sidebar.terminals_collapsed);
+                assert_eq!(sidebar.scroll.offset().y, gpui::px(-40.0));
+                assert!(sidebar.is_collapsed(cx));
+                sidebar.toggle_grid(window, cx);
+                assert_eq!(sidebar.mode, sidebar_mode);
+            });
+            // Revisiting C must honor the latest explicit exit from grid.
+            cx.global_mut::<SettingsState>().store.workspaces.select(3);
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.sync(window, cx);
+                assert_eq!(sidebar.mode, sidebar_mode);
+                assert_eq!(sidebar.last_mode, sidebar_mode);
+                assert_eq!(sidebar.selection, Some(Selection::Project(2)));
+                assert!(!sidebar.terminals_collapsed);
+                assert!(sidebar.is_collapsed(cx));
+            });
+            cx.global_mut::<SettingsState>().store.workspaces.select(2);
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.sync(window, cx);
+                assert_eq!(sidebar.mode, sidebar_mode);
+                assert_eq!(sidebar.selection, Some(Selection::Project(1)));
+                assert_eq!(sidebar.scroll.offset().y, gpui::px(-80.0));
+                assert!(!sidebar.terminals_collapsed);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn workspace_switches_retain_project_and_grid_mode(cx: &mut gpui::TestAppContext) {
+        assert_workspace_switches_retain_view_mode(cx, ViewMode::Project);
+    }
+
+    #[gpui::test]
+    fn workspace_switches_retain_list_and_grid_mode(cx: &mut gpui::TestAppContext) {
+        assert_workspace_switches_retain_view_mode(cx, ViewMode::List);
+    }
 
     #[test]
     fn zen_target_uses_selection_or_first_grid_session() {
