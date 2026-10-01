@@ -91,7 +91,7 @@ case "$OS" in
     # Sign with a stable identity when one exists so macOS TCC permission
     # grants survive rebuilds (ad-hoc signatures change every build, which
     # makes macOS re-prompt for folder/data access after each install).
-    SIGN_ID="${GROVE_SIGN_IDENTITY:-Grove Dev}"
+    SIGN_ID="${GROVE_SIGN_IDENTITY:-gitfudge}"
     if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
       echo "Signing with identity '$SIGN_ID'..."
       codesign --force --deep --sign "$SIGN_ID" "$DEST/$(basename "$APP")"
