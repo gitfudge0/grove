@@ -38,10 +38,19 @@ pub fn check_due(last_update_check: Option<i64>, now: i64, state: &UpgradeState)
     due && matches!(state, UpgradeState::Idle | UpgradeState::UpToDate)
 }
 
-/// All three check triggers route through this, so a duplicate is impossible by construction.
+/// Checks must not interrupt an install or clear its pending restart.
 #[must_use]
 pub fn begin_check(state: &UpgradeState) -> bool {
-    !matches!(state, UpgradeState::Checking)
+    !matches!(
+        state,
+        UpgradeState::Checking | UpgradeState::Updating(_) | UpgradeState::Updated
+    )
+}
+
+/// Only a successfully installed update can be activated by restarting.
+#[must_use]
+pub fn restart_available(state: &UpgradeState) -> bool {
+    matches!(state, UpgradeState::Updated)
 }
 
 /// `manual` selects the error policy: manual surfaces the error inline, launch/periodic falls back to `Idle` silently.
@@ -163,6 +172,35 @@ mod tests {
         assert!(begin_check(&UpgradeState::UpToDate));
         assert!(begin_check(&UpgradeState::Error("x".into())));
         assert!(!begin_check(&UpgradeState::Checking));
+    }
+
+    #[test]
+    fn checks_cannot_interrupt_installation_or_clear_pending_restart() {
+        assert!(!begin_check(&UpgradeState::Updating(Stage::Installing)));
+        let installed = apply_finished(&UpgradeState::Updating(Stage::Installing), Ok(()));
+        assert!(!begin_check(&installed));
+        assert!(!check_due(Some(0), DAY, &installed));
+        assert!(restart_available(&installed));
+        assert!(begin_check(&UpgradeState::UpdateFailed("failed".into())));
+    }
+
+    #[test]
+    fn restart_is_available_only_after_successful_installation() {
+        for state in [
+            UpgradeState::Idle,
+            UpgradeState::Checking,
+            UpgradeState::UpToDate,
+            UpgradeState::Available(release("v2.0.0")),
+            UpgradeState::Error("failed".into()),
+            UpgradeState::Updating(Stage::Installing),
+            apply_finished(
+                &UpgradeState::Updating(Stage::Installing),
+                Err("failed".into()),
+            ),
+        ] {
+            assert!(!restart_available(&state), "{state:?}");
+        }
+        assert!(restart_available(&UpgradeState::Updated));
     }
 
     #[test]

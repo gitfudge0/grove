@@ -3,7 +3,7 @@ use super::{motion, rpx, tokens::*};
 use crate::{
     entities::{
         shell_environment::{RefreshState, ShellEnvironment},
-        upgrade_state::{ChangelogState, UpgradeState},
+        upgrade_state::{restart_available, ChangelogState, UpgradeState},
     },
     keymap::{self, Scope, SHORTCUTS},
     runtime::Runtime,
@@ -739,7 +739,20 @@ impl SettingsPanel {
         let can_update =
             upgrade.available().is_some() && upgrade.method() != InstallMethod::Unknown;
         let has_update = upgrade.available().is_some();
+        let can_restart = restart_available(upgrade.state());
         let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_SM));
+        if can_restart {
+            actions = actions.child(
+                self.button("settings-update-restart", "Restart app", false, true)
+                    .child("Restart app")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if restart_available(this.runtime.read(cx).upgrade.read(cx).state()) {
+                            this.runtime.update(cx, Runtime::shutdown);
+                            cx.restart();
+                        }
+                    })),
+            );
+        }
         if has_update {
             actions = actions.child(
                 self.button("settings-update-now", "Update now", false, can_update)
@@ -780,10 +793,10 @@ impl SettingsPanel {
                     "settings-update-check",
                     "Check for updates",
                     false,
-                    !checking,
+                    !checking && !can_restart,
                 )
                 .child("Check now")
-                .when(!checking, |el| {
+                .when(!checking && !can_restart, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| {
                         let upgrade = this.runtime.read(cx).upgrade.clone();
                         upgrade.update(cx, |upgrade, cx| upgrade.check(true, cx));
