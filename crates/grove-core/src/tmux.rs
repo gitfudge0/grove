@@ -41,10 +41,12 @@ fn tmux() -> Command {
 }
 
 fn run_silent(mut cmd: Command) -> std::io::Result<std::process::ExitStatus> {
-    tracing::debug!(
-        args = ?cmd.get_args().collect::<Vec<_>>(),
-        "running tmux command"
-    );
+    // Session command lines can contain exported credentials.
+    if cmd.get_args().any(|arg| arg == "new-session") {
+        tracing::debug!("running tmux new-session");
+    } else {
+        tracing::debug!(args = ?cmd.get_args().collect::<Vec<_>>(), "running tmux command");
+    }
     let status = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status();
     if let Ok(s) = &status {
         if !s.success() {
@@ -118,7 +120,7 @@ fn sh_quote(s: &str) -> String {
     out
 }
 
-fn valid_env_key(key: &str) -> bool {
+pub(crate) fn valid_env_key(key: &str) -> bool {
     let mut chars = key.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
@@ -153,21 +155,33 @@ pub fn new_session(
         cmdline.push(' ');
         cmdline.push_str(&sh_quote(a));
     }
-    let mut cmd = tmux();
-    cmd.args([
-        "new-session",
-        "-d",
-        "-s",
-        name,
-        "-c",
-        cwd,
-        "-x",
-        &cols.to_string(),
-        "-y",
-        &rows.to_string(),
-        &cmdline,
-    ]);
-    let status = run_silent(cmd)?;
+    let status = if let Some(env) = crate::env_path::session_environment() {
+        let mut applied = APPLIED_ENV_KEYS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let keys = applied.get_or_insert_with(global_environment_keys);
+        // Track even partially applied scripts so a later launch can remove
+        // their keys after a command or transport failure.
+        keys.extend(env.iter().map(|(key, _)| key.clone()));
+        let input = session_script(name, cwd, rows, cols, &cmdline, &env, keys)?;
+        run_script(&input)?
+    } else {
+        let mut cmd = tmux();
+        cmd.args([
+            "new-session",
+            "-d",
+            "-s",
+            name,
+            "-c",
+            cwd,
+            "-x",
+            &cols.to_string(),
+            "-y",
+            &rows.to_string(),
+            &cmdline,
+        ]);
+        run_silent(cmd)?
+    };
     if !status.success() {
         return Err(TmuxError::Command {
             cmd: "new-session".to_string(),
@@ -175,6 +189,124 @@ pub fn new_session(
     }
     configure_embedded_session(name);
     Ok(())
+}
+
+// Serialize each complete environment + new-session transaction, preventing
+// concurrent launches holding different snapshots from crossing environments.
+static APPLIED_ENV_KEYS: Mutex<Option<std::collections::BTreeSet<String>>> = Mutex::new(None);
+
+fn global_environment_keys() -> std::collections::BTreeSet<String> {
+    // A first/recreated server inherits the app's startup environment, which
+    // may contain exports removed by a subsequent shell refresh.
+    let mut keys = std::env::vars_os()
+        .filter_map(|(key, _)| key.into_string().ok())
+        .filter(|key| valid_env_key(key))
+        .collect::<std::collections::BTreeSet<_>>();
+    let output = tmux()
+        .args(["show-environment", "-g"])
+        .stderr(Stdio::null())
+        .output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            keys.extend(
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter_map(|line| {
+                        let key = line
+                            .split_once('=')
+                            .map_or_else(|| line.strip_prefix('-'), |(key, _)| Some(key))?;
+                        valid_env_key(key).then(|| key.to_string())
+                    }),
+            );
+        }
+    }
+    keys
+}
+
+/// Quote a tmux configuration token, including control characters and shell
+/// expansion characters. Environment contents only travel on private stdin.
+fn tmux_quote(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' | '\"' | '$' => {
+                quoted.push('\\');
+                quoted.push(ch);
+            }
+            '\n' => quoted.push_str("\\012"),
+            '\r' => quoted.push_str("\\015"),
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('\"');
+    quoted
+}
+
+fn session_script(
+    name: &str,
+    cwd: &str,
+    rows: u16,
+    cols: u16,
+    cmdline: &str,
+    env: &[(String, String)],
+    previous_keys: &std::collections::BTreeSet<String>,
+) -> Result<String> {
+    use std::fmt::Write;
+    let mut input = String::new();
+    for key in previous_keys {
+        if !env.iter().any(|(current, _)| current == key) {
+            let _ = writeln!(input, "set-environment -gu {}", tmux_quote(key));
+        }
+    }
+    for (key, value) in env {
+        if !valid_env_key(key) {
+            return Err(TmuxError::InvalidEnvKey(key.clone()));
+        }
+        let _ = writeln!(
+            input,
+            "set-environment -g {} {}",
+            tmux_quote(key),
+            tmux_quote(value)
+        );
+    }
+    let _ = writeln!(
+        input,
+        "new-session -d -E -s {} -c {} -x {} -y {} {}",
+        tmux_quote(name),
+        tmux_quote(cwd),
+        cols,
+        rows,
+        tmux_quote(cmdline)
+    );
+    Ok(input)
+}
+
+fn run_script(input: &str) -> std::io::Result<std::process::ExitStatus> {
+    run_script_command(tmux(), input)
+}
+
+fn run_script_command(
+    mut command: Command,
+    input: &str,
+) -> std::io::Result<std::process::ExitStatus> {
+    use std::io::Write;
+    let mut child = command
+        .args(["start-server", ";", "source-file", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let result = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("tmux stdin unavailable"))?
+        .write_all(input.as_bytes());
+    if let Err(error) = result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    child.wait()
 }
 
 pub fn configure_embedded_session(name: &str) {
@@ -707,6 +839,138 @@ mod tests {
     #[test]
     fn sh_quote_empty_string() {
         assert_eq!(sh_quote(""), "''");
+    }
+
+    #[test]
+    fn stdin_environment_transfer_preserves_literal_values() {
+        let name = "grove_test_env_stdin";
+        let key = "GROVE_TEST_LITERAL_EXPORT";
+        let value = "quotes ' \" $HOME $(literal) {braces} \\ backslash\nsecond=line café";
+        let dir = tempfile::tempdir().unwrap();
+        let output_path = dir.path().join("synthetic-export");
+        let shell_script = format!(
+            "printf '%s' \"${key}\" > {}; exec /bin/sleep 10",
+            sh_quote(output_path.to_str().unwrap())
+        );
+        let cmdline = format!("exec /bin/sh -c {}", sh_quote(&shell_script));
+        let input = session_script(
+            name,
+            "/",
+            24,
+            80,
+            &cmdline,
+            &[(key.into(), value.into())],
+            &std::collections::BTreeSet::default(),
+        )
+        .unwrap();
+        if !available() {
+            return;
+        }
+        assert!(run_script(&input).unwrap().success());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !output_path.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = fs_err::read_to_string(&output_path);
+        kill_session(name);
+        assert_eq!(output.unwrap(), value);
+    }
+
+    #[test]
+    fn refreshed_tmux_environment_removes_exports_only_for_new_sessions() {
+        if !available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let old_path = dir.path().join("old-session");
+        let new_path = dir.path().join("new-session");
+        let key = "GROVE_TEST_REFRESH_REMOVED";
+        let old_name = "grove_test_refresh_old";
+        let new_name = "grove_test_refresh_new";
+        let old_script = format!(
+            "/bin/sleep 0.5; printf '%s' \"${key}\" > {}; exec /bin/sleep 10",
+            sh_quote(old_path.to_str().unwrap())
+        );
+        let new_script = format!(
+            "printf '%s' \"${{{key}-unset}}\" > {}; exec /bin/sleep 10",
+            sh_quote(new_path.to_str().unwrap())
+        );
+        let old = session_script(
+            old_name,
+            "/",
+            24,
+            80,
+            &format!("exec /bin/sh -c {}", sh_quote(&old_script)),
+            &[(key.into(), "old-value".into())],
+            &std::collections::BTreeSet::default(),
+        )
+        .unwrap();
+        assert!(run_script(&old).unwrap().success());
+        let new = session_script(
+            new_name,
+            "/",
+            24,
+            80,
+            &format!("exec /bin/sh -c {}", sh_quote(&new_script)),
+            &[],
+            &[key.to_string()].into_iter().collect(),
+        )
+        .unwrap();
+        assert!(run_script(&new).unwrap().success());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while (!old_path.exists() || !new_path.exists()) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let old_value = fs_err::read_to_string(old_path);
+        let new_value = fs_err::read_to_string(new_path);
+        kill_session(old_name);
+        kill_session(new_name);
+        assert_eq!(old_value.unwrap(), "old-value");
+        assert_eq!(new_value.unwrap(), "unset");
+    }
+
+    #[test]
+    fn first_and_recreated_tmux_servers_do_not_restore_deleted_startup_exports() {
+        if !available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let socket = format!("grove-refresh-recreated-{}", std::process::id());
+        let key = "GROVE_TEST_STALE_STARTUP";
+        let previous = [key.to_string()].into_iter().collect();
+        for attempt in 0..2 {
+            let output_path = dir.path().join(format!("child-{attempt}"));
+            let script = format!(
+                "printf '%s' \"${{{key}-unset}}\" > {}; exec /bin/sleep 10",
+                sh_quote(output_path.to_str().unwrap())
+            );
+            let input = session_script(
+                "probe",
+                "/",
+                24,
+                80,
+                &format!("exec /bin/sh -c {}", sh_quote(&script)),
+                &[],
+                &previous,
+            )
+            .unwrap();
+            let mut command = Command::new("tmux");
+            command
+                .args(["-L", &socket, "-f", "/dev/null"])
+                .env(key, "stale-startup");
+            assert!(run_script_command(command, &input).unwrap().success());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !output_path.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = fs_err::read_to_string(output_path);
+            let _ = Command::new("tmux")
+                .args(["-L", &socket, "kill-server"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            assert_eq!(output.unwrap(), "unset");
+        }
     }
 
     fn display(target: &str, fmt: &str) -> String {

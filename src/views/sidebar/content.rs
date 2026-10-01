@@ -19,7 +19,10 @@ use crate::{
     },
 };
 use gpui::{div, prelude::*, AnyElement, Context, Focusable, FontWeight, Window};
-use gpui_component::Disableable;
+use gpui_component::{
+    button::{Button, ButtonCustomVariant, ButtonVariants},
+    Disableable,
+};
 use grove_core::agent::Agent;
 
 const FORM_ACTION_H: f32 = 44.;
@@ -1078,7 +1081,7 @@ impl Sidebar {
             .and_then(|(_, value)| *value);
         let guidance = if main {
             match readiness {
-                Some(WorktreeReadiness::Ready) => "Create a separate worktree when you want an isolated branch.",
+                Some(WorktreeReadiness::Ready) => "Create a separate worktree for an isolated branch.",
                 Some(WorktreeReadiness::NeedsGit) => "Initialize Git to create worktrees. Sessions in this folder still work.",
                 Some(WorktreeReadiness::NeedsCommit) => "Make the first commit before creating a worktree. Sessions in the main checkout still work.",
                 None => "Checking Git before offering another worktree…",
@@ -1086,31 +1089,80 @@ impl Sidebar {
         } else {
             "Start a session in this worktree."
         };
-        let mut actions = div().flex().flex_wrap().justify_center().gap(rpx(SPACE_LG));
-        let codex_available = self.available[0];
-        for (id, label, agent, primary) in [
-            (
-                "start-terminal",
-                "Start Terminal",
-                Agent::Terminal,
-                !codex_available,
-            ),
-            ("start-codex", "Start Codex", Agent::Codex, codex_available),
-            ("start-claude", "Start Claude Code", Agent::Claude, false),
-            ("start-opencode", "Start OpenCode", Agent::OpenCode, false),
-        ] {
+        let branch = self
+            .snapshot
+            .projects
+            .iter()
+            .find(|project| project.idx == project_idx)
+            .and_then(|project| {
+                project
+                    .worktrees
+                    .iter()
+                    .find(|worktree| worktree.path == path)
+            })
+            .map(|worktree| worktree.branch.as_str())
+            .filter(|branch| !branch.is_empty());
+        let mut actions = div()
+            .w_full()
+            .min_w_0()
+            .mt(rpx(20.))
+            .border_1()
+            .border_color(c::BORDER_SOFT())
+            .rounded(rpx(12.))
+            .overflow_hidden()
+            .bg(c::FIELD_FILL())
+            .flex()
+            .flex_col();
+        for (index, (id, label, agent)) in [
+            ("start-terminal", "Start Terminal", Agent::Terminal),
+            ("start-codex", "Start Codex", Agent::Codex),
+            ("start-claude", "Start Claude Code", Agent::Claude),
+            ("start-opencode", "Start OpenCode", Agent::OpenCode),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let target = path.to_string();
             actions = actions.child(
-                form_action(id, label, primary, window, cx)
-                    .debug_selector(move || id.into())
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path(format!("icons/{}.svg", agent.icon_name())),
-                    )
-                    .h(rpx(FORM_ACTION_H))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.launch(project_idx, target.clone(), agent, cx);
-                    })),
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .when(index > 0, |row| {
+                        row.border_t_1().border_color(c::BORDER_SOFT())
+                    })
+                    .child(
+                        Button::new(id)
+                            .label(label)
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path(format!("icons/{}.svg", agent.icon_name()))
+                                    .size(rpx(16.)),
+                            )
+                            .debug_selector(move || id.into())
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(c::FIELD_FILL())
+                                    .foreground(c::FG())
+                                    .hover(c::BG_HOVER())
+                                    .active(c::BG_HOVER())
+                                    .shadow(false),
+                            )
+                            .rounded(gpui_component::button::ButtonRounded::None)
+                            .w_full()
+                            .min_w_0()
+                            .h(rpx(50.))
+                            .px(rpx(16.))
+                            .cursor_pointer()
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .child(div().min_w_0().flex_1().flex().justify_end().child(icon(
+                                "arrow-right",
+                                14.,
+                                c::FG_DIM(),
+                            )))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.launch(project_idx, target.clone(), agent, cx);
+                            })),
+                    ),
             );
         }
         let missing = WORKTREE_LAUNCH_AGENTS
@@ -1129,52 +1181,127 @@ impl Sidebar {
             .id("project-start-card")
             .debug_selector(|| "project-start-card".into())
             .w_full()
-            .max_w(rpx(MODAL_W_XL))
+            .max_w(rpx(420.))
             .min_w_0()
-            .p(rpx(EMPTY_CARD_PAD))
+            .flex_shrink_0()
             .flex()
             .flex_col()
-            .items_center()
-            .text_center()
-            .gap(rpx(SPACE_2XL))
+            .items_start()
             .child(
                 div()
-                    .text_size(rpx(TEXT_DISPLAY))
+                    .w_full()
+                    .min_w_0()
+                    .mb(rpx(28.))
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(rpx(12.))
+                            .mb(rpx(7.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .max_w(gpui::relative(1.))
+                                    .truncate()
+                                    .text_size(rpx(16.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(project_name.to_string()),
+                            )
+                            .when_some(branch, |metadata, branch| {
+                                metadata.child(
+                                    div()
+                                        .min_w_0()
+                                        .max_w(gpui::relative(1.))
+                                        .flex()
+                                        .items_center()
+                                        .gap(rpx(5.))
+                                        .px(rpx(8.))
+                                        .py(rpx(3.))
+                                        .border_1()
+                                        .border_color(c::BORDER_SOFT())
+                                        .rounded(rpx(7.))
+                                        .text_size(rpx(12.))
+                                        .text_color(c::FG_DIM())
+                                        .child(icon("git-branch", 12., c::FG_DIM()))
+                                        .child(
+                                            div().min_w_0().truncate().child(branch.to_string()),
+                                        ),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("project-start-path")
+                            .w_full()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_size(rpx(12.))
+                            .text_color(c::FG_DIM())
+                            .child(path.replace('/', "/\u{200b}")),
+                    ),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .text_size(rpx(22.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(if main {
-                        "Start in the main checkout"
+                        "Start in this checkout"
                     } else {
                         "Start in this worktree"
                     }),
             )
             .child(
                 div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .mt(rpx(8.))
+                    .text_size(rpx(14.))
                     .text_color(c::FG_DIM())
-                    .child(format!("{project_name} · {path}")),
+                    .child(if main {
+                        "Work in the existing checkout."
+                    } else {
+                        "Start a session in this worktree."
+                    }),
             )
             .child(actions);
         if !missing.is_empty() {
             let noun = if missing.len() == 1 { "CLI" } else { "CLIs" };
-            card = card.child(div().id("missing-agent-guidance").role(gpui::Role::Status).text_size(rpx(TEXT_SMALL))
+            card = card.child(div().w_full().min_w_0().whitespace_normal().mt(rpx(14.)).id("missing-agent-guidance").role(gpui::Role::Status).text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG_DIM())
                 .child(format!("{} {noun} unavailable. Install the CLI, check your PATH, then restart Grove. Terminal is ready now.", missing.join(", "))));
         }
         if main {
             card = card.child(
                 div()
-                    .pt(rpx(SPACE_2XL))
+                    .w_full()
+                    .min_w_0()
+                    .mt(rpx(24.))
+                    .border_t_1()
+                    .border_color(c::BORDER_SOFT())
+                    .pt(rpx(20.))
                     .flex()
                     .flex_col()
-                    .items_center()
-                    .gap(rpx(SPACE_LG))
-                    .child(div().font_weight(FontWeight::MEDIUM).child("New worktree"))
-                    .child(div().text_color(c::FG_DIM()).child(guidance))
+                    .items_start()
+                    .child(div().w_full().min_w_0().whitespace_normal().text_size(rpx(15.)).font_weight(FontWeight::SEMIBOLD).child("Work in isolation"))
+                    .child(div().w_full().min_w_0().whitespace_normal().mt(rpx(6.)).text_size(rpx(13.)).text_color(c::FG_DIM()).child(guidance))
                     .when(readiness == Some(WorktreeReadiness::Ready), |row| {
                         row.child(
-                            form_action("project-new-worktree", "New worktree", false, window, cx)
+                            form_action("project-new-worktree", "Create worktree…", false, window, cx)
                                 .debug_selector(|| "project-new-worktree".into())
                                 .icon(gpui_component::Icon::default().path("icons/plus.svg"))
-                                .h(rpx(FORM_ACTION_H))
+                                .mt(rpx(12.))
+                                .h(rpx(42.))
+                                .rounded(rpx(12.).to_pixels(window.rem_size()))
+                                .bg(c::BG())
+                                .border_1()
+                                .border_color(c::BORDER_STRONG())
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.act(Action::NewWorktree(project_path.clone()), window, cx);
                                 })),
@@ -1208,7 +1335,7 @@ impl Sidebar {
                     .when(readiness == Some(WorktreeReadiness::NeedsCommit), |row| {
                         let project_path = path.to_string();
                         row.child(
-                            div().text_color(c::FG_DIM()).child(
+                            div().w_full().min_w_0().whitespace_normal().text_color(c::FG_DIM()).child(
                                 "In the main checkout, stage changes and review the staged diff before committing:",
                             ),
                         )
@@ -1465,15 +1592,20 @@ impl Sidebar {
                     .child(
                         div()
                             .id("project-start-scroll")
+                            .debug_selector(|| "project-start-scroll".into())
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
                             .child(
                                 div()
+                                    .id("project-start-scroll-content")
+                                    .debug_selector(|| "project-start-scroll-content".into())
                                     .w_full()
+                                    .h_auto()
                                     .min_h_full()
                                     .p(rpx(SPACE_3XL))
                                     .flex()
+                                    .flex_col()
                                     .items_center()
                                     .justify_center()
                                     .child(self.render_start_panel(
@@ -1498,15 +1630,20 @@ impl Sidebar {
                     .child(
                         div()
                             .id("worktree-start-scroll")
+                            .debug_selector(|| "worktree-start-scroll".into())
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
                             .child(
                                 div()
+                                    .id("worktree-start-scroll-content")
+                                    .debug_selector(|| "worktree-start-scroll-content".into())
                                     .w_full()
+                                    .h_auto()
                                     .min_h_full()
                                     .p(rpx(SPACE_3XL))
                                     .flex()
+                                    .flex_col()
                                     .items_center()
                                     .justify_center()
                                     .child(self.render_start_panel(
@@ -2222,6 +2359,109 @@ mod tests {
         assert!(card.left() >= canvas.left() && card.right() <= canvas.right());
         assert!((f32::from(card.center().x - canvas.center().x)).abs() < 1.);
         assert!(card.top() >= canvas.top() && card.bottom() <= canvas.bottom());
+    }
+    #[gpui::test]
+    fn start_panel_scrolls_overflow_and_centers_on_desktop(cx: &mut gpui::TestAppContext) {
+        let repo = super::super::tests::ChangedGitRepo::new();
+        let path = repo.path();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "grove".into(),
+                    path: path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                sidebar_collapsed: true,
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![grove_core::git::Worktree {
+                        path: path.clone(),
+                        branch: "main".into(),
+                        mtime: None,
+                        is_main: true,
+                    }],
+                );
+            });
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.available = [true; 4];
+                sidebar.mode = ViewMode::Project;
+                sidebar.selection = Some(Selection::Project(0));
+                sidebar.worktree_readiness.insert(
+                    path.clone(),
+                    (std::time::Instant::now(), Some(WorktreeReadiness::Ready)),
+                );
+                cx.notify();
+            });
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        draw(cx);
+        let desktop_scroll = cx.debug_bounds("project-start-scroll").unwrap();
+        let desktop_card = cx.debug_bounds("project-start-card").unwrap();
+        eprintln!("desktop scroll={desktop_scroll:?} card={desktop_card:?}");
+        assert!((f32::from(desktop_card.center().y - desktop_scroll.center().y)).abs() < 1.);
+        cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(540.)));
+        draw(cx);
+        let scroll = cx.debug_bounds("project-start-scroll").unwrap();
+        let wrapper = cx.debug_bounds("project-start-scroll-content").unwrap();
+        let card = cx.debug_bounds("project-start-card").unwrap();
+        let before = cx.debug_bounds("project-new-worktree").unwrap();
+        eprintln!("narrow scroll={scroll:?} wrapper={wrapper:?} card={card:?} CTA={before:?}");
+        assert!(
+            before.bottom() > scroll.bottom(),
+            "fixture must overflow viewport"
+        );
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-120.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        let after = cx.debug_bounds("project-new-worktree").unwrap();
+        eprintln!("after scroll CTA={after:?}");
+        assert!(after.top() < before.top(), "scroll must move CTA upward");
+        // More than one wheel step can be needed for long paths and short windows.
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-1000.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        let revealed = cx.debug_bounds("project-new-worktree").unwrap();
+        eprintln!("revealed CTA={revealed:?}");
+        assert!(
+            revealed.bottom() <= scroll.bottom(),
+            "scroll must reveal CTA"
+        );
+        cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(200.)));
+        draw(cx);
+        let short_scroll = cx.debug_bounds("project-start-scroll").unwrap();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: short_scroll.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-1000.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        let short_cta = cx.debug_bounds("project-new-worktree").unwrap();
+        eprintln!("short viewport={short_scroll:?} CTA={short_cta:?}");
+        assert!(
+            short_cta.top() >= short_scroll.top() && short_cta.bottom() <= short_scroll.bottom()
+        );
     }
     #[test]
     fn session_header_uses_readable_label_for_uuid_only_titles() {

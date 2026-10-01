@@ -5,6 +5,7 @@ pub mod animation_clock;
 pub mod diff_viewer;
 pub mod project_tree;
 pub mod session_registry;
+pub mod shell_environment;
 pub mod terminal_session;
 pub mod toast;
 pub mod upgrade;

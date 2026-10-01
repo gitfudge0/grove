@@ -17,7 +17,7 @@ pub fn resolve_zoom(store: &Store) -> f32 {
 }
 
 pub fn boot(cx: &mut gpui::App) {
-    // 1. Finder/Launchpad/.desktop launches inherit a minimal PATH; recover the login PATH before anything spawns.
+    // 1. Finder/Launchpad/.desktop launches inherit a minimal PATH; recover exported shell variables once before anything spawns.
     grove_core::env_path::ensure_login_path();
 
     // 2. Stale attention-state GC, before any session id can be reused.

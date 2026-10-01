@@ -1,7 +1,10 @@
 //! App-wide settings and shortcut reference, mounted in the main canvas.
 use super::{motion, rpx, tokens::*};
 use crate::{
-    entities::upgrade_state::{ChangelogState, UpgradeState},
+    entities::{
+        shell_environment::{RefreshState, ShellEnvironment},
+        upgrade_state::{ChangelogState, UpgradeState},
+    },
     keymap::{self, Scope, SHORTCUTS},
     runtime::Runtime,
     settings::SettingsState,
@@ -85,6 +88,7 @@ pub struct SettingsPanel {
     scroll: ScrollHandle,
     _settings_observer: Subscription,
     _upgrade_observer: Subscription,
+    _environment_observer: Subscription,
 }
 
 impl EventEmitter<SettingsPanelEvent> for SettingsPanel {}
@@ -92,6 +96,7 @@ impl EventEmitter<SettingsPanelEvent> for SettingsPanel {}
 impl SettingsPanel {
     pub fn new(runtime: Entity<Runtime>, cx: &mut Context<Self>) -> Self {
         let upgrade = runtime.read(cx).upgrade.clone();
+        let shell_environment = runtime.read(cx).shell_environment.clone();
         Self {
             runtime,
             focus: cx.focus_handle(),
@@ -102,6 +107,7 @@ impl SettingsPanel {
             scroll: ScrollHandle::new(),
             _settings_observer: cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
             _upgrade_observer: cx.observe(&upgrade, |_, _, cx| cx.notify()),
+            _environment_observer: cx.observe(&shell_environment, |_, _, cx| cx.notify()),
         }
     }
 
@@ -565,6 +571,53 @@ impl SettingsPanel {
             .button("settings-chrome", "Toggle Claude in Chrome", chrome, true)
             .child(if chrome { "On" } else { "Off" })
             .on_click(cx.listener(|this, _, _, cx| this.toggle_chrome(cx)));
+        let environment = self.runtime.read(cx).shell_environment.clone();
+        let environment_state = environment.read(cx).state();
+        let refreshing = environment_state == RefreshState::Refreshing;
+        let refresh_enabled = !cfg!(windows) && !refreshing;
+        let refresh_label = if refreshing {
+            "Refreshing…"
+        } else {
+            "Refresh now"
+        };
+        let environment_control = div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(rpx(SPACE_SM))
+            .child(
+                self.button(
+                    "settings-shell-environment",
+                    refresh_label,
+                    false,
+                    refresh_enabled,
+                )
+                .child(refresh_label)
+                .when(refresh_enabled, |el| {
+                    el.on_click(cx.listener(|this, _, _, cx| {
+                        let environment = this.runtime.read(cx).shell_environment.clone();
+                        environment.update(cx, ShellEnvironment::refresh);
+                    }))
+                }),
+            )
+            .when(
+                matches!(
+                    environment_state,
+                    RefreshState::Refreshed | RefreshState::Error
+                ),
+                |el| {
+                    el.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(if environment_state == RefreshState::Refreshed {
+                                "Environment refreshed"
+                            } else {
+                                "Refresh failed. Previous environment retained."
+                            }),
+                    )
+                },
+            );
         body = body.child(
             div()
                 .flex()
@@ -589,6 +642,15 @@ impl SettingsPanel {
                     "Claude in Chrome",
                     "Let Claude read and control Chrome tabs",
                     browser,
+                ))
+                .child(Self::setting_row(
+                    "Shell environment",
+                    if cfg!(windows) {
+                        "Shell environment refresh is unavailable on Windows."
+                    } else {
+                        "Refreshes every 10 minutes. Changes apply to new sessions."
+                    },
+                    environment_control,
                 )),
         );
 

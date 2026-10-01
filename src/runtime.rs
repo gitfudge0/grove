@@ -6,6 +6,7 @@ use crate::{
         activity_store::ActivityStore,
         project_tree::ProjectTree,
         session_registry::{SessionId, SessionRegistry},
+        shell_environment::ShellEnvironment,
         terminal_session::TerminalSession,
         toast::ToastState,
         upgrade::Upgrade,
@@ -86,6 +87,7 @@ pub struct Runtime {
     pub tree: Entity<ProjectTree>,
     pub activity: Entity<ActivityStore>,
     pub upgrade: Entity<Upgrade>,
+    pub shell_environment: Entity<ShellEnvironment>,
     pub toast: Entity<ToastState>,
     pub projects: Entity<crate::project_service::ProjectService>,
     last_pty_dims: (u16, u16),
@@ -104,6 +106,7 @@ impl Runtime {
             |cx| ActivityStore::start(state, registry, cx)
         });
         let upgrade = cx.new(Upgrade::new);
+        let shell_environment = cx.new(ShellEnvironment::new);
         let toast = cx.new(|_| ToastState::new());
         let projects = cx
             .new(|_| crate::project_service::ProjectService::new(registry.clone(), state.clone()));
@@ -132,6 +135,7 @@ impl Runtime {
             tree,
             activity,
             upgrade,
+            shell_environment,
             toast,
             projects,
             last_pty_dims: (dims.rows, dims.cols),

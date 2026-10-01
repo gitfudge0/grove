@@ -236,6 +236,10 @@ impl TerminalSession {
         #[cfg(not(windows))]
         cmd.arg("-lc");
         cmd.arg(script);
+        apply_session_environment(
+            &mut cmd,
+            grove_core::env_path::session_environment().as_deref(),
+        );
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("LC_ALL", "en_US.UTF-8");
@@ -680,8 +684,6 @@ fn spawn_tmux(
         tmux::kill_session(&name);
         return Err(format!("session metadata: {e}"));
     }
-    tmux::configure_embedded_session(&name);
-
     match grove_terminal::pty::spawn(tmux_attach_cmd(&name), rows, cols) {
         Ok(pty) => Ok((pty, Backend::Tmux { name })),
         Err(e) => {
@@ -705,6 +707,17 @@ fn tmux_attach_cmd(name: &str) -> CommandBuilder {
     cmd
 }
 
+/// A complete snapshot removes exports deleted since app startup. Session
+/// overrides are applied afterward by every caller.
+fn apply_session_environment(cmd: &mut CommandBuilder, env: Option<&[(String, String)]>) {
+    if let Some(env) = env {
+        cmd.env_clear();
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+    }
+}
+
 /// Full port of `Session::spawn_native` (`crates/grove-core/src/session.rs:238-279`); grove's no-tmux path runs the agent, not a bare login shell.
 fn spawn_native(
     cwd: &str,
@@ -725,6 +738,10 @@ fn spawn_native(
     for a in prefix_args {
         cmd.arg(a);
     }
+    apply_session_environment(
+        &mut cmd,
+        grove_core::env_path::session_environment().as_deref(),
+    );
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("LC_ALL", "en_US.UTF-8");
@@ -750,6 +767,32 @@ mod tests {
     use grove_core::agent::Agent;
 
     use super::{output_age_at, output_needs_notify};
+
+    #[test]
+    fn session_environment_replaces_stale_exports_before_session_overrides() {
+        let mut cmd = super::CommandBuilder::new("/bin/sh");
+        cmd.env("GROVE_TEST_REMOVED", "old");
+        let env = vec![
+            ("GROVE_TEST_EXPORT".into(), "new".into()),
+            ("TERM".into(), "old-term".into()),
+        ];
+        super::apply_session_environment(&mut cmd, Some(&env));
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("GROVE_MULTI_ROOT", "/session/bundle");
+        assert!(cmd.get_env("GROVE_TEST_REMOVED").is_none());
+        assert_eq!(
+            cmd.get_env("GROVE_TEST_EXPORT"),
+            Some(std::ffi::OsStr::new("new"))
+        );
+        assert_eq!(
+            cmd.get_env("TERM"),
+            Some(std::ffi::OsStr::new("xterm-256color"))
+        );
+        assert_eq!(
+            cmd.get_env("GROVE_MULTI_ROOT"),
+            Some(std::ffi::OsStr::new("/session/bundle"))
+        );
+    }
 
     #[test]
     fn root_binary_tests_do_not_contact_tmux_from_terminal_sessions() {

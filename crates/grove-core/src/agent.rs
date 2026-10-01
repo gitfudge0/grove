@@ -135,13 +135,24 @@ impl Agent {
     }
 
     /// Builds the argv used when launching an agent session. On Unix, run the
-    /// agent through a fresh interactive login shell so current shell rc
-    /// changes are loaded at spawn time. The agent and all of its arguments
-    /// remain separate argv elements behind `--`.
+    /// agent directly after startup captured the exported shell environment.
+    /// If capture failed, retain the fresh interactive login shell fallback.
+    /// Arguments always remain separate argv elements.
     pub fn session_invocation(self, args: &[String]) -> (String, Vec<String>) {
+        self.session_invocation_with_environment(
+            args,
+            crate::env_path::session_environment().is_some(),
+        )
+    }
+
+    fn session_invocation_with_environment(
+        self,
+        args: &[String],
+        resolved: bool,
+    ) -> (String, Vec<String>) {
         let (program, prefix_args) = self.invocation();
 
-        if matches!(self, Agent::Terminal) {
+        if matches!(self, Agent::Terminal) || resolved {
             let mut invocation_args = prefix_args;
             invocation_args.extend(args.iter().cloned());
             return (program, invocation_args);
@@ -448,6 +459,20 @@ mod tests {
             &invocation_args[3..],
             ["codex".to_string(), args[0].clone(), args[1].clone()]
         );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolved_environment_launches_agents_directly_with_literal_arguments() {
+        let args = vec![
+            "spaces; $(literal)".to_string(),
+            "--add-dir=/tmp/two roots".to_string(),
+        ];
+        for agent in [Agent::Claude, Agent::Codex, Agent::OpenCode] {
+            let (program, argv) = agent.session_invocation_with_environment(&args, true);
+            assert_eq!(program, agent.program());
+            assert_eq!(argv, args);
+        }
     }
 
     #[test]

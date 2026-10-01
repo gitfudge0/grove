@@ -66,7 +66,7 @@ cd grove
 - **linux** — installs the generated `.deb` via `dpkg`, or falls back to a binary plus a `grove.desktop` launcher and icon under `~/.local`. launch "Grove" from your application menu.
 - **windows (alpha)** — no `install.sh` support yet; download the `.msi` from the [latest release](https://github.com/gitfudge0/grove/releases/latest) and run it. windows support is new and less battle-tested than macOS/linux — expect rough edges, and please file issues.
 
-when launched from a desktop menu or app launcher, grove recovers your login `PATH` from your shell on startup, so it can still find `claude`, `git`, and your agents. set `GROVE_FORCE_LOGIN_PATH=1` to force this even from a terminal. on windows, grove uses `pwsh` (PowerShell 7+) when available, falling back to the built-in `powershell.exe`.
+when launched from a desktop menu or app launcher, grove recovers your shell’s exported environment (including `PATH`) once on startup, so it can find `claude`, `git`, and your agents without starting another login shell for every session. grove refreshes the environment automatically every 10 minutes, or use **Settings → Shell environment → Refresh now** after changing exported variables. refreshes apply to new sessions; existing sessions stay unchanged. set `GROVE_FORCE_LOGIN_PATH=1` to force this even from a terminal. on windows, grove uses `pwsh` (PowerShell 7+) when available, falling back to the built-in `powershell.exe`.
 
 [`cargo-bundle`]: https://github.com/burtonageo/cargo-bundle
 
