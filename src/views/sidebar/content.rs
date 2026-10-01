@@ -1103,8 +1103,11 @@ impl Sidebar {
             .map(|worktree| worktree.branch.as_str())
             .filter(|branch| !branch.is_empty());
         let mut actions = div()
+            .id("project-start-actions")
+            .debug_selector(|| "project-start-actions".into())
             .w_full()
             .min_w_0()
+            .flex_shrink_0()
             .mt(rpx(20.))
             .border_1()
             .border_color(c::BORDER_SOFT())
@@ -2412,6 +2415,16 @@ mod tests {
         let desktop_card = cx.debug_bounds("project-start-card").unwrap();
         eprintln!("desktop scroll={desktop_scroll:?} card={desktop_card:?}");
         assert!((f32::from(desktop_card.center().y - desktop_scroll.center().y)).abs() < 1.);
+        let actions = cx.debug_bounds("project-start-actions").unwrap();
+        for selector in [
+            "start-terminal",
+            "start-codex",
+            "start-claude",
+            "start-opencode",
+        ] {
+            let row = cx.debug_bounds(selector).unwrap();
+            assert!(row.top() >= actions.top() && row.bottom() <= actions.bottom(), "{selector} must fit inside its clipping container: row={row:?}, actions={actions:?}");
+        }
         cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(540.)));
         draw(cx);
         let scroll = cx.debug_bounds("project-start-scroll").unwrap();
