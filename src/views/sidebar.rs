@@ -2963,24 +2963,30 @@ impl Sidebar {
                 c::alpha(c::BG(), 0.0)
             })
             .items_start()
-            .when_some(number.filter(|number| *number <= 9), |row, number| {
-                row.child(
-                    div()
-                        .id(("session-number", id.raw()))
-                        .debug_selector(move || format!("session-number-{}", id.raw()))
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .font_family(crate::fonts::MONO_FAMILY)
-                        .child(number.to_string()),
-                )
-            })
+            .gap(rpx(SPACE_MD))
+            .child(
+                div()
+                    .id(("session-number", id.raw()))
+                    .debug_selector(move || format!("session-number-{}", id.raw()))
+                    .w(rpx(10.0))
+                    .flex_shrink_0()
+                    .text_size(rpx(TEXT_MICRO))
+                    .line_height(rpx(SESSION_TITLE_LINE_H))
+                    .text_color(c::FG_MUTE())
+                    .font_family(crate::fonts::MONO_FAMILY)
+                    .child(
+                        number
+                            .filter(|number| *number <= 9)
+                            .map_or_else(String::new, |number| number.to_string()),
+                    ),
+            )
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(rpx(ROW_LINE_GAP))
+                    .gap(rpx(SPACE_SM))
                     .child(
                         div()
                             .flex()
@@ -2993,12 +2999,23 @@ impl Sidebar {
                                     .min_w_0()
                                     .truncate()
                                     .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_size(rpx(TEXT_BODY))
+                                    .line_height(rpx(SESSION_TITLE_LINE_H))
+                                    .id(("session-list-title", id.raw()))
+                                    .debug_selector(move || {
+                                        format!("session-list-title-{}", id.raw())
+                                    })
                                     .child(title),
                             )
                             .child(motion::fast(
                                 div()
                                     .flex_shrink_0()
                                     .text_size(rpx(TEXT_MICRO))
+                                    .line_height(rpx(SESSION_TITLE_LINE_H))
+                                    .id(("session-list-status", id.raw()))
+                                    .debug_selector(move || {
+                                        format!("session-list-status-{}", id.raw())
+                                    })
                                     .text_color(color)
                                     .child(status),
                                 format!("session-status-list-{}-{status}", id.raw()),
@@ -3048,7 +3065,13 @@ impl Sidebar {
                                     .min_w_0()
                                     .truncate()
                                     .text_color(c::FG_DIM())
-                                    .font_family(crate::fonts::MONO_FAMILY)
+                                    .font_family(crate::fonts::UI_FAMILY)
+                                    .font_weight(gpui::FontWeight::NORMAL)
+                                    .line_height(rpx(16.0))
+                                    .id(("session-list-context", id.raw()))
+                                    .debug_selector(move || {
+                                        format!("session-list-context-{}", id.raw())
+                                    })
                                     .child(context),
                             ),
                     )
@@ -3056,8 +3079,12 @@ impl Sidebar {
                         column.child(
                             div()
                                 .truncate()
-                                .text_size(rpx(TEXT_SMALL))
+                                .text_size(rpx(TEXT_MICRO))
+                                .line_height(rpx(SESSION_META_LINE_H))
+                                .font_family(crate::fonts::MONO_FAMILY)
                                 .text_color(c::FG_DIM())
+                                .id(("session-list-branch", id.raw()))
+                                .debug_selector(move || format!("session-list-branch-{}", id.raw()))
                                 .child(branch.to_string()),
                         )
                     })
@@ -3065,32 +3092,40 @@ impl Sidebar {
                         div()
                             .flex()
                             .items_center()
-                            .gap(rpx(SPACE_MD))
-                            .text_size(rpx(TEXT_SMALL))
+                            .gap(rpx(SPACE_SM))
+                            .text_size(rpx(TEXT_MICRO))
+                            .line_height(rpx(SESSION_META_LINE_H))
+                            .font_weight(gpui::FontWeight::NORMAL)
                             .text_color(c::FG_DIM())
                             .when_some(diff, |line, (label, actionable)| {
-                                line.child(div().flex_1().min_w_0().overflow_hidden().child(
-                                    if actionable {
-                                        self.control(
-                                            ("diff-chip-open", id.raw()),
-                                            format!("Open changes in {}", meta.wt_path),
-                                            Action::OpenDiff(id),
-                                            cx,
-                                        )
-                                        .debug_selector(move || {
-                                            format!("diff-chip-open-{}", id.raw())
-                                        })
-                                        .w_full()
-                                        .min_w_0()
-                                        .h_auto()
-                                        .px(rpx(SPACE_SM))
-                                        .text_color(c::GREEN())
-                                        .child(div().min_w_0().truncate().child(label))
-                                        .into_any_element()
-                                    } else {
-                                        div().truncate().child(label).into_any_element()
-                                    },
-                                ))
+                                line.child(div().flex_1().min_w_0().child(if actionable {
+                                    self.control(
+                                        ("diff-chip-open", id.raw()),
+                                        format!("Open changes in {}", meta.wt_path),
+                                        Action::OpenDiff(id),
+                                        cx,
+                                    )
+                                    .debug_selector(move || format!("diff-chip-open-{}", id.raw()))
+                                    .w_full()
+                                    .min_w_0()
+                                    .h_auto()
+                                    .px(rpx(0.0))
+                                    .justify_start()
+                                    .text_color(c::GREEN())
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .id(("session-list-diff-label", id.raw()))
+                                            .debug_selector(move || {
+                                                format!("session-list-diff-label-{}", id.raw())
+                                            })
+                                            .child(label),
+                                    )
+                                    .into_any_element()
+                                } else {
+                                    div().truncate().child(label).into_any_element()
+                                }))
                             })
                             .child(div().flex_shrink_0().child(age))
                             .child(
@@ -3106,7 +3141,9 @@ impl Sidebar {
                     .children(roots.into_iter().map(|root| {
                         div()
                             .truncate()
-                            .text_size(rpx(TEXT_SMALL))
+                            .text_size(rpx(TEXT_MICRO))
+                            .line_height(rpx(SESSION_META_LINE_H))
+                            .font_family(crate::fonts::UI_FAMILY)
                             .text_color(c::FG_DIM())
                             .child(root)
                     })),
@@ -3239,16 +3276,7 @@ impl Sidebar {
                                     })
                                     .text_size(rpx(TEXT_SMALL))
                                     .child(title),
-                            )
-                            .child(motion::fast(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_size(rpx(HIERARCHY_META_TEXT))
-                                    .text_color(color)
-                                    .child(status),
-                                format!("session-status-tree-{}-{status}", id.raw()),
-                                cx,
-                            )),
+                            ),
                     )
                     .child(
                         div()
@@ -3265,13 +3293,15 @@ impl Sidebar {
                                     .justify_start()
                                     .child(diff_element),
                             )
-                            .child(
+                            .child(motion::fast(
                                 div()
                                     .flex_shrink_0()
                                     .text_size(rpx(HIERARCHY_META_TEXT))
-                                    .text_color(c::FG_DIM())
-                                    .child(meta.agent.label()),
-                            ),
+                                    .text_color(color)
+                                    .child(status),
+                                format!("session-status-tree-{}-{status}", id.raw()),
+                                cx,
+                            )),
                     ),
             )
             .child(
@@ -6015,6 +6045,32 @@ mod tests {
                 assert!(close.left() >= card.left() && close.right() <= card.right());
                 assert!(close.top() >= card.top() && close.bottom() <= card.bottom());
                 assert!(cx.debug_bounds("diff-chip-open-1").is_some());
+            }
+            for (title, context, branch, diff, status) in [
+                (
+                    "session-list-title-1",
+                    "session-list-context-1",
+                    "session-list-branch-1",
+                    "session-list-diff-label-1",
+                    "session-list-status-1",
+                ),
+                (
+                    "session-list-title-2",
+                    "session-list-context-2",
+                    "session-list-branch-2",
+                    "session-list-diff-label-2",
+                    "session-list-status-2",
+                ),
+            ] {
+                let title = cx.debug_bounds(title).unwrap();
+                for selector in [context, branch, diff] {
+                    let bounds = cx.debug_bounds(selector).unwrap();
+                    assert!((bounds.left() - title.left()).abs() <= gpui::px(1.0));
+                    assert!(bounds.right() <= rail.right());
+                }
+                let status = cx.debug_bounds(status).unwrap();
+                assert!(status.left() >= title.right());
+                assert!(status.right() <= rail.right());
             }
             assert_eq!(
                 sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),

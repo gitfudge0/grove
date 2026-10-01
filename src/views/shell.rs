@@ -1381,6 +1381,9 @@ impl Render for Shell {
                 }),
                 cx.observe_window_activation(window, move |_, window, cx| {
                     let active = window.is_window_active();
+                    if active && !cfg!(test) {
+                        crate::platform::window_chrome::refresh_native_backdrop(window);
+                    }
                     runtime.update(cx, |runtime, cx| {
                         runtime
                             .activity
