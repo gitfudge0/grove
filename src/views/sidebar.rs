@@ -2935,11 +2935,16 @@ impl Sidebar {
                 .map(session_diff_status);
             self.row(
                 format!("session-{}", id.raw()),
-                format!("{title} · {name} · {context} · {status}"),
+                format!(
+                    "{title} · {name} · {context} · {status} · {} session",
+                    meta.agent.label()
+                ),
                 selected,
                 Action::Select(Selection::Session(id)),
                 cx,
             )
+            .relative()
+            .group("session-row")
             .h_auto()
             .min_h(rpx(ROW_H))
             .p(rpx(SPACE_LG))
@@ -2947,27 +2952,17 @@ impl Sidebar {
             .border_1()
             .border_color(if attention {
                 c::AMBER()
-            } else if selected {
-                c::BORDER_STRONG()
             } else {
-                c::BORDER()
+                c::alpha(c::BORDER(), 0.0)
             })
             .bg(if selected {
                 c::alpha(c::FG(), 0.14)
             } else if attention {
                 c::AMBER_ROW_TINT()
             } else {
-                c::SURFACE_RAISED()
+                c::alpha(c::BG(), 0.0)
             })
             .items_start()
-            .child(
-                div()
-                    .h(rpx(CONTROL_H))
-                    .flex()
-                    .items_center()
-                    .flex_shrink_0()
-                    .child(icon(meta.agent.icon_name(), ICON_SM, color)),
-            )
             .when_some(number.filter(|number| *number <= 9), |row, number| {
                 row.child(
                     div()
@@ -2991,6 +2986,7 @@ impl Sidebar {
                             .flex()
                             .items_center()
                             .min_w_0()
+                            .gap(rpx(SPACE_SM))
                             .child(
                                 div()
                                     .flex_1()
@@ -2999,6 +2995,15 @@ impl Sidebar {
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .child(title),
                             )
+                            .child(motion::fast(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(rpx(TEXT_MICRO))
+                                    .text_color(color)
+                                    .child(status),
+                                format!("session-status-list-{}-{status}", id.raw()),
+                                cx,
+                            ))
                             .child(
                                 self.control(
                                     ("close-session", id.raw()),
@@ -3007,6 +3012,10 @@ impl Sidebar {
                                     cx,
                                 )
                                 .debug_selector(move || format!("close-session-{}", id.raw()))
+                                .flex_shrink_0()
+                                .opacity(0.0)
+                                .group_hover("session-row", |button| button.opacity(1.0))
+                                .focus_visible(|button| button.opacity(1.0))
                                 .when_some(
                                     self.session_close_bounds.get(&id).cloned(),
                                     |button, bounds| {
@@ -3041,40 +3050,7 @@ impl Sidebar {
                                     .text_color(c::FG_DIM())
                                     .font_family(crate::fonts::MONO_FAMILY)
                                     .child(context),
-                            )
-                            .child(motion::fast(
-                                div().flex_shrink_0().text_color(color).child(status),
-                                format!("session-status-list-{}-{status}", id.raw()),
-                                cx,
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_MD))
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(age)
-                            .when_some(diff, |line, (label, actionable)| {
-                                line.child(if actionable {
-                                    self.control(
-                                        ("diff-chip-open", id.raw()),
-                                        format!("Open changes in {}", meta.wt_path),
-                                        Action::OpenDiff(id),
-                                        cx,
-                                    )
-                                    .debug_selector(move || format!("diff-chip-open-{}", id.raw()))
-                                    .w_auto()
-                                    .h_auto()
-                                    .px(rpx(SPACE_SM))
-                                    .text_color(c::GREEN())
-                                    .child(label)
-                                    .into_any_element()
-                                } else {
-                                    div().child(label).into_any_element()
-                                })
-                            }),
+                            ),
                     )
                     .when_some(branch, |column, branch| {
                         column.child(
@@ -3085,6 +3061,48 @@ impl Sidebar {
                                 .child(branch.to_string()),
                         )
                     })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_MD))
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .when_some(diff, |line, (label, actionable)| {
+                                line.child(div().flex_1().min_w_0().overflow_hidden().child(
+                                    if actionable {
+                                        self.control(
+                                            ("diff-chip-open", id.raw()),
+                                            format!("Open changes in {}", meta.wt_path),
+                                            Action::OpenDiff(id),
+                                            cx,
+                                        )
+                                        .debug_selector(move || {
+                                            format!("diff-chip-open-{}", id.raw())
+                                        })
+                                        .w_full()
+                                        .min_w_0()
+                                        .h_auto()
+                                        .px(rpx(SPACE_SM))
+                                        .text_color(c::GREEN())
+                                        .child(div().min_w_0().truncate().child(label))
+                                        .into_any_element()
+                                    } else {
+                                        div().truncate().child(label).into_any_element()
+                                    },
+                                ))
+                            })
+                            .child(div().flex_shrink_0().child(age))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_XS))
+                                    .child(icon(meta.agent.icon_name(), ICON_XS, c::FG_DIM()))
+                                    .child(meta.agent.label()),
+                            ),
+                    )
                     .children(roots.into_iter().map(|root| {
                         div()
                             .truncate()
@@ -3203,17 +3221,34 @@ impl Sidebar {
                     .gap(rpx(SPACE_XS))
                     .child(
                         div()
+                            .flex()
+                            .items_center()
                             .min_w_0()
+                            .gap(rpx(SPACE_SM))
                             .pr(rpx(SPACE_20))
-                            .truncate()
-                            .font_weight(if selected {
-                                gpui::FontWeight::SEMIBOLD
-                            } else {
-                                gpui::FontWeight::MEDIUM
-                            })
-                            .text_size(rpx(TEXT_SMALL))
                             .line_height(rpx(SESSION_TITLE_LINE_H))
-                            .child(title),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(if selected {
+                                        gpui::FontWeight::SEMIBOLD
+                                    } else {
+                                        gpui::FontWeight::MEDIUM
+                                    })
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .child(title),
+                            )
+                            .child(motion::fast(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_size(rpx(HIERARCHY_META_TEXT))
+                                    .text_color(color)
+                                    .child(status),
+                                format!("session-status-tree-{}-{status}", id.raw()),
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -3230,16 +3265,13 @@ impl Sidebar {
                                     .justify_start()
                                     .child(diff_element),
                             )
-                            .child(motion::fast(
+                            .child(
                                 div()
                                     .flex_shrink_0()
-                                    .font_family(crate::fonts::MONO_FAMILY)
                                     .text_size(rpx(HIERARCHY_META_TEXT))
-                                    .text_color(color)
-                                    .child(status),
-                                format!("session-status-tree-{}-{status}", id.raw()),
-                                cx,
-                            )),
+                                    .text_color(c::FG_DIM())
+                                    .child(meta.agent.label()),
+                            ),
                     ),
             )
             .child(
@@ -3274,7 +3306,7 @@ impl Sidebar {
             let idle_fill = if attention {
                 c::AMBER_ROW_TINT()
             } else {
-                c::SURFACE_RAISED()
+                c::alpha(c::BG(), 0.0)
             };
             let selected_fill = c::alpha(c::FG(), 0.14);
             motion::background(
