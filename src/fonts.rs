@@ -11,13 +11,15 @@ pub const CELL_H: f32 = 17.0;
 pub const FONT_SIZE: f32 = 12.5;
 /// `fc-scan` and gpui's `all_font_names()` agree on this spelling.
 pub const MONO_FAMILY: &str = "BlexMono Nerd Font Mono";
-pub const UI_FAMILY: &str = "IBM Plex Sans";
+pub const UI_FAMILY: &str = "Geist";
 
-const FONT_FILES: [&str; 4] = [
+const FONT_FILES: [&str; 6] = [
     "fonts/BlexMonoNerdFontMono-Regular.ttf",
     "fonts/BlexMonoNerdFontMono-Bold.ttf",
-    "fonts/IBMPlexSans-Regular.ttf",
-    "fonts/IBMPlexSans-Bold.ttf",
+    "fonts/Geist-Regular.ttf",
+    "fonts/Geist-Medium.ttf",
+    "fonts/Geist-SemiBold.ttf",
+    "fonts/Geist-Bold.ttf",
 ];
 
 /// A genuinely wrong font/size is off by >= 0.3px per cell; float noise from shaping is ~5e-7.

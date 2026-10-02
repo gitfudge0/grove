@@ -1350,7 +1350,7 @@ impl Sidebar {
                                 .rounded(rpx(RADIUS_CONTROL))
                                 .bg(c::FIELD_FILL())
                                 .text_size(rpx(TEXT_SMALL))
-                                .font_family(crate::fonts::MONO_FAMILY)
+                                .font_family(crate::fonts::UI_FAMILY)
                                 .flex()
                                 .flex_col()
                                 .gap(rpx(SPACE_SM))

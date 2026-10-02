@@ -460,7 +460,7 @@ impl Render for ProjectSetup {
                                     .min_w_0()
                                     .max_w(rpx(210.))
                                     .truncate()
-                                    .font_family(crate::fonts::MONO_FAMILY)
+                                    .font_family(crate::fonts::UI_FAMILY)
                                     .text_size(rpx(TEXT_MICRO))
                                     .text_color(c::FG_DIM())
                                     .child(path),
@@ -519,7 +519,7 @@ impl Render for ProjectSetup {
                         div()
                             .min_w_0()
                             .truncate()
-                            .font_family(crate::fonts::MONO_FAMILY)
+                            .font_family(crate::fonts::UI_FAMILY)
                             .text_size(rpx(TEXT_CODE))
                             .child(self.state.path.clone()),
                     ),

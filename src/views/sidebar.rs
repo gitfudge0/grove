@@ -2973,7 +2973,7 @@ impl Sidebar {
                     .text_size(rpx(TEXT_MICRO))
                     .line_height(rpx(SESSION_TITLE_LINE_H))
                     .text_color(c::FG_MUTE())
-                    .font_family(crate::fonts::MONO_FAMILY)
+                    .font_family(crate::fonts::UI_FAMILY)
                     .child(
                         number
                             .filter(|number| *number <= 9)
@@ -3081,7 +3081,7 @@ impl Sidebar {
                                 .truncate()
                                 .text_size(rpx(TEXT_MICRO))
                                 .line_height(rpx(SESSION_META_LINE_H))
-                                .font_family(crate::fonts::MONO_FAMILY)
+                                .font_family(crate::fonts::UI_FAMILY)
                                 .text_color(c::FG_DIM())
                                 .id(("session-list-branch", id.raw()))
                                 .debug_selector(move || format!("session-list-branch-{}", id.raw()))
@@ -3179,7 +3179,7 @@ impl Sidebar {
                     .h_auto()
                     .justify_start()
                     .gap(rpx(SPACE_MD))
-                    .font_family(crate::fonts::MONO_FAMILY)
+                    .font_family(crate::fonts::UI_FAMILY)
                     .text_size(rpx(HIERARCHY_META_TEXT))
                     .when(added > 0 || removed > 0, |diff| {
                         diff.when(added > 0, |diff| {
@@ -3194,13 +3194,13 @@ impl Sidebar {
                     })
                     .into_any_element(),
                 Some(_) => div()
-                    .font_family(crate::fonts::MONO_FAMILY)
+                    .font_family(crate::fonts::UI_FAMILY)
                     .text_size(rpx(HIERARCHY_META_TEXT))
                     .text_color(c::FG_DIM())
                     .child("clean")
                     .into_any_element(),
                 None => div()
-                    .font_family(crate::fonts::MONO_FAMILY)
+                    .font_family(crate::fonts::UI_FAMILY)
                     .text_size(rpx(HIERARCHY_META_TEXT))
                     .text_color(c::FG_DIM())
                     .child("—")
@@ -3621,6 +3621,9 @@ impl Sidebar {
                             div()
                                 .id(("project-title", idx))
                                 .debug_selector(move || format!("project-title-{idx}"))
+                                .flex_1()
+                                .flex()
+                                .flex_col()
                                 .min_w_0()
                                 .truncate()
                                 .line_height(rpx(PROJECT_TITLE_LINE_H))
@@ -4296,7 +4299,7 @@ impl Render for Sidebar {
                                                 .id("projects-count")
                                                 .debug_selector(|| "projects-count".into())
                                                 .flex_shrink_0()
-                                                .font_family(crate::fonts::MONO_FAMILY)
+                                                .font_family(crate::fonts::UI_FAMILY)
                                                 .font_weight(gpui::FontWeight::NORMAL)
                                                 .child(format!(
                                                     "({})",
