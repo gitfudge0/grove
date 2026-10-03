@@ -24,7 +24,7 @@
       Schedule="afterInstallInitialize"
       DowngradeErrorMessage="A newer version of Grove is already installed." />
 
-    <Media Id="1" Cabinet="grove.cab" EmbedCab="yes" />
+    <Media Id="1" Cabinet="grove.cab" EmbedCab="yes" CompressionLevel="high" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
