@@ -2932,12 +2932,19 @@ impl Sidebar {
             let git = self.runtime.read(cx).tree.read(cx).git_states();
             let diff = git
                 .get(crate::paths::normalize_wt_path(&meta.wt_path))
-                .map(session_diff_status);
+                .map(session_diff_status)
+                .unwrap_or_else(|| ("Git status unavailable".into(), false));
+            let full_context =
+                branch.map_or_else(|| context.clone(), |branch| format!("{context} · {branch}"));
             self.row(
                 format!("session-{}", id.raw()),
                 format!(
-                    "{title} · {name} · {context} · {status} · {} session",
-                    meta.agent.label()
+                    "{title} · {full_context} · {status} · {} · {age} · {} session{}",
+                    diff.0,
+                    meta.agent.label(),
+                    number
+                        .filter(|number| *number <= 9)
+                        .map_or_else(String::new, |number| format!(" · shortcut {number}"))
                 ),
                 selected,
                 Action::Select(Selection::Session(id)),
@@ -2947,7 +2954,8 @@ impl Sidebar {
             .group("session-row")
             .h_auto()
             .min_h(rpx(ROW_H))
-            .p(rpx(SPACE_LG))
+            .px(rpx(SPACE_LG))
+            .py(rpx(SPACE_MD))
             .rounded(rpx(RADIUS_GROUP))
             .border_1()
             .border_color(if attention {
@@ -2986,7 +2994,8 @@ impl Sidebar {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(rpx(SPACE_SM))
+                    .relative()
+                    .gap(rpx(SPACE_XS))
                     .child(
                         div()
                             .flex()
@@ -3020,84 +3029,64 @@ impl Sidebar {
                                     .child(status),
                                 format!("session-status-list-{}-{status}", id.raw()),
                                 cx,
-                            ))
-                            .child(
-                                self.control(
-                                    ("close-session", id.raw()),
-                                    format!("Close {} in {}", meta.label, meta.project),
-                                    Action::Close(id),
-                                    cx,
-                                )
-                                .debug_selector(move || format!("close-session-{}", id.raw()))
-                                .flex_shrink_0()
-                                .opacity(0.0)
-                                .group_hover("session-row", |button| button.opacity(1.0))
-                                .focus_visible(|button| button.opacity(1.0))
-                                .when_some(
-                                    self.session_close_bounds.get(&id).cloned(),
-                                    |button, bounds| {
-                                        button.child(
-                                            gpui::canvas(
-                                                move |rect, _, _| bounds.set(rect),
-                                                |_, (), _, _| {},
-                                            )
-                                            .absolute()
-                                            .inset_0(),
-                                        )
-                                    },
-                                )
-                                .child(icon(
-                                    "close",
-                                    ICON_XS,
-                                    c::FG_DIM(),
-                                )),
-                            ),
+                            )),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(rpx(SPACE_MD))
-                            .text_size(rpx(TEXT_SMALL))
+                            .min_w_0()
+                            .gap(rpx(SPACE_XS))
+                            .pr(rpx(CONTROL_H + SPACE_XS))
+                            .text_size(rpx(TEXT_MICRO))
+                            .line_height(rpx(SESSION_META_LINE_H))
+                            .text_color(c::FG_DIM())
+                            .id(("session-list-context-line", id.raw()))
+                            .tooltip({
+                                let context = full_context.clone();
+                                move |window, cx| {
+                                    crate::views::components::tooltip(context.clone(), window)
+                                        .build(window, cx)
+                                }
+                            })
                             .child(
                                 div()
-                                    .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_color(c::FG_DIM())
                                     .font_family(crate::fonts::UI_FAMILY)
                                     .font_weight(gpui::FontWeight::NORMAL)
-                                    .line_height(rpx(16.0))
                                     .id(("session-list-context", id.raw()))
                                     .debug_selector(move || {
                                         format!("session-list-context-{}", id.raw())
                                     })
                                     .child(context),
-                            ),
+                            )
+                            .when_some(branch, |line, branch| {
+                                line.child(div().flex_shrink_0().child("·")).child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .font_family(crate::fonts::UI_FAMILY)
+                                        .id(("session-list-branch", id.raw()))
+                                        .debug_selector(move || {
+                                            format!("session-list-branch-{}", id.raw())
+                                        })
+                                        .child(branch.to_string()),
+                                )
+                            }),
                     )
-                    .when_some(branch, |column, branch| {
-                        column.child(
-                            div()
-                                .truncate()
-                                .text_size(rpx(TEXT_MICRO))
-                                .line_height(rpx(SESSION_META_LINE_H))
-                                .font_family(crate::fonts::UI_FAMILY)
-                                .text_color(c::FG_DIM())
-                                .id(("session-list-branch", id.raw()))
-                                .debug_selector(move || format!("session-list-branch-{}", id.raw()))
-                                .child(branch.to_string()),
-                        )
-                    })
                     .child(
                         div()
                             .flex()
                             .items_center()
+                            .min_w_0()
                             .gap(rpx(SPACE_SM))
+                            .pr(rpx(CONTROL_H + SPACE_XS))
                             .text_size(rpx(TEXT_MICRO))
                             .line_height(rpx(SESSION_META_LINE_H))
                             .font_weight(gpui::FontWeight::NORMAL)
                             .text_color(c::FG_DIM())
-                            .when_some(diff, |line, (label, actionable)| {
+                            .when_some(Some(diff), |line, (label, actionable)| {
                                 line.child(div().flex_1().min_w_0().child(if actionable {
                                     self.control(
                                         ("diff-chip-open", id.raw()),
@@ -3106,6 +3095,10 @@ impl Sidebar {
                                         cx,
                                     )
                                     .debug_selector(move || format!("diff-chip-open-{}", id.raw()))
+                                    .when_some(
+                                        self.session_diff_focus.get(&id),
+                                        gpui::InteractiveElement::track_focus,
+                                    )
                                     .w_full()
                                     .min_w_0()
                                     .h_auto()
@@ -3137,6 +3130,40 @@ impl Sidebar {
                                     .child(icon(meta.agent.icon_name(), ICON_XS, c::FG_DIM()))
                                     .child(meta.agent.label()),
                             ),
+                    )
+                    .child(
+                        self.control(
+                            ("close-session", id.raw()),
+                            format!("Close {} in {}", meta.label, meta.project),
+                            Action::Close(id),
+                            cx,
+                        )
+                        .debug_selector(move || format!("close-session-{}", id.raw()))
+                        .absolute()
+                        .right_0()
+                        .top(rpx(SESSION_TITLE_LINE_H
+                            + SPACE_XS
+                            + SESSION_META_LINE_H
+                            + SPACE_XS
+                            + SESSION_META_LINE_H
+                            - CONTROL_H))
+                        .opacity(0.0)
+                        .group_hover("session-row", |button| button.opacity(1.0))
+                        .focus_visible(|button| button.opacity(1.0))
+                        .when_some(
+                            self.session_close_bounds.get(&id).cloned(),
+                            |button, bounds| {
+                                button.child(
+                                    gpui::canvas(
+                                        move |rect, _, _| bounds.set(rect),
+                                        |_, (), _, _| {},
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                            },
+                        )
+                        .child(icon("close", ICON_XS, c::FG_DIM())),
                     )
                     .children(roots.into_iter().map(|root| {
                         div()
@@ -6066,7 +6093,12 @@ mod tests {
                 ),
             ] {
                 let title = cx.debug_bounds(title).unwrap();
-                for selector in [context, branch, diff] {
+                let context_bounds = cx.debug_bounds(context).unwrap();
+                let branch_bounds = cx.debug_bounds(branch).unwrap();
+                assert_eq!(context_bounds.top(), branch_bounds.top());
+                assert!(branch_bounds.left() >= context_bounds.right());
+                assert!(branch_bounds.right() <= rail.right());
+                for selector in [context, diff] {
                     let bounds = cx.debug_bounds(selector).unwrap();
                     assert!((bounds.left() - title.left()).abs() <= gpui::px(1.0));
                     assert!(bounds.right() <= rail.right());
