@@ -30,6 +30,7 @@ const FORM_PRIMARY_MIN_W: f32 = 130.;
 const FORM_SECONDARY_MIN_W: f32 = 100.;
 const SESSION_HEADER_H: f32 = 36.;
 const SESSION_ICON_SLOT: f32 = 24.;
+const SESSION_CONTEXT_MAX_FRACTION: f32 = 0.5;
 const EMPTY_CARD_W: f32 = 430.;
 const EMPTY_CARD_PAD: f32 = 24.;
 const EMPTY_TITLE_SIZE: f32 = 18.;
@@ -582,10 +583,33 @@ impl Sidebar {
             .unwrap_or_default();
         let location =
             worktree.map_or_else(|| meta.wt_path.clone(), |worktree| worktree.name.clone());
-        let context = if home {
+        let full_context = if home {
             format!("{workspace} / Standalone terminal / ~")
         } else {
             format!("{workspace} / {} / {location}", meta.project)
+        };
+        let is_main = worktree.is_some_and(|worktree| worktree.is_main)
+            || cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .iter()
+                .any(|project| project.name == meta.project && project.path == meta.wt_path);
+        let context = if home {
+            "Standalone terminal".to_string()
+        } else if is_main {
+            meta.project.clone()
+        } else {
+            let checkout = worktree.map_or_else(
+                || {
+                    std::path::Path::new(&meta.wt_path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(&meta.wt_path)
+                },
+                |worktree| worktree.name.as_str(),
+            );
+            format!("{} · {checkout}", meta.project)
         };
         let error = session
             .as_ref()
@@ -617,7 +641,15 @@ impl Sidebar {
         );
         let agent = agent_name(meta.agent);
         let grid = self.mode == ViewMode::Grid;
-        let accessible_label = format!("{agent} · {task} · {context} · {}", state.label());
+        let mut accessible_label = format!(
+            "{agent} · {task} · {full_context} · Path: {} · {}",
+            meta.wt_path,
+            state.label()
+        );
+        if !branch.is_empty() {
+            accessible_label.push_str(" · Branch: ");
+            accessible_label.push_str(&branch);
+        }
         let mut view = None;
         if let Some(session) = session {
             if !self.canvas_observers.contains_key(&id) {
@@ -734,6 +766,22 @@ impl Sidebar {
             cx,
         );
         if grid {
+            // Reserve only the label's full width; truncation must not measure its own budget.
+            let context_text: gpui::SharedString =
+                format!("· {context}").replace(['\r', '\n'], " ").into();
+            let mut context_run = window.text_style().to_run(context_text.len());
+            context_run.font = gpui::font(crate::fonts::UI_FAMILY);
+            let context_width = window
+                .text_system()
+                .shape_line(
+                    context_text.clone(),
+                    rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                    &[context_run],
+                    None,
+                )
+                .width()
+                .ceil()
+                + rpx(SPACE_SM).to_pixels(window.rem_size());
             header = header
                 .child(agent_icon)
                 .h(rpx(SESSION_HEADER_H))
@@ -747,7 +795,7 @@ impl Sidebar {
                         .child(
                             div()
                                 .debug_selector(move || format!("grid-header-task-{}", id.raw()))
-                                .flex_auto()
+                                .flex_1()
                                 .min_w_0()
                                 .truncate()
                                 .font_weight(FontWeight::MEDIUM)
@@ -757,12 +805,13 @@ impl Sidebar {
                         .child(
                             div()
                                 .debug_selector(move || format!("grid-header-context-{}", id.raw()))
-                                .flex_auto()
+                                .w(context_width)
+                                .max_w(gpui::relative(SESSION_CONTEXT_MAX_FRACTION))
                                 .min_w_0()
                                 .truncate()
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
-                                .child(format!("· {context}")),
+                                .child(context_text),
                         ),
                 )
                 .child(status)
@@ -2279,7 +2328,7 @@ mod tests {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
                 projects: vec![grove_core::storage::Project {
-                    name: "demo".into(),
+                    name: "demo project with a descriptive name".into(),
                     path: "/grove-canvas-fixture".into(),
                     scripts: grove_core::storage::ProjectScripts::default(),
                     archived: false,
@@ -2293,7 +2342,11 @@ mod tests {
             let runtime = cx.new(crate::runtime::Runtime::new);
             let registry = runtime.read(cx).registry.clone();
             let id = registry.update(cx, |registry, _| {
-                registry.insert_meta("demo".into(), "/grove-canvas-fixture".into(), Agent::Codex)
+                registry.insert_meta(
+                    "demo project with a descriptive name".into(),
+                    "/grove-canvas-fixture".into(),
+                    Agent::Codex,
+                )
             });
             let mut sidebar = Sidebar::new(runtime, window, cx);
             sidebar.selection = Some(Selection::Session(id));
@@ -2344,17 +2397,18 @@ mod tests {
         let close = cx.debug_bounds("canvas-close-1").unwrap();
         assert!(f32::from(close.center().y - grid_header.center().y).abs() < 1.);
         assert!(close.left() >= grid_header.left() && close.right() <= grid_header.right());
+        let task = cx.debug_bounds("grid-header-task-1").unwrap();
+        let context = cx.debug_bounds("grid-header-context-1").unwrap();
+        assert!(task.size.width > gpui::px(0.));
+        assert!(task.right() <= context.left() && context.right() < close.left());
 
         cx.simulate_resize(gpui::size(gpui::px(1600.), gpui::px(800.)));
         draw(cx);
         let task = cx.debug_bounds("grid-header-task-1").unwrap();
         let context = cx.debug_bounds("grid-header-context-1").unwrap();
         let close = cx.debug_bounds("canvas-close-1").unwrap();
-        let context_width = cx.update(|window, cx| {
-            let workspaces = &cx.global::<SettingsState>().store.workspaces;
-            let workspace = workspaces.name(workspaces.active);
-            let text: gpui::SharedString =
-                format!("· {workspace} / demo / /grove-canvas-fixture").into();
+        let context_width = cx.update(|window, _| {
+            let text: gpui::SharedString = "· demo project with a descriptive name".into();
             let run = window.text_style().to_run(text.len());
             window
                 .text_system()
