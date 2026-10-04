@@ -82,6 +82,9 @@ fn resolve_multi_root_worktree(
 }
 
 pub struct Runtime {
+    pub(crate) control: Option<crate::control_runtime::ControlRuntime>,
+    control_task: Option<gpui::Task<()>>,
+    control_guard: Option<crate::control_server::ServerGuard>,
     pub state: Entity<WorkspaceState>,
     pub registry: Entity<SessionRegistry>,
     pub tree: Entity<ProjectTree>,
@@ -129,7 +132,10 @@ impl Runtime {
             cx.subscribe(&projects, Self::on_project_event),
         ];
         let dims = cx.global::<crate::zoom::CurrentPtyDims>();
-        Self {
+        let mut runtime = Self {
+            control: None,
+            control_task: None,
+            control_guard: None,
             state,
             registry,
             tree,
@@ -141,7 +147,25 @@ impl Runtime {
             last_pty_dims: (dims.rows, dims.cols),
             pending_managed_launch: None,
             _observers: observers,
+        };
+        if cx.has_global::<crate::control_server::ControlEndpoint>() {
+            let endpoint = cx.global_mut::<crate::control_server::ControlEndpoint>();
+            if let (Some(listener), Some(state)) = (endpoint.listener.take(), endpoint.state.take())
+            {
+                runtime.control = Some(crate::control_runtime::ControlRuntime::new(state));
+                match crate::control_server::start(listener, cx) {
+                    Ok((task, guard)) => {
+                        runtime.control_task = Some(task);
+                        runtime.control_guard = Some(guard);
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "could not start Grove control server");
+                        std::process::exit(1);
+                    }
+                }
+            }
         }
+        runtime
     }
 
     fn on_project_event(
@@ -247,6 +271,34 @@ impl Runtime {
         temp_bundle_path: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.spawn_session_with_options(
+            name,
+            cwd,
+            agent,
+            args,
+            context_roots,
+            temp_bundle_path,
+            true,
+            None,
+            None,
+            cx,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_session_with_options(
+        &mut self,
+        name: String,
+        cwd: String,
+        agent: Agent,
+        args: Vec<String>,
+        context_roots: Vec<grove_core::session_meta::ContextRoot>,
+        temp_bundle_path: Option<String>,
+        focus: bool,
+        backend: Option<bool>,
+        task_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.pending_managed_launch.is_some() {
             if let Some(path) = temp_bundle_path.as_deref() {
                 grove_core::multi_root::cleanup_path(std::path::Path::new(path));
@@ -277,7 +329,7 @@ impl Runtime {
             return false;
         }
         if should_choose_backend(
-            cx.global::<SettingsState>().store.tmux_enabled,
+            backend.or(cx.global::<SettingsState>().store.tmux_enabled),
             grove_core::tmux::available,
         ) {
             self.queue_backend_choice(
@@ -294,11 +346,14 @@ impl Runtime {
             );
             return false;
         }
-        self.state.update(cx, |s, cx| {
-            s.set_open_agent_menu(None);
-            cx.notify();
-        });
-        let use_tmux = managed_session_uses_tmux(cx.global::<SettingsState>().store.tmux_enabled);
+        if focus {
+            self.state.update(cx, |s, cx| {
+                s.set_open_agent_menu(None);
+                cx.notify();
+            });
+        }
+        let use_tmux =
+            managed_session_uses_tmux(backend.or(cx.global::<SettingsState>().store.tmux_enabled));
         let (id, extra_args, state_file, target) = self.registry.update(cx, |r, cx| {
             let id = r.insert_meta_with_context(
                 name.clone(),
@@ -316,6 +371,7 @@ impl Runtime {
                 extra_args,
                 state_file,
                 crate::entities::session_registry::SpawnTarget {
+                    task_id,
                     cwd,
                     agent,
                     project: name,
@@ -372,13 +428,15 @@ impl Runtime {
                 ],
             );
         }
-        let snap = self.snapshot(cx);
-        let old = self.state.read(cx).proj_idx();
-        ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
-        self.state.update(cx, |s, cx| {
-            s.select_session(id, &snap);
-            cx.notify();
-        });
+        if focus {
+            let snap = self.snapshot(cx);
+            let old = self.state.read(cx).proj_idx();
+            ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
+            self.state.update(cx, |s, cx| {
+                s.select_session(id, &snap);
+                cx.notify();
+            });
+        }
         spawn_error.is_none()
     }
 
@@ -669,6 +727,7 @@ impl Runtime {
             .registry
             .update(cx, |r, _| (r.next_home_id(), r.next_wt_label()));
         let target = crate::entities::session_registry::SpawnTarget {
+            task_id: None,
             cwd: wt_path.to_string(),
             agent: grove_core::agent::Agent::Terminal,
             project: String::new(),

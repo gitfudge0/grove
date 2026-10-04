@@ -62,6 +62,7 @@ pub struct SessionMeta {
 /// Where a new session opens. Replaces [`TerminalSession::spawn`]'s hardcoded single target.
 #[derive(Clone, Debug)]
 pub struct SpawnTarget {
+    pub task_id: Option<String>,
     pub cwd: String,
     pub agent: Agent,
     /// Empty for home terminals, which belong to no project.
@@ -80,6 +81,7 @@ impl SpawnTarget {
     #[must_use]
     pub fn home(label: String) -> Self {
         Self {
+            task_id: None,
             cwd: home_dir(),
             agent: Agent::Terminal,
             project: String::new(),

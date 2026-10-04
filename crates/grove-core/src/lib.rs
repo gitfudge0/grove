@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod attention;
 pub mod claude_agents;
+pub mod control;
 pub mod diff;
 pub mod env_path;
 pub mod error;
@@ -17,3 +18,5 @@ pub mod theme;
 pub mod theme_file;
 pub mod tmux;
 pub mod upgrade;
+
+pub mod control_state;

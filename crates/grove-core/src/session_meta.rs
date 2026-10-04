@@ -34,6 +34,9 @@ pub fn multi_project_identity(
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionMeta {
+    /// Opaque control identity retained across tmux reattachment.
+    #[serde(default)]
+    pub control_id: Option<String>,
     pub wt_path: String,
     pub project: String,
     pub label: String,
@@ -353,6 +356,7 @@ mod tests {
 
     fn make_meta() -> SessionMeta {
         SessionMeta {
+            control_id: None,
             wt_path: "/tmp/test-wt".into(),
             project: "testproject".into(),
             label: "test-label".into(),
@@ -524,6 +528,7 @@ mod tests {
 
     fn meta_with(project: &str, wt_path: &str) -> SessionMeta {
         SessionMeta {
+            control_id: None,
             wt_path: wt_path.into(),
             project: project.into(),
             label: "test-label".into(),
