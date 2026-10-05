@@ -2,6 +2,7 @@
 mod collapsed;
 mod content;
 mod grid;
+mod project_flyout;
 mod project_setup;
 mod projects;
 mod session_diff;
@@ -260,6 +261,7 @@ struct Navigation {
 enum Action {
     Select(Selection),
     ToggleProject(String),
+    ProjectFlyout(String),
     Mode(ViewMode),
     Menu(usize),
     NewWorktree(String),
@@ -358,6 +360,18 @@ pub struct Sidebar {
     scroll: ScrollHandle,
     terminal_owners: HashMap<SessionId, u64>,
     terminals_collapsed: bool,
+    project_flyout: Option<String>,
+    project_flyout_hover_open: bool,
+    project_flyout_hover_blocked: bool,
+    project_flyout_suppressed: Option<String>,
+    project_flyout_hide_task: Option<gpui::Task<()>>,
+    project_group_bounds: HashMap<usize, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
+    project_flyout_popup_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    project_flyout_focus: FocusHandle,
+    project_flyout_index: usize,
+    rail_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    project_flyout_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    project_flyout_scroll: ScrollHandle,
     menu: Option<usize>,
     menu_opened_by_hover: bool,
     menu_focus: FocusHandle,
@@ -512,6 +526,18 @@ impl Sidebar {
             scroll: ScrollHandle::new(),
             terminal_owners: HashMap::new(),
             terminals_collapsed: false,
+            project_flyout: None,
+            project_flyout_hover_open: false,
+            project_flyout_hover_blocked: false,
+            project_flyout_suppressed: None,
+            project_flyout_hide_task: None,
+            project_group_bounds: HashMap::new(),
+            project_flyout_popup_bounds: std::rc::Rc::default(),
+            project_flyout_focus: cx.focus_handle(),
+            project_flyout_index: 0,
+            rail_bounds: std::rc::Rc::default(),
+            project_flyout_bounds: std::rc::Rc::default(),
+            project_flyout_scroll: ScrollHandle::new(),
             menu: None,
             menu_opened_by_hover: false,
             menu_focus: cx.focus_handle(),
@@ -730,6 +756,31 @@ impl Sidebar {
         }
         self.snapshot = self.runtime.update(cx, |r, cx| r.snapshot(cx));
         self.snapshot.projects.retain(|p| ids.contains(&p.idx));
+        let stale_project_flyout = switched
+            || !self.is_collapsed(cx)
+            || self.mode != ViewMode::Project
+            || self.zen_return.is_some()
+            || self
+                .settings_panel
+                .as_ref()
+                .is_some_and(|panel| panel.read(cx).is_open())
+            || self.project_flyout.as_ref().is_some_and(|path| {
+                !self
+                    .snapshot
+                    .projects
+                    .iter()
+                    .any(|p| self.project_paths.get(&p.idx) == Some(path))
+            });
+        if stale_project_flyout {
+            let restore_focus =
+                self.project_flyout.is_some() && self.project_flyout_focus.is_focused(window);
+            self.project_flyout = None;
+            self.project_flyout_hover_open = false;
+            self.project_flyout_hide_task = None;
+            if restore_focus {
+                self.focus.focus(window, cx);
+            }
+        }
         let git_paths = {
             let registry = self.runtime.read(cx).registry.read(cx);
             let mut seen = HashSet::new();
@@ -747,6 +798,7 @@ impl Sidebar {
         });
         for project in &self.snapshot.projects {
             self.project_menu_bounds.entry(project.idx).or_default();
+            self.project_group_bounds.entry(project.idx).or_default();
             self.project_menu_focus
                 .entry(project.idx)
                 .or_insert_with(|| cx.focus_handle());
@@ -1605,6 +1657,7 @@ impl Sidebar {
             })
     }
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.dismiss_project_context(cx);
         self.initial_selection_pending = false;
         self.pending_canvas_focus = None;
         self.pending_grid_workspace_focus = None;
@@ -1787,7 +1840,9 @@ impl Sidebar {
                                 .get(project.idx)
                                 .map(|stored| &stored.path)
                         })
-                        .is_none_or(|path| !self.collapsed_projects.contains(path))
+                        .is_none_or(|path| {
+                            self.is_collapsed(cx) || !self.collapsed_projects.contains(path)
+                        })
                 })
                 .flat_map(|project| {
                     project
@@ -2218,7 +2273,43 @@ impl Sidebar {
         {
             return;
         }
+        let was_project_flyout = self.project_flyout.is_some();
+        if !matches!(
+            &action,
+            Action::ProjectFlyout(_) | Action::Close(_) | Action::ConfirmClose(_) | Action::Cancel
+        ) {
+            self.dismiss_project_context(cx);
+            self.track_project_flyout_pointer(window.mouse_position(), window, cx);
+        }
         match action {
+            Action::ProjectFlyout(path) => {
+                if self.project_flyout.as_ref() == Some(&path) && self.project_flyout_hover_open {
+                    self.project_flyout_hover_open = false;
+                    self.project_flyout_hide_task = None;
+                    self.project_flyout_focus.focus(window, cx);
+                    cx.notify();
+                } else if self.project_flyout.as_ref() == Some(&path) {
+                    self.close_project_flyout(window, cx);
+                } else if self.project_path_is_active(&path, cx) {
+                    self.menu = None;
+                    if let Some(bounds) = self
+                        .project_paths
+                        .iter()
+                        .find(|(_, candidate)| *candidate == &path)
+                        .and_then(|(idx, _)| self.project_menu_bounds.get(idx))
+                        .cloned()
+                    {
+                        self.project_flyout_bounds = bounds;
+                    }
+                    self.project_flyout_hover_open = false;
+                    self.project_flyout_hide_task = None;
+                    self.project_flyout = Some(path);
+                    self.project_flyout_index = 0;
+                    self.project_flyout_scroll = ScrollHandle::new();
+                    self.project_flyout_focus.focus(window, cx);
+                    cx.notify();
+                }
+            }
             Action::ToggleSidebar => {
                 let collapsed = !self.is_collapsed(cx);
                 self.drag = None;
@@ -2284,7 +2375,7 @@ impl Sidebar {
                 };
                 if let Some(view) = view {
                     view.focus_handle(cx).focus(window, cx);
-                } else if leaving_project_panel {
+                } else if leaving_project_panel || was_project_flyout {
                     self.focus.focus(window, cx);
                 }
             }
@@ -2313,7 +2404,14 @@ impl Sidebar {
                         self.menu_trigger_bounds = bounds.clone();
                     }
                     self.menu_index = 0;
-                    self.menu_return_focus = self.project_menu_focus.get(&i).cloned();
+                    self.menu_return_focus = if was_project_flyout {
+                        self.project_paths
+                            .get(&i)
+                            .and_then(|path| self.project_toggle_focus.get(path))
+                            .cloned()
+                    } else {
+                        self.project_menu_focus.get(&i).cloned()
+                    };
                     self.menu_focus.focus(window, cx);
                 }
             }
@@ -4387,6 +4485,7 @@ impl Render for Sidebar {
             .text_color(c::FG())
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                 this.divider_move(event, window, cx);
+                this.track_project_flyout_pointer(event.position, window, cx);
                 if this.menu_opened_by_hover
                     && !this.menu_trigger_bounds.get().contains(&event.position)
                     && !this.menu_popup_bounds.get().contains(&event.position)
@@ -4407,6 +4506,21 @@ impl Render for Sidebar {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && this.project_flyout.is_some()
+                    && !this.confirmation_open()
+                {
+                    if this.project_flyout_hover_open
+                        && !this.project_flyout_focus.contains_focused(window, cx)
+                    {
+                        this.dismiss_project_context(cx);
+                        this.track_project_flyout_pointer(window.mouse_position(), window, cx);
+                    } else {
+                        this.close_project_flyout(window, cx);
+                        cx.stop_propagation();
+                    }
+                    return;
+                }
                 if this.diff_viewer.is_some() {
                     if event.keystroke.key == "escape" {
                         this.act(Action::CloseDiff, window, cx);
@@ -4484,6 +4598,17 @@ impl Render for Sidebar {
                         .relative()
                         .h_full()
                         .child(rail)
+                        .child(
+                            gpui::canvas(
+                                {
+                                    let bounds = self.rail_bounds.clone();
+                                    move |rect, _, _| bounds.set(rect)
+                                },
+                                |_, (), _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
+                        )
                         .when(!collapsed, |rail| {
                             rail.child(
                                 div()
@@ -4969,13 +5094,22 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
-                projects: vec![grove_core::storage::Project {
-                    name: "demo".into(),
-                    path: path.into(),
-                    scripts: grove_core::storage::ProjectScripts::default(),
-                    archived: false,
-                    worktree_dir: None,
-                }],
+                projects: vec![
+                    grove_core::storage::Project {
+                        name: "demo".into(),
+                        path: path.into(),
+                        scripts: grove_core::storage::ProjectScripts::default(),
+                        archived: false,
+                        worktree_dir: None,
+                    },
+                    grove_core::storage::Project {
+                        name: "second".into(),
+                        path: "/grove-sidebar-second".into(),
+                        scripts: grove_core::storage::ProjectScripts::default(),
+                        archived: false,
+                        worktree_dir: None,
+                    },
+                ],
                 sidebar_width: Some(300.0),
                 sidebar_collapsed: true,
                 ..Default::default()
@@ -4992,8 +5126,17 @@ mod tests {
             let runtime = cx.new(Runtime::new);
             let registry = runtime.read(cx).registry.clone();
             let ids = registry.update(cx, |registry, _| {
-                [Agent::Codex, Agent::Claude]
-                    .map(|agent| registry.insert_meta("demo".into(), path.into(), agent))
+                [Agent::Codex, Agent::Claude].map(|agent| {
+                    registry.insert_meta(
+                        "demo".into(),
+                        if agent == Agent::Claude {
+                            format!("{path}/feature")
+                        } else {
+                            path.into()
+                        },
+                        agent,
+                    )
+                })
             });
             let home_terminal = cx.new(|cx| {
                 crate::entities::terminal_session::TerminalSession::attach_existing(
@@ -5017,12 +5160,26 @@ mod tests {
             runtime.read(cx).tree.clone().update(cx, |tree, _| {
                 tree.set_active_worktrees(
                     0,
-                    vec![grove_core::git::Worktree {
-                        path: path.into(),
-                        branch: "main".into(),
-                        mtime: None,
-                        is_main: true,
-                    }],
+                    vec![
+                        grove_core::git::Worktree {
+                            path: path.into(),
+                            branch: "main".into(),
+                            mtime: None,
+                            is_main: true,
+                        },
+                        grove_core::git::Worktree {
+                            path: format!("{path}/feature"),
+                            branch: "feature".into(),
+                            mtime: None,
+                            is_main: false,
+                        },
+                        grove_core::git::Worktree {
+                            path: format!("{path}/empty"),
+                            branch: "empty".into(),
+                            mtime: None,
+                            is_main: false,
+                        },
+                    ],
                 );
             });
             runtime.read(cx).activity.clone().update(cx, |activity, _| {
@@ -5044,39 +5201,21 @@ mod tests {
         assert!(cx.debug_bounds("sidebar-appbar-spacer").is_none());
         assert_compact_disclosure(
             cx,
-            "project-0",
-            "compact-glyph-project-0",
-            "compact-project-disclosure-0",
-        );
-        assert_compact_disclosure(
-            cx,
             "fold-terminals",
             "compact-glyph-fold-terminals",
             "compact-terminals-disclosure",
         );
         let project = cx.debug_bounds("project-0").unwrap();
-        let worktree = cx
-            .debug_bounds("worktree-/grove-sidebar-collapse-test")
-            .unwrap();
         let first = cx.debug_bounds("session-1").unwrap();
         let second = cx.debug_bounds("session-2").unwrap();
-        assert!(
-            project.top() < worktree.top()
-                && worktree.top() < first.top()
-                && first.top() < second.top()
-        );
-        for bounds in [project, worktree, first, second] {
+        assert!(project.top() < first.top() && first.top() < second.top());
+        for bounds in [project, first, second] {
             assert_eq!(f32::from(bounds.size.width), 36.0);
             assert_eq!(f32::from(bounds.size.height), 32.0);
         }
         assert_compact_column(
             cx,
             &[
-                ("project-0", "compact-glyph-project-0"),
-                (
-                    "worktree-/grove-sidebar-collapse-test",
-                    "compact-glyph-worktree-/grove-sidebar-collapse-test",
-                ),
                 ("session-1", "compact-glyph-session-1"),
                 ("session-2", "compact-glyph-session-2"),
                 ("home-3", "compact-glyph-home-3"),
@@ -5090,7 +5229,124 @@ mod tests {
         assert_compact_overlay(cx, "session-2", "compact-session-status-2");
         assert_compact_overlay(cx, "home-3", "compact-home-status-3");
         let canvas_left = cx.debug_bounds("sidebar-canvas").unwrap().left();
-        let project_menu = cx.debug_bounds("compact-project-menu-0").unwrap();
+        let selected_before_hover = sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
+        let focus_before_hover = cx.update(|window, cx| window.focused(cx));
+        cx.simulate_mouse_move(second.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.project_flyout_hover_open));
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
+            selected_before_hover
+        );
+        cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before_hover));
+        let hovered_popup = cx.debug_bounds("project-session-flyout").unwrap();
+        let heading = cx.debug_bounds("flyout-project-heading").unwrap();
+        let count = cx.debug_bounds("flyout-project-count").unwrap();
+        assert!((f32::from(heading.center().y - count.center().y)).abs() <= 1.0);
+        let session_row = cx.debug_bounds("flyout-session-1").unwrap();
+        assert_eq!(f32::from(session_row.size.height), SESSION_ROW_H);
+        let session_label = cx.debug_bounds("flyout-session-title-1").unwrap();
+        let footer_label = cx.debug_bounds("flyout-actions-label").unwrap();
+        assert!((f32::from(session_label.left() - footer_label.left())).abs() <= 1.0);
+
+        let group = cx.debug_bounds("compact-project-group-0").unwrap();
+        let crossing = gpui::point(
+            (group.right() + hovered_popup.left()) / 2.0,
+            second.center().y,
+        );
+        cx.simulate_mouse_move(crossing, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_some());
+        cx.simulate_mouse_move(hovered_popup.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_some());
+        let reentry_outside = gpui::point(gpui::px(900.0), gpui::px(740.0));
+        cx.simulate_mouse_move(reentry_outside, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_none());
+        cx.simulate_mouse_move(second.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_some());
+        let other_project = cx.debug_bounds("project-1").unwrap();
+        cx.simulate_mouse_move(other_project.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.project_flyout.as_deref()
+                == Some("/grove-sidebar-second"))
+        );
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
+            selected_before_hover
+        );
+        cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before_hover));
+        let outside_context = gpui::point(gpui::px(900.0), gpui::px(740.0));
+        cx.simulate_mouse_move(outside_context, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_none());
+        cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before_hover));
+        cx.simulate_mouse_move(second.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_some());
+        cx.simulate_click(second.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_none());
+        cx.simulate_mouse_move(second.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_none());
+        cx.simulate_mouse_move(outside_context, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_click(project.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_move(outside_context, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert!(!sidebar.read_with(cx, |sidebar, _| sidebar.project_flyout_hover_open));
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_some());
+        let popup = cx.debug_bounds("project-session-flyout").unwrap();
+        let trigger = sidebar.read_with(cx, |sidebar, _| sidebar.project_flyout_bounds.get());
+        assert!(
+            popup.left() >= rail.right(),
+            "popup={popup:?}; rail={rail:?}; trigger={trigger:?}"
+        );
+        assert!(cx
+            .debug_bounds("flyout-worktree-/grove-sidebar-collapse-test/feature")
+            .is_some());
+        assert!(cx
+            .debug_bounds("flyout-empty-/grove-sidebar-collapse-test/empty")
+            .is_some());
+        let selection_before_inspecting =
+            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
+        let second_project = cx.debug_bounds("project-1").unwrap();
+        cx.simulate_click(second_project.center(), gpui::Modifiers::default());
+        draw(cx);
+        let second_popup = cx.debug_bounds("project-session-flyout").unwrap();
+        assert!(second_popup.left() >= rail.right());
+        assert!(
+            (f32::from(second_popup.top() - second_project.top())).abs() <= 1.0,
+            "second popup={second_popup:?}; project={second_project:?}"
+        );
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
+            selection_before_inspecting
+        );
+        cx.simulate_click(project.center(), gpui::Modifiers::default());
+        draw(cx);
+        let project_menu = cx.debug_bounds("flyout-project-actions").unwrap();
         cx.simulate_click(project_menu.center(), gpui::Modifiers::default());
         draw(cx);
         let popup = cx.debug_bounds("project-actions-popup").unwrap();
@@ -5139,37 +5395,65 @@ mod tests {
         assert!(cx.debug_bounds("fold-terminals").is_some());
         assert!(cx.debug_bounds("add-terminal").is_some());
         assert!(cx.debug_bounds("projects-add").is_some());
-        let disclosure = cx
-            .debug_bounds("compact-project-disclosure-0")
-            .unwrap()
-            .center();
-        cx.simulate_click(disclosure, gpui::Modifiers::default());
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.collapsed_projects.insert(path.to_string());
+                assert_eq!(
+                    sidebar.visible_session_order(cx),
+                    vec![SessionId::from_raw(1), SessionId::from_raw(2)]
+                );
+                cx.notify();
+            });
+        });
+        let project_center = cx.debug_bounds("project-0").unwrap().center();
+        cx.simulate_click(project_center, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_some());
+        assert!(cx.debug_bounds("session-1").is_some());
+        cx.simulate_resize(gpui::size(gpui::px(240.0), gpui::px(300.0)));
+        draw(cx);
+        let flyout = cx.debug_bounds("project-session-flyout").unwrap();
+        assert!(flyout.left() >= gpui::px(0.0));
+        assert!(flyout.right() <= gpui::px(240.0));
+        assert!(flyout.bottom() <= gpui::px(300.0));
+        cx.simulate_keystrokes("down down down");
+        draw(cx);
+        let actions = cx.debug_bounds("flyout-project-actions").unwrap();
+        assert!(
+            actions.top() >= flyout.top() && actions.bottom() <= flyout.bottom(),
+            "scrolled actions={actions:?}; flyout={flyout:?}"
+        );
+
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        cx.update(|window, _| window.set_rem_size(gpui::px(crate::zoom::REM_BASE * 1.5)));
+        draw(cx);
+        let zoomed_rail = cx.debug_bounds("sidebar-rail").unwrap();
+        let zoomed_popup = cx.debug_bounds("project-session-flyout").unwrap();
+        assert!(
+            zoomed_popup.left() >= zoomed_rail.right(),
+            "zoomed popup={zoomed_popup:?}; rail={zoomed_rail:?}"
+        );
+        cx.update(|window, _| window.set_rem_size(gpui::px(crate::zoom::REM_BASE)));
         draw(cx);
         assert!(cx
             .debug_bounds("worktree-/grove-sidebar-collapse-test")
             .is_none());
-        assert_compact_disclosure(
-            cx,
-            "project-0",
-            "compact-glyph-project-0",
-            "compact-project-disclosure-0",
-        );
-        let disclosure = cx
-            .debug_bounds("compact-project-disclosure-0")
-            .unwrap()
-            .center();
-        cx.simulate_click(disclosure, gpui::Modifiers::default());
+        cx.simulate_keystrokes("escape");
         draw(cx);
-        assert!(cx
-            .debug_bounds("worktree-/grove-sidebar-collapse-test")
-            .is_some());
-        let second = cx.debug_bounds("session-2").unwrap();
+        assert!(cx.debug_bounds("project-session-flyout").is_none());
+        cx.update(|window, cx| {
+            assert!(sidebar.read(cx).project_toggle_focus[path].is_focused(window));
+        });
+        cx.simulate_click(project_center, gpui::Modifiers::default());
+        draw(cx);
+        let second = cx.debug_bounds("flyout-session-2").unwrap();
         cx.simulate_click(second.center(), gpui::Modifiers::default());
         draw(cx);
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
             Some(Selection::Session(SessionId::from_raw(2)))
         );
+        assert!(cx.debug_bounds("project-session-flyout").is_none());
         assert_compact_column(cx, &[("session-2", "compact-glyph-session-2")]);
         assert_compact_overlay(cx, "session-2", "compact-session-status-2");
         cx.update(|window, cx| {

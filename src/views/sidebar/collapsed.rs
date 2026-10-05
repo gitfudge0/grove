@@ -53,9 +53,6 @@ impl Sidebar {
         action: Action,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let hierarchy_child = matches!(action, Action::Select(Selection::Worktree(..)))
-            || (self.mode == ViewMode::Project
-                && matches!(action, Action::Select(Selection::Session(_))));
         let glyph_id = format!("compact-glyph-{id}");
         let agent_identity = matches!(action, Action::Select(Selection::Session(_)));
         let selection_bar =
@@ -78,19 +75,6 @@ impl Sidebar {
                         .h(rpx(16.0))
                         .rounded_full()
                         .bg(c::FG()),
-                )
-            })
-            .when(hierarchy_child, |item| {
-                item.child(
-                    div()
-                        .absolute()
-                        .left(rpx(4.0))
-                        .top(rpx(9.0))
-                        .w(rpx(3.0))
-                        .h(rpx(8.0))
-                        .border_l_1()
-                        .border_b_1()
-                        .border_color(c::BORDER_SOFT()),
                 )
             })
             .child(
@@ -406,13 +390,101 @@ impl Sidebar {
                 }
             }
         } else {
+            let identifiers = project_flyout::project_identifiers(
+                &self
+                    .snapshot
+                    .projects
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>(),
+            );
             for (position, project) in self.snapshot.projects.iter().enumerate() {
                 let idx = project.idx;
                 let Some(path) = self.project_paths.get(&idx) else {
                     continue;
                 };
-                let expanded = !self.collapsed_projects.contains(path);
+
+                let count = project
+                    .worktrees
+                    .iter()
+                    .map(|wt| wt.sessions.len())
+                    .sum::<usize>();
+                let anchor = self
+                    .control(
+                        format!("project-{idx}"),
+                        format!("{} · {count} open sessions · {path}", project.name),
+                        Action::ProjectFlyout(path.clone()),
+                        cx,
+                    )
+                    .debug_selector(move || format!("project-{idx}"))
+                    .relative()
+                    .w(rpx(36.0))
+                    .h(rpx(COMPACT_ROW_H))
+                    .rounded(rpx(RADIUS_CHROME))
+                    .text_size(rpx(TEXT_SMALL))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .when(self.project_flyout.as_ref() == Some(path), |row| {
+                        row.bg(c::BG_HOVER())
+                    })
+                    .when_some(
+                        self.project_toggle_focus.get(path),
+                        gpui::InteractiveElement::track_focus,
+                    )
+                    .child(identifiers[position].clone())
+                    .child(
+                        div()
+                            .absolute()
+                            .right_0()
+                            .bottom_0()
+                            .text_size(rpx(TEXT_MICRO))
+                            .text_color(c::FG_DIM())
+                            .child(count.to_string()),
+                    )
+                    .child(
+                        gpui::canvas(
+                            {
+                                let bounds = self.project_flyout_bounds.clone();
+                                let menu_bounds = self.project_menu_bounds.get(&idx).cloned();
+                                let active = self.project_flyout.as_ref() == Some(path);
+                                move |rect, _, _| {
+                                    if let Some(bounds) = &menu_bounds {
+                                        bounds.set(rect);
+                                    }
+                                    if active {
+                                        bounds.set(rect);
+                                    }
+                                }
+                            },
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .when(self.project_flyout.as_ref() == Some(path), |row| {
+                        row.child(gpui::deferred(self.project_session_flyout(idx, window, cx)))
+                    });
+                let group_path = path.clone();
                 let mut group = div()
+                    .id(("compact-project-group", idx))
+                    .debug_selector(move || format!("compact-project-group-{idx}"))
+                    .relative()
+                    .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                        if *hovered {
+                            this.open_project_flyout_on_hover(&group_path, window, cx);
+                        } else {
+                            this.track_project_flyout_pointer(window.mouse_position(), window, cx);
+                        }
+                    }))
+                    .when_some(
+                        self.project_group_bounds.get(&idx).cloned(),
+                        |group, bounds| {
+                            group.child(
+                                gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                                    .absolute()
+                                    .inset_0(),
+                            )
+                        },
+                    )
                     .w_full()
                     .min_w_0()
                     .flex_shrink_0()
@@ -427,130 +499,18 @@ impl Sidebar {
                             .border_t_1()
                             .border_color(c::BORDER_SOFT())
                     })
-                    .child(
-                        self.compact_item(
-                            format!("project-{idx}"),
-                            format!(
-                                "{} project · {path} · {}",
-                                project.name,
-                                if expanded {
-                                    "Collapse project"
-                                } else {
-                                    "Expand project"
-                                }
-                            ),
-                            if expanded { "folder-open" } else { "folder" },
-                            self.selection == Some(Selection::Project(idx)),
-                            Action::ToggleProject(path.clone()),
-                            cx,
-                        )
-                        .group("compact-project-row")
-                        .when_some(
-                            self.project_toggle_focus.get(path),
-                            gpui::InteractiveElement::track_focus,
-                        )
-                        .when(!project.worktrees.is_empty(), |item| {
-                            item.child(
-                                div()
-                                    .absolute()
-                                    .right(rpx(1.0))
-                                    .top_0()
-                                    .h_full()
-                                    .w(rpx(DISCLOSURE_D))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "compact-project-disclosure-{idx}"
-                                            )))
-                                            .debug_selector(move || {
-                                                format!("compact-project-disclosure-{idx}")
-                                            })
-                                            .size(rpx(DISCLOSURE_D))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(icon(
-                                                if expanded { "chev-down" } else { "chev-right" },
-                                                DISCLOSURE_D,
-                                                c::FG_DIM(),
-                                            )),
-                                    ),
-                            )
-                        })
-                        .child(
-                            self.control(
-                                ("project-menu", idx),
-                                format!("Actions for {}", project.name),
-                                Action::Menu(idx),
-                                cx,
-                            )
-                            .debug_selector(move || format!("compact-project-menu-{idx}"))
-                            .relative()
-                            .absolute()
-                            .right_0()
-                            .top_0()
-                            .w(rpx(SPACE_20))
-                            .h(rpx(ICON_MD))
-                            .opacity(0.0)
-                            .group_hover("compact-project-row", |button| button.opacity(1.0))
-                            .focus_visible(|button| button.opacity(1.0))
-                            .when_some(
-                                self.project_menu_focus.get(&idx),
-                                gpui::InteractiveElement::track_focus,
-                            )
-                            .when_some(
-                                self.project_menu_bounds.get(&idx).cloned(),
-                                |button, bounds| {
-                                    button.child(
-                                        gpui::canvas(
-                                            move |rect, _, _| bounds.set(rect),
-                                            |_, (), _, _| {},
-                                        )
-                                        .absolute()
-                                        .inset_0(),
-                                    )
-                                },
-                            )
-                            .child(icon("more", ICON_SM, c::FG_DIM()))
-                            .when(self.menu == Some(idx), |button| {
-                                button.child(gpui::deferred(self.project_popup(idx, window, cx)))
-                            }),
-                        ),
-                    );
-                if expanded {
-                    for worktree in &project.worktrees {
-                        group = group.child(
-                            self.compact_item(
-                                format!("worktree-{}", worktree.path),
-                                format!(
-                                    "{} · {} · {} · {}",
-                                    project.name,
-                                    sidebar_worktree_name(&worktree.name, worktree.is_main),
-                                    worktree.branch,
-                                    worktree.path
-                                ),
-                                "git-branch",
-                                self.selection
-                                    == Some(Selection::Worktree(idx, worktree.path.clone())),
-                                Action::Select(Selection::Worktree(idx, worktree.path.clone())),
-                                cx,
-                            )
-                            .when_some(
-                                self.worktree_focus.get(&worktree.path),
-                                gpui::InteractiveElement::track_focus,
-                            ),
-                        );
-                        for id in &worktree.sessions {
-                            if let Some(meta) =
-                                self.runtime.read(cx).registry.read(cx).meta(*id).cloned()
-                            {
-                                group = group.child(self.compact_session(&meta, window, cx));
-                            }
+                    .child(anchor);
+                for worktree in &project.worktrees {
+                    for id in &worktree.sessions {
+                        if let Some(meta) =
+                            self.runtime.read(cx).registry.read(cx).meta(*id).cloned()
+                        {
+                            group = group.child(self.compact_session(&meta, window, cx));
                         }
                     }
+                }
+                if self.menu == Some(idx) {
+                    group = group.child(gpui::deferred(self.project_popup(idx, window, cx)));
                 }
                 body = body.child(group);
             }

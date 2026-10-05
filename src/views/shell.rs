@@ -175,6 +175,8 @@ impl Shell {
         let sidebar_events =
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
                 super::sidebar::SidebarEvent::SettingsRequested => {
+                    this.sidebar
+                        .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                     this.settings
                         .update(cx, |settings, cx| settings.open(window, cx));
                 }
@@ -469,6 +471,8 @@ impl Shell {
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .child(icon("plus", ICON_MD, c::FG()))
                             .on_click(cx.listener(|this, _, window, cx| {
+                                this.sidebar
+                                    .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                                 this.launcher
                                     .update(cx, |launcher, cx| launcher.open(window, cx));
                             })),
@@ -628,6 +632,8 @@ impl Shell {
     }
 
     fn open_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar
+            .update(cx, super::sidebar::Sidebar::dismiss_project_context);
         if self.shortcut_blocked(cx) {
             return;
         }
@@ -710,6 +716,8 @@ impl Shell {
 
     fn new_session_from_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_switcher(window, cx);
+        self.sidebar
+            .update(cx, super::sidebar::Sidebar::dismiss_project_context);
         self.launcher
             .update(cx, |launcher, cx| launcher.open(window, cx));
     }
@@ -1338,6 +1346,10 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let project_hover_blocked = self.shortcut_blocked(cx);
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_project_hover_blocked(project_hover_blocked, cx);
+        });
         if !self.highlights_startup_checked
             && !self.highlights_startup_scheduled
             && !self.shortcut_blocked(cx)
@@ -1440,6 +1452,8 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &k::NewSession, window, cx| {
                 if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                     this.launcher
                         .update(cx, |launcher, cx| launcher.open(window, cx));
                 }
@@ -1448,6 +1462,8 @@ impl Render for Shell {
                 cx.listener(|this, _: &k::NewSessionInWorktree, window, cx| {
                     if !this.shortcut_blocked(cx) {
                         if let Some((project, path)) = this.sidebar.read(cx).selected_worktree() {
+                            this.sidebar
+                                .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                             this.launcher.update(cx, |launcher, cx| {
                                 launcher.open_for_worktree(project, &path, window, cx);
                             });
@@ -1538,12 +1554,16 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &k::Settings, window, cx| {
                 if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                     this.settings
                         .update(cx, |settings, cx| settings.open(window, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &k::ShortcutOverlay, window, cx| {
                 if !this.shortcut_blocked(cx) {
+                    this.sidebar
+                        .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                     this.settings
                         .update(cx, |settings, cx| settings.open_shortcuts(window, cx));
                 }
@@ -2877,13 +2897,14 @@ mod tests {
                 .meta(selected)
                 .is_some());
         });
-        let disclosure = cx
-            .debug_bounds("compact-project-disclosure-0")
-            .unwrap()
-            .center();
-        cx.simulate_click(disclosure, gpui::Modifiers::default());
+        let project = cx.debug_bounds("project-0").unwrap().center();
+        cx.simulate_click(project, gpui::Modifiers::default());
         draw(cx);
-        assert!(cx.debug_bounds("session-1").is_none());
+        assert!(cx.debug_bounds("project-session-flyout").is_some());
+        assert!(cx.debug_bounds("session-1").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds("project-session-flyout").is_none());
         cx.update(|window, cx| prior.focus(window, cx));
         cx.simulate_keystrokes(&format!("{}w", k::platform_mod_prefix()));
         draw(cx);
