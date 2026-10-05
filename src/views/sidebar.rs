@@ -3030,8 +3030,10 @@ impl Sidebar {
             let git = self.runtime.read(cx).tree.read(cx).git_states();
             let diff = git
                 .get(crate::paths::normalize_wt_path(&meta.wt_path))
-                .map(session_diff_status)
-                .unwrap_or_else(|| ("Git status unavailable".into(), false));
+                .map_or_else(
+                    || ("Git status unavailable".into(), false),
+                    session_diff_status,
+                );
             let full_context =
                 branch.map_or_else(|| context.clone(), |branch| format!("{context} · {branch}"));
             self.row(
