@@ -746,6 +746,8 @@ impl Sidebar {
                         .gap(rpx(SPACE_MD))
                         .child(
                             div()
+                                .debug_selector(move || format!("grid-header-task-{}", id.raw()))
+                                .flex_auto()
                                 .min_w_0()
                                 .truncate()
                                 .font_weight(FontWeight::MEDIUM)
@@ -754,6 +756,8 @@ impl Sidebar {
                         )
                         .child(
                             div()
+                                .debug_selector(move || format!("grid-header-context-{}", id.raw()))
+                                .flex_auto()
                                 .min_w_0()
                                 .truncate()
                                 .text_size(rpx(TEXT_SMALL))
@@ -1350,7 +1354,7 @@ impl Sidebar {
                                 .rounded(rpx(RADIUS_CONTROL))
                                 .bg(c::FIELD_FILL())
                                 .text_size(rpx(TEXT_SMALL))
-                                .font_family(crate::fonts::MONO_FAMILY)
+                                .font_family(crate::fonts::UI_FAMILY)
                                 .flex()
                                 .flex_col()
                                 .gap(rpx(SPACE_SM))
@@ -2339,6 +2343,30 @@ mod tests {
         assert_eq!(f32::from(grid_header.size.height), SESSION_HEADER_H);
         let close = cx.debug_bounds("canvas-close-1").unwrap();
         assert!(f32::from(close.center().y - grid_header.center().y).abs() < 1.);
+        assert!(close.left() >= grid_header.left() && close.right() <= grid_header.right());
+
+        cx.simulate_resize(gpui::size(gpui::px(1600.), gpui::px(800.)));
+        draw(cx);
+        let task = cx.debug_bounds("grid-header-task-1").unwrap();
+        let context = cx.debug_bounds("grid-header-context-1").unwrap();
+        let close = cx.debug_bounds("canvas-close-1").unwrap();
+        let context_width = cx.update(|window, cx| {
+            let workspaces = &cx.global::<SettingsState>().store.workspaces;
+            let workspace = workspaces.name(workspaces.active);
+            let text: gpui::SharedString =
+                format!("· {workspace} / demo / /grove-canvas-fixture").into();
+            let run = window.text_style().to_run(text.len());
+            window
+                .text_system()
+                .shape_line(text, gpui::px(TEXT_SMALL), &[run], None)
+                .width()
+        });
+        assert!(
+            context.size.width >= context_width,
+            "Context must fit without truncation in a wide header: {context:?}, text width {context_width:?}"
+        );
+        assert!(task.right() <= context.left());
+        assert!(context.right() < close.left());
     }
     #[gpui::test]
     fn empty_workspace_card_is_centered_and_bounded(cx: &mut gpui::TestAppContext) {

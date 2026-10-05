@@ -11,6 +11,9 @@ use rust_embed::RustEmbed;
 #[folder = "assets"]
 #[include = "fonts/*"]
 #[include = "highlights/**"]
+// The UI registers Geist; retain the old font files only as source assets.
+#[exclude = "fonts/IBMPlexSans-Regular.ttf"]
+#[exclude = "fonts/IBMPlexSans-Bold.ttf"]
 pub struct Assets;
 
 impl AssetSource for Assets {

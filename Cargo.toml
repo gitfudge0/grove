@@ -29,6 +29,13 @@ edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 
+# Reduce shipped binaries on every platform without changing panic behavior
+# or the default release optimization level.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+
 # Denied in production paths only. CI runs a second `--all-targets` pass with
 # these allowed, so test modules keep using unwrap() freely.
 [workspace.lints.rust]
@@ -155,9 +162,9 @@ arboard.workspace = true
 base64.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
-# `include-exclude` keeps the embed to `assets/fonts` — the icon PNGs and the
-# macOS bundle art have no business inside this binary.
-rust-embed = { workspace = true, features = ["include-exclude"] }
+# Embed only the fonts and release highlights selected in Assets, and compress
+# their bytes in release builds. Icon PNGs and bundle art stay outside the binary.
+rust-embed = { workspace = true, features = ["include-exclude", "compression"] }
 futures.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

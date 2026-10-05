@@ -87,10 +87,10 @@ Components use semantic accessors only. Neutral selection never becomes violet. 
 
 | Token | CSS family | Use | Rust / GPUI mapping |
 |---|---|---|---|
-| font-ui | `"IBM Plex Sans"` | app UI and all form values | verified: `.font_family(crate::fonts::UI_FAMILY)` on the `grove-shell` root — IBM Plex Sans is bundled and registered in `src/fonts.rs`; retain existing bold/medium weights. |
-| font-mono | `"BlexMono Nerd Font Mono"` | terminal, code metadata, keycap, status | verified: `gpui::font(crate::fonts::MONO_FAMILY)` — BlexMono is bundled. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
+| font-ui | `"Geist"` | app UI and all form values | verified: `.font_family(crate::fonts::UI_FAMILY)` on the `grove-shell` root — Geist is bundled and registered in `src/fonts.rs`; Regular (400), Medium (500), SemiBold (600), and Bold (700) are bundled. |
+| font-mono | `"BlexMono Nerd Font Mono"` | PTY text only | verified: `gpui::font(crate::fonts::MONO_FAMILY)` — BlexMono is bundled. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
 
-IBM Plex Sans is the bundled UI family, including paths and branches inside forms. Blex Mono remains for terminal and code metadata; its PTY metrics remain fixed at FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17.
+Geist is the bundled family for all non-PTY text, including paths, branches, metadata, keycaps, status, diffs, and script editors. Blex Mono remains for PTY text only; its PTY metrics remain fixed at FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17.
 
 ### Scale
 
@@ -133,19 +133,19 @@ Embedded labels use `line-field-label = 16px` with `text-12`, regular weight. Va
 | section heading | UI | 18 | 600 | page and panel headings | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
 | row label | UI | 12 | 500 | project, worktree, and session | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
 | body | UI | 13 | 400 | guidance and dialog copy | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
-| metadata | Mono | 11 | 400 | path and branch | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
-| status | Mono | 10 | 500 | statusbar and counters | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
+| metadata | UI | 11 | 400 | path and branch | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
+| status | UI | 10 | 500 | statusbar and counters | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
 | terminal | Mono | 12 | 400 | PTY text | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
 | display | UI | 32 | 700 | sparse empty-state title | Composition target; combine audited family, size, explicit line-height, weight and semantic color rows. PTY uses existing cell metrics. |
 
 ## Forms and inputs
 
-Grove forms use flat filled controls on black or white surfaces. Each field is 60px tall with a 12px regular label above a 16px value; label and value line heights are 16px and 22px. Labels use `text-secondary`, never the quiet metadata token. All form values use bundled IBM Plex Sans, including paths and branches.
+Grove forms use flat filled controls on black or white surfaces. Each field is 60px tall with a 12px regular label above a 16px value; label and value line heights are 16px and 22px. Labels use `text-secondary`, never the quiet metadata token. All form values use bundled Geist, including paths and branches.
 
 | Pattern | Anatomy | States | GPUI mapping |
 |---|---|---|---|
 | Embedded-label field | 60px field-fill well, 12px radius, label above value | empty, filled, focused, invalid, disabled, readonly | Target (pending): `FIELD_H`, `RADIUS_12`, `c::FIELD_FILL()` |
-| Compound field | optional semantic icon, input/select/textarea, trailing action | native select, split values, textarea, date/time | Target (pending): form geometry; value text uses bundled IBM Plex Sans; keep catalog icons |
+| Compound field | optional semantic icon, input/select/textarea, trailing action | native select, split values, textarea, date/time | Target (pending): form geometry; value text uses bundled Geist; keep catalog icons |
 | Attached validation | invalid field joins a local message below with a shared border and error-wash backing | single and multiple errors | Target (pending): error text and border use `c::RED()`; light error is `#b6384c` |
 | Grouped switches | quiet outlined 16px group; 48×28 track, 22px white thumb, 3px inset | on, off, disabled | Target (pending): `SWITCH_*`, `c::SWITCH_ON()`, `c::SWITCH_THUMB()` |
 | Selection tiles | min 42×44, 12px radius, neutral 2px total selected outline | single or multiple, selected/unselected | Target (pending): `TILE_*`, `c::SEL_RING()`; blue category dot pairs with visible text |
@@ -231,7 +231,7 @@ Workspace switching is appbar content and owns no separate width token.
 
 ## Tooltips
 
-App tooltips use the shared `views::components::tooltip` helper: IBM Plex Sans at the existing `TEXT_SMALL` (12 design px), 16px line height, 8px horizontal and 5px vertical padding, and `RADIUS_GROUP` (6px). Tooltips always use an inverse dark surface, regardless of the app theme: background `#1b1b1b`, text `#f7f7f8`, border `#34343a`, and a subtle black shadow at .36 alpha with a 2px offset and 8px blur. Text wraps within a 320-design-pixel surface, including long names. Dimensions scale with app rem zoom; the one-pixel border remains a logical hairline. Existing hover delay, margins, placement, and animation remain owned by the tooltip component, and accessible labels stay on the triggers.
+App tooltips use the shared `views::components::tooltip` helper: Geist at the existing `TEXT_SMALL` (12 design px), 16px line height, 8px horizontal and 5px vertical padding, and `RADIUS_GROUP` (6px). Tooltips always use an inverse dark surface, regardless of the app theme: background `#1b1b1b`, text `#f7f7f8`, border `#34343a`, and a subtle black shadow at .36 alpha with a 2px offset and 8px blur. Text wraps within a 320-design-pixel surface, including long names. Dimensions scale with app rem zoom; the one-pixel border remains a logical hairline. Existing hover delay, margins, placement, and animation remain owned by the tooltip component, and accessible labels stay on the triggers.
 
 ## Shadows
 
@@ -349,7 +349,7 @@ Forms use 60px flat filled wells, 12px embedded labels, and attached validation 
 |---|---|---|
 | Source | The approved form moodboard sets surfaces, focus, typography, radius, and form geometry. Existing dense workspace chrome retains its dimensions. | `DESIGN.html` CSS tokens drive rendered tables; this Markdown mirrors them. |
 | Themes | Dark received primary design scrutiny. Light is a derived white counterpart. | Both resolve through the same `c::*()` semantic names. |
-| Fonts | IBM Plex Sans is the bundled UI family; Blex Mono remains for terminal and code metadata. | Composition target; combine family, size, explicit line-height, weight and semantic color rows. PTY retains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
+| Fonts | Geist is the bundled UI family; Blex Mono remains for PTY text only. | Composition target; combine family, size, explicit line-height, weight and semantic color rows. PTY retains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
 | Units | 1rem is 16 design px. Layout values pass through `rpx()`; hairlines use `px(1.)`. | Do not place bare layout numbers in components. |
 | Regularization | Spacing and radius are tidy scales rather than traced values. | Add or rename constants in `src/views/tokens.rs` before component work. |
 | New aliases | Changed values and new semantic names are target mappings pending source migration in `src/theme.rs` and token definitions. | Do not substitute component literals while aliases are pending. |
@@ -384,7 +384,7 @@ The exhaustive table below is mirrored from `var gpuiTokenMap` in `DESIGN.html`;
 
 `rpx(v) = rems(v / 16)` and Workspace sets rem size to `16 * zoom`. Layout and type measured in design pixels therefore scale once. `gpui::px` creates logical pixels, not device pixels. Hairlines remain unscaled; shadow geometry uses `rpx(value).to_pixels(window.rem_size())` to convert design dimensions into the Pixels required by BoxShadow. Never pass an already-scaled value to `icon()`. Exact CSS unitless line-height multipliers produce fractional values (for example 12 × 1.417 = 17.004); the older rounded px labels are explanatory only. Apply explicit line height to UI labels; do not feed these values into PTY metrics.
 
-Current `src/theme.rs` derives Tokyo Night colors. Existing names do not establish visual parity. `sync_component_theme` currently only synchronizes `muted_foreground`; the component library theme still requires a deliberate migration. The `grove-shell` root applies the bundled IBM Plex Sans UI family. Preserve Blex Mono PTY cell width/height/font metrics. Catalog icons below are adaptation seams: compare actual SVG paths with the HTML, including missing sprite keys; a function name does not prove glyph parity.
+Current `src/theme.rs` derives Tokyo Night colors. Existing names do not establish visual parity. `sync_component_theme` currently only synchronizes `muted_foreground`; the component library theme still requires a deliberate migration. The `grove-shell` root applies the bundled Geist UI family. Preserve Blex Mono PTY cell width/height/font metrics. Catalog icons below are adaptation seams: compare actual SVG paths with the HTML, including missing sprite keys; a function name does not prove glyph parity.
 
 No CSS z-index, outline, blur, easing or accessibility attribute should be translated by inventing an API. The table records composition work explicitly. Motion preference plumbing and static reduced-motion rendering are implemented in the app; border rings, attached overlays, focus restoration and blocking input require component-level verification.
 
@@ -444,8 +444,8 @@ No CSS z-index, outline, blur, easing or accessibility attribute should be trans
 | --shadow-sm | 0 1px 2px rgba(0,0,0,.36) | 0 1px 2px rgba(13,13,15,.10) | `gpui::BoxShadow { color: c::SHADOW_SM(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_SM_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_SM_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }` | add | src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs | Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW. |
 | --shadow-md | 0 8px 24px rgba(0,0,0,.42) | 0 8px 24px rgba(13,13,15,.14) | `gpui::BoxShadow { color: c::SHADOW_MD(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_MD_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_MD_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }` | add | src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs | Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW. |
 | --shadow-lg | 0 16px 48px rgba(0,0,0,.50) | 0 16px 48px rgba(13,13,15,.18) | `gpui::BoxShadow { color: c::SHADOW_LG(), offset: gpui::point(gpui::px(0.), rpx(SHADOW_LG_Y).to_pixels(window.rem_size())), blur_radius: rpx(SHADOW_LG_BLUR).to_pixels(window.rem_size()), spread_radius: gpui::px(0.), inset: false }` | add | src/views/components.rs; GPUI 1a246efd7e1b83ab568ec5e3e6c1a43a42e1abba crates/gpui/src/style.rs | Add SHADOW_SM_Y = 1.0, SHADOW_SM_BLUR = 2.0 and theme alpha accessor. BoxShadow requires Pixels, so convert rem-scaled design dimensions with current rem_size. Hairlines remain unscaled logical px. Do not reuse PANEL_SHADOW. |
-| --font-ui | "IBM Plex Sans" | "IBM Plex Sans" | `.font_family(crate::fonts::UI_FAMILY)` on `Shell` root | verified | assets/fonts/IBMPlexSans-Regular.ttf; src/fonts.rs; src/views/shell.rs | IBM Plex Sans is bundled and registered in `src/fonts.rs`; root family is inherited by app UI text. Retain bold/medium weights. |
-| --font-mono | "BlexMono Nerd Font Mono" | "BlexMono Nerd Font Mono" | `gpui::font(crate::fonts::MONO_FAMILY)` | verified | assets/fonts/BlexMonoNerdFontMono-Regular.ttf; src/fonts.rs | BlexMono remains for terminal and code metadata. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
+| --font-ui | "Geist" | "Geist" | `.font_family(crate::fonts::UI_FAMILY)` on `Shell` root | verified | assets/fonts/Geist-Regular.ttf; src/fonts.rs; src/views/shell.rs | Geist is bundled and registered in `src/fonts.rs`; root family is inherited by app UI text. Regular (400), Medium (500), SemiBold (600), and Bold (700) are bundled. |
+| --font-mono | "BlexMono Nerd Font Mono" | "BlexMono Nerd Font Mono" | `gpui::font(crate::fonts::MONO_FAMILY)` | verified | assets/fonts/BlexMonoNerdFontMono-Regular.ttf; src/fonts.rs | BlexMono remains for PTY text only. PTY remains FONT_SIZE=12.5, CELL_W=7.5, CELL_H=17. |
 | --text-10 | .625rem | .625rem | `.text_size(rpx(TEXT_MICRO))` | adapt | src/views/tokens.rs | Grove TEXT_MICRO is 11px; reference CSS token is 10px. ui()/mono() do not set explicit line height. |
 | --text-11 | .6875rem | .6875rem | `.text_size(rpx(TEXT_SMALL))` | adapt | src/views/tokens.rs | Grove TEXT_SMALL is 12px; reference CSS token is 11px. ui()/mono() do not set explicit line height. |
 | --text-12 | .75rem | .75rem | `.text_size(rpx(TEXT_BODY))` | adapt | src/views/tokens.rs | Grove TEXT_BODY is 13px; reference CSS token is 12px. ui()/mono() do not set explicit line height. |

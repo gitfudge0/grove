@@ -84,7 +84,7 @@ impl Sidebar {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .font_family(crate::fonts::MONO_FAMILY)
+            .font_family(crate::fonts::UI_FAMILY)
             .text_size(rpx(TEXT_CODE_SMALL));
         if let Some(path) = &selected_path {
             if !changed_files.iter().any(|file| &file.path == path) {

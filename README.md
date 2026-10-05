@@ -24,6 +24,7 @@ grove is a native desktop app for managing git worktrees across projects and run
 - [install](#install)
 - [quickstart](#quickstart)
 - [sessions](#sessions)
+- [CLI and agent delegation](#cli-and-agent-delegation)
 - [keyboard](#keyboard)
 - [supported agents](#supported-agents)
 - [appearance](#appearance)
@@ -108,6 +109,27 @@ grove supports two session backends:
 | **native** | no tmux dependency | sessions end when grove exits |
 
 when you start your first managed project session with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new sessions. existing sessions keep the backend they were started with.
+
+## CLI and agent delegation
+
+with the desktop running, the `grove` CLI can discover projects, create worktrees, launch and inspect sessions, and track delegated tasks. control uses a private local Unix socket on linux/macOS; Windows CLI control is not supported yet. it does not start a headless service or open the desktop automatically. bare `grove` still opens the desktop; `grove --help` and `grove --version` work without it.
+
+```sh
+grove projects list --json
+grove worktrees list --project /path/to/project --json
+grove sessions start --project /path/to/project --worktree /path/to/worktree \
+  --agent codex --backend tmux --prompt-file /path/to/prompt.txt \
+  --task-title "Implement the parser" --task-file /path/to/prompt.txt \
+  --request-id parser-worker-1 --json
+grove sessions logs SESSION_ID --lines 100 --json
+grove tasks wait TASK_ID --timeout 60 --json
+```
+
+use the returned session/task IDs and `grove <command> --help` for command details. responses are versioned JSON envelopes with `{version, ok, data, error}` and the executed request ID; `--json` is accepted anywhere. reuse the same request ID and identical inputs when retrying a launch after a lost response. pending requests after a crash require inspecting sessions/tasks before recovery. logs return bounded current-screen text, not a historical transcript. if you set `GROVE_CONFIG_DIR` for the desktop, use the same value for CLI commands.
+
+task records persist across restarts. workers receive `GROVE_TASK_ID` and `GROVE_CONFIG_DIR`, and explicitly submit a result with `grove tasks complete TASK_ID --result-file /path/to/result.json`; a result is a worker report that the coordinator still needs to verify. terminal activity and sidebar “done” signals do not establish success. native sessions end on desktop exit; tmux sessions can reconnect. check the returned backend because a failed tmux launch can fall back to native. launches honor Grove's existing agent permission settings.
+
+the repository includes a [Grove skill](skills/grove/SKILL.md) for agents coordinating independent tasks in separate worktrees. to install it for Codex, copy `skills/grove` into `~/.codex/skills/grove` (or your custom Codex skills directory), then use `$grove`. installation is optional; Grove does not install it automatically.
 
 ## keyboard
 

@@ -193,7 +193,7 @@ impl Render for Statusbar {
             .bg(c::BG_STRIP())
             .text_color(c::FG_DIM())
             .text_size(rpx(TEXT_MICRO))
-            .font_family(crate::fonts::MONO_FAMILY);
+            .font_family(crate::fonts::UI_FAMILY);
         if !compact || toast.is_none() {
             bar = bar.child(
                 div()

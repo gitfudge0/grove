@@ -410,7 +410,7 @@ fn script_field(
                 .bordered(false)
                 .focus_bordered(false)
                 .h(rpx(96.))
-                .font_family(crate::fonts::MONO_FAMILY)
+                .font_family(crate::fonts::UI_FAMILY)
                 .text_size(rpx(TEXT_CODE))
                 .text_color(c::FG())
                 .p_0(),
@@ -509,7 +509,7 @@ impl Render for ProjectPanel {
                                         .child(meta.label.clone())
                                         .child(
                                             div()
-                                                .font_family(crate::fonts::MONO_FAMILY)
+                                                .font_family(crate::fonts::UI_FAMILY)
                                                 .text_size(rpx(TEXT_SMALL))
                                                 .text_color(c::FG_DIM())
                                                 .child(meta.wt_path.clone()),
@@ -1160,7 +1160,7 @@ impl Render for ProjectPanel {
                                     )
                                     .child(
                                         div()
-                                            .font_family(crate::fonts::MONO_FAMILY)
+                                            .font_family(crate::fonts::UI_FAMILY)
                                             .text_size(rpx(TEXT_SMALL))
                                             .text_color(c::FG_DIM())
                                             .truncate()

@@ -19,6 +19,7 @@ use crate::settings::SettingsState;
 pub enum ProjectEvent {
     TreeInvalidated,
     WorktreeAdded { path: String },
+    BackgroundWorktreeAdded,
     WorktreeRemoved { result: Result<(), String> },
     WorktreeRemovalChanged { path: String },
     ProjectRemoved { errors: Vec<String> },
@@ -340,6 +341,27 @@ impl ProjectService {
         base: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
+        self.create_worktree_with_focus(project, name, base, true, cx)
+    }
+
+    pub(crate) fn create_background_worktree(
+        &mut self,
+        project: &storage::Project,
+        name: &str,
+        base: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        self.create_worktree_with_focus(project, name, base, false, cx)
+    }
+
+    fn create_worktree_with_focus(
+        &mut self,
+        project: &storage::Project,
+        name: &str,
+        base: Option<&str>,
+        focus: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
         self.ensure_not_removing(&project.path)?;
         match git::add_worktree(&project.path, project.worktree_dir(), name, base) {
             Ok(path) => {
@@ -347,7 +369,11 @@ impl ProjectService {
                     tracing::warn!("grove-gpui: worktree includes not copied: {e}");
                 }
                 crate::telemetry::track("worktree_created", vec![]);
-                cx.emit(ProjectEvent::WorktreeAdded { path: path.clone() });
+                if focus {
+                    cx.emit(ProjectEvent::WorktreeAdded { path: path.clone() });
+                } else {
+                    cx.emit(ProjectEvent::BackgroundWorktreeAdded);
+                }
                 Ok(path)
             }
             Err(e) => {

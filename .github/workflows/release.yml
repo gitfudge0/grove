@@ -84,7 +84,7 @@ jobs:
             libfontconfig1-dev libfreetype-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
             libwayland-dev \
-            librsvg2-dev libssl-dev pkg-config dpkg
+            librsvg2-dev libssl-dev pkg-config dpkg xz-utils
 
       - name: Add cross-compile target
         if: matrix.target != ''
@@ -140,7 +140,7 @@ jobs:
             # hdiutil intermittently fails with "Resource busy" on GitHub
             # runners (Spotlight/quarantine racing on the fresh .app) — retry.
             for i in 1 2 3 4 5; do
-              hdiutil create -volname "Grove" -srcfolder "$APP" -ov -format UDZO "$DMG" && break
+              hdiutil create -volname "Grove" -srcfolder "$APP" -ov -format UDZO -imagekey zlib-level=9 "$DMG" && break
               [ "$i" = 5 ] && exit 1
               sleep 10
             done
@@ -148,7 +148,12 @@ jobs:
           else
             DEB="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' | head -n1)"
             [ -n "$DEB" ] || { echo "no .deb produced" >&2; exit 1; }
-            cp "$DEB" "$OUT/Grove-${VERSION}-linux-amd64.deb"
+            # Repack cargo-bundle's package with xz compression, preserving
+            # package contents and control metadata with root ownership.
+            DEB_TEMP="$(mktemp -d)"
+            trap 'rm -rf -- "$DEB_TEMP"' EXIT
+            dpkg-deb --raw-extract "$DEB" "$DEB_TEMP/package"
+            dpkg-deb --build --root-owner-group -Zxz -z6 "$DEB_TEMP/package" "$OUT/Grove-${VERSION}-linux-amd64.deb"
             echo "Built $OUT/Grove-${VERSION}-linux-amd64.deb"
           fi
 

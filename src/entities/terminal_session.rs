@@ -656,6 +656,16 @@ fn spawn_tmux(
         })
         .unwrap_or_default();
     let mut env = env;
+    if let Some(id) = &target.task_id {
+        env.push(("GROVE_TASK_ID".into(), id.clone()));
+        env.push((
+            "GROVE_CONFIG_DIR".into(),
+            grove_core::storage::config_dir()
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .into_owned(),
+        ));
+    }
     if let Some(path) = &target.temp_bundle_path {
         env.push(("GROVE_MULTI_ROOT".into(), path.clone()));
     }
@@ -666,12 +676,14 @@ fn spawn_tmux(
         .chain(extra_args.iter().cloned())
         .collect::<Vec<_>>();
     let (program, invocation_args) = agent.session_invocation(&agent_args);
+    let control_id = grove_core::control::random_id()?;
     tmux::new_session(&name, cwd, rows, cols, &program, &invocation_args, &env)
         .map_err(|e| e.to_string())?;
     // Without the sidecar the session can't be rediscovered after a restart; kill rather than orphan it (`session.rs:213-227`).
     if let Err(e) = session_meta::write(
         &name,
         &SessionMeta {
+            control_id: Some(control_id),
             wt_path: cwd.to_string(),
             project: target.project.clone(),
             label: target.label.clone(),
@@ -742,6 +754,13 @@ fn spawn_native(
         &mut cmd,
         grove_core::env_path::session_environment().as_deref(),
     );
+    if let Some(id) = &target.task_id {
+        cmd.env("GROVE_TASK_ID", id);
+        cmd.env(
+            "GROVE_CONFIG_DIR",
+            grove_core::storage::config_dir().map_err(|e| e.to_string())?,
+        );
+    }
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("LC_ALL", "en_US.UTF-8");

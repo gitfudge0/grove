@@ -869,7 +869,7 @@ impl SettingsPanel {
                     .child(
                         div()
                             .min_w(rpx(135.0))
-                            .font_family(crate::fonts::MONO_FAMILY)
+                            .font_family(crate::fonts::UI_FAMILY)
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::CYAN())
                             .child(chord),
