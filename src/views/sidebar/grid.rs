@@ -359,7 +359,12 @@ impl Sidebar {
             cx.notify();
         }
     }
-    fn grid_separator(&mut self, boundary: GridBoundary, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn grid_separator(
+        &mut self,
+        boundary: GridBoundary,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let key = (boundary.boundary, boundary.column);
         let grid = self.grid_layouts.entry(self.active_workspace).or_default();
         let focus = grid
@@ -400,6 +405,7 @@ impl Sidebar {
                 )
             })
             .role(gpui::Role::Splitter)
+            .group("grid-divider")
             .aria_label(label)
             .tab_index(0)
             .track_focus(&focus)
@@ -419,8 +425,27 @@ impl Sidebar {
                     .w_full()
                     .cursor_row_resize()
             })
-            .hover(|s| s.bg(c::BG_HOVER()))
-            .focus(|s| s.bg(c::BG_HOVER()))
+            // The generous hit target overlaps the panes; only the seam paints.
+            .child(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "grid-divider-seam-{key:?}"
+                    )))
+                    .debug_selector(move || {
+                        format!(
+                            "grid-divider-seam-{}-{}",
+                            boundary
+                                .column
+                                .map_or_else(|| "columns".into(), |c| format!("row-{c}")),
+                            boundary.boundary
+                        )
+                    })
+                    .flex_shrink_0()
+                    .when(vertical, |seam| seam.w(gpui::px(1.)).h_full())
+                    .when(!vertical, |seam| seam.h(gpui::px(1.)).w_full())
+                    .group_hover("grid-divider", |seam| seam.bg(c::BG_HOVER()))
+                    .when(focus.is_focused(window), |seam| seam.bg(c::BG_HOVER())),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
@@ -603,6 +628,7 @@ impl Sidebar {
                         boundary: column - 1,
                         column: None,
                     },
+                    window,
                     cx,
                 ));
             }
@@ -621,6 +647,7 @@ impl Sidebar {
                             boundary: row - 1,
                             column: Some(column),
                         },
+                        window,
                         cx,
                     ));
                 }
@@ -819,6 +846,10 @@ mod tests {
         let owner = harness.read_with(cx, |harness, _| harness.sidebar.entity_id());
         let divider = cx.debug_bounds("grid-divider-columns-0").unwrap();
         assert_eq!(f32::from(divider.size.width), GRID_RESIZE_HIT);
+        let seam = cx.debug_bounds("grid-divider-seam-columns-0").unwrap();
+        assert_eq!(f32::from(seam.size.width), 1.0);
+        assert_eq!(seam.size.height, divider.size.height);
+        assert_eq!(seam.center(), divider.center());
         assert!((f32::from(divider.center().x - first.right())).abs() < 1.0);
         let separator = divider.center();
         cx.simulate_mouse_down(separator, MouseButton::Left, gpui::Modifiers::default());
@@ -860,7 +891,13 @@ mod tests {
         assert_eq!(first.top(), second.top());
         assert!((f32::from(third.top() - first.bottom())).abs() < 1.0);
         assert_eq!(third.left(), first.left());
-        let separator = cx.debug_bounds("grid-divider-row-0-0").unwrap().center();
+        let divider = cx.debug_bounds("grid-divider-row-0-0").unwrap();
+        assert_eq!(f32::from(divider.size.height), GRID_RESIZE_HIT);
+        let seam = cx.debug_bounds("grid-divider-seam-row-0-0").unwrap();
+        assert_eq!(f32::from(seam.size.height), 1.0);
+        assert_eq!(seam.size.width, divider.size.width);
+        assert_eq!(seam.center(), divider.center());
+        let separator = divider.center();
         cx.simulate_mouse_down(separator, MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_mouse_up(separator, MouseButton::Left, gpui::Modifiers::default());
         cx.simulate_keystrokes("down");
