@@ -3540,20 +3540,39 @@ impl Sidebar {
                                     .min_w_0()
                                     .flex()
                                     .items_center()
-                                    .gap(rpx(SPACE_SM))
+                                    .gap(rpx(HIERARCHY_GAP))
                                     .text_size(rpx(SESSION_LAUNCHER_SIZE))
                                     .text_color(c::BLUE())
-                                    .child(icon(
-                                        meta.agent.icon_name(),
-                                        SESSION_LAUNCHER_SIZE,
-                                        c::BLUE(),
-                                    ))
-                                    .child(div().min_w_0().truncate().child(match meta.agent {
-                                        Agent::Claude => "Claude Code",
-                                        Agent::Codex => "Codex",
-                                        Agent::OpenCode => "OpenCode",
-                                        Agent::Terminal => "Terminal",
-                                    })),
+                                    .child(
+                                        div()
+                                            .w(rpx(HIERARCHY_ICON_SLOT))
+                                            .h(rpx(SESSION_META_LINE_H))
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_start()
+                                            .child(icon(
+                                                meta.agent.icon_name(),
+                                                SESSION_LAUNCHER_SIZE,
+                                                c::BLUE(),
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(("session-agent-label", id.raw()))
+                                            .debug_selector(move || {
+                                                format!("session-agent-label-{}", id.raw())
+                                            })
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(match meta.agent {
+                                                Agent::Claude => "Claude Code",
+                                                Agent::Codex => "Codex",
+                                                Agent::OpenCode => "OpenCode",
+                                                Agent::Terminal => "Terminal",
+                                            }),
+                                    ),
                             )
                             .child(motion::fast(
                                 div()
@@ -3581,62 +3600,64 @@ impl Sidebar {
                                 cx,
                             )),
                     )
-                    .child(if multi_project::project_names(meta).is_some() {
-                        self.multi_project_content(meta, title)
-                    } else {
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(rpx(SPACE_XS))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .min_w_0()
-                                    .gap(rpx(SPACE_SM))
-                                    .pr(rpx(SPACE_20))
-                                    .line_height(rpx(SESSION_TITLE_LINE_H))
-                                    .child(
-                                        div()
-                                            .id(("session-tree-title", id.raw()))
-                                            .debug_selector(move || {
-                                                format!("session-tree-title-{}", id.raw())
-                                            })
-                                            .flex_1()
-                                            .min_w_0()
-                                            .whitespace_normal()
-                                            .line_clamp(2)
-                                            .text_ellipsis()
-                                            .font_weight(gpui::FontWeight::NORMAL)
-                                            .text_size(rpx(TEXT_SMALL))
-                                            .child(title),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .min_w_0()
-                                    .gap(rpx(SPACE_SM))
-                                    .id(("session-tree-metadata", id.raw()))
-                                    .debug_selector(move || {
-                                        format!("session-tree-metadata-{}", id.raw())
-                                    })
-                                    .line_height(rpx(SESSION_META_LINE_H))
-                                    .pr(rpx(CONTROL_H))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .flex()
-                                            .justify_start()
-                                            .child(diff_element),
-                                    ),
-                            )
-                            .into_any_element()
-                    }),
+                    .child(div().pl(rpx(HIERARCHY_ICON_SLOT + HIERARCHY_GAP)).child(
+                        if multi_project::project_names(meta).is_some() {
+                            self.multi_project_content(meta, title)
+                        } else {
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(rpx(SPACE_XS))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .min_w_0()
+                                        .gap(rpx(SPACE_SM))
+                                        .pr(rpx(SPACE_20))
+                                        .line_height(rpx(SESSION_TITLE_LINE_H))
+                                        .child(
+                                            div()
+                                                .id(("session-tree-title", id.raw()))
+                                                .debug_selector(move || {
+                                                    format!("session-tree-title-{}", id.raw())
+                                                })
+                                                .flex_1()
+                                                .min_w_0()
+                                                .whitespace_normal()
+                                                .line_clamp(2)
+                                                .text_ellipsis()
+                                                .font_weight(gpui::FontWeight::NORMAL)
+                                                .text_size(rpx(TEXT_SMALL))
+                                                .child(title),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .min_w_0()
+                                        .gap(rpx(SPACE_SM))
+                                        .id(("session-tree-metadata", id.raw()))
+                                        .debug_selector(move || {
+                                            format!("session-tree-metadata-{}", id.raw())
+                                        })
+                                        .line_height(rpx(SESSION_META_LINE_H))
+                                        .pr(rpx(CONTROL_H))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .flex()
+                                                .justify_start()
+                                                .child(diff_element),
+                                        ),
+                                )
+                                .into_any_element()
+                        },
+                    )),
             )
             .child(
                 self.control(
@@ -3958,6 +3979,7 @@ impl Sidebar {
                     )
                     .debug_selector(move || format!("project-folder-toggle-{idx}"))
                     .size(rpx(HIERARCHY_ICON_SLOT))
+                    .justify_start()
                     .when_some(
                         self.project_toggle_focus.get(&project_path),
                         gpui::InteractiveElement::track_focus,
@@ -4200,7 +4222,7 @@ impl Sidebar {
                     } else {
                         SPACE_2XL
                     }))
-                    .pl(rpx(HIERARCHY_INSET + SPACE_LG))
+                    .pl(rpx(HIERARCHY_INSET))
                     .pr(rpx(HIERARCHY_INSET))
                     .gap(rpx(HIERARCHY_GAP))
                     .text_size(rpx(TEXT_SMALL))
@@ -4212,10 +4234,12 @@ impl Sidebar {
                     .text_color(c::FG())
                     .child(
                         div()
-                            .size(rpx(HIERARCHY_ICON_SLOT))
+                            .w(rpx(HIERARCHY_ICON_SLOT))
+                            .h(rpx(WORKTREE_TITLE_LINE_H + SPACE_XS + WORKTREE_META_LINE_H))
                             .flex_shrink_0()
                             .flex()
-                            .items_center()
+                            .items_start()
+                            .justify_start()
                             .child(icon(
                                 "git-branch",
                                 HIERARCHY_ICON,
@@ -4290,7 +4314,7 @@ impl Sidebar {
                     group = group.child(
                         div()
                             .id(SharedString::from(format!("worktree-empty-{path}")))
-                            .pl(rpx(HIERARCHY_LABEL_INSET + HIERARCHY_INSET))
+                            .pl(rpx(HIERARCHY_LABEL_INSET))
                             .py(rpx(SPACE_SM))
                             .text_size(rpx(TEXT_MICRO))
                             .text_color(c::FG_DIM())
@@ -4313,7 +4337,6 @@ impl Sidebar {
                             .map(|index| index + 1);
                         group = group.child(
                             div()
-                                .ml(rpx(HIERARCHY_LABEL_INSET))
                                 .mt(rpx(if session_position == 0 {
                                     SESSION_FIRST_GAP
                                 } else {
@@ -8104,7 +8127,14 @@ mod tests {
             let metadata = cx.debug_bounds("session-tree-metadata-1").unwrap();
             let status = cx.debug_bounds("session-tree-status-1").unwrap();
             let close = cx.debug_bounds("session-tree-close-1").unwrap();
-            assert_eq!(launcher.left(), title.left());
+            let launcher_label = cx.debug_bounds("session-agent-label-1").unwrap();
+            let project_title = cx.debug_bounds("project-title-0").unwrap();
+            let worktree_title = cx
+                .debug_bounds("worktree-title-/grove-spacing-main")
+                .unwrap();
+            assert_eq!(project_title.left(), worktree_title.left());
+            assert_eq!(worktree_title.left(), launcher_label.left());
+            assert_eq!(launcher_label.left(), title.left());
             assert_eq!(title.left(), metadata.left());
             assert!(status.left() >= launcher.right());
             assert!(status.bottom() <= title.top());
