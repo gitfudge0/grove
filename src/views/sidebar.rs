@@ -6020,6 +6020,21 @@ mod tests {
             assert_eq!(f32::from(bounds.size.width), 36.0);
             assert_eq!(f32::from(bounds.size.height), 32.0);
         }
+        let other_project = cx.debug_bounds("project-1").unwrap();
+        let initials = cx.debug_bounds("compact-project-initials-0").unwrap();
+        let other_initials = cx.debug_bounds("compact-project-initials-1").unwrap();
+        assert_eq!(initials.center().x, project.center().x);
+        assert_eq!(other_initials.center().x, other_project.center().x);
+        for (initial_selector, other_selector) in [
+            ("compact-project-initial-0-0", "compact-project-initial-1-0"),
+            ("compact-project-initial-0-1", "compact-project-initial-1-1"),
+        ] {
+            let initial = cx.debug_bounds(initial_selector).unwrap();
+            let other_initial = cx.debug_bounds(other_selector).unwrap();
+            assert_eq!(initial.center().x, other_initial.center().x);
+        }
+        assert_compact_overlay(cx, "project-0", "compact-project-count-0");
+        assert_compact_overlay(cx, "project-1", "compact-project-count-1");
         assert_compact_column(
             cx,
             &[

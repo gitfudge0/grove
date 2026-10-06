@@ -4,6 +4,7 @@ use super::*;
 pub(super) const COMPACT_ROW_H: f32 = 32.0;
 pub(super) const COMPACT_ITEM_W: f32 = 36.0;
 const DISCLOSURE_D: f32 = 8.0;
+const PROJECT_INITIAL_W: f32 = 10.0;
 
 impl Sidebar {
     pub(super) fn collapse_control(&self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -455,9 +456,34 @@ impl Sidebar {
                         self.project_toggle_focus.get(path),
                         gpui::InteractiveElement::track_focus,
                     )
-                    .child(identifiers[position].clone())
                     .child(
                         div()
+                            .id(("compact-project-initials", idx))
+                            .debug_selector(move || format!("compact-project-initials-{idx}"))
+                            .flex()
+                            .items_center()
+                            // Keep proportional glyphs in the same columns across projects.
+                            .children(identifiers[position].chars().enumerate().map(
+                                |(column, initial)| {
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "compact-project-initial-{idx}-{column}"
+                                        )))
+                                        .debug_selector(move || {
+                                            format!("compact-project-initial-{idx}-{column}")
+                                        })
+                                        .w(rpx(PROJECT_INITIAL_W))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .justify_center()
+                                        .child(initial.to_string())
+                                },
+                            )),
+                    )
+                    .child(
+                        div()
+                            .id(("compact-project-count", idx))
+                            .debug_selector(move || format!("compact-project-count-{idx}"))
                             .absolute()
                             .right_0()
                             .bottom_0()
