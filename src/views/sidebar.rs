@@ -6062,6 +6062,16 @@ mod tests {
         );
         cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before_hover));
         let hovered_popup = cx.debug_bounds("project-session-flyout").unwrap();
+        assert!((f32::from(hovered_popup.left() - rail.right()) - 8.0).abs() <= 0.5);
+        for selector in [
+            "flyout-worktree-divider-/grove-sidebar-collapse-test/feature",
+            "flyout-worktree-divider-/grove-sidebar-collapse-test/empty",
+            "flyout-footer-divider",
+        ] {
+            let divider = cx.debug_bounds(selector).unwrap();
+            assert_eq!(divider.left(), hovered_popup.left() + gpui::px(1.0));
+            assert_eq!(divider.right(), hovered_popup.right() - gpui::px(1.0));
+        }
         assert!(cx.debug_bounds("flyout-project-count").is_none());
         let session_row = cx.debug_bounds("flyout-session-1").unwrap();
         assert_eq!(f32::from(session_row.size.height), SESSION_ROW_H);
@@ -6251,10 +6261,10 @@ mod tests {
         draw(cx);
         let zoomed_rail = cx.debug_bounds("sidebar-rail").unwrap();
         let zoomed_popup = cx.debug_bounds("project-session-flyout").unwrap();
-        assert!(
-            zoomed_popup.left() >= zoomed_rail.right(),
-            "zoomed popup={zoomed_popup:?}; rail={zoomed_rail:?}"
-        );
+        assert!((f32::from(zoomed_popup.left() - zoomed_rail.right()) - 12.0).abs() <= 0.5);
+        let zoomed_divider = cx.debug_bounds("flyout-footer-divider").unwrap();
+        assert_eq!(zoomed_divider.left(), zoomed_popup.left() + gpui::px(1.0));
+        assert_eq!(zoomed_divider.right(), zoomed_popup.right() - gpui::px(1.0));
         cx.update(|window, _| window.set_rem_size(gpui::px(crate::zoom::REM_BASE)));
         draw(cx);
         assert!(cx

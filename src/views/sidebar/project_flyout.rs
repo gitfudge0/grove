@@ -2,6 +2,7 @@
 use super::*;
 
 const FLYOUT_W: f32 = 320.0;
+const FLYOUT_GAP: f32 = 8.0;
 const HOVER_DISMISS_DELAY: Duration = Duration::from_millis(MOTION_SLOW_MS);
 
 pub(super) fn project_identifiers(names: &[&str]) -> Vec<String> {
@@ -423,10 +424,18 @@ impl Sidebar {
                     .when(worktree_index > 0, |group| {
                         group.child(
                             div()
+                                .id(SharedString::from(format!(
+                                    "flyout-worktree-divider-{}",
+                                    worktree.path
+                                )))
+                                .debug_selector({
+                                    let path = worktree.path.clone();
+                                    move || format!("flyout-worktree-divider-{path}")
+                                })
                                 .absolute()
                                 .top(rpx(-SPACE_MD))
-                                .left_0()
-                                .w_full()
+                                .left(rpx(-SPACE_2XL))
+                                .right(rpx(-SPACE_2XL))
                                 .h(gpui::px(1.0))
                                 .bg(c::BORDER_SOFT()),
                         )
@@ -635,7 +644,10 @@ impl Sidebar {
         }
         body = body.child(
             div()
+                .id("flyout-footer-divider")
+                .debug_selector(|| "flyout-footer-divider".into())
                 .mt(rpx(SPACE_SM))
+                .mx(rpx(-SPACE_2XL))
                 .h(gpui::px(1.0))
                 .bg(c::BORDER_SOFT()),
         );
@@ -743,7 +755,10 @@ impl Sidebar {
         let action_count = actions.len();
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let width = FLYOUT_W.min(
-            (f32::from(window.viewport_size().width) / scale - SIDEBAR_COLLAPSED_W - SPACE_LG)
+            (f32::from(window.viewport_size().width) / scale
+                - SIDEBAR_COLLAPSED_W
+                - FLYOUT_GAP
+                - SPACE_LG)
                 .max(0.0),
         );
         let panel = div()
@@ -937,7 +952,8 @@ impl gpui::Element for ProjectFlyoutAnchor {
         cx: &mut App,
     ) -> Self::PrepaintState {
         self.inner = std::mem::replace(&mut self.inner, gpui::anchored()).position(gpui::point(
-            self.rail.get().right(),
+            self.rail.get().right()
+                + gpui::px(FLYOUT_GAP * f32::from(window.rem_size()) / crate::zoom::REM_BASE),
             self.trigger.get().top(),
         ));
         self.inner
