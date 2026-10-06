@@ -657,7 +657,7 @@ impl WorkspaceState {
         self.pending_kill_terminal = None;
     }
 
-    /// The pending-confirmation shift across a home-terminal removal (`sessions.rs:109-113`); the registry owns the actual removal and respawn, this is the selection half.
+    /// The pending-confirmation shift across a home-terminal removal (`sessions.rs:109-113`); the registry owns the actual removal, this is the selection half.
     pub fn close_home_terminal(&mut self, i: usize, remaining: usize) {
         self.pending_kill_terminal = match self.pending_kill_terminal {
             Some(p) if p == i => None,

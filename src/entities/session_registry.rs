@@ -410,7 +410,7 @@ impl SessionRegistry {
         Some(std::mem::replace(&mut self.home_terms[i], term))
     }
 
-    /// Respawn on a last-terminal close is the caller's job — see [`Self::home_terminals_need_spawn`].
+    /// Closing the last terminal leaves the home panel empty.
     pub fn close_home(&mut self, i: usize) -> Option<Entity<TerminalSession>> {
         if i >= self.home.len() {
             return None;
@@ -418,11 +418,6 @@ impl SessionRegistry {
         self.home.remove(i);
         // Pure tests record metadata only, so a missing entity here is not an error.
         (i < self.home_terms.len()).then(|| self.home_terms.remove(i))
-    }
-
-    #[must_use]
-    pub fn home_terminals_need_spawn(&self) -> bool {
-        self.home.is_empty()
     }
 
     // Shells are ported in shape from `App::wt_terminals`/`wt_active_terminal` (`src/app/terminals.rs:110-176`); native, not tmux, like home terminals (`sidebar.rs:297-301`).
@@ -477,7 +472,7 @@ impl SessionRegistry {
         }
     }
 
-    /// Unlike the home terminal, does not respawn when the last shell closes — an empty panel is valid (`src/app/terminals.rs:172-201`).
+    /// Like the home terminal, does not respawn when the last shell closes — an empty panel is valid (`src/app/terminals.rs:172-201`).
     pub fn close_wt_shell(&mut self, wt_path: &str, idx: usize) -> Option<Entity<TerminalSession>> {
         let shells = self.wt.get_mut(wt_path)?;
         if idx >= shells.len() {
@@ -665,14 +660,14 @@ mod tests {
     }
 
     #[test]
-    fn closing_the_last_home_terminal_asks_for_a_respawn() {
+    fn closing_the_last_home_terminal_leaves_an_empty_panel() {
         let mut r = SessionRegistry::new();
-        assert!(r.home_terminals_need_spawn());
+        assert_eq!(r.home_terminal_count(), 0);
         let label = r.next_home_label();
         r.push_home_meta(label);
-        assert!(!r.home_terminals_need_spawn());
+        assert_eq!(r.home_terminal_count(), 1);
         r.close_home(0);
-        assert!(r.home_terminals_need_spawn());
+        assert_eq!(r.home_terminal_count(), 0);
         // Out-of-range closes are no-ops, not panics.
         assert!(r.close_home(7).is_none());
     }

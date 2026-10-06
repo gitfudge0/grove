@@ -2871,7 +2871,6 @@ impl Sidebar {
             }
             Action::ConfirmHome(id) => {
                 let from_canvas = self.canvas_close_anchor.take().is_some();
-                let owner = self.terminal_owners.get(&id).copied().unwrap_or(1);
                 let was_selected = self.selection == Some(Selection::Home(id));
                 let index = self
                     .runtime
@@ -2881,23 +2880,16 @@ impl Sidebar {
                     .home_terminals()
                     .iter()
                     .position(|m| m.id == id);
-                let replacement = index.and_then(|i| {
+                if let Some(i) = index {
                     self.runtime
-                        .update(cx, |r, cx| r.close_home_terminal(i, cx))
-                });
+                        .update(cx, |r, cx| r.close_home_terminal(i, cx));
+                }
                 self.pending_home_close = None;
                 self.terminal_owners.remove(&id);
-                if let Some(replacement) = replacement {
-                    self.terminal_owners.insert(replacement, owner);
-                    self.terminals_collapsed = false;
-                    if was_selected && owner == self.active_workspace {
-                        self.select(Selection::Home(replacement), cx);
-                        self.focus.focus(window, cx);
-                    }
+                if was_selected {
+                    self.selection = None;
                 }
-                if (from_canvas || was_selected)
-                    && !(replacement.is_some() && owner == self.active_workspace)
-                {
+                if from_canvas || was_selected {
                     self.focus_remaining_canvas(window, cx);
                 }
             }
@@ -6675,7 +6667,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn final_home_close_replaces_one_shell_in_its_workspace(cx: &mut gpui::TestAppContext) {
+    fn final_home_close_stays_empty_until_explicitly_opened_in_its_workspace(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(|cx| {
             gpui_component::init(cx);
             let mut store = grove_core::storage::Store::default();
@@ -6704,13 +6698,42 @@ mod tests {
                 assert_eq!(sidebar.terminal_owners.get(&original), Some(&2));
                 sidebar.act(Action::CloseHome(original), window, cx);
                 sidebar.act(Action::ConfirmHome(original), window, cx);
-                let registry = sidebar.runtime.read(cx).registry.read(cx);
-                assert_eq!(registry.home_terminal_count(), 1);
-                let replacement = registry.home_terminals()[0].id;
-                assert_ne!(replacement, original);
-                assert_eq!(sidebar.terminal_owners.get(&replacement), Some(&2));
-                assert_eq!(sidebar.selection, Some(Selection::Home(replacement)));
+                assert_eq!(
+                    sidebar
+                        .runtime
+                        .read(cx)
+                        .registry
+                        .read(cx)
+                        .home_terminal_count(),
+                    0
+                );
                 assert!(!sidebar.terminal_owners.contains_key(&original));
+                assert_ne!(sidebar.selection, Some(Selection::Home(original)));
+                sidebar.sync(window, cx);
+                assert_eq!(
+                    sidebar
+                        .runtime
+                        .read(cx)
+                        .registry
+                        .read(cx)
+                        .home_terminal_count(),
+                    0
+                );
+                sidebar.add_terminal(window, cx);
+                let Some(Selection::Home(reopened)) = sidebar.selection else {
+                    panic!("explicit terminal action should select a shell")
+                };
+                assert_ne!(reopened, original);
+                assert_eq!(sidebar.terminal_owners.get(&reopened), Some(&2));
+                assert_eq!(
+                    sidebar
+                        .runtime
+                        .read(cx)
+                        .registry
+                        .read(cx)
+                        .home_terminal_count(),
+                    1
+                );
             });
         });
         draw(cx);

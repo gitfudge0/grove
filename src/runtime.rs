@@ -540,32 +540,24 @@ impl Runtime {
         Some(id)
     }
 
-    /// Returns the replacement id only when a valid final terminal was closed and its new shell started.
-    pub(crate) fn close_home_terminal(
-        &mut self,
-        i: usize,
-        cx: &mut Context<Self>,
-    ) -> Option<SessionId> {
+    /// Closes the terminal and leaves an empty panel when it was the last one.
+    pub(crate) fn close_home_terminal(&mut self, i: usize, cx: &mut Context<Self>) {
         let invalid_index = {
             let registry = self.registry.read(cx);
             i >= registry.home_terminal_count() || registry.home_terminal(i).is_none()
         };
         if invalid_index {
-            return None;
+            return;
         }
-        let (remaining, needs_spawn) = self.registry.update(cx, |r, cx| {
-            let closed = r.close_home(i).is_some();
+        let remaining = self.registry.update(cx, |r, cx| {
+            r.close_home(i);
             cx.notify();
-            (
-                r.home_terminal_count(),
-                closed && r.home_terminals_need_spawn(),
-            )
+            r.home_terminal_count()
         });
         self.state.update(cx, |s, cx| {
             s.close_home_terminal(i, remaining);
             cx.notify();
         });
-        needs_spawn.then(|| self.spawn_home_terminal(cx)).flatten()
     }
 
     pub(crate) fn snapshot(&self, cx: &mut App) -> crate::entities::workspace_state::TreeSnapshot {
@@ -1292,7 +1284,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn closing_only_home_terminal_spawns_one_fresh_shell(cx: &mut gpui::TestAppContext) {
+    fn closing_only_home_terminal_stays_empty_until_explicitly_opened(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(|cx| {
             cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
@@ -1300,13 +1294,16 @@ mod tests {
             let first = runtime
                 .update(cx, Runtime::spawn_home_terminal)
                 .expect("shell should start");
-            let replacement = runtime
-                .update(cx, |runtime, cx| runtime.close_home_terminal(0, cx))
-                .expect("last close should replace the shell");
+            runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
+            assert_eq!(runtime.read(cx).registry.read(cx).home_terminal_count(), 0);
+            assert_eq!(runtime.read(cx).state.read(cx).active_terminal(), None);
+            let reopened = runtime
+                .update(cx, Runtime::spawn_home_terminal)
+                .expect("explicitly opening a shell should still work");
             let registry = runtime.read(cx).registry.read(cx);
-            assert_ne!(first, replacement);
+            assert_ne!(first, reopened);
             assert_eq!(registry.home_terminal_count(), 1);
-            assert_eq!(registry.home_terminals()[0].id, replacement);
+            assert_eq!(registry.home_terminals()[0].id, reopened);
             assert_eq!(registry.home_terminals()[0].label, "terminal 2");
             assert_eq!(runtime.read(cx).state.read(cx).active_terminal(), Some(0));
         });
@@ -1324,15 +1321,9 @@ mod tests {
             let second = runtime
                 .update(cx, Runtime::spawn_home_terminal)
                 .expect("second shell should start");
-            assert_eq!(
-                runtime.update(cx, |runtime, cx| runtime.close_home_terminal(2, cx)),
-                None
-            );
+            runtime.update(cx, |runtime, cx| runtime.close_home_terminal(2, cx));
             assert_eq!(runtime.read(cx).registry.read(cx).home_terminal_count(), 2);
-            assert_eq!(
-                runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx)),
-                None
-            );
+            runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
             let registry = runtime.read(cx).registry.read(cx);
             assert_eq!(registry.home_terminal_count(), 1);
             assert_eq!(registry.home_terminals()[0].id, second);
