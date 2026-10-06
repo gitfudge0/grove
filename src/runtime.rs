@@ -1169,14 +1169,26 @@ mod tests {
             runtime
         });
         let mut actual = None;
-        for _ in 0..100 {
+        // A login shell can start slowly on a busy CI runner. Wait for its
+        // complete pwd line rather than the file's creation or a fixed poll count.
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
             if let Ok(contents) = fs_err::read_to_string(&output) {
-                actual = Some(contents);
+                if contents.ends_with('\n') {
+                    actual = Some(contents);
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert_eq!(actual.as_deref().map(str::trim), Some(path));
+        assert_eq!(
+            actual.as_deref().map(str::trim),
+            Some(path),
+            "login shell did not write the expected cwd within 10 seconds"
+        );
         drop(runtime);
     }
 
