@@ -323,7 +323,7 @@ impl Sidebar {
         let mut index = 0;
         let mut child_index = 1 + usize::from(needs_you > 0);
         let mut scroll_indices = Vec::new();
-        for worktree in &project.worktrees {
+        for (worktree_index, worktree) in project.worktrees.iter().enumerate() {
             let name = sidebar_worktree_name(&worktree.name, worktree.is_main);
             let expanded = self.project_flyout_launch_path.as_ref() == Some(&worktree.path);
             let mut launches = div()
@@ -416,9 +416,21 @@ impl Sidebar {
                     })
                     .min_w_0()
                     .mt(rpx(SPACE_2XL))
+                    .relative()
                     .flex()
                     .flex_col()
                     .gap(rpx(SPACE_XS))
+                    .when(worktree_index > 0, |group| {
+                        group.child(
+                            div()
+                                .absolute()
+                                .top(rpx(-SPACE_MD))
+                                .left_0()
+                                .w_full()
+                                .h(gpui::px(1.0))
+                                .bg(c::BORDER_SOFT()),
+                        )
+                    })
                     .child(
                         div()
                             .flex()

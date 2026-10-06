@@ -1725,11 +1725,15 @@ impl Sidebar {
                     }
                 }
             })
-            .when(!matches!(&action, Action::ProjectFlyout(_)), |control| {
-                control.tooltip(move |window, cx| {
-                    crate::views::components::tooltip(label.clone(), window).build(window, cx)
-                })
-            })
+            .when(
+                !(matches!(&action, Action::ProjectFlyout(_))
+                    || icon_rail && matches!(&action, Action::Select(Selection::Session(_)))),
+                |control| {
+                    control.tooltip(move |window, cx| {
+                        crate::views::components::tooltip(label.clone(), window).build(window, cx)
+                    })
+                },
+            )
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.act(click.clone(), window, cx);
