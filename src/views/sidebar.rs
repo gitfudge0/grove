@@ -54,7 +54,7 @@ fn rail_background(cx: &App) -> gpui::Hsla {
 const EDITOR_FULL_WIDTH_BREAKPOINT: f32 = 640.0;
 const HEAD_H: f32 = 36.0;
 const ROW_H: f32 = 28.0;
-// Project view keeps every level in one column; these dimensions reproduce F's rhythm.
+// Expanded project navigation uses nested type roles and a single session content column.
 const HIERARCHY_INSET: f32 = 5.0;
 const HIERARCHY_GAP: f32 = 7.0;
 const HIERARCHY_ICON_SLOT: f32 = 18.0;
@@ -64,13 +64,17 @@ const HIERARCHY_META_TEXT: f32 = TEXT_MICRO;
 const HIERARCHY_TRAILING_W: f32 = 24.0;
 const PROJECT_GROUP_GAP: f32 = 14.0;
 const PROJECT_ROW_H: f32 = 35.0;
-const PROJECT_TEXT: f32 = 15.0;
+const PROJECT_TEXT: f32 = TEXT_TITLE;
 const PROJECT_TITLE_LINE_H: f32 = 21.0;
 const WORKTREE_ROW_H: f32 = 40.0;
 const WORKTREE_TITLE_LINE_H: f32 = 17.0;
 const WORKTREE_META_LINE_H: f32 = 14.0;
 const WORKTREE_ACTION_W: f32 = 22.0;
 const SESSION_ROW_H: f32 = 43.0;
+const SESSION_TREE_ROW_H: f32 =
+    HIERARCHY_INSET * 2.0 + SESSION_META_LINE_H * 2.0 + SESSION_TITLE_LINE_H + SPACE_XS * 2.0;
+/// Launcher glyph and label share the approved small header size.
+const SESSION_LAUNCHER_SIZE: f32 = ICON_XS;
 const SESSION_TITLE_LINE_H: f32 = 17.0;
 const SESSION_META_LINE_H: f32 = 14.0;
 const SESSION_ROW_RADIUS: f32 = 7.0;
@@ -787,7 +791,7 @@ impl Sidebar {
                 .is_some_and(|panel| panel.read(cx).is_open())
             || self.project_flyout.as_ref().is_some_and(|target| {
                 if *target == SidebarContext::MultiProject {
-                    return self.multi_project_sessions(cx).is_empty();
+                    return false;
                 }
                 let Some(path) = target.project_path() else {
                     return true;
@@ -1547,9 +1551,20 @@ impl Sidebar {
         .child(icon("cog", ICON_MD, c::FG_DIM()))
         .into_any_element()
     }
-    fn navigation_heading(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn navigation_heading(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let project = self.mode == ViewMode::Project;
         let gap = if project { SPACE_SM } else { SPACE_LG };
+        let label = if self.mode == ViewMode::List {
+            "Sessions"
+        } else if !project && !self.multi_project_sessions(cx).is_empty() {
+            ""
+        } else {
+            "Projects"
+        };
+        let mut run = window.text_style().to_run(label.len());
+        run.font.weight = gpui::FontWeight::MEDIUM;
+        let font_size = rpx(TEXT_SMALL).to_pixels(window.rem_size());
+        let label_width = navigation_label_width(label, font_size, &run, window.text_system());
         div()
             .id("sidebar-navigation-header")
             .debug_selector(|| "sidebar-navigation-header".into())
@@ -1571,15 +1586,10 @@ impl Sidebar {
                     .child(
                         div()
                             .debug_selector(|| "sidebar-heading-label".into())
+                            .w(label_width)
                             .min_w_0()
                             .truncate()
-                            .child(if self.mode == ViewMode::List {
-                                "Sessions"
-                            } else if !project && !self.multi_project_sessions(cx).is_empty() {
-                                ""
-                            } else {
-                                "Projects"
-                            }),
+                            .child(label),
                     )
                     .when(project, |heading| {
                         heading.child(
@@ -3502,35 +3512,13 @@ impl Sidebar {
             .relative()
             .group("session-row")
             .h_auto()
-            .min_h(rpx(SESSION_ROW_H))
+            .min_h(rpx(SESSION_TREE_ROW_H))
             .px(rpx(HIERARCHY_INSET))
             .py(rpx(HIERARCHY_INSET))
             .gap(rpx(HIERARCHY_GAP))
             .items_start()
             .rounded(rpx(SESSION_ROW_RADIUS))
             .child(
-                div()
-                    .id(("session-agent", id.raw()))
-                    .debug_selector(move || format!("session-agent-{}", id.raw()))
-                    .role(gpui::Role::Image)
-                    .aria_label(format!("{} session", meta.agent.label()))
-                    .tooltip({
-                        let label = format!("{} session", meta.agent.label());
-                        move |window, cx| {
-                            crate::views::components::tooltip(label.clone(), window)
-                                .build(window, cx)
-                        }
-                    })
-                    .w(rpx(HIERARCHY_ICON_SLOT))
-                    .h(rpx(SESSION_TITLE_LINE_H))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .child(icon(meta.agent.icon_name(), ICON_SM, c::FG_DIM())),
-            )
-            .child(if multi_project::project_names(meta).is_some() {
-                self.multi_project_content(meta, title, (status, color), selected, cx)
-            } else {
                 div()
                     .flex_1()
                     .min_w_0()
@@ -3543,49 +3531,113 @@ impl Sidebar {
                             .items_center()
                             .min_w_0()
                             .gap(rpx(SPACE_SM))
-                            .pr(rpx(SPACE_20))
-                            .line_height(rpx(SESSION_TITLE_LINE_H))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .font_weight(if selected {
-                                        gpui::FontWeight::SEMIBOLD
-                                    } else {
-                                        gpui::FontWeight::MEDIUM
-                                    })
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .child(title),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .min_w_0()
-                            .gap(rpx(SPACE_SM))
                             .line_height(rpx(SESSION_META_LINE_H))
                             .child(
                                 div()
+                                    .id(("session-agent", id.raw()))
+                                    .debug_selector(move || format!("session-agent-{}", id.raw()))
                                     .flex_1()
                                     .min_w_0()
                                     .flex()
-                                    .justify_start()
-                                    .child(diff_element),
+                                    .items_center()
+                                    .gap(rpx(SPACE_SM))
+                                    .text_size(rpx(SESSION_LAUNCHER_SIZE))
+                                    .text_color(c::BLUE())
+                                    .child(icon(
+                                        meta.agent.icon_name(),
+                                        SESSION_LAUNCHER_SIZE,
+                                        c::BLUE(),
+                                    ))
+                                    .child(div().min_w_0().truncate().child(match meta.agent {
+                                        Agent::Claude => "Claude Code",
+                                        Agent::Codex => "Codex",
+                                        Agent::OpenCode => "OpenCode",
+                                        Agent::Terminal => "Terminal",
+                                    })),
                             )
                             .child(motion::fast(
                                 div()
+                                    .id(("session-tree-status", id.raw()))
+                                    .debug_selector(move || {
+                                        format!("session-tree-status-{}", id.raw())
+                                    })
                                     .flex_shrink_0()
-                                    .text_size(rpx(HIERARCHY_META_TEXT))
+                                    .text_size(rpx(TEXT_MICRO))
                                     .text_color(color)
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_SM))
+                                    .when(status == "Working", |label| {
+                                        label.child(
+                                            div()
+                                                .size(rpx(DOT_SM))
+                                                .flex_shrink_0()
+                                                .rounded_full()
+                                                .bg(color),
+                                        )
+                                    })
                                     .child(status),
                                 format!("session-status-tree-{}-{status}", id.raw()),
                                 cx,
                             )),
                     )
-                    .into_any_element()
-            })
+                    .child(if multi_project::project_names(meta).is_some() {
+                        self.multi_project_content(meta, title)
+                    } else {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(rpx(SPACE_XS))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .min_w_0()
+                                    .gap(rpx(SPACE_SM))
+                                    .pr(rpx(SPACE_20))
+                                    .line_height(rpx(SESSION_TITLE_LINE_H))
+                                    .child(
+                                        div()
+                                            .id(("session-tree-title", id.raw()))
+                                            .debug_selector(move || {
+                                                format!("session-tree-title-{}", id.raw())
+                                            })
+                                            .flex_1()
+                                            .min_w_0()
+                                            .whitespace_normal()
+                                            .line_clamp(2)
+                                            .text_ellipsis()
+                                            .font_weight(gpui::FontWeight::NORMAL)
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .child(title),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .min_w_0()
+                                    .gap(rpx(SPACE_SM))
+                                    .id(("session-tree-metadata", id.raw()))
+                                    .debug_selector(move || {
+                                        format!("session-tree-metadata-{}", id.raw())
+                                    })
+                                    .line_height(rpx(SESSION_META_LINE_H))
+                                    .pr(rpx(CONTROL_H))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .justify_start()
+                                            .child(diff_element),
+                                    ),
+                            )
+                            .into_any_element()
+                    }),
+            )
             .child(
                 self.control(
                     ("close-session", id.raw()),
@@ -3595,7 +3647,8 @@ impl Sidebar {
                 )
                 .absolute()
                 .right_0()
-                .top_0()
+                .bottom_0()
+                .debug_selector(move || format!("session-tree-close-{}", id.raw()))
                 .opacity(0.0)
                 .group_hover("session-row", |button| button.opacity(1.0))
                 .focus_visible(|button| button.opacity(1.0))
@@ -3816,20 +3869,16 @@ impl Sidebar {
         let snapshot = self.project_navigation_snapshot(cx);
         let multi = self.multi_project_sessions(cx);
         let mut body = div().flex().flex_col();
-        if !multi.is_empty() {
+        if self.mode == ViewMode::Project || !multi.is_empty() {
             body = body.child(self.multi_project_section(&multi, window, cx));
         }
         if self.mode == ViewMode::Project {
             body = body.child(
                 div()
-                    .mt(rpx(if multi.is_empty() {
-                        SPACE_LG
-                    } else {
-                        SPACE_2XL
-                    }))
+                    .mt(rpx(SPACE_2XL))
                     .mb(rpx(SPACE_SM))
                     .px(rpx(HIERARCHY_INSET))
-                    .child(self.navigation_heading(cx)),
+                    .child(self.navigation_heading(window, cx)),
             );
             if snapshot.projects.is_empty() {
                 body = body.child(
@@ -4151,9 +4200,10 @@ impl Sidebar {
                     } else {
                         SPACE_2XL
                     }))
-                    .px(rpx(HIERARCHY_INSET))
+                    .pl(rpx(HIERARCHY_INSET + SPACE_LG))
+                    .pr(rpx(HIERARCHY_INSET))
                     .gap(rpx(HIERARCHY_GAP))
-                    .text_size(rpx(TEXT_BODY))
+                    .text_size(rpx(TEXT_SMALL))
                     .font_weight(if selected {
                         gpui::FontWeight::SEMIBOLD
                     } else {
@@ -4191,13 +4241,22 @@ impl Sidebar {
                                     .truncate()
                                     .text_ellipsis_middle()
                                     .line_height(rpx(WORKTREE_TITLE_LINE_H))
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_SM))
                                     .group_hover("worktree-row", move |s| {
                                         s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
                                     })
                                     .when(focused, move |s| {
                                         s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
                                     })
-                                    .child(worktree_name.to_owned()),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(worktree_name.to_owned()),
+                                    ),
                             )
                             .when(!worktree.branch.is_empty(), |title| {
                                 title.child(
@@ -4231,7 +4290,7 @@ impl Sidebar {
                     group = group.child(
                         div()
                             .id(SharedString::from(format!("worktree-empty-{path}")))
-                            .pl(rpx(HIERARCHY_LABEL_INSET))
+                            .pl(rpx(HIERARCHY_LABEL_INSET + HIERARCHY_INSET))
                             .py(rpx(SPACE_SM))
                             .text_size(rpx(TEXT_MICRO))
                             .text_color(c::FG_DIM())
@@ -4254,6 +4313,7 @@ impl Sidebar {
                             .map(|index| index + 1);
                         group = group.child(
                             div()
+                                .ml(rpx(HIERARCHY_LABEL_INSET))
                                 .mt(rpx(if session_position == 0 {
                                     SESSION_FIRST_GAP
                                 } else {
@@ -4507,6 +4567,31 @@ impl Focusable for Sidebar {
         self.focus.clone()
     }
 }
+fn navigation_label_width(
+    label: &str,
+    font_size: gpui::Pixels,
+    run: &gpui::TextRun,
+    text_system: &gpui::WindowTextSystem,
+) -> gpui::Pixels {
+    let shaped_width = text_system
+        .shape_line(
+            label.to_owned().into(),
+            font_size,
+            std::slice::from_ref(run),
+            None,
+        )
+        .width()
+        .ceil();
+    // GPUI truncates using separate glyph advances, which can exceed a kerned
+    // word's intrinsic width. Reserve that budget before flex layout shrinks it.
+    let font_id = text_system.resolve_font(&run.font);
+    let glyph_width: gpui::Pixels = label
+        .chars()
+        .map(|ch| text_system.layout_width(font_id, font_size, ch))
+        .sum();
+    shaped_width.max(glyph_width.floor())
+}
+
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync(window, cx);
@@ -4634,7 +4719,7 @@ impl Render for Sidebar {
                     div()
                         .px(rpx(SPACE_3XL))
                         .pt(rpx(SPACE_LG))
-                        .child(self.navigation_heading(cx)),
+                        .child(self.navigation_heading(window, cx)),
                 )
             })
             .child(
@@ -5011,6 +5096,97 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    fn assert_empty_cross_project_launch(
+        cx: &mut gpui::TestAppContext,
+        collapsed: bool,
+        projects: bool,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            let mut store = grove_core::storage::Store::default();
+            if projects {
+                for name in ["alpha", "beta"] {
+                    let path = format!("/grove-empty-multi-{name}");
+                    store.projects.push(grove_core::storage::Project {
+                        name: name.into(),
+                        path: path.clone(),
+                        scripts: grove_core::storage::ProjectScripts::default(),
+                        archived: false,
+                        worktree_dir: None,
+                    });
+                    store.assign_project_to_active_workspace(&path);
+                }
+            }
+            cx.set_global(SettingsState::new(store));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        let requests = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update(|window, cx| {
+            let requests = requests.clone();
+            cx.subscribe(&sidebar, move |_, event, _| {
+                if matches!(event, SidebarEvent::NewMultiProjectSessionRequested) {
+                    requests.set(requests.get() + 1);
+                }
+            })
+            .detach();
+            sidebar.update(cx, |sidebar, cx| {
+                assert!(sidebar.multi_project_sessions(cx).is_empty());
+                assert_eq!(sidebar.snapshot.projects.is_empty(), !projects);
+                if collapsed {
+                    sidebar.toggle_sidebar(window, cx);
+                }
+            });
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        let launch_id = if collapsed {
+            let anchor = cx
+                .debug_bounds("multi-project-anchor")
+                .expect("empty compact sidebar must expose the cross-project launcher");
+            cx.simulate_click(anchor.center(), gpui::Modifiers::default());
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("multi-project-session-flyout").is_some());
+            assert!(cx.debug_bounds("multi-project-flyout-empty").is_some());
+            "multi-project-flyout-new"
+        } else {
+            assert!(cx.debug_bounds("multi-project-empty").is_some());
+            "multi-project-new"
+        };
+        let launch = cx
+            .debug_bounds(launch_id)
+            .expect("empty sidebar must expose a new cross-project session control");
+        cx.simulate_click(launch.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert_eq!(requests.get(), 1);
+    }
+
+    #[gpui::test]
+    fn empty_expanded_sidebar_can_launch_cross_project_session(cx: &mut gpui::TestAppContext) {
+        assert_empty_cross_project_launch(cx, false, false);
+    }
+
+    #[gpui::test]
+    fn empty_compact_sidebar_can_launch_cross_project_session(cx: &mut gpui::TestAppContext) {
+        assert_empty_cross_project_launch(cx, true, false);
+    }
+
+    #[gpui::test]
+    fn populated_expanded_sidebar_can_launch_cross_project_session(cx: &mut gpui::TestAppContext) {
+        assert_empty_cross_project_launch(cx, false, true);
+    }
+
+    #[gpui::test]
+    fn populated_compact_sidebar_can_launch_cross_project_session(cx: &mut gpui::TestAppContext) {
+        assert_empty_cross_project_launch(cx, true, true);
+    }
+
     #[gpui::test]
     fn multi_project_sessions_have_one_workspace_scoped_navigation_row(
         cx: &mut gpui::TestAppContext,
@@ -5095,6 +5271,7 @@ mod tests {
         cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
         draw(cx);
         let section = cx.debug_bounds("multi-project-sessions").unwrap();
+        assert!(cx.debug_bounds("multi-project-empty").is_none());
         let multi = cx.debug_bounds("session-1").unwrap();
         let project = cx.debug_bounds("project-0").unwrap();
         let single = cx.debug_bounds("session-2").unwrap();
@@ -5128,13 +5305,13 @@ mod tests {
             }
             let row = cx.debug_bounds("session-1").unwrap();
             let title = cx.debug_bounds("multi-session-title-1").unwrap();
-            let status = cx.debug_bounds("multi-session-status-1").unwrap();
+            let status = cx.debug_bounds("session-tree-status-1").unwrap();
             let first = cx.debug_bounds("multi-root-row-1-0").unwrap();
             let second = cx.debug_bounds("multi-root-row-1-1").unwrap();
             let project = cx.debug_bounds("multi-root-project-1-0").unwrap();
             let worktree = cx.debug_bounds("multi-root-worktree-1-0").unwrap();
-            assert_eq!(second.top(), status.top());
-            assert!(status.left() >= cx.debug_bounds("multi-root-worktree-1-1").unwrap().right());
+            assert!(status.bottom() <= title.top());
+            assert!(status.left() >= cx.debug_bounds("session-agent-1").unwrap().right());
             assert!(status.right() < row.right());
             assert!(first.top() >= title.bottom());
             assert!(second.top() >= first.bottom());
@@ -5230,6 +5407,7 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("multi-project-session-flyout").is_some());
         assert!(cx.debug_bounds("multi-flyout-session-1").is_some());
+        assert!(cx.debug_bounds("multi-project-flyout-empty").is_none());
         assert!(cx.debug_bounds("flyout-project-actions").is_none());
         cx.simulate_click(anchor.center(), gpui::Modifiers::default());
         draw(cx);
@@ -5355,12 +5533,21 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(cx.debug_bounds("compact-multi-project-sessions").is_none());
+        assert!(cx.debug_bounds("compact-multi-project-sessions").is_some());
+        let anchor = cx.debug_bounds("multi-project-anchor").unwrap();
+        cx.simulate_click(anchor.center(), gpui::Modifiers::default());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("multi-project-session-flyout").is_some());
+        assert!(cx.debug_bounds("multi-project-flyout-new").is_some());
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| sidebar.toggle_sidebar(window, cx));
         });
         draw(cx);
-        assert!(cx.debug_bounds("multi-project-sessions").is_none());
+        assert!(cx.debug_bounds("multi-project-sessions").is_some());
+        assert!(cx.debug_bounds("multi-project-new").is_some());
         assert!(cx.debug_bounds("sidebar-navigation-header").is_some());
         assert!(cx.debug_bounds("projects-count").is_some());
         cx.update(|window, cx| {
@@ -5393,7 +5580,8 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(cx.debug_bounds("multi-project-sessions").is_none());
+        assert!(cx.debug_bounds("multi-project-sessions").is_some());
+        assert!(cx.debug_bounds("multi-project-new").is_some());
         assert!(cx.debug_bounds("projects-count").is_some());
         let heading = cx.debug_bounds("sidebar-heading-label").unwrap();
         for id in [
@@ -5821,21 +6009,21 @@ mod tests {
                     sidebar.launch_target(0, format!("{path}/feature"), Agent::Terminal, cx),
                     Some(("demo".into(), format!("{path}/feature"), Agent::Terminal))
                 );
-            })
+            });
         });
         cx.simulate_keystrokes("tab");
         cx.update(|window, cx| {
             assert!(!sidebar
                 .read(cx)
                 .project_flyout_launch_focus
-                .is_focused(window))
+                .is_focused(window));
         });
         cx.simulate_keystrokes("shift-tab");
         cx.update(|window, cx| {
             assert!(sidebar
                 .read(cx)
                 .project_flyout_launch_focus
-                .is_focused(window))
+                .is_focused(window));
         });
         let feature_plus = cx
             .debug_bounds("flyout-launch-plus-/grove-sidebar-collapse-test/feature")
@@ -5884,7 +6072,7 @@ mod tests {
                     sidebar.project_flyout_plus_focus["/grove-sidebar-collapse-test/feature"]
                         .is_focused(window)
                 );
-            })
+            });
         });
         assert!(cx.debug_bounds("project-session-flyout").is_some());
         cx.simulate_keystrokes("escape");
@@ -7263,11 +7451,8 @@ mod tests {
         let worktree = cx.debug_bounds(worktree_selector).unwrap();
         let first = cx.debug_bounds("session-agent-1").unwrap();
         let second = cx.debug_bounds("session-agent-2").unwrap();
-        assert_eq!(project.left(), worktree.left());
-        assert_eq!(
-            first.left(),
-            project.left() - gpui::px(HIERARCHY_ICON_SLOT + HIERARCHY_GAP)
-        );
+        assert_eq!(project.left() + gpui::px(SPACE_LG), worktree.left());
+        assert_eq!(first.left(), project.left() + gpui::px(HIERARCHY_INSET));
         assert_eq!(first.left(), second.left());
         assert!(cx.debug_bounds("diff-chip-open-1").is_some());
         assert!(cx.debug_bounds("diff-chip-open-2").is_some());
@@ -7511,6 +7696,122 @@ mod tests {
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn heading_intrinsic_width_does_not_trigger_geist_truncation() {
+        use gpui::AssetSource as _;
+        let platform = gpui_platform::current_platform(true);
+        let text_system = std::sync::Arc::new(gpui::TextSystem::new(platform.text_system()));
+        let fonts = ["fonts/Geist-Regular.ttf", "fonts/Geist-Medium.ttf"]
+            .map(|path| crate::assets::Assets.load(path).unwrap().unwrap());
+        text_system.add_fonts(fonts.into()).unwrap();
+        let window_text_system = gpui::WindowTextSystem::new(text_system.clone());
+        let style = gpui::TextStyle {
+            font_family: crate::fonts::UI_FAMILY.into(),
+            font_weight: gpui::FontWeight::MEDIUM,
+            ..Default::default()
+        };
+        for zoom in [0.9, 1.0, 1.1, 1.2, 1.5, 2.0] {
+            for label in ["Projects", "Sessions", ""] {
+                let size = gpui::px(TEXT_SMALL * zoom);
+                let run = style.to_run(label.len());
+                let width = navigation_label_width(label, size, &run, &window_text_system);
+                let mut wrapper = text_system.line_wrapper(run.font, size);
+                assert_eq!(
+                    wrapper.should_truncate_line(label, width, "…", gpui::TruncateFrom::End),
+                    None,
+                    "{label} incorrectly truncates at {zoom}x with preferred width {width:?}"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn project_heading_fits_full_text_at_zoom(cx: &mut gpui::TestAppContext) {
+        struct Fixture(Entity<Sidebar>);
+        impl Render for Fixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .font_family(crate::fonts::UI_FAMILY)
+                    .child(self.0.clone())
+            }
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: (0..4)
+                    .map(|index| grove_core::storage::Project {
+                        name: format!("project-{index}"),
+                        path: format!("/grove-heading-{index}"),
+                        scripts: grove_core::storage::ProjectScripts::default(),
+                        archived: false,
+                        worktree_dir: None,
+                    })
+                    .collect(),
+                sidebar_width: Some(300.0),
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Fixture(cx.new(|cx| Sidebar::new(runtime, window, cx)))
+        });
+        for rail_width in [260.0, 280.0, 300.0] {
+            cx.update(|_, cx| {
+                cx.global_mut::<SettingsState>().store.sidebar_width = Some(rail_width);
+            });
+            for zoom in [0.9, 1.0, 1.1, 1.2, 1.5, 2.0] {
+                cx.update(|window, _| window.set_rem_size(gpui::px(16.0 * zoom)));
+                draw(cx);
+                let heading = cx.debug_bounds("sidebar-heading-label").unwrap();
+                let width = cx.update(|window, _| {
+                    let text: SharedString = "Projects".into();
+                    let mut run = window.text_style().to_run(text.len());
+                    run.font.weight = gpui::FontWeight::MEDIUM;
+                    run.font.family = crate::fonts::UI_FAMILY.into();
+                    let font_id = window.text_system().resolve_font(&run.font);
+                    let glyph_width: gpui::Pixels = text
+                        .chars()
+                        .map(|ch| {
+                            window.text_system().layout_width(
+                                font_id,
+                                gpui::px(TEXT_SMALL * zoom),
+                                ch,
+                            )
+                        })
+                        .sum();
+                    let shaped_width = window
+                        .text_system()
+                        .shape_line(text, gpui::px(TEXT_SMALL * zoom), &[run], None)
+                        .width();
+                    shaped_width.max(glyph_width.floor())
+                });
+                assert!(
+                    heading.size.width >= width,
+                    "heading truncated at {zoom}x: {:?}, full text width {width:?}",
+                    heading.size.width
+                );
+            }
+        }
+        // A genuinely narrow viewport must still shrink the label, keeping the
+        // count and controls visible instead of forcing the word to overflow.
+        cx.update(|window, _| window.set_rem_size(gpui::px(16.0)));
+        draw(cx);
+        let full_width = cx.debug_bounds("sidebar-heading-label").unwrap().size.width;
+        cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(800.0)));
+        draw(cx);
+        let heading = cx.debug_bounds("sidebar-heading-label").unwrap();
+        let count = cx.debug_bounds("projects-count").unwrap();
+        let control = cx.debug_bounds("sidebar-view").unwrap();
+        assert!(heading.size.width < full_width);
+        assert!(heading.right() < count.left());
+        assert!((f32::from(count.left() - heading.right()) - SPACE_SM).abs() <= 1.0);
+        assert!(count.right() <= control.left());
+    }
+
     #[gpui::test]
     fn project_title_toggles_without_selecting_or_preserving_descendants(
         cx: &mut gpui::TestAppContext,
@@ -7792,6 +8093,23 @@ mod tests {
             f32::from(next_worktree.top() - second.bottom())
                 > f32::from(second.top() - first.bottom())
         );
+        for width in [220.0, 260.0, 320.0] {
+            cx.update(|window, cx| {
+                cx.global_mut::<SettingsState>().store.sidebar_width = Some(width);
+                sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
+            });
+            draw(cx);
+            let launcher = cx.debug_bounds("session-agent-1").unwrap();
+            let title = cx.debug_bounds("session-tree-title-1").unwrap();
+            let metadata = cx.debug_bounds("session-tree-metadata-1").unwrap();
+            let status = cx.debug_bounds("session-tree-status-1").unwrap();
+            let close = cx.debug_bounds("session-tree-close-1").unwrap();
+            assert_eq!(launcher.left(), title.left());
+            assert_eq!(title.left(), metadata.left());
+            assert!(status.left() >= launcher.right());
+            assert!(status.bottom() <= title.top());
+            assert!(close.top() >= status.bottom());
+        }
         assert!(cx.debug_bounds("session-3").is_some());
         assert!(cx.debug_bounds("fold-/grove-spacing-feature").is_none());
     }
@@ -9196,8 +9514,14 @@ mod tests {
         let project_title = cx.debug_bounds("project-title-0").unwrap();
         let worktree_title = cx.debug_bounds(selector("worktree-title-")).unwrap();
         let empty = cx.debug_bounds(selector("worktree-empty-")).unwrap();
-        assert_eq!(worktree_title.left(), project_title.left());
-        assert_eq!(empty.left(), worktree_title.left());
+        assert_eq!(
+            worktree_title.left(),
+            project_title.left() + gpui::px(SPACE_LG)
+        );
+        assert_eq!(
+            empty.left(),
+            project_title.left() + gpui::px(HIERARCHY_INSET)
+        );
         assert!(cx.debug_bounds("projects-count").is_some());
         assert!(cx.debug_bounds(selector("worktree-count-")).is_none());
         assert!(cx.debug_bounds("tree-expand-cycle").is_none());
@@ -9223,7 +9547,7 @@ mod tests {
         let agent = cx.debug_bounds("session-agent-1").unwrap();
         assert_eq!(
             agent.left(),
-            project_title.left() - gpui::px(HIERARCHY_ICON_SLOT + HIERARCHY_GAP)
+            project_title.left() + gpui::px(HIERARCHY_INSET)
         );
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {

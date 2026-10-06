@@ -418,9 +418,7 @@ impl Sidebar {
         } else {
             let snapshot = self.project_navigation_snapshot(cx);
             let multi = self.multi_project_sessions(cx);
-            if !multi.is_empty() {
-                body = body.child(self.compact_multi_project_group(&multi, window, cx));
-            }
+            body = body.child(self.compact_multi_project_group(&multi, window, cx));
             let identifiers = project_flyout::project_identifiers(
                 &snapshot
                     .projects

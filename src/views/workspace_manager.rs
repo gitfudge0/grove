@@ -1153,7 +1153,7 @@ mod tests {
                 assert!(manager.dismiss_hover_menu(window, cx));
                 manager.hover_trigger(true, window, cx);
                 assert_eq!(manager.panel, Panel::Closed);
-            })
+            });
         });
         cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before));
         cx.simulate_mouse_move(

@@ -82,17 +82,9 @@ fn resolved_roots(meta: &SessionMeta, snapshot: &TreeSnapshot) -> Vec<RootLabel>
 }
 
 impl Sidebar {
-    pub(super) fn multi_project_content(
-        &self,
-        meta: &SessionMeta,
-        title: String,
-        status: (&'static str, gpui::Hsla),
-        selected: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(super) fn multi_project_content(&self, meta: &SessionMeta, title: String) -> AnyElement {
         let id = meta.id;
         let roots = resolved_roots(meta, &self.snapshot);
-        let last = roots.len().saturating_sub(1);
         div()
             .flex_1()
             .min_w_0()
@@ -114,13 +106,11 @@ impl Sidebar {
                             .debug_selector(move || format!("multi-session-title-{}", id.raw()))
                             .flex_1()
                             .min_w_0()
-                            .truncate()
+                            .whitespace_normal()
+                            .line_clamp(2)
+                            .text_ellipsis()
                             .text_size(rpx(TEXT_SMALL))
-                            .font_weight(if selected {
-                                gpui::FontWeight::SEMIBOLD
-                            } else {
-                                gpui::FontWeight::MEDIUM
-                            })
+                            .font_weight(gpui::FontWeight::NORMAL)
                             .child(title),
                     ),
             )
@@ -183,22 +173,6 @@ impl Sidebar {
                             .text_color(c::FG_DIM())
                             .child(root.worktree),
                     )
-                    .when(index == last, |row| {
-                        row.child(motion::fast(
-                            div()
-                                .id(("multi-session-status", id.raw()))
-                                .debug_selector(move || {
-                                    format!("multi-session-status-{}", id.raw())
-                                })
-                                .flex_shrink_0()
-                                .text_size(rpx(HIERARCHY_META_TEXT))
-                                .font_weight(gpui::FontWeight::NORMAL)
-                                .text_color(status.1)
-                                .child(status.0),
-                            format!("session-status-tree-{}-{}", id.raw(), status.0),
-                            cx,
-                        ))
-                    })
             }))
             .into_any_element()
     }
@@ -236,7 +210,7 @@ impl Sidebar {
     pub(super) fn sidebar_context_is_active(&self, target: &SidebarContext, cx: &App) -> bool {
         match target {
             SidebarContext::Project(path) => self.project_path_is_active(path, cx),
-            SidebarContext::MultiProject => !self.multi_project_sessions(cx).is_empty(),
+            SidebarContext::MultiProject => true,
         }
     }
 
@@ -322,6 +296,19 @@ impl Sidebar {
                     .mb(rpx(SPACE_SM))
                     .child(self.multi_project_header(sessions.len(), false, cx)),
             );
+        if sessions.is_empty() {
+            section = section.child(
+                div()
+                    .id("multi-project-empty")
+                    .debug_selector(|| "multi-project-empty".into())
+                    .px(rpx(HIERARCHY_INSET))
+                    .py(rpx(SPACE_SM))
+                    .text_size(rpx(TEXT_MICRO))
+                    .text_color(c::FG_DIM())
+                    .whitespace_normal()
+                    .child("No cross-project sessions yet. Start one with +."),
+            );
+        }
         for (index, meta) in sessions.iter().enumerate() {
             section =
                 section.child(self.session_row(meta, false, Some(index + 1), false, window, cx));
@@ -426,6 +413,17 @@ impl Sidebar {
             .p(rpx(SPACE_2XL))
             .gap(rpx(SPACE_SM))
             .child(self.multi_project_header(sessions.len(), true, cx));
+        if sessions.is_empty() {
+            body = body.child(
+                div()
+                    .id("multi-project-flyout-empty")
+                    .debug_selector(|| "multi-project-flyout-empty".into())
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .whitespace_normal()
+                    .child("No cross-project sessions yet. Start one with +."),
+            );
+        }
         let mut actions = Vec::new();
         let mut indices = Vec::new();
         for (index, meta) in sessions.iter().enumerate() {
