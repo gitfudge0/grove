@@ -1,7 +1,8 @@
 //! Compact navigation uses the same snapshots, actions and ordering as the full rail.
 use super::*;
 
-const COMPACT_ROW_H: f32 = 32.0;
+pub(super) const COMPACT_ROW_H: f32 = 32.0;
+pub(super) const COMPACT_ITEM_W: f32 = 36.0;
 const DISCLOSURE_D: f32 = 8.0;
 
 impl Sidebar {
@@ -60,7 +61,7 @@ impl Sidebar {
         self.control(SharedString::from(id.clone()), label, action, cx)
             .debug_selector(move || id.clone())
             .relative()
-            .w(rpx(36.0))
+            .w(rpx(COMPACT_ITEM_W))
             .h(rpx(COMPACT_ROW_H))
             .rounded(rpx(RADIUS_CHROME))
             .aria_selected(selected)
@@ -242,7 +243,7 @@ impl Sidebar {
             .into_any_element()
     }
 
-    fn compact_session(
+    pub(super) fn compact_session(
         &self,
         meta: &SessionMeta,
         window: &Window,
@@ -283,6 +284,14 @@ impl Sidebar {
                 )
             },
         );
+        let context = if multi_project::project_names(meta).is_some() {
+            multi_project::root_details(meta, &self.snapshot)
+        } else {
+            context
+        };
+        // The named multi-project context owns Close and its anchor while open.
+        let flyout_owns_close = self.project_flyout.as_ref() == Some(&SidebarContext::MultiProject)
+            && multi_project::project_names(meta).is_some();
         let mut row = self
             .compact_item(
                 format!("session-{}", id.raw()),
@@ -312,46 +321,56 @@ impl Sidebar {
                     .child(icon(compact_status_glyph(status), 11.0, color)),
             )
             .group("compact-session-row")
-            .child(
-                self.control(
-                    ("compact-close-session", id.raw()),
-                    format!("Close {} in {}", meta.label, meta.project),
-                    Action::Close(id),
-                    cx,
+            .when(!flyout_owns_close, |row| {
+                row.child(
+                    self.control(
+                        ("compact-close-session", id.raw()),
+                        format!("Close {} in {}", meta.label, meta.project),
+                        Action::Close(id),
+                        cx,
+                    )
+                    .debug_selector(move || format!("compact-close-session-{}", id.raw()))
+                    .absolute()
+                    .right_0()
+                    .top_0()
+                    .w(rpx(SPACE_20))
+                    .h(rpx(ICON_MD))
+                    .opacity(0.0)
+                    .group_hover("compact-session-row", |button| button.opacity(1.0))
+                    .focus_visible(|button| button.opacity(1.0))
+                    .when_some(
+                        self.session_close_bounds.get(&id).cloned(),
+                        |button, bounds| {
+                            button.child(
+                                gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                                    .absolute()
+                                    .inset_0(),
+                            )
+                        },
+                    )
+                    .child(icon("close", ICON_XS, c::FG_DIM())),
                 )
-                .debug_selector(move || format!("compact-close-session-{}", id.raw()))
-                .absolute()
-                .right_0()
-                .top_0()
-                .w(rpx(SPACE_20))
-                .h(rpx(ICON_MD))
-                .opacity(0.0)
-                .group_hover("compact-session-row", |button| button.opacity(1.0))
-                .focus_visible(|button| button.opacity(1.0))
-                .when_some(
-                    self.session_close_bounds.get(&id).cloned(),
-                    |button, bounds| {
-                        button.child(
-                            gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
-                                .absolute()
-                                .inset_0(),
-                        )
-                    },
-                )
-                .child(icon("close", ICON_XS, c::FG_DIM())),
-            );
-        if self.pending_close == Some(id) && self.canvas_close_anchor.is_none() {
+            });
+        if !flyout_owns_close
+            && self.pending_close == Some(id)
+            && self.canvas_close_anchor.is_none()
+        {
             if let Some(bounds) = self.session_close_bounds.get(&id) {
-                row = row.child(gpui::deferred(self.confirmation_popup(
-                    &format!(
+                row = row.child(
+                    div()
+                        .id(("compact-close-popup", id.raw()))
+                        .debug_selector(move || format!("compact-close-popup-{}", id.raw()))
+                        .child(gpui::deferred(self.confirmation_popup(
+                            &format!(
                         "Close {} in {}? Its process will stop. The worktree stays on disk.",
                         meta.label, meta.project
                     ),
-                    Action::ConfirmClose(id),
-                    bounds.get(),
-                    window,
-                    cx,
-                )));
+                            Action::ConfirmClose(id),
+                            bounds.get(),
+                            window,
+                            cx,
+                        ))),
+                );
             }
         }
         row.into_any_element()
@@ -390,15 +409,19 @@ impl Sidebar {
                 }
             }
         } else {
+            let snapshot = self.project_navigation_snapshot(cx);
+            let multi = self.multi_project_sessions(cx);
+            if !multi.is_empty() {
+                body = body.child(self.compact_multi_project_group(&multi, window, cx));
+            }
             let identifiers = project_flyout::project_identifiers(
-                &self
-                    .snapshot
+                &snapshot
                     .projects
                     .iter()
                     .map(|p| p.name.as_str())
                     .collect::<Vec<_>>(),
             );
-            for (position, project) in self.snapshot.projects.iter().enumerate() {
+            for (position, project) in snapshot.projects.iter().enumerate() {
                 let idx = project.idx;
                 let Some(path) = self.project_paths.get(&idx) else {
                     continue;
@@ -413,19 +436,21 @@ impl Sidebar {
                     .control(
                         format!("project-{idx}"),
                         format!("{} · {count} open sessions · {path}", project.name),
-                        Action::ProjectFlyout(path.clone()),
+                        Action::ProjectFlyout(SidebarContext::Project(path.clone())),
                         cx,
                     )
                     .debug_selector(move || format!("project-{idx}"))
                     .relative()
-                    .w(rpx(36.0))
+                    .w(rpx(COMPACT_ITEM_W))
                     .h(rpx(COMPACT_ROW_H))
                     .rounded(rpx(RADIUS_CHROME))
                     .text_size(rpx(TEXT_SMALL))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .when(self.project_flyout.as_ref() == Some(path), |row| {
-                        row.bg(c::BG_HOVER())
-                    })
+                    .when(
+                        self.project_flyout.as_ref()
+                            == Some(&SidebarContext::Project(path.clone())),
+                        |row| row.bg(c::BG_HOVER()),
+                    )
                     .when_some(
                         self.project_toggle_focus.get(path),
                         gpui::InteractiveElement::track_focus,
@@ -445,7 +470,8 @@ impl Sidebar {
                             {
                                 let bounds = self.project_flyout_bounds.clone();
                                 let menu_bounds = self.project_menu_bounds.get(&idx).cloned();
-                                let active = self.project_flyout.as_ref() == Some(path);
+                                let active = self.project_flyout.as_ref()
+                                    == Some(&SidebarContext::Project(path.clone()));
                                 move |rect, _, _| {
                                     if let Some(bounds) = &menu_bounds {
                                         bounds.set(rect);
@@ -460,9 +486,13 @@ impl Sidebar {
                         .absolute()
                         .inset_0(),
                     )
-                    .when(self.project_flyout.as_ref() == Some(path), |row| {
-                        row.child(gpui::deferred(self.project_session_flyout(idx, window, cx)))
-                    });
+                    .when(
+                        self.project_flyout.as_ref()
+                            == Some(&SidebarContext::Project(path.clone())),
+                        |row| {
+                            row.child(gpui::deferred(self.project_session_flyout(idx, window, cx)))
+                        },
+                    );
                 let group_path = path.clone();
                 let mut group = div()
                     .id(("compact-project-group", idx))
@@ -470,7 +500,11 @@ impl Sidebar {
                     .relative()
                     .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                         if *hovered {
-                            this.open_project_flyout_on_hover(&group_path, window, cx);
+                            this.open_sidebar_context_on_hover(
+                                SidebarContext::Project(group_path.clone()),
+                                window,
+                                cx,
+                            );
                         } else {
                             this.track_project_flyout_pointer(window.mouse_position(), window, cx);
                         }

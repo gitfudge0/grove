@@ -174,6 +174,14 @@ impl Shell {
             );
         let sidebar_events =
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
+                super::sidebar::SidebarEvent::NewMultiProjectSessionRequested => {
+                    if !this.shortcut_blocked(cx) {
+                        this.sidebar
+                            .update(cx, super::sidebar::Sidebar::dismiss_project_context);
+                        this.launcher
+                            .update(cx, |launcher, cx| launcher.open_multi_project(window, cx));
+                    }
+                }
                 super::sidebar::SidebarEvent::SettingsRequested => {
                     this.sidebar
                         .update(cx, super::sidebar::Sidebar::dismiss_project_context);
@@ -2743,6 +2751,96 @@ mod tests {
     }
 
     #[gpui::test]
+    fn cross_project_header_opens_existing_selector_by_click_and_keyboard(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.update(|_, cx| {
+            let runtime = shell.read(cx).runtime.clone();
+            runtime
+                .read(cx)
+                .registry
+                .clone()
+                .update(cx, |registry, cx| {
+                    registry.insert_meta_with_context(
+                        "navigation".into(),
+                        "/grove-shell-navigation-test".into(),
+                        Agent::Claude,
+                        vec![grove_core::session_meta::ContextRoot {
+                            project: "WEB".into(),
+                            wt_path: "/web/main".into(),
+                        }],
+                        None,
+                    );
+                    cx.notify();
+                });
+            runtime.read(cx).tree.clone().update(cx, |tree, cx| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![grove_core::git::Worktree {
+                        path: "/grove-shell-navigation-test".into(),
+                        branch: "main".into(),
+                        mtime: None,
+                        is_main: true,
+                    }],
+                );
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let plus = cx
+            .debug_bounds("multi-project-new")
+            .expect("cross-project header action")
+            .center();
+        cx.simulate_mouse_down(plus, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(plus, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("worktree-launcher-selected-count")
+                .is_some(),
+            "existing multi selector opened directly"
+        );
+        assert!(cx.debug_bounds("launcher-row-0-selection").is_some());
+        cx.simulate_keystrokes("escape escape");
+        draw(cx);
+        cx.update(|_, cx| assert!(!shell.read(cx).launcher.read(cx).is_open()));
+        cx.update(|window, cx| {
+            shell
+                .read(cx)
+                .sidebar
+                .clone()
+                .update(cx, |sidebar, cx| sidebar.toggle_sidebar(window, cx));
+        });
+        draw(cx);
+        let anchor = cx.debug_bounds("multi-project-anchor").unwrap().center();
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(600.0), gpui::px(500.0)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_move(anchor, None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("multi-project-flyout-new").is_some(),
+            "hover opens named group"
+        );
+        cx.simulate_mouse_down(anchor, MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_up(anchor, MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("multi-project-flyout-new").is_some());
+        cx.simulate_keystrokes("tab enter");
+        draw(cx);
+        assert!(
+            cx.debug_bounds("worktree-launcher-selected-count")
+                .is_some(),
+            "flyout plus reachable by Tab and Enter"
+        );
+        assert!(cx.debug_bounds("multi-project-session-flyout").is_none());
+        cx.update(|_, cx| assert!(shell.read(cx).launcher.read(cx).is_open()));
+    }
+
+    #[gpui::test]
     fn header_launcher_opens_palette_and_selected_canvas_stays_aligned(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -2925,6 +3023,62 @@ mod tests {
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|window, _| assert!(prior.is_focused(window)));
+    }
+
+    #[gpui::test]
+    fn command_palette_shortcut_works_after_closing_session_without_click(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        cx.update(|cx| cx.bind_keys(k::shell_bindings()));
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        let selected = cx.update(|_, cx| {
+            let registry = shell.read(cx).runtime.read(cx).registry.clone();
+            let terminal = cx.new(|cx| {
+                crate::entities::terminal_session::TerminalSession::spawn_script(
+                    "\0",
+                    "/grove-shell-navigation-test",
+                    cx,
+                )
+            });
+            registry.update(cx, |registry, cx| {
+                let id = registry.insert_meta(
+                    "navigation".into(),
+                    "/grove-shell-navigation-test".into(),
+                    Agent::Terminal,
+                );
+                registry.attach(id, terminal, None);
+                cx.notify();
+                id
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            shell.read(cx).sidebar.clone().update(cx, |sidebar, cx| {
+                sidebar.select_session_id(selected, window, cx);
+            });
+        });
+        draw(cx);
+        cx.simulate_keystrokes(&format!("{}w", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-confirmation").is_some());
+        cx.simulate_keystrokes("tab enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(shell
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .meta(selected)
+                .is_none());
+            assert!(!shell.sidebar.read(cx).confirmation_open());
+            assert_eq!(shell.sidebar.read(cx).selected_session(), None);
+        });
+        cx.simulate_keystrokes(&format!("{}p", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).launcher.read(cx).is_open()));
     }
 
     #[gpui::test]

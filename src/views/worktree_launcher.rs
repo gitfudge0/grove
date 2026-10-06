@@ -156,6 +156,20 @@ impl WorktreeLauncher {
         cx.notify();
     }
 
+    /// Open the existing multi-worktree selector directly from the sidebar.
+    pub(crate) fn open_multi_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open(window, cx);
+        let rows = self.rows(cx);
+        if let Some(index) = rows
+            .iter()
+            .position(|row| *row == PaletteRow::NewMultiProjectSession)
+        {
+            self.selected = index;
+            self.anchor = Some(launcher::row_identity(&rows[index]));
+            self.activate(window, cx);
+        }
+    }
+
     /// Focus the inline tool selector for a worktree selected in the active workspace.
     pub fn open_for_worktree(
         &mut self,
@@ -847,7 +861,7 @@ impl Render for WorktreeLauncher {
                             .when(!compact, |header| header.child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(match self.mode {
                                 PaletteMode::Root => "Command palette",
                                 PaletteMode::Single => "New session",
-                                PaletteMode::Multi => "New multi-project session",
+                                PaletteMode::Multi => "New cross-project session",
                             })))
                             .child(
                                 div()
@@ -896,7 +910,7 @@ impl Render for WorktreeLauncher {
                                         (format!("{} / {}", project, worktree_name(wt_path)), wt_path.clone(), "git-branch", agent.label().to_string())
                                     }
                                     PaletteRow::NewSession => ("New session".into(), "Choose a worktree".into(), "plus", String::new()),
-                                    PaletteRow::NewMultiProjectSession => ("New multi-project session".into(), "Select multiple worktrees".into(), "plus", String::new()),
+                                    PaletteRow::NewMultiProjectSession => ("New cross-project session".into(), "Select multiple worktrees".into(), "plus", String::new()),
                                     PaletteRow::TerminalHome => ("New home terminal".into(), "Open a terminal in the workspace".into(), "terminal", String::new()),
                                     PaletteRow::TerminalWt => ("New worktree terminal".into(), "Open a terminal in the selected worktree".into(), "terminal", String::new()),
                                     PaletteRow::AddProject => ("Add project".into(), "Add a local project to this workspace".into(), "plus", String::new()),

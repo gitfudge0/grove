@@ -74,52 +74,52 @@ impl Sidebar {
                 .is_some_and(|selector| selector.read(cx).is_open())
     }
 
-    pub(super) fn open_project_flyout_on_hover(
+    pub(super) fn open_sidebar_context_on_hover(
         &mut self,
-        path: &str,
+        target: SidebarContext,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !self.project_hover_allowed(cx)
-            || self.project_flyout_suppressed.as_deref() == Some(path)
+            || self.project_flyout_suppressed.as_ref() == Some(&target)
+            || !self.sidebar_context_is_active(&target, cx)
         {
             return;
         }
         self.project_flyout_hide_task = None;
-        if self.project_flyout.as_deref() == Some(path) {
+        if self.project_flyout.as_ref() == Some(&target) {
             return;
         }
-        let Some((&idx, _)) = self
-            .project_paths
-            .iter()
-            .find(|(_, candidate)| candidate.as_str() == path)
-        else {
-            return;
-        };
-        if let Some(bounds) = self.project_menu_bounds.get(&idx).cloned() {
+        if let Some(bounds) = self.sidebar_context_trigger(&target) {
             self.project_flyout_bounds = bounds;
         }
         self.project_flyout_hover_open =
             self.project_flyout.is_none() || self.project_flyout_hover_open;
-        self.project_flyout = Some(path.to_string());
+        self.project_flyout_launch_path = None;
+        self.project_flyout_launch_error = None;
+        self.project_flyout = Some(target);
         self.project_flyout_index = 0;
         self.project_flyout_scroll = ScrollHandle::new();
         cx.notify();
     }
 
-    fn project_group_rect(&self, path: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
-        self.project_paths
-            .iter()
-            .find(|(_, candidate)| candidate.as_str() == path)
-            .and_then(|(idx, _)| self.project_group_bounds.get(idx))
-            .map(|bounds| bounds.get())
+    fn project_group_rect(&self, target: &SidebarContext) -> Option<gpui::Bounds<gpui::Pixels>> {
+        match target {
+            SidebarContext::MultiProject => Some(self.multi_project_group_bounds.get()),
+            SidebarContext::Project(path) => self
+                .project_paths
+                .iter()
+                .find(|(_, candidate)| *candidate == path)
+                .and_then(|(idx, _)| self.project_group_bounds.get(idx))
+                .map(|bounds| bounds.get()),
+        }
     }
 
     fn pointer_in_project_context(&self, point: gpui::Point<gpui::Pixels>) -> bool {
         let Some(group) = self
             .project_flyout
-            .as_deref()
-            .and_then(|path| self.project_group_rect(path))
+            .as_ref()
+            .and_then(|target| self.project_group_rect(target))
         else {
             return false;
         };
@@ -140,13 +140,20 @@ impl Sidebar {
     ) {
         if self
             .project_flyout_suppressed
-            .as_deref()
-            .is_some_and(|path| {
-                self.project_group_rect(path)
+            .as_ref()
+            .is_some_and(|target| {
+                self.project_group_rect(target)
                     .is_none_or(|bounds| !bounds.contains(&point))
             })
         {
             self.project_flyout_suppressed = None;
+        }
+        if self.project_flyout.as_ref() == Some(&SidebarContext::MultiProject)
+            && self.confirmation_open()
+        {
+            // Keep the close dialog's owning context mounted until the decision resolves.
+            self.project_flyout_hide_task = None;
+            return;
         }
         if !self.project_flyout_hover_open || self.project_flyout.is_none() {
             return;
@@ -175,21 +182,68 @@ impl Sidebar {
     pub(crate) fn dismiss_project_context(&mut self, cx: &mut Context<Self>) {
         self.project_flyout_hide_task = None;
         self.project_flyout_hover_open = false;
+        self.project_flyout_launch_path = None;
+        self.project_flyout_launch_error = None;
         if let Some(path) = self.project_flyout.take() {
             self.project_flyout_suppressed = Some(path);
             cx.notify();
         }
     }
+    pub(super) fn collapse_project_launch_options(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(path) = self.project_flyout_launch_path.take() else {
+            return false;
+        };
+        self.project_flyout_launch_error = None;
+        if let Some(focus) = self.project_flyout_plus_focus.get(&path).cloned() {
+            cx.defer_in(window, move |_, window, cx| focus.focus(window, cx));
+        }
+        cx.notify();
+        true
+    }
+
     pub(super) fn close_project_flyout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let return_focus = self
             .project_flyout
             .as_ref()
-            .and_then(|path| self.project_toggle_focus.get(path))
+            .and_then(|target| match target {
+                SidebarContext::Project(path) => self.project_toggle_focus.get(path),
+                SidebarContext::MultiProject => Some(&self.multi_project_focus),
+            })
             .cloned();
         self.dismiss_project_context(cx);
         self.track_project_flyout_pointer(window.mouse_position(), window, cx);
         if let Some(focus) = return_focus {
             cx.defer_in(window, move |_, window, cx| focus.focus(window, cx));
+        }
+    }
+
+    fn project_popup_action_focus(&self, action: &Action) -> Option<FocusHandle> {
+        match action {
+            Action::ProjectFlyoutLaunchOptions(path) => {
+                self.project_flyout_plus_focus.get(path).cloned()
+            }
+            Action::Launch(_, _, Agent::Terminal) => Some(self.project_flyout_launch_focus.clone()),
+            Action::Launch(_, path, agent) => self
+                .project_flyout_item_focus
+                .get(&format!("launch-{}-{path}", agent.label()))
+                .cloned(),
+            Action::Select(Selection::Session(id)) => self
+                .project_flyout_item_focus
+                .get(&format!("session-{}", id.raw()))
+                .cloned(),
+            Action::Select(Selection::Project(idx)) => self
+                .project_flyout_item_focus
+                .get(&format!("overview-{idx}"))
+                .cloned(),
+            Action::Menu(idx) => self
+                .project_menu_focus
+                .get(idx)
+                .map(|focus| focus.clone().tab_stop(true)),
+            _ => None,
         }
     }
 
@@ -199,7 +253,8 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(project) = self.snapshot.projects.iter().find(|p| p.idx == idx) else {
+        let snapshot = self.project_navigation_snapshot(cx);
+        let Some(project) = snapshot.projects.iter().find(|p| p.idx == idx) else {
             return div().into_any_element();
         };
         let Some(path) = self.project_paths.get(&idx) else {
@@ -222,18 +277,8 @@ impl Sidebar {
                     .is_some_and(|meta| self.status(meta, cx).0 == "Needs you")
             })
             .count();
-        let mut actions = ids
-            .iter()
-            .map(|id| Action::Select(Selection::Session(*id)))
-            .collect::<Vec<_>>();
-        actions.push(Action::Select(Selection::Project(idx)));
-        actions.push(Action::Menu(idx));
-        let action_count = actions.len();
+        let mut actions = Vec::new();
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
-        let width = FLYOUT_W.min(
-            (f32::from(window.viewport_size().width) / scale - SIDEBAR_COLLAPSED_W - SPACE_LG)
-                .max(0.0),
-        );
         let height = (f32::from(window.viewport_size().height) / scale - SPACE_LG * 2.0).max(0.0);
         let mut body = div()
             .id("project-session-flyout-scroll")
@@ -261,21 +306,6 @@ impl Sidebar {
                             .line_height(rpx(SESSION_TITLE_LINE_H))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(project.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .id("flyout-project-count")
-                            .debug_selector(|| "flyout-project-count".into())
-                            .flex_shrink_0()
-                            .text_size(rpx(TEXT_MICRO))
-                            .line_height(rpx(SESSION_META_LINE_H))
-                            .font_weight(gpui::FontWeight::NORMAL)
-                            .text_color(c::FG_DIM())
-                            .child(format!(
-                                "{} open session{}",
-                                ids.len(),
-                                if ids.len() == 1 { "" } else { "s" }
-                            )),
                     ),
             )
             .when(needs_you > 0, |body| {
@@ -294,6 +324,86 @@ impl Sidebar {
         let mut child_index = 1 + usize::from(needs_you > 0);
         let mut scroll_indices = Vec::new();
         for worktree in &project.worktrees {
+            let name = sidebar_worktree_name(&worktree.name, worktree.is_main);
+            let expanded = self.project_flyout_launch_path.as_ref() == Some(&worktree.path);
+            let mut launches = div()
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .gap(rpx(SPACE_XS));
+            if expanded {
+                for agent in [
+                    Agent::Terminal,
+                    Agent::Claude,
+                    Agent::Codex,
+                    Agent::OpenCode,
+                ] {
+                    let agent_name = match agent {
+                        Agent::Terminal => "Terminal",
+                        Agent::Claude => "Claude Code",
+                        Agent::Codex => "Codex",
+                        Agent::OpenCode => "OpenCode",
+                    };
+                    let action = Action::Launch(idx, worktree.path.clone(), agent);
+                    let selector = format!("flyout-launch-{}-{}", agent.label(), worktree.path);
+                    launches = launches.child(
+                        self.control(
+                            SharedString::from(selector.clone()),
+                            format!("Start {agent_name} in {} · {name}", project.name),
+                            action.clone(),
+                            cx,
+                        )
+                        .debug_selector(move || selector.clone())
+                        .when(
+                            !self.project_flyout_hover_open
+                                && self.project_flyout_focus.is_focused(window)
+                                && self.project_flyout_index == index,
+                            |button| button.bg(c::BG_HOVER()),
+                        )
+                        .when_some(self.project_popup_action_focus(&action), |button, focus| {
+                            button.track_focus(&focus)
+                        })
+                        .child(icon(
+                            agent.icon_name(),
+                            ICON_SM,
+                            if agent == Agent::Terminal {
+                                c::FG_DIM()
+                            } else {
+                                c::MAGENTA()
+                            },
+                        )),
+                    );
+                    actions.push(action);
+                    scroll_indices.push(child_index);
+                    index += 1;
+                }
+            } else {
+                let action = Action::ProjectFlyoutLaunchOptions(worktree.path.clone());
+                let selector = format!("flyout-launch-plus-{}", worktree.path);
+                launches = launches.child(
+                    self.control(
+                        SharedString::from(selector.clone()),
+                        format!("Show launch options in {} · {name}", project.name),
+                        action.clone(),
+                        cx,
+                    )
+                    .debug_selector(move || selector.clone())
+                    .when_some(
+                        self.project_flyout_plus_focus.get(&worktree.path),
+                        gpui::InteractiveElement::track_focus,
+                    )
+                    .when(
+                        !self.project_flyout_hover_open
+                            && self.project_flyout_focus.is_focused(window)
+                            && self.project_flyout_index == index,
+                        |button| button.bg(c::BG_HOVER()),
+                    )
+                    .child(icon("plus", ICON_SM, c::FG_DIM())),
+                );
+                actions.push(action);
+                scroll_indices.push(child_index);
+                index += 1;
+            }
             body = body.child(
                 div()
                     .id(SharedString::from(format!(
@@ -316,17 +426,24 @@ impl Sidebar {
                             .text_size(rpx(TEXT_SMALL))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .line_height(rpx(SESSION_TITLE_LINE_H))
-                            .child(div().min_w_0().flex_1().truncate().child(
-                                sidebar_worktree_name(&worktree.name, worktree.is_main).to_string(),
-                            ))
+                            .items_center()
+                            .gap(rpx(SPACE_LG))
                             .child(
                                 div()
-                                    .text_size(rpx(TEXT_MICRO))
-                                    .font_weight(gpui::FontWeight::NORMAL)
-                                    .line_height(rpx(SESSION_META_LINE_H))
-                                    .text_color(c::FG_DIM())
-                                    .child(format!("{} open", worktree.sessions.len())),
-                            ),
+                                    .id(SharedString::from(format!(
+                                        "flyout-worktree-title-{}",
+                                        worktree.path
+                                    )))
+                                    .debug_selector({
+                                        let path = worktree.path.clone();
+                                        move || format!("flyout-worktree-title-{path}")
+                                    })
+                                    .min_w_0()
+                                    .flex_1()
+                                    .truncate()
+                                    .child(name.to_string()),
+                            )
+                            .child(launches),
                     )
                     .child(
                         div()
@@ -340,6 +457,27 @@ impl Sidebar {
                     ),
             );
             child_index += 1;
+            if expanded {
+                if let Some(error) = &self.project_flyout_launch_error {
+                    body = body.child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "flyout-launch-error-{}",
+                                worktree.path
+                            )))
+                            .debug_selector({
+                                let path = worktree.path.clone();
+                                move || format!("flyout-launch-error-{path}")
+                            })
+                            .text_size(rpx(TEXT_SMALL))
+                            .line_height(rpx(SESSION_META_LINE_H))
+                            .text_color(c::RED())
+                            .whitespace_normal()
+                            .child(error.clone()),
+                    );
+                    child_index += 1;
+                }
+            }
             if worktree.sessions.is_empty() {
                 child_index += 1;
                 body = body.child(
@@ -358,6 +496,7 @@ impl Sidebar {
                 );
             }
             for id in &worktree.sessions {
+                actions.push(Action::Select(Selection::Session(*id)));
                 scroll_indices.push(child_index);
                 child_index += 1;
                 if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(*id).cloned() {
@@ -393,6 +532,12 @@ impl Sidebar {
                             let id = *id;
                             move || format!("flyout-session-{}", id.raw())
                         })
+                        .when_some(
+                            self.project_popup_action_focus(&Action::Select(Selection::Session(
+                                *id,
+                            ))),
+                            |row, focus| row.track_focus(&focus),
+                        )
                         .relative()
                         .aria_selected(self.selection == Some(Selection::Session(*id)))
                         .when(self.selection == Some(Selection::Session(*id)), |row| {
@@ -491,6 +636,10 @@ impl Sidebar {
                     Action::Select(Selection::Project(idx)),
                     cx,
                 )
+                .when_some(
+                    self.project_popup_action_focus(&Action::Select(Selection::Project(idx))),
+                    |row, focus| row.track_focus(&focus),
+                )
                 .w_full()
                 .h(rpx(ROW_H))
                 .font_weight(gpui::FontWeight::NORMAL)
@@ -532,10 +681,9 @@ impl Sidebar {
                     !self.project_flyout_hover_open && self.project_flyout_index == index + 1,
                     |row| row.bg(c::BG_HOVER()),
                 )
-                .when_some(
-                    self.project_menu_focus.get(&idx),
-                    gpui::InteractiveElement::track_focus,
-                )
+                .when_some(self.project_menu_focus.get(&idx), |row, focus| {
+                    row.track_focus(&focus.clone().tab_stop(true))
+                })
                 .debug_selector(|| "flyout-project-actions".into())
                 .child(
                     div()
@@ -558,7 +706,34 @@ impl Sidebar {
                     .text_color(c::FG_DIM())
                     .child("Esc to close"),
             );
+        actions.extend([Action::Select(Selection::Project(idx)), Action::Menu(idx)]);
         scroll_indices.extend([child_index, child_index + 1]);
+        self.sidebar_context_popup(
+            body,
+            actions,
+            scroll_indices,
+            format!("{} sessions · {path}", project.name),
+            window,
+            cx,
+        )
+    }
+
+    pub(super) fn sidebar_context_popup(
+        &self,
+        body: Stateful<Div>,
+        actions: Vec<Action>,
+        scroll_indices: Vec<usize>,
+        label: String,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let multi = self.project_flyout.as_ref() == Some(&SidebarContext::MultiProject);
+        let action_count = actions.len();
+        let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+        let width = FLYOUT_W.min(
+            (f32::from(window.viewport_size().width) / scale - SIDEBAR_COLLAPSED_W - SPACE_LG)
+                .max(0.0),
+        );
         let panel = div()
             .id("project-session-flyout")
             .relative()
@@ -583,10 +758,18 @@ impl Sidebar {
                     this.track_project_flyout_pointer(window.mouse_position(), window, cx);
                 }
             }))
-            .debug_selector(|| "project-session-flyout".into())
+            .debug_selector(move || {
+                if multi {
+                    "multi-project-session-flyout"
+                } else {
+                    "project-session-flyout"
+                }
+                .into()
+            })
             .track_focus(&self.project_flyout_focus)
+            .tab_group()
             .role(gpui::Role::Menu)
-            .aria_label(format!("{} sessions · {path}", project.name))
+            .aria_label(label)
             .w(rpx(width))
             .rounded(rpx(RADIUS_CHROME))
             .border_1()
@@ -612,6 +795,61 @@ impl Sidebar {
             )
             .capture_key_down(
                 cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    // Modal controls use the sidebar's existing confirmation trap.
+                    if this.confirmation_open() {
+                        return;
+                    }
+                    let key = &event.keystroke;
+                    if key.key == "escape" {
+                        if !this.collapse_project_launch_options(window, cx) {
+                            this.close_project_flyout(window, cx);
+                        }
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if key.key == "tab"
+                        && !key.modifiers.control
+                        && !key.modifiers.alt
+                        && !key.modifiers.platform
+                        && !key.modifiers.function
+                    {
+                        window.prevent_default();
+                        let initial = window.focused(cx);
+                        loop {
+                            let before = window.focused(cx);
+                            if key.modifiers.shift {
+                                window.focus_prev(cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
+                            if this.project_flyout_focus.contains_focused(window, cx) {
+                                break;
+                            }
+                            let current = window.focused(cx);
+                            if current == before || current == initial {
+                                this.project_flyout_focus.focus(window, cx);
+                                break;
+                            }
+                        }
+                        if !multi {
+                            if let Some(index) = actions.iter().position(|action| {
+                                this.project_popup_action_focus(action)
+                                    .is_some_and(|focus| focus.is_focused(window))
+                            }) {
+                                this.project_flyout_index = index;
+                                this.project_flyout_scroll
+                                    .scroll_to_item(scroll_indices[index]);
+                                cx.notify();
+                            }
+                        }
+                        cx.stop_propagation();
+                        return;
+                    }
+                    // Close/Retry descendants own Enter/Space themselves.
+                    if !this.project_flyout_focus.is_focused(window) {
+                        return;
+                    }
                     window.prevent_default();
                     match event.keystroke.key.as_str() {
                         "escape" => this.close_project_flyout(window, cx),

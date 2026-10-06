@@ -605,8 +605,8 @@ pub fn typed_rows(
     if !query.trim().is_empty()
         && fuzzy_match(
             query,
-            "new multi-project session",
-            "multi repo multiple worktrees",
+            "new cross-project session",
+            "multi-project multi project multi repo multiple worktrees cross project",
             "",
         )
     {
@@ -999,7 +999,13 @@ mod tests {
 
     #[test]
     fn multi_project_command_matches_its_private_search_aliases() {
-        for query in ["multi project", "multi repo", "multiple worktrees"] {
+        for query in [
+            "cross-project",
+            "cross project",
+            "multi project",
+            "multi repo",
+            "multiple worktrees",
+        ] {
             assert!(typed_rows(query, &[], &[], false, false, PaletteScope::All)
                 .contains(&PaletteRow::NewMultiProjectSession));
         }
