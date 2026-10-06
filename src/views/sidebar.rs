@@ -7474,8 +7474,11 @@ mod tests {
         let worktree = cx.debug_bounds(worktree_selector).unwrap();
         let first = cx.debug_bounds("session-agent-1").unwrap();
         let second = cx.debug_bounds("session-agent-2").unwrap();
-        assert_eq!(project.left() + gpui::px(SPACE_LG), worktree.left());
-        assert_eq!(first.left(), project.left() + gpui::px(HIERARCHY_INSET));
+        assert_eq!(project.left(), worktree.left());
+        assert_eq!(
+            first.left() + gpui::px(HIERARCHY_ICON_SLOT + HIERARCHY_GAP),
+            project.left()
+        );
         assert_eq!(first.left(), second.left());
         assert!(cx.debug_bounds("diff-chip-open-1").is_some());
         assert!(cx.debug_bounds("diff-chip-open-2").is_some());
@@ -9544,14 +9547,8 @@ mod tests {
         let project_title = cx.debug_bounds("project-title-0").unwrap();
         let worktree_title = cx.debug_bounds(selector("worktree-title-")).unwrap();
         let empty = cx.debug_bounds(selector("worktree-empty-")).unwrap();
-        assert_eq!(
-            worktree_title.left(),
-            project_title.left() + gpui::px(SPACE_LG)
-        );
-        assert_eq!(
-            empty.left(),
-            project_title.left() + gpui::px(HIERARCHY_INSET)
-        );
+        assert_eq!(worktree_title.left(), project_title.left());
+        assert_eq!(empty.left(), project_title.left());
         assert!(cx.debug_bounds("projects-count").is_some());
         assert!(cx.debug_bounds(selector("worktree-count-")).is_none());
         assert!(cx.debug_bounds("tree-expand-cycle").is_none());
@@ -9576,8 +9573,8 @@ mod tests {
         assert!(cx.debug_bounds("session-1").is_some());
         let agent = cx.debug_bounds("session-agent-1").unwrap();
         assert_eq!(
-            agent.left(),
-            project_title.left() + gpui::px(HIERARCHY_INSET)
+            agent.left() + gpui::px(HIERARCHY_ICON_SLOT + HIERARCHY_GAP),
+            project_title.left()
         );
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
