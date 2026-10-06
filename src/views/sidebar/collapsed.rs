@@ -133,6 +133,7 @@ impl Sidebar {
             .border_color(c::BORDER_SOFT())
             .when_some(self.workspace_selector.clone(), |controls, selector| {
                 let trigger_bounds = selector.read(cx).compact_trigger_bounds();
+                let hover_selector = selector.clone();
                 controls
                     .child(
                         self.compact_item(
@@ -144,6 +145,11 @@ impl Sidebar {
                             cx,
                         )
                         .track_focus(&self.compact_workspace_focus)
+                        .on_hover(cx.listener(move |_, hovered: &bool, window, cx| {
+                            hover_selector.update(cx, |selector, cx| {
+                                selector.hover_trigger(*hovered, window, cx);
+                            });
+                        }))
                         .child(
                             gpui::canvas(
                                 move |bounds, _, _| trigger_bounds.set(bounds),

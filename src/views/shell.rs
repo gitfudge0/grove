@@ -1375,7 +1375,14 @@ impl Render for Shell {
         }
         let compact_workspace_picker = self.sidebar.read(cx).rail_visible(window, cx)
             && self.sidebar.read(cx).is_collapsed(cx);
+        let workspace_hover_blocked = self.highlights.is_some()
+            || self.backend_choice_open
+            || self.launcher.read(cx).is_open()
+            || self.settings.read(cx).is_open()
+            || self.switcher_open
+            || self.sidebar.read(cx).confirmation_open();
         self.workspaces.update(cx, |manager, _| {
+            manager.set_hover_blocked(workspace_hover_blocked);
             manager.set_compact(compact_workspace_picker);
         });
         if self.backend_choice_open && !self.backend_choice_focus.is_focused(window) {
@@ -1433,6 +1440,16 @@ impl Render for Shell {
                     && !self.shortcut_blocked(cx),
                 |shell| shell.key_context(k::Screen::Grid.key_context()),
             )
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && this
+                        .workspaces
+                        .update(cx, |manager, cx| manager.dismiss_hover_menu(window, cx))
+                {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(traverse_unhandled_tab)
             .on_key_down(cx.listener(|this, event, window, cx| {
                 if this.switcher_open {
@@ -2231,6 +2248,51 @@ mod tests {
             f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
             52.0
         );
+    }
+
+    #[gpui::test]
+    fn compact_workspace_hover_preserves_focus_and_click_pins_then_toggles(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            init(cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .sidebar_collapsed = true;
+        });
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        let workspace = cx.debug_bounds("sidebar-workspaces").unwrap().center();
+        let original_focus = cx.update(|window, cx| {
+            shell.read(cx).focus_handle(cx).focus(window, cx);
+            window.focused(cx)
+        });
+        cx.simulate_mouse_move(workspace, None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("workspace-popup").is_some());
+        cx.update(|window, cx| assert_eq!(window.focused(cx), original_focus));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds("workspace-popup").is_none());
+        cx.update(|window, cx| assert_eq!(window.focused(cx), original_focus));
+        let outside = cx.debug_bounds("sidebar-canvas").unwrap().center();
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_move(workspace, None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("workspace-popup").is_some());
+        cx.simulate_click(workspace, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert!(cx.debug_bounds("workspace-popup").is_some());
+        cx.simulate_click(workspace, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("workspace-popup").is_none());
     }
 
     #[gpui::test]

@@ -48,6 +48,10 @@ pub struct WorkspaceManager {
     popup_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     compact: bool,
     return_focus: Option<FocusHandle>,
+    hover_open: bool,
+    hover_blocked: bool,
+    hover_suppressed: bool,
+    hover_hide_task: Option<gpui::Task<()>>,
 }
 impl WorkspaceManager {
     pub(crate) fn is_open(&self) -> bool {
@@ -55,10 +59,108 @@ impl WorkspaceManager {
     }
 
     pub(crate) fn open_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open(Panel::Menu, window, cx);
+        if self.panel == Panel::Menu && self.hover_open {
+            self.hover_open = false;
+            self.hover_hide_task = None;
+            self.focus.focus(window, cx);
+            cx.notify();
+        } else if self.panel == Panel::Closed {
+            self.open(Panel::Menu, window, cx);
+        } else {
+            self.close(window, cx);
+        }
+    }
+
+    pub(crate) fn hover_trigger(
+        &mut self,
+        hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !hovered {
+            self.hover_suppressed = false;
+            self.schedule_hover_dismiss(window, cx);
+            return;
+        }
+        self.hover_hide_task = None;
+        if self.panel != Panel::Closed || self.hover_suppressed || self.hover_blocked {
+            return;
+        }
+        self.panel = Panel::Menu;
+        self.hover_open = true;
+        self.error = None;
+        self.selected = self
+            .state
+            .rows
+            .iter()
+            .position(|row| row.id == self.state.active)
+            .unwrap_or(0);
+        self.keyboard_navigation = false;
+        cx.notify();
+    }
+
+    pub(crate) fn dismiss_hover_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.panel != Panel::Menu || !self.hover_open {
+            return false;
+        }
+        self.close(window, cx);
+        true
+    }
+
+    fn pointer_in_menu(&self, point: gpui::Point<gpui::Pixels>) -> bool {
+        let trigger = self.trigger_bounds.get();
+        let popup = self.popup_bounds.get();
+        trigger.contains(&point)
+            || popup.contains(&point)
+            || (point.y >= trigger.bottom()
+                && point.y <= popup.top()
+                && point.x >= trigger.left().max(popup.left())
+                && point.x <= trigger.right().min(popup.right()))
+    }
+
+    fn schedule_hover_dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.hover_open || self.panel != Panel::Menu || self.hover_hide_task.is_some() {
+            return;
+        }
+        self.hover_hide_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(MOTION_SLOW_MS))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.hover_hide_task = None;
+                if this.hover_open
+                    && this.panel == Panel::Menu
+                    && !this.pointer_in_menu(window.mouse_position())
+                {
+                    // Passive dismissal leaves keyboard focus where hover found it.
+                    this.panel = Panel::Closed;
+                    this.hover_open = false;
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    pub(crate) fn set_hover_blocked(&mut self, blocked: bool) {
+        self.hover_blocked = blocked;
+        if blocked && self.hover_open {
+            self.hover_hide_task = None;
+            self.hover_open = false;
+            self.panel = Panel::Closed;
+            self.hover_suppressed = true;
+        }
     }
 
     pub(crate) fn set_compact(&mut self, compact: bool) {
+        if self.compact != compact && self.hover_open {
+            self.hover_hide_task = None;
+            self.hover_open = false;
+            self.panel = Panel::Closed;
+        }
         self.compact = compact;
         if !compact {
             self.return_focus = None;
@@ -117,6 +219,10 @@ impl WorkspaceManager {
             menu_scroll: gpui::ScrollHandle::new(),
             compact: false,
             return_focus: None,
+            hover_open: false,
+            hover_blocked: false,
+            hover_suppressed: false,
+            hover_hide_task: None,
         }
     }
     fn persist(&mut self, cx: &mut Context<Self>) -> bool {
@@ -135,15 +241,23 @@ impl WorkspaceManager {
         true
     }
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_hover_open = self.hover_open;
+        self.hover_hide_task = None;
+        self.hover_open = false;
+        self.hover_suppressed = self.trigger_bounds.get().contains(&window.mouse_position());
         self.panel = Panel::Closed;
         self.error = None;
-        self.return_focus
-            .as_ref()
-            .unwrap_or(&self.focus)
-            .focus(window, cx);
+        if !was_hover_open {
+            self.return_focus
+                .as_ref()
+                .unwrap_or(&self.focus)
+                .focus(window, cx);
+        }
         cx.notify();
     }
     fn open(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
+        self.hover_hide_task = None;
+        self.hover_open = false;
         self.panel = panel;
         self.error = None;
         if panel == Panel::Menu {
@@ -329,7 +443,14 @@ impl WorkspaceManager {
             .border_color(c::BORDER())
             .rounded(rpx(if menu { RADIUS_CHROME } else { RADIUS_PANEL }))
             .bg(if menu { c::SURFACE_RAISED() } else { c::BG() })
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                if *hovered {
+                    this.hover_hide_task = None;
+                } else {
+                    this.schedule_hover_dismiss(window, cx);
+                }
+            }));
         panel = panel.child(
             gpui::canvas(
                 move |bounds, _, _| popup_bounds.set(bounds),
@@ -690,6 +811,7 @@ impl Render for WorkspaceManager {
             .on_mouse_down_out(
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                     if this.panel != Panel::Closed
+                        && !this.trigger_bounds.get().contains(&event.position)
                         && !this.popup_bounds.get().contains(&event.position)
                     {
                         this.close(window, cx);
@@ -786,12 +908,11 @@ impl Render for WorkspaceManager {
                             cx,
                         ))
                         .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                        .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                            this.hover_trigger(*hovered, window, cx);
+                        }))
                         .on_click(cx.listener(|this, _, window, cx| {
-                            if this.panel == Panel::Closed {
-                                this.open(Panel::Menu, window, cx);
-                            } else {
-                                this.close(window, cx);
-                            }
+                            this.open_menu(window, cx);
                         })),
                 )
             })
@@ -964,6 +1085,101 @@ mod tests {
             Panel::Manage
         );
     }
+    #[gpui::test]
+    fn hover_menu_preserves_focus_crossing_and_click_pins(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (manager, cx) = cx.add_window_view(WorkspaceManager::new);
+        draw(cx);
+        let trigger = cx.debug_bounds("workspace-picker").unwrap();
+        let focus_before = cx.update(|window, cx| window.focused(cx));
+        cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        manager.read_with(cx, |manager, _| {
+            assert_eq!(manager.panel, Panel::Menu);
+            assert!(manager.hover_open);
+        });
+        cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before));
+        let popup = cx.debug_bounds("workspace-popup").unwrap();
+        cx.simulate_mouse_move(popup.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert_eq!(
+            manager.read_with(cx, |manager, _| manager.panel),
+            Panel::Menu
+        );
+        cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
+        cx.simulate_mouse_down(
+            trigger.center(),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            trigger.center(),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert!(!manager.read_with(cx, |manager, _| manager.hover_open));
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(MENU_W + SPACE_3XL), gpui::px(MANAGER_W)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert_eq!(
+            manager.read_with(cx, |manager, _| manager.panel),
+            Panel::Menu
+        );
+    }
+
+    #[gpui::test]
+    fn hover_menu_dismisses_on_exit_and_explicit_close_suppresses_reopen(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let (manager, cx) = cx.add_window_view(WorkspaceManager::new);
+        draw(cx);
+        let trigger = cx.debug_bounds("workspace-picker").unwrap();
+        cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        let focus_before = cx.update(|window, cx| window.focused(cx));
+        cx.update(|window, cx| {
+            manager.update(cx, |manager, cx| {
+                assert!(manager.dismiss_hover_menu(window, cx));
+                manager.hover_trigger(true, window, cx);
+                assert_eq!(manager.panel, Panel::Closed);
+            })
+        });
+        cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before));
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(MENU_W + SPACE_3XL), gpui::px(MANAGER_W)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert!(manager.read_with(cx, |manager, _| manager.hover_open));
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(MENU_W + SPACE_3XL), gpui::px(MANAGER_W)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 2));
+        draw(cx);
+        assert_eq!(
+            manager.read_with(cx, |manager, _| manager.panel),
+            Panel::Closed
+        );
+    }
+
     struct HeaderFixture {
         manager: Entity<WorkspaceManager>,
     }

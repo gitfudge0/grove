@@ -4699,6 +4699,16 @@ impl Render for Sidebar {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    if let Some(selector) = this.workspace_selector.clone() {
+                        if selector
+                            .update(cx, |selector, cx| selector.dismiss_hover_menu(window, cx))
+                        {
+                            cx.stop_propagation();
+                            return;
+                        }
+                    }
+                }
                 if event.keystroke.key == "escape"
                     && this.project_flyout.is_some()
                     && !this.confirmation_open()
