@@ -43,6 +43,29 @@ pub(super) fn root_details(meta: &SessionMeta, snapshot: &TreeSnapshot) -> Strin
     details.join(" · ")
 }
 
+pub(super) fn worktree_names(meta: &SessionMeta, snapshot: &TreeSnapshot) -> String {
+    let mut seen = HashSet::new();
+    std::iter::once(meta.wt_path.as_str())
+        .chain(meta.context_roots.iter().map(|root| root.wt_path.as_str()))
+        .filter(|path| seen.insert(crate::paths::normalize_wt_path(path)))
+        .map(|path| {
+            snapshot
+                .projects
+                .iter()
+                .flat_map(|project| &project.worktrees)
+                .find(|worktree| {
+                    crate::paths::normalize_wt_path(&worktree.path)
+                        == crate::paths::normalize_wt_path(path)
+                })
+                .map_or_else(
+                    || crate::paths::path_basename(path),
+                    |worktree| worktree.name.clone(),
+                )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 impl Sidebar {
     pub(super) fn multi_project_sessions(&self, cx: &App) -> Vec<SessionMeta> {
         let registry = self.runtime.read(cx).registry.read(cx);
@@ -376,5 +399,9 @@ mod tests {
         assert!(details.contains("/server/main/"));
         assert!(details.contains("/web/missing/"));
         assert!(details.contains("/server/topic/"));
+        assert_eq!(
+            worktree_names(&meta, &snapshot),
+            "SERVER · missing · Improve logging"
+        );
     }
 }

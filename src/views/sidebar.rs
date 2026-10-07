@@ -83,6 +83,11 @@ const WORKTREE_READINESS_REFRESH: Duration = Duration::from_secs(5);
 
 /// Visible activity owns its repeating animation; unmounted and quiet states have no timer.
 fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
+    let working_color = if status == "Working" {
+        c::GREEN()
+    } else {
+        c::BLUE()
+    };
     match status {
         "Working" | "Starting" if !cx.reduce_motion() => div()
             .id(("session-spinner-icon", id.raw()))
@@ -98,7 +103,7 @@ fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
                             format!("session-spinner-phase-{}-{frame}", id.raw())
                         })
                         .child(
-                            crate::icons::spinner(ICON_MD, c::BLUE(), 0).with_transformation(
+                            crate::icons::spinner(ICON_MD, working_color, 0).with_transformation(
                                 gpui::Transformation::rotate(gpui::percentage(progress)),
                             ),
                         )
@@ -109,7 +114,7 @@ fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
             .id(("session-spinner-icon", id.raw()))
             .debug_selector(move || format!("session-spinner-phase-{}-0", id.raw()))
             .size(rpx(ICON_MD))
-            .child(crate::icons::spinner(ICON_MD, c::BLUE(), 0))
+            .child(crate::icons::spinner(ICON_MD, working_color, 0))
             .into_any_element(),
         "Needs you" => icon("status-dot", ICON_MD, c::AMBER()).into_any_element(),
         "Done" => icon("check", ICON_MD, c::GREEN()).into_any_element(),
@@ -1674,6 +1679,25 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let label = label.into();
+        let tooltip_label = if let Action::Select(Selection::Session(id)) = &action {
+            let registry = self.runtime.read(cx).registry.read(cx);
+            registry.meta(*id).and_then(|meta| {
+                multi_project::project_names(meta)?;
+                let title = session_display_title(
+                    meta,
+                    registry
+                        .session(*id)
+                        .and_then(|session| session.read(cx).title()),
+                );
+                Some(SharedString::from(format!(
+                    "{title} · {}",
+                    multi_project::worktree_names(meta, &self.snapshot)
+                )))
+            })
+        } else {
+            None
+        }
+        .unwrap_or_else(|| label.clone());
         let click = action.clone();
         let icon_rail = self.is_collapsed(cx);
         let hierarchy_row = !icon_rail
@@ -1776,7 +1800,8 @@ impl Sidebar {
                     || icon_rail && matches!(&action, Action::Select(Selection::Session(_)))),
                 |control| {
                     control.tooltip(move |window, cx| {
-                        crate::views::components::tooltip(label.clone(), window).build(window, cx)
+                        crate::views::components::tooltip(tooltip_label.clone(), window)
+                            .build(window, cx)
                     })
                 },
             )
@@ -3475,6 +3500,13 @@ impl Sidebar {
             )
         } else {
             let selected = self.selection == Some(Selection::Session(id));
+            let worktree_names = multi_project::project_names(meta)
+                .map(|_| multi_project::worktree_names(meta, &self.snapshot));
+            let row_height = if worktree_names.is_some() {
+                SESSION_ROW_H
+            } else {
+                SESSION_TREE_ROW_H
+            };
             let git = self.runtime.read(cx).tree.read(cx).git_states();
             let diff = git
                 .get(crate::paths::normalize_wt_path(&meta.wt_path))
@@ -3547,7 +3579,7 @@ impl Sidebar {
             .when(diff_focused && !selected, |row| row.bg(c::BG_HOVER()))
             .relative()
             .group("session-row")
-            .h(rpx(SESSION_TREE_ROW_H))
+            .h(rpx(row_height))
             .px(rpx(HIERARCHY_INSET))
             .gap(rpx(SPACE_SM))
             .items_center()
@@ -3579,15 +3611,35 @@ impl Sidebar {
             )
             .child(
                 div()
-                    .id(("session-tree-title", id.raw()))
-                    .debug_selector(move || format!("session-tree-title-{}", id.raw()))
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .line_height(rpx(SESSION_TITLE_LINE_H))
-                    .font_weight(gpui::FontWeight::NORMAL)
-                    .text_size(rpx(TEXT_SMALL))
-                    .child(title),
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id(("session-tree-title", id.raw()))
+                            .debug_selector(move || format!("session-tree-title-{}", id.raw()))
+                            .truncate()
+                            .line_height(rpx(SESSION_TITLE_LINE_H))
+                            .font_weight(gpui::FontWeight::NORMAL)
+                            .text_size(rpx(TEXT_SMALL))
+                            .child(title),
+                    )
+                    .when_some(worktree_names, |column, names| {
+                        column.child(
+                            div()
+                                .id(("session-tree-worktrees", id.raw()))
+                                .debug_selector(move || {
+                                    format!("session-tree-worktrees-{}", id.raw())
+                                })
+                                .truncate()
+                                .line_height(rpx(SESSION_META_LINE_H))
+                                .font_weight(gpui::FontWeight::NORMAL)
+                                .text_size(rpx(TEXT_MICRO))
+                                .text_color(c::FG_DIM())
+                                .child(names),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -3609,7 +3661,7 @@ impl Sidebar {
                 )
                 .absolute()
                 .right_0()
-                .top(rpx((SESSION_TREE_ROW_H - CONTROL_H) / 2.0))
+                .top(rpx((row_height - CONTROL_H) / 2.0))
                 .debug_selector(move || format!("session-tree-close-{}", id.raw()))
                 .opacity(0.0)
                 .group_hover("session-row", |button| button.opacity(1.0))
@@ -5255,10 +5307,17 @@ mod tests {
             }
             let row = cx.debug_bounds("session-1").unwrap();
             let title = cx.debug_bounds("session-tree-title-1").unwrap();
+            let worktrees = cx.debug_bounds("session-tree-worktrees-1").unwrap();
             let status = cx.debug_bounds("session-tree-status-1").unwrap();
             let agent = cx.debug_bounds("session-agent-1").unwrap();
             let metadata = cx.debug_bounds("session-tree-metadata-1").unwrap();
-            assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
+            assert_eq!(f32::from(row.size.height), SESSION_ROW_H);
+            assert!(title.top() >= row.top());
+            assert!(worktrees.top() >= title.bottom());
+            assert!(worktrees.bottom() <= row.bottom());
+            assert_eq!(worktrees.left(), title.left());
+            assert!(worktrees.right() <= metadata.left());
+            assert!(cx.debug_bounds("session-tree-worktrees-2").is_none());
             assert!(status.right() <= agent.left());
             assert!(agent.right() <= title.left());
             assert!(title.right() <= metadata.left());
@@ -5284,8 +5343,12 @@ mod tests {
             draw(cx);
             let title = cx.debug_bounds("session-tree-title-1").unwrap();
             let row = cx.debug_bounds("session-1").unwrap();
+            let worktrees = cx.debug_bounds("session-tree-worktrees-1").unwrap();
             assert!(title.size.width > gpui::px(0.0));
             assert!(title.right() < row.right());
+            assert!(worktrees.size.width > gpui::px(0.0));
+            assert!(worktrees.top() >= title.bottom());
+            assert!(worktrees.bottom() <= row.bottom());
             let details = sidebar.read_with(cx, |sidebar, cx| {
                 let registry = sidebar.runtime.read(cx).registry.read(cx);
                 multi_project::root_details(
@@ -5349,7 +5412,12 @@ mod tests {
         cx.simulate_mouse_move(anchor.center(), None, gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("multi-project-session-flyout").is_some());
-        assert!(cx.debug_bounds("multi-flyout-session-1").is_some());
+        let flyout_row = cx.debug_bounds("multi-flyout-session-1").unwrap();
+        let flyout_title = cx.debug_bounds("session-tree-title-1").unwrap();
+        let flyout_worktrees = cx.debug_bounds("session-tree-worktrees-1").unwrap();
+        assert!(flyout_worktrees.top() >= flyout_title.bottom());
+        assert!(flyout_worktrees.bottom() <= flyout_row.bottom());
+        assert_eq!(flyout_worktrees.left(), flyout_title.left());
         assert!(cx.debug_bounds("multi-project-flyout-empty").is_none());
         assert!(cx.debug_bounds("flyout-project-actions").is_none());
         cx.simulate_click(anchor.center(), gpui::Modifiers::default());
