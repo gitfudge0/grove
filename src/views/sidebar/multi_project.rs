@@ -35,148 +35,15 @@ pub(super) fn root_details(meta: &SessionMeta, snapshot: &TreeSnapshot) -> Strin
             paths.push(&root.wt_path);
         }
     }
-    format!("{inventory} · {}", paths.join(" · "))
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct RootLabel {
-    project: String,
-    worktree: String,
-    path: String,
-}
-
-fn resolved_roots(meta: &SessionMeta, snapshot: &TreeSnapshot) -> Vec<RootLabel> {
-    let mut seen = HashSet::new();
-    std::iter::once((&meta.project, &meta.wt_path))
-        .chain(
-            meta.context_roots
-                .iter()
-                .map(|root| (&root.project, &root.wt_path)),
-        )
-        .filter_map(|(project, path)| {
-            let normalized = crate::paths::normalize_wt_path(path);
-            if !seen.insert(normalized.to_string()) {
-                return None;
-            }
-            let worktree = snapshot
-                .projects
-                .iter()
-                .flat_map(|project| &project.worktrees)
-                .find(|worktree| crate::paths::normalize_wt_path(&worktree.path) == normalized)
-                .map_or_else(
-                    || {
-                        std::path::Path::new(normalized).file_name().map_or_else(
-                            || normalized.to_string(),
-                            |name| name.to_string_lossy().into_owned(),
-                        )
-                    },
-                    |worktree| sidebar_worktree_name(&worktree.name, worktree.is_main).to_string(),
-                );
-            Some(RootLabel {
-                project: project.clone(),
-                worktree,
-                path: path.clone(),
-            })
-        })
-        .collect()
+    let mut details = vec![project_names(meta).unwrap_or_else(|| meta.project.clone())];
+    if !inventory.is_empty() {
+        details.push(inventory);
+    }
+    details.extend(paths.into_iter().map(str::to_string));
+    details.join(" · ")
 }
 
 impl Sidebar {
-    pub(super) fn multi_project_content(&self, meta: &SessionMeta, title: String) -> AnyElement {
-        let id = meta.id;
-        let roots = resolved_roots(meta, &self.snapshot);
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_XS))
-            .child(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_SM))
-                    .pr(rpx(CHROME_CONTROL_H))
-                    .line_height(rpx(SESSION_TITLE_LINE_H))
-                    .child(
-                        div()
-                            .id(("multi-session-title", id.raw()))
-                            .debug_selector(move || format!("multi-session-title-{}", id.raw()))
-                            .flex_1()
-                            .min_w_0()
-                            .whitespace_normal()
-                            .line_clamp(2)
-                            .text_ellipsis()
-                            .text_size(rpx(TEXT_SMALL))
-                            .font_weight(gpui::FontWeight::NORMAL)
-                            .child(title),
-                    ),
-            )
-            .children(roots.into_iter().enumerate().map(|(index, root)| {
-                let path = root.path;
-                div()
-                    .id(SharedString::from(format!(
-                        "multi-root-row-{}-{index}",
-                        id.raw()
-                    )))
-                    .debug_selector(move || format!("multi-root-row-{}-{index}", id.raw()))
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_SM))
-                    .line_height(rpx(SESSION_META_LINE_H))
-                    .tooltip(move |window, cx| {
-                        crate::views::components::tooltip(path.clone(), window).build(window, cx)
-                    })
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "multi-root-project-{}-{index}",
-                                id.raw()
-                            )))
-                            .debug_selector(move || {
-                                format!("multi-root-project-{}-{index}", id.raw())
-                            })
-                            .min_w_0()
-                            .max_w(gpui::relative(0.5))
-                            .truncate()
-                            .text_size(rpx(HIERARCHY_META_TEXT))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(c::FG_DIM())
-                            .child(root.project),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(rpx(TEXT_MICRO))
-                            .font_weight(gpui::FontWeight::NORMAL)
-                            .text_color(c::FG_MUTE())
-                            .child("·"),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!(
-                                "multi-root-worktree-{}-{index}",
-                                id.raw()
-                            )))
-                            .debug_selector(move || {
-                                format!("multi-root-worktree-{}-{index}", id.raw())
-                            })
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rpx(TEXT_MICRO))
-                            .font_weight(gpui::FontWeight::NORMAL)
-                            .text_color(c::FG_DIM())
-                            .child(root.worktree),
-                    )
-            }))
-            .into_any_element()
-    }
-
     pub(super) fn multi_project_sessions(&self, cx: &App) -> Vec<SessionMeta> {
         let registry = self.runtime.read(cx).registry.read(cx);
         let mut seen = HashSet::new();
@@ -458,7 +325,7 @@ mod tests {
     use grove_core::session_meta::ContextRoot;
 
     #[test]
-    fn multi_project_root_labels_resolve_names_and_keep_distinct_roots() {
+    fn multi_project_root_details_keep_project_and_path_identities() {
         let meta = SessionMeta {
             id: SessionId::from_raw(1),
             project: "SERVER".into(),
@@ -503,25 +370,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(
-            resolved_roots(&meta, &snapshot),
-            vec![
-                RootLabel {
-                    project: "SERVER".into(),
-                    worktree: "Main checkout".into(),
-                    path: "/server/main/".into()
-                },
-                RootLabel {
-                    project: "WEB".into(),
-                    worktree: "missing".into(),
-                    path: "/web/missing/".into()
-                },
-                RootLabel {
-                    project: "SERVER".into(),
-                    worktree: "Improve logging".into(),
-                    path: "/server/topic/".into()
-                },
-            ]
-        );
+        let details = root_details(&meta, &snapshot);
+        assert!(details.contains("SERVER"));
+        assert!(details.contains("WEB"));
+        assert!(details.contains("/server/main/"));
+        assert!(details.contains("/web/missing/"));
+        assert!(details.contains("/server/topic/"));
     }
 }

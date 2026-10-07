@@ -23,8 +23,9 @@ use crate::{
     theme as c,
 };
 use gpui::{
-    div, prelude::*, AnyElement, App, Context, CursorStyle, Div, Entity, EventEmitter, FocusHandle,
-    Focusable, MouseButton, MouseMoveEvent, ScrollHandle, SharedString, Stateful, Window,
+    div, prelude::*, AnimationExt as _, AnyElement, App, Context, CursorStyle, Div, Entity,
+    EventEmitter, FocusHandle, Focusable, MouseButton, MouseMoveEvent, ScrollHandle, SharedString,
+    Stateful, Window,
 };
 use gpui_component::input::InputState;
 use grove_core::{agent::Agent, storage::SidebarAppearance};
@@ -54,7 +55,7 @@ fn rail_background(cx: &App) -> gpui::Hsla {
 const EDITOR_FULL_WIDTH_BREAKPOINT: f32 = 640.0;
 const HEAD_H: f32 = 36.0;
 const ROW_H: f32 = 28.0;
-// Expanded project navigation uses nested type roles and a single session content column.
+// Expanded project navigation keeps session activity, identity and changes on one line.
 const HIERARCHY_INSET: f32 = 5.0;
 const HIERARCHY_GAP: f32 = 7.0;
 const HIERARCHY_ICON_SLOT: f32 = 18.0;
@@ -66,21 +67,56 @@ const PROJECT_GROUP_GAP: f32 = 14.0;
 const PROJECT_ROW_H: f32 = 35.0;
 const PROJECT_TEXT: f32 = TEXT_TITLE;
 const PROJECT_TITLE_LINE_H: f32 = 21.0;
-const WORKTREE_ROW_H: f32 = 40.0;
+const WORKTREE_ROW_H: f32 = ROW_H;
 const WORKTREE_TITLE_LINE_H: f32 = 17.0;
-const WORKTREE_META_LINE_H: f32 = 14.0;
 const WORKTREE_ACTION_W: f32 = 22.0;
 const SESSION_ROW_H: f32 = 43.0;
-const SESSION_TREE_ROW_H: f32 =
-    HIERARCHY_INSET * 2.0 + SESSION_META_LINE_H * 2.0 + SESSION_TITLE_LINE_H + SPACE_XS * 2.0;
-/// Launcher glyph and label share the approved small header size.
-const SESSION_LAUNCHER_SIZE: f32 = ICON_XS;
+const SESSION_TREE_ROW_H: f32 = 32.0;
+const SESSION_LAUNCHER_SIZE: f32 = ICON_SM;
 const SESSION_TITLE_LINE_H: f32 = 17.0;
 const SESSION_META_LINE_H: f32 = 14.0;
 const SESSION_ROW_RADIUS: f32 = 7.0;
 const SESSION_FIRST_GAP: f32 = 3.0;
+const SESSION_SPINNER_PERIOD: Duration = Duration::from_millis(1200);
 const SESSION_AGE_REFRESH: Duration = Duration::from_secs(1);
 const WORKTREE_READINESS_REFRESH: Duration = Duration::from_secs(5);
+
+/// Visible activity owns its repeating animation; unmounted and quiet states have no timer.
+fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
+    match status {
+        "Working" | "Starting" if !cx.reduce_motion() => div()
+            .id(("session-spinner-icon", id.raw()))
+            .size(rpx(ICON_MD))
+            .with_animation(
+                ("session-spinner", id.raw()),
+                gpui::Animation::new(SESSION_SPINNER_PERIOD).repeat(),
+                move |element, progress| {
+                    let frame =
+                        (progress * crate::entities::animation_clock::SPINNER_FRAMES as f32) as u64;
+                    element
+                        .debug_selector(move || {
+                            format!("session-spinner-phase-{}-{frame}", id.raw())
+                        })
+                        .child(
+                            crate::icons::spinner(ICON_MD, c::BLUE(), 0).with_transformation(
+                                gpui::Transformation::rotate(gpui::percentage(progress)),
+                            ),
+                        )
+                },
+            )
+            .into_any_element(),
+        "Working" | "Starting" => div()
+            .id(("session-spinner-icon", id.raw()))
+            .debug_selector(move || format!("session-spinner-phase-{}-0", id.raw()))
+            .size(rpx(ICON_MD))
+            .child(crate::icons::spinner(ICON_MD, c::BLUE(), 0))
+            .into_any_element(),
+        "Needs you" => icon("status-dot", ICON_MD, c::AMBER()).into_any_element(),
+        "Done" => icon("check", ICON_MD, c::GREEN()).into_any_element(),
+        "Failed" => icon("close", ICON_MD, c::RED()).into_any_element(),
+        _ => icon("hexagon", ICON_MD, c::FG_DIM()).into_any_element(),
+    }
+}
 
 fn sidebar_worktree_name(name: &str, is_main: bool) -> &str {
     if is_main {
@@ -3511,154 +3547,59 @@ impl Sidebar {
             .when(diff_focused && !selected, |row| row.bg(c::BG_HOVER()))
             .relative()
             .group("session-row")
-            .h_auto()
-            .min_h(rpx(SESSION_TREE_ROW_H))
+            .h(rpx(SESSION_TREE_ROW_H))
             .px(rpx(HIERARCHY_INSET))
-            .py(rpx(HIERARCHY_INSET))
-            .gap(rpx(HIERARCHY_GAP))
-            .items_start()
+            .gap(rpx(SPACE_SM))
+            .items_center()
             .rounded(rpx(SESSION_ROW_RADIUS))
+            .child(motion::fast(
+                div()
+                    .id(("session-tree-status", id.raw()))
+                    .debug_selector(move || format!("session-tree-status-{}", id.raw()))
+                    .size(rpx(ICON_MD))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(session_status_icon(id, status, cx)),
+                format!("session-status-tree-{}-{status}", id.raw()),
+                cx,
+            ))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_XS))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .min_w_0()
-                            .gap(rpx(SPACE_SM))
-                            .line_height(rpx(SESSION_META_LINE_H))
-                            .child(
-                                div()
-                                    .id(("session-agent", id.raw()))
-                                    .debug_selector(move || format!("session-agent-{}", id.raw()))
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(HIERARCHY_GAP))
-                                    .text_size(rpx(SESSION_LAUNCHER_SIZE))
-                                    .text_color(c::BLUE())
-                                    .child(
-                                        div()
-                                            .w(rpx(HIERARCHY_ICON_SLOT))
-                                            .h(rpx(SESSION_META_LINE_H))
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .items_center()
-                                            .justify_start()
-                                            .child(icon(
-                                                meta.agent.icon_name(),
-                                                SESSION_LAUNCHER_SIZE,
-                                                c::BLUE(),
-                                            )),
-                                    )
-                                    .child(
-                                        div()
-                                            .id(("session-agent-label", id.raw()))
-                                            .debug_selector(move || {
-                                                format!("session-agent-label-{}", id.raw())
-                                            })
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(match meta.agent {
-                                                Agent::Claude => "Claude Code",
-                                                Agent::Codex => "Codex",
-                                                Agent::OpenCode => "OpenCode",
-                                                Agent::Terminal => "Terminal",
-                                            }),
-                                    ),
-                            )
-                            .child(motion::fast(
-                                div()
-                                    .id(("session-tree-status", id.raw()))
-                                    .debug_selector(move || {
-                                        format!("session-tree-status-{}", id.raw())
-                                    })
-                                    .flex_shrink_0()
-                                    .text_size(rpx(TEXT_MICRO))
-                                    .text_color(color)
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(SPACE_SM))
-                                    .when(status == "Working", |label| {
-                                        label.child(
-                                            div()
-                                                .size(rpx(DOT_SM))
-                                                .flex_shrink_0()
-                                                .rounded_full()
-                                                .bg(color),
-                                        )
-                                    })
-                                    .child(status),
-                                format!("session-status-tree-{}-{status}", id.raw()),
-                                cx,
-                            )),
-                    )
-                    .child(div().pl(rpx(HIERARCHY_ICON_SLOT + HIERARCHY_GAP)).child(
-                        if multi_project::project_names(meta).is_some() {
-                            self.multi_project_content(meta, title)
-                        } else {
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(rpx(SPACE_XS))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .min_w_0()
-                                        .gap(rpx(SPACE_SM))
-                                        .pr(rpx(SPACE_20))
-                                        .line_height(rpx(SESSION_TITLE_LINE_H))
-                                        .child(
-                                            div()
-                                                .id(("session-tree-title", id.raw()))
-                                                .debug_selector(move || {
-                                                    format!("session-tree-title-{}", id.raw())
-                                                })
-                                                .flex_1()
-                                                .min_w_0()
-                                                .whitespace_normal()
-                                                .line_clamp(2)
-                                                .text_ellipsis()
-                                                .font_weight(gpui::FontWeight::NORMAL)
-                                                .text_size(rpx(TEXT_SMALL))
-                                                .child(title),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .min_w_0()
-                                        .gap(rpx(SPACE_SM))
-                                        .id(("session-tree-metadata", id.raw()))
-                                        .debug_selector(move || {
-                                            format!("session-tree-metadata-{}", id.raw())
-                                        })
-                                        .line_height(rpx(SESSION_META_LINE_H))
-                                        .pr(rpx(CONTROL_H))
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .flex()
-                                                .justify_start()
-                                                .child(diff_element),
-                                        ),
-                                )
-                                .into_any_element()
-                        },
+                    .id(("session-agent", id.raw()))
+                    .debug_selector(move || format!("session-agent-{}", id.raw()))
+                    .size(rpx(SESSION_LAUNCHER_SIZE))
+                    .flex_shrink_0()
+                    .child(icon(
+                        meta.agent.icon_name(),
+                        SESSION_LAUNCHER_SIZE,
+                        c::BLUE(),
                     )),
             )
+            .child(
+                div()
+                    .id(("session-tree-title", id.raw()))
+                    .debug_selector(move || format!("session-tree-title-{}", id.raw()))
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .line_height(rpx(SESSION_TITLE_LINE_H))
+                    .font_weight(gpui::FontWeight::NORMAL)
+                    .text_size(rpx(TEXT_SMALL))
+                    .child(title),
+            )
+            .child(
+                div()
+                    .id(("session-tree-metadata", id.raw()))
+                    .debug_selector(move || format!("session-tree-metadata-{}", id.raw()))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .line_height(rpx(SESSION_META_LINE_H))
+                    .child(diff_element),
+            )
+            .child(div().w(rpx(CONTROL_H)).flex_shrink_0())
             .child(
                 self.control(
                     ("close-session", id.raw()),
@@ -3668,7 +3609,7 @@ impl Sidebar {
                 )
                 .absolute()
                 .right_0()
-                .bottom_0()
+                .top(rpx((SESSION_TREE_ROW_H - CONTROL_H) / 2.0))
                 .debug_selector(move || format!("session-tree-close-{}", id.raw()))
                 .opacity(0.0)
                 .group_hover("session-row", |button| button.opacity(1.0))
@@ -4235,10 +4176,10 @@ impl Sidebar {
                     .child(
                         div()
                             .w(rpx(HIERARCHY_ICON_SLOT))
-                            .h(rpx(WORKTREE_TITLE_LINE_H + SPACE_XS + WORKTREE_META_LINE_H))
+                            .h(rpx(WORKTREE_TITLE_LINE_H))
                             .flex_shrink_0()
                             .flex()
-                            .items_start()
+                            .items_center()
                             .justify_start()
                             .child(icon(
                                 "git-branch",
@@ -4250,7 +4191,7 @@ impl Sidebar {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .h(rpx(WORKTREE_TITLE_LINE_H + SPACE_XS + WORKTREE_META_LINE_H))
+                            .h(rpx(WORKTREE_TITLE_LINE_H))
                             .flex()
                             .flex_col()
                             .gap(rpx(SPACE_XS))
@@ -4281,20 +4222,7 @@ impl Sidebar {
                                             .truncate()
                                             .child(worktree_name.to_owned()),
                                     ),
-                            )
-                            .when(!worktree.branch.is_empty(), |title| {
-                                title.child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_ellipsis_middle()
-                                        .text_size(rpx(HIERARCHY_META_TEXT))
-                                        .line_height(rpx(WORKTREE_META_LINE_H))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(c::FG_DIM())
-                                        .child(worktree.branch.clone()),
-                                )
-                            }),
+                            ),
                     )
                     .child(
                         div()
@@ -5302,7 +5230,6 @@ mod tests {
         assert!(section.bottom() + gpui::px(SPACE_2XL) <= project.top());
         assert!(single.top() > project.top());
         assert!(cx.debug_bounds("session-3").is_none());
-        let mut project_width = None;
         for width in [220.0, 260.0, 320.0] {
             cx.update(|window, cx| {
                 cx.global_mut::<SettingsState>().store.sidebar_width = Some(width);
@@ -5327,28 +5254,15 @@ mod tests {
                 previous = control.right();
             }
             let row = cx.debug_bounds("session-1").unwrap();
-            let title = cx.debug_bounds("multi-session-title-1").unwrap();
+            let title = cx.debug_bounds("session-tree-title-1").unwrap();
             let status = cx.debug_bounds("session-tree-status-1").unwrap();
-            let first = cx.debug_bounds("multi-root-row-1-0").unwrap();
-            let second = cx.debug_bounds("multi-root-row-1-1").unwrap();
-            let project = cx.debug_bounds("multi-root-project-1-0").unwrap();
-            let worktree = cx.debug_bounds("multi-root-worktree-1-0").unwrap();
-            assert!(status.bottom() <= title.top());
-            assert!(status.left() >= cx.debug_bounds("session-agent-1").unwrap().right());
-            assert!(status.right() < row.right());
-            assert!(first.top() >= title.bottom());
-            assert!(second.top() >= first.bottom());
-            assert_eq!(first.left(), title.left());
-            assert_eq!(second.left(), title.left());
-            assert!(worktree.size.width > gpui::px(0.0));
-            assert!((f32::from(worktree.right() - first.right())).abs() <= 1.0);
-            if let Some(previous) = project_width {
-                assert_eq!(
-                    project.size.width, previous,
-                    "project label must not shrink at narrow widths"
-                );
-            }
-            project_width = Some(project.size.width);
+            let agent = cx.debug_bounds("session-agent-1").unwrap();
+            let metadata = cx.debug_bounds("session-tree-metadata-1").unwrap();
+            assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
+            assert!(status.right() <= agent.left());
+            assert!(agent.right() <= title.left());
+            assert!(title.right() <= metadata.left());
+            assert!(metadata.right() <= row.right());
         }
         let long_project = "A project name that is much longer than the entire available sidebar";
         cx.update(|_, cx| {
@@ -5368,13 +5282,19 @@ mod tests {
                 sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
             });
             draw(cx);
-            let root = cx.debug_bounds("multi-root-row-1-1").unwrap();
-            let project = cx.debug_bounds("multi-root-project-1-1").unwrap();
-            let worktree = cx.debug_bounds("multi-root-worktree-1-1").unwrap();
-            assert!(project.size.width <= root.size.width / 2.0 + gpui::px(1.0));
-            assert!(worktree.size.width > gpui::px(0.0));
-            assert!(worktree.left() >= project.right());
-            assert!(worktree.right() <= root.right() + gpui::px(1.0));
+            let title = cx.debug_bounds("session-tree-title-1").unwrap();
+            let row = cx.debug_bounds("session-1").unwrap();
+            assert!(title.size.width > gpui::px(0.0));
+            assert!(title.right() < row.right());
+            let details = sidebar.read_with(cx, |sidebar, cx| {
+                let registry = sidebar.runtime.read(cx).registry.read(cx);
+                multi_project::root_details(
+                    registry.meta(SessionId::from_raw(1)).unwrap(),
+                    &sidebar.snapshot,
+                )
+            });
+            assert!(details.contains(long_project));
+            assert!(details.contains(paths[0]) && details.contains(paths[1]));
         }
         cx.update(|_, cx| {
             sidebar
@@ -7475,10 +7395,9 @@ mod tests {
         let first = cx.debug_bounds("session-agent-1").unwrap();
         let second = cx.debug_bounds("session-agent-2").unwrap();
         assert_eq!(project.left(), worktree.left());
-        assert_eq!(
-            first.left() + gpui::px(HIERARCHY_ICON_SLOT + HIERARCHY_GAP),
-            project.left()
-        );
+        let status = cx.debug_bounds("session-tree-status-1").unwrap();
+        assert!(status.right() <= first.left());
+        assert!(first.right() <= cx.debug_bounds("session-tree-title-1").unwrap().left());
         assert_eq!(first.left(), second.left());
         assert!(cx.debug_bounds("diff-chip-open-1").is_some());
         assert!(cx.debug_bounds("diff-chip-open-2").is_some());
@@ -7549,9 +7468,9 @@ mod tests {
         });
         draw(cx);
         let diff = cx.debug_bounds("diff-chip-open-1").unwrap();
-        let row = cx.debug_bounds("session-1").unwrap();
-        let outside = gpui::point(row.center().x, diff.center().y);
-        assert!(outside.x > diff.right());
+        let title = cx.debug_bounds("session-tree-title-1").unwrap();
+        let outside = title.center();
+        assert!(outside.x < diff.left());
         cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
         draw(cx);
         cx.simulate_click(outside, gpui::Modifiers::default());
@@ -7567,6 +7486,81 @@ mod tests {
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.diff_viewer.is_some()));
     }
+    #[gpui::test]
+    fn session_status_spinner_advances_only_for_busy_states_and_respects_reduced_motion(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct StatusPreview(&'static str);
+        impl gpui::Render for StatusPreview {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                session_status_icon(SessionId::from_raw(1), self.0, cx)
+            }
+        }
+        let (preview, cx) = cx.add_window_view(|_, _| StatusPreview("Working"));
+        draw(cx);
+        assert!(cx.debug_bounds("session-spinner-phase-1-0").is_some());
+        // GPUI Animation uses wall-clock Instant, not the executor's virtual clock.
+        std::thread::sleep(SESSION_SPINNER_PERIOD / 4);
+        assert!(cx.update(Window::simulate_next_frame) > 0);
+        draw(cx);
+        assert!(
+            (1..crate::entities::animation_clock::SPINNER_FRAMES).any(|frame| cx
+                .debug_bounds(Box::leak(
+                    format!("session-spinner-phase-1-{frame}").into_boxed_str()
+                ))
+                .is_some())
+        );
+        assert!(cx.debug_bounds("session-spinner-phase-1-0").is_none());
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            preview.update(cx, |_, cx| cx.notify());
+        });
+        cx.update(Window::simulate_next_frame);
+        draw(cx);
+        assert!(cx.debug_bounds("session-spinner-phase-1-0").is_some());
+        assert_eq!(cx.update(Window::simulate_next_frame), 0);
+        std::thread::sleep(SESSION_SPINNER_PERIOD / 4);
+        draw(cx);
+        assert!(cx.debug_bounds("session-spinner-phase-1-0").is_some());
+        assert!(cx.debug_bounds("session-spinner-phase-1-3").is_none());
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(false);
+            preview.update(cx, |preview, cx| {
+                preview.0 = "Starting";
+                cx.notify();
+            });
+        });
+        draw(cx);
+        std::thread::sleep(SESSION_SPINNER_PERIOD / 4);
+        assert!(cx.update(Window::simulate_next_frame) > 0);
+        draw(cx);
+        assert!(
+            (1..crate::entities::animation_clock::SPINNER_FRAMES).any(|frame| cx
+                .debug_bounds(Box::leak(
+                    format!("session-spinner-phase-1-{frame}").into_boxed_str()
+                ))
+                .is_some())
+        );
+        for status in ["Idle", "Done", "Needs you", "Failed", "Exited"] {
+            cx.update(|_, cx| {
+                preview.update(cx, |preview, cx| {
+                    preview.0 = status;
+                    cx.notify();
+                });
+            });
+            cx.update(Window::simulate_next_frame);
+            draw(cx);
+            assert_eq!(cx.update(Window::simulate_next_frame), 0);
+            for frame in 0..crate::entities::animation_clock::SPINNER_FRAMES {
+                assert!(cx
+                    .debug_bounds(Box::leak(
+                        format!("session-spinner-phase-1-{frame}").into_boxed_str()
+                    ))
+                    .is_none());
+            }
+        }
+    }
+
     fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -8068,7 +8062,16 @@ mod tests {
             let runtime = cx.new(Runtime::new);
             let registry = runtime.read(cx).registry.clone();
             registry.update(cx, |registry, _| {
-                registry.insert_meta("demo".into(), "/grove-spacing-main".into(), Agent::Codex);
+                registry.insert_reattached(0, &grove_core::tmux::DiscoveredSession {
+                    name: "grove-spacing-fixture".into(),
+                    pane_title: Some("Repair webhook retries and duplicate delivery handling with a long session title".into()),
+                    wt_path: "/grove-spacing-main".into(),
+                    project: "demo".into(),
+                    label: "codex 1".into(),
+                    agent: Agent::Codex,
+                    context_roots: Vec::new(),
+                    temp_bundle_path: None,
+                });
                 registry.insert_meta("demo".into(), "/grove-spacing-main".into(), Agent::Claude);
                 registry.insert_meta(
                     "demo".into(),
@@ -8094,8 +8097,41 @@ mod tests {
                         },
                     ],
                 );
+                tree.apply_git_poll(HashMap::from([(
+                    "/grove-spacing-main".into(),
+                    grove_core::git::WorktreeGitState {
+                        dirty: true,
+                        added: 42,
+                        removed: 12,
+                        ..Default::default()
+                    },
+                )]), &[]);
             });
             Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        // Finish the nonexistent-path poll before injecting the deterministic diff fixture.
+        cx.update(|_, cx| {
+            sidebar
+                .read(cx)
+                .runtime
+                .read(cx)
+                .tree
+                .clone()
+                .update(cx, |tree, _| {
+                    tree.apply_git_poll(
+                        HashMap::from([(
+                            "/grove-spacing-main".into(),
+                            grove_core::git::WorktreeGitState {
+                                dirty: true,
+                                added: 42,
+                                removed: 12,
+                                ..Default::default()
+                            },
+                        )]),
+                        &[],
+                    );
+                });
         });
         draw(cx);
         let labels = sidebar.read_with(cx, |sidebar, _| {
@@ -8128,20 +8164,23 @@ mod tests {
             let launcher = cx.debug_bounds("session-agent-1").unwrap();
             let title = cx.debug_bounds("session-tree-title-1").unwrap();
             let metadata = cx.debug_bounds("session-tree-metadata-1").unwrap();
+            assert!(cx.debug_bounds("diff-chip-open-1").is_some());
             let status = cx.debug_bounds("session-tree-status-1").unwrap();
             let close = cx.debug_bounds("session-tree-close-1").unwrap();
-            let launcher_label = cx.debug_bounds("session-agent-label-1").unwrap();
             let project_title = cx.debug_bounds("project-title-0").unwrap();
             let worktree_title = cx
                 .debug_bounds("worktree-title-/grove-spacing-main")
                 .unwrap();
             assert_eq!(project_title.left(), worktree_title.left());
-            assert_eq!(worktree_title.left(), launcher_label.left());
-            assert_eq!(launcher_label.left(), title.left());
-            assert_eq!(title.left(), metadata.left());
-            assert!(status.left() >= launcher.right());
-            assert!(status.bottom() <= title.top());
-            assert!(close.top() >= status.bottom());
+            let row = cx.debug_bounds("session-1").unwrap();
+            assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
+            assert!(status.right() <= launcher.left());
+            assert!(launcher.right() <= title.left());
+            assert!(title.right() <= metadata.left());
+            assert!(metadata.right() <= close.left());
+            assert!(status.top() >= row.top() && status.bottom() <= row.bottom());
+            assert!(title.top() >= row.top() && title.bottom() <= row.bottom());
+            assert!(close.bottom() <= row.bottom());
         }
         assert!(cx.debug_bounds("session-3").is_some());
         assert!(cx.debug_bounds("fold-/grove-spacing-feature").is_none());
@@ -9572,10 +9611,9 @@ mod tests {
         );
         assert!(cx.debug_bounds("session-1").is_some());
         let agent = cx.debug_bounds("session-agent-1").unwrap();
-        assert_eq!(
-            agent.left() + gpui::px(HIERARCHY_ICON_SLOT + HIERARCHY_GAP),
-            project_title.left()
-        );
+        let status = cx.debug_bounds("session-tree-status-1").unwrap();
+        assert!(status.right() <= agent.left());
+        assert!(agent.right() <= cx.debug_bounds("session-tree-title-1").unwrap().left());
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.act(

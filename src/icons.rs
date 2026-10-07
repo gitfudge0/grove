@@ -127,6 +127,8 @@ fn svg_for(name: &str) -> String {
         "question" => {
             r#"<path d="M5.8 6a2.2 2.2 0 1 1 3.2 2c-.8.5-1 .8-1 1.6"/><circle cx="8" cy="12.2" r="0.5" fill="currentColor" stroke="none"/>"#
         }
+        "status-dot" => r#"<circle cx="8" cy="8" r="5" fill="currentColor" stroke="none"/>"#,
+        "hexagon" => r#"<path d="m8 1.5 5.5 3.2v6.6L8 14.5l-5.5-3.2V4.7z"/>"#,
         "dot" => r#"<circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/>"#,
         "ring" => r#"<circle cx="8" cy="8" r="3.5"/>"#,
         "terminal" | "term" => {
@@ -245,6 +247,8 @@ mod tests {
             "close",
             "check",
             "dot",
+            "status-dot",
+            "hexagon",
             "ring",
             "question",
             "restart",
