@@ -952,7 +952,7 @@ impl Render for WorktreeLauncher {
                                     .when(index == self.selected, |row| row.bg(c::BG_HL()))
                                     .hover(|row| row.bg(c::BG_HOVER()))
                                     .child(
-                                        div().flex().items_start().gap(rpx(SPACE_2XL)).min_w_0()
+                                        div().flex().flex_1().items_start().gap(rpx(SPACE_2XL)).min_w_0()
                                             .child(
                                                 div()
                                                     .size(rpx(CONTROL_H))
@@ -962,7 +962,7 @@ impl Render for WorktreeLauncher {
                                                     .justify_center()
                                                     .child(icon(icon_name, ICON_20, c::FG_DIM())),
                                             )
-                                            .child(div().flex().flex_col().min_w_0().gap(rpx(SPACE_XS))
+                                            .child(div().flex().flex_1().flex_col().min_w_0().gap(rpx(SPACE_XS))
                                                 .child(div().line_height(rpx(SPACE_3XL)).text_size(rpx(TEXT_BODY)).text_color(c::FG()).truncate().child(label))
                                                 .child(div().line_height(rpx(SPACE_3XL)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE()).truncate().child(detail)))
                                     )
