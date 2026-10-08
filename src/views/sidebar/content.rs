@@ -1911,7 +1911,7 @@ fn validate_worktree_fields(name: &str, branch: &str, base: &str) -> [Option<Str
             Some("Enter a worktree name.".into())
         } else if !grove_core::git::valid_worktree_name(name) {
             Some(
-                "Use letters, numbers, dots, hyphens, or underscores for the worktree name.".into(),
+                "Use letters, numbers, spaces, dots, hyphens, or underscores for the worktree name.".into(),
             )
         } else {
             None
@@ -2536,7 +2536,7 @@ mod tests {
             Some("Enter a base branch or revision.")
         );
         assert!(
-            validate_worktree_fields("billing-retry", "feat/billing-retry", "main")
+            validate_worktree_fields("billing retry", "feat/billing-retry", "main")
                 .iter()
                 .all(Option::is_none)
         );

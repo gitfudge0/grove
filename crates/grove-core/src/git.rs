@@ -8,7 +8,7 @@ use thiserror::Error;
 pub enum GitError {
     #[error("refusing to remove the project root checkout")]
     RefusesProjectRoot,
-    #[error("invalid worktree name: use letters, digits, '-', '_' or '.'")]
+    #[error("invalid worktree name: use letters, digits, spaces, '-', '_' or '.'")]
     InvalidWorktreeName,
     #[error(
         "invalid project name: must not be empty, start with '-', or contain '/', '\\' or '..'"
@@ -284,6 +284,7 @@ fn create_private_dir(dir: &Path) -> Result<()> {
 
 pub fn valid_worktree_name(name: &str) -> bool {
     !name.is_empty()
+        && name.trim() == name
         && name != "."
         && name != ".."
         && !name.starts_with('-')
@@ -292,7 +293,7 @@ pub fn valid_worktree_name(name: &str) -> bool {
         && !name.contains("@{")
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
 }
 
 /// Looser than `valid_worktree_name` (not a git ref), but still must not escape its parent directory or read as a git flag.
@@ -312,7 +313,9 @@ pub fn add_worktree(
     name: &str,
     base: Option<&str>,
 ) -> Result<String> {
-    add_worktree_impl(project_path, worktree_dir, name, name, base, false)
+    // Directory names may contain spaces; Git branch names cannot.
+    let branch = name.replace(' ', "-");
+    add_worktree_impl(project_path, worktree_dir, name, &branch, base, false)
 }
 
 /// Create a new branch independently from the worktree directory name.
@@ -716,7 +719,15 @@ mod tests {
 
     #[test]
     fn valid_names_accepted() {
-        for name in &["feature-x", "fix_1", "v1.2", "abc", "a-b_c.d", "123"] {
+        for name in &[
+            "feature-x",
+            "fix_1",
+            "v1.2",
+            "abc",
+            "a-b_c.d",
+            "123",
+            "billing retry",
+        ] {
             assert!(
                 valid_worktree_name(name),
                 "{name:?} should be accepted as a valid worktree name"
@@ -767,14 +778,27 @@ mod tests {
     }
 
     #[test]
-    fn space_and_shell_metacharacters_rejected() {
+    fn shell_metacharacters_and_invalid_whitespace_rejected() {
         let bad = [
-            "my name", "a;b", "a|b", "a&b", "a>b", "a<b", "a`b", "a$b", "a!b",
+            "   ",
+            " leading",
+            "trailing ",
+            "a\tb",
+            "a\nb",
+            "a\\b",
+            "a;b",
+            "a|b",
+            "a&b",
+            "a>b",
+            "a<b",
+            "a`b",
+            "a$b",
+            "a!b",
         ];
         for name in &bad {
             assert!(
                 !valid_worktree_name(name),
-                "{name:?} should be rejected (space/metachar)"
+                "{name:?} should be rejected (whitespace/metachar)"
             );
         }
     }
@@ -1263,12 +1287,12 @@ mod branch_tests {
         let path = add_worktree_with_branch(
             &repo_str,
             &directory,
-            "billing",
+            "billing retry",
             "feat/billing",
             Some("base"),
         )
         .expect("create named worktree");
-        assert!(path.ends_with("/billing"));
+        assert!(path.ends_with("/billing retry"));
         assert_eq!(current_branch(&path), "feat/billing");
         assert_eq!(head_sha(Path::new(&path)), base_tip);
         let before = list_worktrees(&repo_str).len();
@@ -1283,7 +1307,7 @@ mod branch_tests {
         assert!(add_worktree_with_branch(
             &repo_str,
             &directory,
-            "billing",
+            "billing retry",
             "feat/other",
             Some("main")
         )

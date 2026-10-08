@@ -83,6 +83,10 @@ const WORKTREE_READINESS_REFRESH: Duration = Duration::from_secs(5);
 
 /// Visible activity owns its repeating animation; unmounted and quiet states have no timer.
 fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
+    session_status_icon_sized(id, status, ICON_MD, cx)
+}
+
+fn session_status_icon_sized(id: SessionId, status: &str, size: f32, cx: &App) -> AnyElement {
     let working_color = if status == "Working" {
         c::GREEN()
     } else {
@@ -91,7 +95,7 @@ fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
     match status {
         "Working" | "Starting" if !cx.reduce_motion() => div()
             .id(("session-spinner-icon", id.raw()))
-            .size(rpx(ICON_MD))
+            .size(rpx(size))
             .with_animation(
                 ("session-spinner", id.raw()),
                 gpui::Animation::new(SESSION_SPINNER_PERIOD).repeat(),
@@ -103,7 +107,7 @@ fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
                             format!("session-spinner-phase-{}-{frame}", id.raw())
                         })
                         .child(
-                            crate::icons::spinner(ICON_MD, working_color, 0).with_transformation(
+                            crate::icons::spinner(size, working_color, 0).with_transformation(
                                 gpui::Transformation::rotate(gpui::percentage(progress)),
                             ),
                         )
@@ -113,13 +117,14 @@ fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
         "Working" | "Starting" => div()
             .id(("session-spinner-icon", id.raw()))
             .debug_selector(move || format!("session-spinner-phase-{}-0", id.raw()))
-            .size(rpx(ICON_MD))
-            .child(crate::icons::spinner(ICON_MD, working_color, 0))
+            .size(rpx(size))
+            .child(crate::icons::spinner(size, working_color, 0))
             .into_any_element(),
-        "Needs you" => icon("status-dot", ICON_MD, c::AMBER()).into_any_element(),
-        "Done" => icon("check", ICON_MD, c::GREEN()).into_any_element(),
-        "Failed" => icon("close", ICON_MD, c::RED()).into_any_element(),
-        _ => icon("hexagon", ICON_MD, c::FG_DIM()).into_any_element(),
+        "Running" => icon("status-dot", size, c::GREEN()).into_any_element(),
+        "Needs you" => icon("status-dot", size, c::AMBER()).into_any_element(),
+        "Done" => icon("check", size, c::GREEN()).into_any_element(),
+        "Failed" => icon("close", size, c::RED()).into_any_element(),
+        _ => icon("hexagon", size, c::FG_DIM()).into_any_element(),
     }
 }
 
@@ -5842,7 +5847,29 @@ mod tests {
             assert_eq!(f32::from(row.size.width), 36.0, "{row_selector}");
             assert_eq!(f32::from(row.size.height), 32.0, "{row_selector}");
             assert_eq!(row.center().x, expand.center().x, "{row_selector}");
-            assert_eq!(glyph.center().x, expand.center().x, "{glyph_selector}");
+            if let Some((kind, id)) = row_selector
+                .split_once('-')
+                .filter(|(kind, _)| matches!(*kind, "session" | "home"))
+            {
+                let status = cx
+                    .debug_bounds(Box::leak(
+                        format!("compact-{kind}-status-{id}").into_boxed_str(),
+                    ))
+                    .unwrap();
+                assert_eq!(status.center().y, row.center().y, "{row_selector}");
+                assert_eq!(
+                    status.left() - glyph.right(),
+                    gpui::px(SPACE_SM),
+                    "{row_selector}"
+                );
+                assert_eq!(
+                    glyph.left() - row.left(),
+                    row.right() - status.right(),
+                    "{row_selector}"
+                );
+            } else {
+                assert_eq!(glyph.center().x, expand.center().x, "{glyph_selector}");
+            }
             assert_eq!(glyph.center().y, row.center().y, "{glyph_selector}");
             assert!(
                 row.left() >= rail.left() && row.right() <= rail.right(),
@@ -6242,8 +6269,35 @@ mod tests {
             let other_initial = cx.debug_bounds(other_selector).unwrap();
             assert_eq!(initial.center().x, other_initial.center().x);
         }
-        assert_compact_overlay(cx, "project-0", "compact-project-count-0");
-        assert_compact_overlay(cx, "project-1", "compact-project-count-1");
+        assert!(cx.debug_bounds("compact-project-count-0").is_none());
+        assert!(cx.debug_bounds("compact-project-count-1").is_none());
+        let spinner_phase = |cx: &mut gpui::VisualTestContext| {
+            (0..crate::entities::animation_clock::SPINNER_FRAMES)
+                .find(|frame| {
+                    cx.debug_bounds(Box::leak(
+                        format!("session-spinner-phase-1-{frame}").into_boxed_str(),
+                    ))
+                    .is_some()
+                })
+                .expect("compact working session mounts the shared spinner")
+        };
+        let initial_phase = spinner_phase(cx);
+        std::thread::sleep(SESSION_SPINNER_PERIOD / 4);
+        cx.update(Window::simulate_next_frame);
+        draw(cx);
+        assert_ne!(spinner_phase(cx), initial_phase);
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            sidebar.update(cx, |_, cx| cx.notify());
+        });
+        cx.update(Window::simulate_next_frame);
+        draw(cx);
+        assert!(cx.debug_bounds("session-spinner-phase-1-0").is_some());
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(false);
+            sidebar.update(cx, |_, cx| cx.notify());
+        });
+        draw(cx);
         assert_compact_column(
             cx,
             &[

@@ -270,3 +270,34 @@ fn worktree_owner_repo_on_non_git_directory_returns_none() {
         "a plain directory has no owning repository"
     );
 }
+
+#[test]
+fn spaced_worktree_name_preserves_directory_and_uses_valid_default_branch() {
+    if !git_available() {
+        return;
+    }
+    let repo = tempfile::tempdir().expect("tempdir");
+    init_repo_with_commit(repo.path());
+    let repo_str = repo.path().to_str().expect("utf8 path");
+    let project_name = format!(
+        "grove-spaces-test-{}-{}",
+        std::process::id(),
+        repo.path().file_name().unwrap().to_string_lossy()
+    );
+    let root = worktrees_root().expect("worktrees_root");
+    let _guard = WorktreeRootGuard(root.join(&project_name));
+    let dest = add_worktree(repo_str, &project_name, "billing retry", None)
+        .expect("spaced name must work");
+    assert_eq!(Path::new(&dest).file_name().unwrap(), "billing retry");
+    assert_eq!(current_branch(&dest), "billing-retry");
+    assert!(list_worktrees(repo_str)
+        .iter()
+        .any(|w| w.path == dest && w.branch == "billing-retry"));
+    for invalid in ["../escape", "nested/path", "nested\\path", "   ", "a\nb"] {
+        assert!(
+            add_worktree(repo_str, &project_name, invalid, None).is_err(),
+            "{invalid:?}"
+        );
+    }
+    remove_worktree(repo_str, &dest).expect("remove spaced worktree");
+}

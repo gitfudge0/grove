@@ -5,6 +5,7 @@ pub(super) const COMPACT_ROW_H: f32 = 32.0;
 pub(super) const COMPACT_ITEM_W: f32 = 36.0;
 const DISCLOSURE_D: f32 = 8.0;
 const PROJECT_INITIAL_W: f32 = 10.0;
+const COMPACT_STATUS_SIZE: f32 = 11.0;
 
 impl Sidebar {
     pub(super) fn collapse_control(&self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -65,6 +66,7 @@ impl Sidebar {
             .w(rpx(COMPACT_ITEM_W))
             .h(rpx(COMPACT_ROW_H))
             .rounded(rpx(RADIUS_CHROME))
+            .gap(rpx(SPACE_SM))
             .aria_selected(selected)
             .when(selected, |item| item.bg(c::alpha(c::FG(), 0.14)))
             .when(selection_bar, |item| {
@@ -263,7 +265,7 @@ impl Sidebar {
             meta,
             session.and_then(crate::entities::terminal_session::TerminalSession::title),
         );
-        let (status, color) = if session.is_some_and(|session| session.spawn_error().is_some()) {
+        let (status, _) = if session.is_some_and(|session| session.spawn_error().is_some()) {
             ("Failed", c::RED())
         } else if session
             .is_some_and(crate::entities::terminal_session::TerminalSession::is_pending_attach)
@@ -316,16 +318,17 @@ impl Sidebar {
                 div()
                     .id(("compact-session-status", id.raw()))
                     .debug_selector(move || format!("compact-session-status-{}", id.raw()))
-                    .absolute()
-                    .right(rpx(1.0))
-                    .bottom(rpx(1.0))
-                    .size(rpx(11.0))
-                    .rounded_full()
-                    .bg(rail_background(cx))
+                    .size(rpx(COMPACT_STATUS_SIZE))
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon(compact_status_glyph(status), 11.0, color)),
+                    .child(session_status_icon_sized(
+                        id,
+                        status,
+                        COMPACT_STATUS_SIZE,
+                        cx,
+                    )),
             )
             .group("compact-session-row")
             .when(!flyout_owns_close, |row| {
@@ -485,17 +488,6 @@ impl Sidebar {
                             )),
                     )
                     .child(
-                        div()
-                            .id(("compact-project-count", idx))
-                            .debug_selector(move || format!("compact-project-count-{idx}"))
-                            .absolute()
-                            .right_0()
-                            .bottom_0()
-                            .text_size(rpx(TEXT_MICRO))
-                            .text_color(c::FG_DIM())
-                            .child(count.to_string()),
-                    )
-                    .child(
                         gpui::canvas(
                             {
                                 let bounds = self.project_flyout_bounds.clone();
@@ -555,7 +547,7 @@ impl Sidebar {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(rpx(2.0))
+                    .gap(rpx(SPACE_SM))
                     .when(position > 0, |group| {
                         group
                             .mt(rpx(SPACE_LG))
@@ -706,24 +698,12 @@ impl Sidebar {
                         div()
                             .id(("compact-home-status", id.raw()))
                             .debug_selector(move || format!("compact-home-status-{}", id.raw()))
-                            .absolute()
-                            .right(rpx(1.0))
-                            .bottom(rpx(1.0))
-                            .size(rpx(11.0))
-                            .rounded_full()
-                            .bg(rail_background(cx))
+                            .size(rpx(COMPACT_STATUS_SIZE))
+                            .flex_shrink_0()
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(icon(
-                                compact_status_glyph(status),
-                                11.0,
-                                match status {
-                                    "Running" => c::GREEN(),
-                                    "Failed" => c::RED(),
-                                    _ => c::FG_DIM(),
-                                },
-                            )),
+                            .child(session_status_icon_sized(id, status, COMPACT_STATUS_SIZE, cx)),
                     )
                     .child(
                         self.control(("compact-close-home", id.raw()), format!("Close {}", meta.label), Action::CloseHome(id), cx)
@@ -758,16 +738,5 @@ impl Sidebar {
                 cx,
             ))
             .into_any_element()
-    }
-}
-
-fn compact_status_glyph(status: &str) -> &'static str {
-    match status {
-        "Needs you" => "question",
-        "Failed" => "close",
-        "Starting" => "ring",
-        "Working" | "Running" => "dot",
-        "Done" => "check",
-        _ => "ring",
     }
 }
