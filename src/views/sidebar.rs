@@ -5847,6 +5847,7 @@ mod tests {
             assert_eq!(f32::from(row.size.width), 36.0, "{row_selector}");
             assert_eq!(f32::from(row.size.height), 32.0, "{row_selector}");
             assert_eq!(row.center().x, expand.center().x, "{row_selector}");
+            assert_eq!(glyph.center().x, expand.center().x, "{glyph_selector}");
             if let Some((kind, id)) = row_selector
                 .split_once('-')
                 .filter(|(kind, _)| matches!(*kind, "session" | "home"))
@@ -5856,19 +5857,31 @@ mod tests {
                         format!("compact-{kind}-status-{id}").into_boxed_str(),
                     ))
                     .unwrap();
-                assert_eq!(status.center().y, row.center().y, "{row_selector}");
                 assert_eq!(
-                    status.left() - glyph.right(),
-                    gpui::px(SPACE_SM),
+                    status.size,
+                    gpui::size(gpui::px(8.0), gpui::px(8.0)),
                     "{row_selector}"
                 );
                 assert_eq!(
-                    glyph.left() - row.left(),
                     row.right() - status.right(),
+                    gpui::px(SPACE_XS),
                     "{row_selector}"
                 );
-            } else {
-                assert_eq!(glyph.center().x, expand.center().x, "{glyph_selector}");
+                assert_eq!(
+                    row.bottom() - status.bottom(),
+                    gpui::px(SPACE_XS),
+                    "{row_selector}"
+                );
+                assert!(status.left() >= glyph.right(), "{row_selector}");
+                assert!(status.top() > glyph.center().y, "{row_selector}");
+                if let Some(close) = cx.debug_bounds(Box::leak(
+                    format!("compact-close-{kind}-{id}").into_boxed_str(),
+                )) {
+                    assert!(
+                        status.top() - close.bottom() >= gpui::px(SPACE_SM),
+                        "{row_selector}"
+                    );
+                }
             }
             assert_eq!(glyph.center().y, row.center().y, "{glyph_selector}");
             assert!(

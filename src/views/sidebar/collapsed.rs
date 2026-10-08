@@ -5,7 +5,7 @@ pub(super) const COMPACT_ROW_H: f32 = 32.0;
 pub(super) const COMPACT_ITEM_W: f32 = 36.0;
 const DISCLOSURE_D: f32 = 8.0;
 const PROJECT_INITIAL_W: f32 = 10.0;
-const COMPACT_STATUS_SIZE: f32 = 11.0;
+const COMPACT_STATUS_SIZE: f32 = 8.0;
 
 impl Sidebar {
     pub(super) fn collapse_control(&self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -66,7 +66,6 @@ impl Sidebar {
             .w(rpx(COMPACT_ITEM_W))
             .h(rpx(COMPACT_ROW_H))
             .rounded(rpx(RADIUS_CHROME))
-            .gap(rpx(SPACE_SM))
             .aria_selected(selected)
             .when(selected, |item| item.bg(c::alpha(c::FG(), 0.14)))
             .when(selection_bar, |item| {
@@ -318,6 +317,9 @@ impl Sidebar {
                 div()
                     .id(("compact-session-status", id.raw()))
                     .debug_selector(move || format!("compact-session-status-{}", id.raw()))
+                    .absolute()
+                    .right(rpx(SPACE_XS))
+                    .bottom(rpx(SPACE_XS))
                     .size(rpx(COMPACT_STATUS_SIZE))
                     .flex_shrink_0()
                     .flex()
@@ -698,6 +700,9 @@ impl Sidebar {
                         div()
                             .id(("compact-home-status", id.raw()))
                             .debug_selector(move || format!("compact-home-status-{}", id.raw()))
+                            .absolute()
+                            .right(rpx(SPACE_XS))
+                            .bottom(rpx(SPACE_XS))
                             .size(rpx(COMPACT_STATUS_SIZE))
                             .flex_shrink_0()
                             .flex()
