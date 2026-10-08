@@ -136,11 +136,43 @@ impl Upgrade {
         cx.notify();
     }
 
-    /// The channel closing orders the last stage before finish, so a late stage can never resurrect `Updating`.
+    /// Refresh the offered release before installing; explicit intent overrides version skips.
     pub fn start_update(&mut self, cx: &mut Context<Self>) {
-        let Some(release) = self.available().cloned() else {
+        self.start_update_with(
+            async { upgrade::latest().map_err(|e| e.to_string()) },
+            Self::install,
+            cx,
+        );
+    }
+
+    fn start_update_with(
+        &mut self,
+        fetch: impl std::future::Future<Output = Result<Release, String>> + Send + 'static,
+        install: impl FnOnce(&mut Self, Release, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.available().is_none() {
             return;
-        };
+        }
+        self.state = UpgradeState::Checking;
+        cx.notify();
+        let fetch = cx.background_spawn(fetch);
+        self.check_task = Some(cx.spawn(async move |this, cx| {
+            let result = fetch.await;
+            let _ = this.update(cx, |this, cx| {
+                SettingsState::update(cx, |store| store.last_update_check = Some(now_unix()));
+                this.state = apply_check_result(result, true, env!("CARGO_PKG_VERSION"), None);
+                if let Some(release) = this.available().cloned() {
+                    install(this, release, cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// The channel closing orders the last stage before finish, so a late stage can never resurrect `Updating`.
+    fn install(&mut self, release: Release, cx: &mut Context<Self>) {
         let method = self.method;
         self.state = UpgradeState::Updating(Stage::Downloading);
         cx.notify();
@@ -186,6 +218,136 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn release(tag: &str) -> Release {
+        Release {
+            version: semver::Version::parse(tag.trim_start_matches('v')).unwrap(),
+            tag: tag.into(),
+            html_url: format!("https://example.invalid/{tag}"),
+            body: String::new(),
+            dmg_url: None,
+            dmg_sha256_url: None,
+            target_commitish: "main".into(),
+        }
+    }
+
+    fn offered_upgrade(cx: &mut gpui::TestAppContext) -> gpui::Entity<Upgrade> {
+        cx.update(|cx| {
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                skipped_version: Some("v99.0.0".into()),
+                ..Default::default()
+            }));
+        });
+        cx.new(|_| Upgrade {
+            state: UpgradeState::Available(release("v98.0.0")),
+            changelog: ChangelogState::Idle,
+            method: InstallMethod::Unknown,
+            _timers: vec![],
+            check_task: None,
+            changelog_task: None,
+            apply_task: None,
+        })
+    }
+
+    #[gpui::test]
+    fn update_fetches_fresh_release_before_install_and_ignores_skip(cx: &mut gpui::TestAppContext) {
+        let upgrade = offered_upgrade(cx);
+        let (send, receive) = futures::channel::oneshot::channel();
+        let installed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.start_update_with(
+                async move { receive.await.unwrap() },
+                {
+                    let installed = installed.clone();
+                    move |upgrade, release, _| {
+                        installed.borrow_mut().push(release.tag);
+                        upgrade.state = UpgradeState::Updating(Stage::Downloading);
+                    }
+                },
+                cx,
+            );
+            assert!(matches!(upgrade.state(), UpgradeState::Checking));
+            // Duplicate update and check must neither install nor replace the pending fetch.
+            upgrade.start_update_with(
+                async { panic!("duplicate fetched") },
+                |_, _, _| panic!("duplicate installed"),
+                cx,
+            );
+            upgrade.check(true, cx);
+        });
+        cx.run_until_parked();
+        assert!(installed.borrow().is_empty());
+        send.send(Ok(release("v99.0.0"))).unwrap();
+        cx.run_until_parked();
+        assert_eq!(*installed.borrow(), ["v99.0.0"]);
+        upgrade.update(cx, |upgrade, cx| {
+            assert!(matches!(upgrade.state(), UpgradeState::Updating(_)));
+            upgrade.start_update_with(
+                async { panic!("install interrupted") },
+                |_, _, _| panic!("installed twice"),
+                cx,
+            );
+            upgrade.check(true, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(*installed.borrow(), ["v99.0.0"]);
+        cx.update(|cx| {
+            assert!(cx
+                .global::<SettingsState>()
+                .store
+                .last_update_check
+                .is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn failed_preflight_does_not_fall_back_to_cached_release(cx: &mut gpui::TestAppContext) {
+        let upgrade = offered_upgrade(cx);
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.start_update_with(
+                async { Err("offline".into()) },
+                |_, _, _| panic!("cached release installed after fetch failure"),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        upgrade.read_with(cx, |upgrade, _| {
+            assert!(matches!(upgrade.state(), UpgradeState::Error(error) if error == "offline"));
+        });
+        cx.update(|cx| {
+            assert!(cx
+                .global::<SettingsState>()
+                .store
+                .last_update_check
+                .is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn current_and_older_preflight_releases_are_not_installed(cx: &mut gpui::TestAppContext) {
+        for tag in [env!("CARGO_PKG_VERSION"), "v0.0.0"] {
+            let upgrade = offered_upgrade(cx);
+            let latest = release(tag);
+            upgrade.update(cx, |upgrade, cx| {
+                upgrade.start_update_with(
+                    async move { Ok(latest) },
+                    |_, _, _| panic!("non-newer release installed"),
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            upgrade.read_with(cx, |upgrade, _| {
+                assert!(matches!(upgrade.state(), UpgradeState::UpToDate));
+            });
+            cx.update(|cx| {
+                assert!(cx
+                    .global::<SettingsState>()
+                    .store
+                    .last_update_check
+                    .is_some());
+            });
+        }
+    }
 
     /// These are the oracle's numbers, not convenient round ones (`src/gui/update/upgrade.rs:227`).
     #[test]
