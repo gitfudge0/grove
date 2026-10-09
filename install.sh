@@ -50,7 +50,8 @@ case "$OS" in
 esac
 
 TARGET=""
-BUNDLE_DIR="target/release/bundle"
+BUILD_DIR="${CARGO_TARGET_DIR:-target}"
+BUNDLE_DIR="$BUILD_DIR/release/bundle"
 if [ "$OS" = "Darwin" ]; then
   # `uname -m` reflects Rosetta when the shell itself runs translated, so it
   # can report x86_64 on Apple Silicon hardware. Ask sysctl for the real CPU
@@ -67,7 +68,7 @@ if [ "$OS" = "Darwin" ]; then
   esac
   if [ -n "$TARGET" ]; then
     rustup target add "$TARGET" >/dev/null 2>&1 || true
-    BUNDLE_DIR="target/$TARGET/release/bundle"
+    BUNDLE_DIR="$BUILD_DIR/$TARGET/release/bundle"
   fi
 fi
 
@@ -105,7 +106,7 @@ case "$OS" in
     ;;
 
   Linux)
-    DEB="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' 2>/dev/null | head -n1 || true)"
+    DEB="$(find "$BUILD_DIR/release/bundle/deb" -maxdepth 1 -name '*.deb' 2>/dev/null | head -n1 || true)"
     if [ -n "$DEB" ] && command -v dpkg >/dev/null 2>&1; then
       echo "Installing $DEB (sudo)..."
       sudo dpkg -i "$DEB" || sudo apt-get -f install -y
@@ -113,7 +114,7 @@ case "$OS" in
     else
       # Fallback: binary + .desktop + icon under ~/.local (no root needed).
       echo "dpkg/.deb unavailable — installing under ~/.local ..."
-      install -Dm755 target/release/grove "$HOME/.local/bin/grove"
+      install -Dm755 "$BUILD_DIR/release/grove" "$HOME/.local/bin/grove"
       install -Dm644 assets/icon/512x512.png \
         "$HOME/.local/share/icons/hicolor/512x512/apps/grove.png"
       DESKTOP="$HOME/.local/share/applications/grove.desktop"

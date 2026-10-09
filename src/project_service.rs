@@ -854,6 +854,22 @@ impl ProjectService {
     }
 
     /// Skipping cancels the owned script PTY, then proceeds with Git removal once.
+    pub(crate) fn skip_worktree_teardown_for(
+        &mut self,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if self
+            .teardown_target
+            .as_ref()
+            .is_none_or(|(_, target)| target != path)
+        {
+            return Err("No active teardown for this exact worktree path".into());
+        }
+        self.skip_worktree_teardown(cx);
+        Ok(())
+    }
+
     pub fn skip_worktree_teardown(&mut self, cx: &mut Context<Self>) {
         let Some((project_path, wt_path)) = self.teardown_target.take() else {
             return;

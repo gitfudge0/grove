@@ -355,7 +355,7 @@ impl TerminalSession {
     }
 
     /// Order is load-bearing: snap to live and leave copy-mode before the bytes go out (`session.rs:604-625`).
-    pub fn send(&mut self, bytes: &[u8]) {
+    pub fn send_checked(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.last_input_at = Some(Instant::now());
         self.term.scroll_to(0);
         self.tmux_display_offset = 0;
@@ -367,10 +367,18 @@ impl TerminalSession {
             }
             self.tmux_copy_mode = false;
         }
-        if let Some(pty) = self.pty.as_mut() {
-            if let Err(e) = pty.write(bytes) {
-                tracing::debug!("grove-gpui: PTY write failed: {e}");
-            }
+        let pty = self
+            .pty
+            .as_mut()
+            .ok_or("Session terminal is not attached; no input sent")?;
+        pty.write(bytes).map_err(|error| {
+            format!("Request outcome is uncertain; terminal input write failed: {error}")
+        })
+    }
+
+    pub fn send(&mut self, bytes: &[u8]) {
+        if let Err(error) = self.send_checked(bytes) {
+            tracing::debug!("grove-gpui: {error}");
         }
     }
 
@@ -658,14 +666,14 @@ fn spawn_tmux(
     let mut env = env;
     if let Some(id) = &target.task_id {
         env.push(("GROVE_TASK_ID".into(), id.clone()));
-        env.push((
-            "GROVE_CONFIG_DIR".into(),
-            grove_core::storage::config_dir()
-                .map_err(|e| e.to_string())?
-                .to_string_lossy()
-                .into_owned(),
-        ));
     }
+    env.push((
+        "GROVE_CONFIG_DIR".into(),
+        grove_core::storage::config_dir()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .into_owned(),
+    ));
     if let Some(path) = &target.temp_bundle_path {
         env.push(("GROVE_MULTI_ROOT".into(), path.clone()));
     }
@@ -756,11 +764,11 @@ fn spawn_native(
     );
     if let Some(id) = &target.task_id {
         cmd.env("GROVE_TASK_ID", id);
-        cmd.env(
-            "GROVE_CONFIG_DIR",
-            grove_core::storage::config_dir().map_err(|e| e.to_string())?,
-        );
     }
+    cmd.env(
+        "GROVE_CONFIG_DIR",
+        grove_core::storage::config_dir().map_err(|e| e.to_string())?,
+    );
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("LC_ALL", "en_US.UTF-8");
@@ -838,6 +846,18 @@ mod tests {
         session.update(cx, super::TerminalSession::attach_now);
         assert!(session.read_with(cx, |session, _| session.is_pending_attach()));
         assert!(session.read_with(cx, |session, _| session.spawn_error().is_none()));
+    }
+
+    #[gpui::test]
+    fn checked_send_rejects_unattached_terminal_instead_of_claiming_input(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let session = cx.new(|cx| {
+            super::TerminalSession::attach_existing("grove__unattached_input_test", 24, 80, cx)
+        });
+        let result = session.update(cx, |session, _| session.send_checked(b"literal input\n"));
+        assert!(result.unwrap_err().contains("no input sent"));
+        assert!(session.read_with(cx, |session, _| session.is_pending_attach()));
     }
 
     #[gpui::test]
