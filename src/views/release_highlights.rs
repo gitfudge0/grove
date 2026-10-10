@@ -121,7 +121,10 @@ impl ReleaseCarousel {
         let Some(slide) = self.release.slides.get(self.index) else {
             return;
         };
-        match materialize(&slide.media.src) {
+        let Some(media) = &slide.media else {
+            return;
+        };
+        match materialize(&media.src) {
             Ok(path) => {
                 #[cfg(target_os = "macos")]
                 let result = std::process::Command::new("open").arg(&path).spawn();
@@ -199,116 +202,124 @@ impl Render for ReleaseCarousel {
             return div().into_any_element();
         };
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
-        let width = MODAL_W_XL
+        let modal_width = if slide.media.is_some() {
+            MODAL_W_XL
+        } else {
+            MODAL_W_LG
+        };
+        let width = modal_width
             .min((f32::from(window.viewport_size().width) / scale - SPACE_LG * 2.0).max(0.0));
         let height = (f32::from(window.viewport_size().height) / scale - SPACE_LG * 2.0).max(0.0);
         let animated = self.animation_enabled(cx);
-        let source = match slide.media.kind {
-            MediaKind::Image => Some(slide.media.src.clone()),
-            MediaKind::Gif if animated => Some(slide.media.src.clone()),
-            MediaKind::Gif | MediaKind::Video => slide.media.poster.clone(),
-        };
-        let media_height = (width * 9.0 / 16.0).min(height * 0.52);
-        let mut media = div()
-            .id("highlights-media")
-            .debug_selector(|| "highlights-media".into())
-            .w_full()
-            .h(rpx(media_height))
-            .flex_shrink_0()
-            .overflow_hidden()
-            .bg(c::BG())
-            .relative()
-            .aria_label(slide.media.alt.clone());
-        media = media.child(match source {
-            Some(source) if Assets::get(&source).is_some() => {
-                let image_source = gpui::ImageSource::from(gpui::SharedString::from(source));
-                #[cfg(test)]
-                let image_source = self.image_source_override.clone().unwrap_or(image_source);
-                let image_width = (width - 2.0).max(0.0);
-                let (image_width, image_height, image_left, image_top) = match &slide.media.frame {
-                    Some(frame) => {
-                        let image_width = image_width * frame.zoom;
-                        let image_height = image_width / frame.aspect_ratio;
-                        (image_width, image_height,
-                            -(image_width - (width - 2.0)).max(0.0) * frame.position_x,
-                            -(image_height - media_height).max(0.0) * frame.position_y)
-                    }
-                    None => (image_width, media_height, 0.0, 0.0),
-                };
-                let image_radius = RADIUS_CHROME * slide.media.frame.as_ref().map_or(1.0, |frame| frame.zoom);
-                let retry_source = image_source.clone();
-                let carousel = cx.entity().downgrade();
-                img(image_source).id(format!("highlights-image-{}-{}", self.index, animated)).debug_selector(|| "highlights-image".into()).absolute().left(rpx(image_left)).top(rpx(image_top)).w(rpx(image_width)).h(rpx(image_height)).rounded(rpx(image_radius)).object_fit(gpui::ObjectFit::Contain)
-                    .with_fallback(move || {
-                        let source = retry_source.clone(); let key_source = retry_source.clone(); let key_carousel = carousel.clone(); let carousel = carousel.clone();
-                        div().size_full().flex().flex_col().gap(rpx(SPACE_LG)).items_center().justify_center().text_color(c::FG_DIM())
-                            .child("Preview could not be decoded. The highlight is still available below.")
-                            .child(div().id("highlights-retry").tab_index(0).aria_label("Retry media preview").child("Retry")
-                                .on_click(move |_, _, cx| { source.remove_asset(cx); let _ = carousel.update(cx, |_, cx| cx.notify()); })
-                                .on_key_down(move |event, window, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { key_source.remove_asset(cx); let _ = key_carousel.update(cx, |_, cx| cx.notify()); window.prevent_default(); cx.stop_propagation(); } }))
-                            .into_any_element()
-                    }).into_any_element()
-            },
-            _ => unavailable(),
+        let media = slide.media.as_ref().map(|authored_media| {
+            let source = match authored_media.kind {
+                MediaKind::Image => Some(authored_media.src.clone()),
+                MediaKind::Gif if animated => Some(authored_media.src.clone()),
+                MediaKind::Gif | MediaKind::Video => authored_media.poster.clone(),
+            };
+            let media_height = (width * 9.0 / 16.0).min(height * 0.52);
+            let mut media = div()
+                .id("highlights-media")
+                .debug_selector(|| "highlights-media".into())
+                .w_full()
+                .h(rpx(media_height))
+                .flex_shrink_0()
+                .overflow_hidden()
+                .bg(c::BG())
+                .relative()
+                .aria_label(authored_media.alt.clone());
+            media = media.child(match source {
+                Some(source) if Assets::get(&source).is_some() => {
+                    let image_source = gpui::ImageSource::from(gpui::SharedString::from(source));
+                    #[cfg(test)]
+                    let image_source = self.image_source_override.clone().unwrap_or(image_source);
+                    let image_width = (width - 2.0).max(0.0);
+                    let (image_width, image_height, image_left, image_top) = match &authored_media.frame {
+                        Some(frame) => {
+                            let image_width = image_width * frame.zoom;
+                            let image_height = image_width / frame.aspect_ratio;
+                            (image_width, image_height,
+                                -(image_width - (width - 2.0)).max(0.0) * frame.position_x,
+                                -(image_height - media_height).max(0.0) * frame.position_y)
+                        }
+                        None => (image_width, media_height, 0.0, 0.0),
+                    };
+                    let image_radius = RADIUS_CHROME * authored_media.frame.as_ref().map_or(1.0, |frame| frame.zoom);
+                    let retry_source = image_source.clone();
+                    let carousel = cx.entity().downgrade();
+                    img(image_source).id(format!("highlights-image-{}-{}", self.index, animated)).debug_selector(|| "highlights-image".into()).absolute().left(rpx(image_left)).top(rpx(image_top)).w(rpx(image_width)).h(rpx(image_height)).rounded(rpx(image_radius)).object_fit(gpui::ObjectFit::Contain)
+                        .with_fallback(move || {
+                            let source = retry_source.clone(); let key_source = retry_source.clone(); let key_carousel = carousel.clone(); let carousel = carousel.clone();
+                            div().size_full().flex().flex_col().gap(rpx(SPACE_LG)).items_center().justify_center().text_color(c::FG_DIM())
+                                .child("Preview could not be decoded. The highlight is still available below.")
+                                .child(div().id("highlights-retry").tab_index(0).aria_label("Retry media preview").child("Retry")
+                                    .on_click(move |_, _, cx| { source.remove_asset(cx); let _ = carousel.update(cx, |_, cx| cx.notify()); })
+                                    .on_key_down(move |event, window, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { key_source.remove_asset(cx); let _ = key_carousel.update(cx, |_, cx| cx.notify()); window.prevent_default(); cx.stop_propagation(); } }))
+                                .into_any_element()
+                        }).into_any_element()
+                },
+                _ => unavailable(),
+            });
+            if let Some(frame) = &authored_media.frame {
+                if let Some([left, top, marker_width, marker_height]) = frame.highlight {
+                    let image_width = (width - 2.0).max(0.0) * frame.zoom;
+                    let image_height = image_width / frame.aspect_ratio;
+                    let image_left = -(image_width - (width - 2.0)).max(0.0) * frame.position_x;
+                    let image_top = -(image_height - media_height).max(0.0) * frame.position_y;
+                    media = media.child(
+                        div()
+                            .debug_selector(|| "highlights-image-focus".into())
+                            .absolute()
+                            .left(rpx(image_left + image_width * left))
+                            .top(rpx(image_top + image_height * top))
+                            .w(rpx(image_width * marker_width))
+                            .h(rpx(image_height * marker_height))
+                            .rounded(rpx(RADIUS_CONTROL))
+                            .border_2()
+                            .border_color(c::FG()),
+                    );
+                }
+            }
+            match authored_media.kind {
+                MediaKind::Gif if !cx.reduce_motion() => {
+                    media = media.child(
+                        div()
+                            .absolute()
+                            .bottom(rpx(SPACE_LG))
+                            .right(rpx(SPACE_LG))
+                            .child(
+                                button(
+                                    "highlights-gif",
+                                    if animated {
+                                        "Pause animation"
+                                    } else {
+                                        "Play animation"
+                                    },
+                                    window,
+                                    cx,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.toggle_animation(cx);
+                                })),
+                            ),
+                    );
+                }
+                MediaKind::Video => {
+                    media = media.child(
+                        div()
+                            .absolute()
+                            .bottom(rpx(SPACE_LG))
+                            .right(rpx(SPACE_LG))
+                            .child(
+                                button("highlights-video", "Play video", window, cx)
+                                    .on_click(cx.listener(|this, _, _, cx| this.play_video(cx))),
+                            ),
+                    );
+                }
+                _ => {}
+            }
+            media
         });
-        if let Some(frame) = &slide.media.frame {
-            if let Some([left, top, marker_width, marker_height]) = frame.highlight {
-                let image_width = (width - 2.0).max(0.0) * frame.zoom;
-                let image_height = image_width / frame.aspect_ratio;
-                let image_left = -(image_width - (width - 2.0)).max(0.0) * frame.position_x;
-                let image_top = -(image_height - media_height).max(0.0) * frame.position_y;
-                media = media.child(
-                    div()
-                        .debug_selector(|| "highlights-image-focus".into())
-                        .absolute()
-                        .left(rpx(image_left + image_width * left))
-                        .top(rpx(image_top + image_height * top))
-                        .w(rpx(image_width * marker_width))
-                        .h(rpx(image_height * marker_height))
-                        .rounded(rpx(RADIUS_CONTROL))
-                        .border_2()
-                        .border_color(c::FG()),
-                );
-            }
-        }
-        match slide.media.kind {
-            MediaKind::Gif if !cx.reduce_motion() => {
-                media = media.child(
-                    div()
-                        .absolute()
-                        .bottom(rpx(SPACE_LG))
-                        .right(rpx(SPACE_LG))
-                        .child(
-                            button(
-                                "highlights-gif",
-                                if animated {
-                                    "Pause animation"
-                                } else {
-                                    "Play animation"
-                                },
-                                window,
-                                cx,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.toggle_animation(cx);
-                            })),
-                        ),
-                );
-            }
-            MediaKind::Video => {
-                media = media.child(
-                    div()
-                        .absolute()
-                        .bottom(rpx(SPACE_LG))
-                        .right(rpx(SPACE_LG))
-                        .child(
-                            button("highlights-video", "Play video", window, cx)
-                                .on_click(cx.listener(|this, _, _, cx| this.play_video(cx))),
-                        ),
-                );
-            }
-            _ => {}
-        }
         let mut dots = div().id("highlights-progress").flex().aria_label(format!(
             "Highlight {} of {}",
             self.index + 1,
@@ -395,7 +406,7 @@ impl Render for ReleaseCarousel {
                                     ),
                             ),
                     )
-                    .child(media)
+                    .when_some(media, gpui::ParentElement::child)
                     .child(
                         div()
                             .debug_selector(|| "highlights-copy".into())
@@ -479,14 +490,14 @@ mod tests {
                     id: format!("slide-{index}"),
                     title: format!("Feature {index}"),
                     description: "A user-visible improvement.".into(),
-                    media: HighlightMedia {
+                    media: Some(HighlightMedia {
                         kind: MediaKind::Image,
                         src: "highlights/missing.png".into(),
                         alt: "Feature preview".into(),
                         poster: None,
                         captions: None,
                         frame: None,
-                    },
+                    }),
                 })
                 .collect(),
         }
@@ -533,7 +544,10 @@ mod tests {
     fn gif_autoplays_can_pause_and_restarts_on_navigation(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let release = manifest().unwrap().release("1.0.2").unwrap().clone();
-        assert_eq!(release.slides[0].media.kind, MediaKind::Gif);
+        assert_eq!(
+            release.slides[0].media.as_ref().unwrap().kind,
+            MediaKind::Gif
+        );
         let (carousel, cx) =
             cx.add_window_view(|window, cx| ReleaseCarousel::new(release, window, cx));
         cx.update(|window, cx| {
@@ -592,20 +606,62 @@ mod tests {
         cx.simulate_keystrokes("escape");
     }
     #[gpui::test]
+    fn text_only_highlights_render_without_media_and_keep_navigation(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let release = manifest().unwrap().release("1.0.8").unwrap().clone();
+        assert!(release.slides.iter().all(|slide| slide.media.is_none()));
+        let count = release.slides.len();
+        let (carousel, cx) =
+            cx.add_window_view(|window, cx| ReleaseCarousel::new(release, window, cx));
+        for (width, height) in [(1280.0, 800.0), (360.0, 480.0)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            for index in 0..count {
+                cx.update(|window, cx| {
+                    carousel.update(cx, |this, cx| {
+                        this.select(index, cx);
+                        this.play_video(cx);
+                        assert!(this.media_error.is_none());
+                    });
+                    let _ = window.draw(cx);
+                });
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                assert!(cx.debug_bounds("highlights-media").is_none());
+                assert!(cx.debug_bounds("highlights-image").is_none());
+                let panel = cx.debug_bounds("release-highlights").unwrap();
+                let copy = cx.debug_bounds("highlights-copy").unwrap();
+                let footer = cx.debug_bounds("highlights-footer").unwrap();
+                assert!(panel.top() >= gpui::px(0.0) && panel.bottom() <= gpui::px(height));
+                assert!(panel.left() >= gpui::px(0.0) && panel.right() <= gpui::px(width));
+                assert!(copy.bottom() <= footer.top());
+                assert!(footer.bottom() <= panel.bottom());
+            }
+        }
+        cx.update(|_, cx| {
+            carousel.update(cx, |this, cx| this.select(0, cx));
+        });
+        cx.simulate_keystrokes("right");
+        assert_eq!(cx.update(|_, cx| carousel.read(cx).index), 1);
+        cx.simulate_keystrokes("left");
+        assert_eq!(cx.update(|_, cx| carousel.read(cx).index), 0);
+        cx.simulate_keystrokes("tab");
+        assert!(cx.update(|window, cx| carousel.read(cx).focus.contains_focused(window, cx)));
+    }
+
+    #[gpui::test]
     fn decoded_screenshot_stays_inside_media_and_before_copy(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let mut release = manifest().unwrap().release("1.0.2").unwrap().clone();
-        release.slides[0].media.frame = None;
-        let bytes = Assets::get(
-            release.slides[0]
-                .media
-                .poster
-                .as_ref()
-                .unwrap_or(&release.slides[0].media.src),
-        )
-        .unwrap()
-        .data
-        .into_owned();
+        release.slides[0].media.as_mut().unwrap().frame = None;
+        let media = release.slides[0].media.as_ref().unwrap();
+        let bytes = Assets::get(media.poster.as_ref().unwrap_or(&media.src))
+            .unwrap()
+            .data
+            .into_owned();
         let image = std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes));
         let image_for_view = image.clone();
         let (_, cx) = cx.add_window_view(move |window, cx| {
@@ -656,7 +712,7 @@ mod tests {
         let release = manifest().unwrap().release("1.0.2").unwrap().clone();
         let image = std::sync::Arc::new(gpui::Image::from_bytes(
             gpui::ImageFormat::Gif,
-            Assets::get(&release.slides[0].media.src)
+            Assets::get(&release.slides[0].media.as_ref().unwrap().src)
                 .unwrap()
                 .data
                 .into_owned(),
@@ -709,9 +765,12 @@ mod tests {
         let manifest = manifest().expect("bundled manifest must parse");
         for release in manifest.releases {
             for slide in release.slides {
-                for path in std::iter::once(&slide.media.src)
-                    .chain(slide.media.poster.iter())
-                    .chain(slide.media.captions.iter())
+                let Some(media) = &slide.media else {
+                    continue;
+                };
+                for path in std::iter::once(&media.src)
+                    .chain(media.poster.iter())
+                    .chain(media.captions.iter())
                 {
                     assert!(
                         Assets::get(path).is_some(),

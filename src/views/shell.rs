@@ -1669,14 +1669,14 @@ mod tests {
                 id: "fixture".into(),
                 title: "An example improvement".into(),
                 description: "A fixture independent of release authoring.".into(),
-                media: HighlightMedia {
+                media: Some(HighlightMedia {
                     kind: MediaKind::Image,
                     src: "highlights/test-missing.png".into(),
                     alt: "Test preview".into(),
                     poster: None,
                     captions: None,
                     frame: None,
-                },
+                }),
             }],
         }
     }

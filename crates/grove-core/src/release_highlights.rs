@@ -23,7 +23,8 @@ pub struct HighlightSlide {
     pub id: String,
     pub title: String,
     pub description: String,
-    pub media: HighlightMedia,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media: Option<HighlightMedia>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,11 +112,15 @@ impl Manifest {
                     || !ids.insert(&slide.id)
                     || !text_valid(&slide.title, 160)
                     || !text_valid(&slide.description, 1200)
-                    || !text_valid(&slide.media.alt, 1200)
                 {
                     return Err(invalid("invalid slide content or duplicate ID"));
                 }
-                let media = &slide.media;
+                let Some(media) = &slide.media else {
+                    continue;
+                };
+                if !text_valid(&media.alt, 1200) {
+                    return Err(invalid("invalid media alternative text"));
+                }
                 if !path_valid(&media.src)
                     || media.poster.as_deref().is_some_and(|p| !path_valid(p))
                     || media.captions.as_deref().is_some_and(|p| !path_valid(p))
@@ -186,6 +191,34 @@ mod tests {
     }
     fn parse(v: &serde_json::Value) -> Result<Manifest, ManifestError> {
         Manifest::parse(&serde_json::to_vec(v).unwrap())
+    }
+    #[test]
+    fn accepts_text_only_slides_and_omits_absent_media() {
+        let mut v = value();
+        v["releases"][0]["slides"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("media");
+        let manifest = parse(&v).unwrap();
+        assert!(manifest.releases[0].slides[0].media.is_none());
+        let serialized = serde_json::to_value(&manifest).unwrap();
+        assert!(serialized["releases"][0]["slides"][0]
+            .get("media")
+            .is_none());
+        assert!(manifest.releases[0].should_auto_open("1.0.2", &[]));
+        v["releases"][0]["slides"][0]["title"] = " ".into();
+        assert!(parse(&v).is_err(), "text-only slides still require content");
+    }
+    #[test]
+    fn optional_media_does_not_accept_incomplete_media() {
+        for media in [
+            serde_json::json!({}),
+            serde_json::json!({"kind":"image","src":"highlights/demo.png"}),
+        ] {
+            let mut v = value();
+            v["releases"][0]["slides"][0]["media"] = media;
+            assert!(parse(&v).is_err());
+        }
     }
     #[test]
     fn installed_version_and_seen_versions_are_independent() {

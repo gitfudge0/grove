@@ -2,6 +2,33 @@
   "schema_version": 1,
   "releases": [
     {
+      "version": "1.0.8",
+      "enabled": true,
+      "title": "What's new in Grove",
+      "slides": [
+        {
+          "id": "navigation",
+          "title": "Find your next session",
+          "description": "Browse sessions in the compact sidebar or its project popup. Clearer titles, activity icons, Git changes, and cmd+b / ctrl+b keep navigation simple."
+        },
+        {
+          "id": "cross-project",
+          "title": "Work across projects",
+          "description": "Choose worktrees from different projects in one launcher, then start your agent with their shared context. Launch directly from worktree rows and compact project popups, too."
+        },
+        {
+          "id": "agent-workflows",
+          "title": "Let agents coordinate the work",
+          "description": "Use the Grove CLI to manage projects, worktrees, and sessions, and track delegated tasks across restarts. Install or refresh the Grove skill globally from Settings for Codex, Claude Code, or OpenCode."
+        },
+        {
+          "id": "updates",
+          "title": "Keep Grove up to date",
+          "description": "Updates check the latest release again before installing. Restart when you are ready, and keep the desktop and installed Grove CLI in sync. Downloads and installers are smaller, too."
+        }
+      ]
+    },
+    {
       "version": "1.0.2",
       "enabled": true,
       "title": "What's new in Grove",
