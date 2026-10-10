@@ -180,7 +180,7 @@ grove uses fixed light and dark palettes. In settings, choose System to follow y
 
 ## release highlights
 
-Release carousels are authored in `assets/highlights/manifest.json` and bundled with Grove; release notes are not converted into slides at runtime. Each release entry uses the exact installed version (for example `1.0.2`). Set `enabled: true` only for releases you want to show automatically. A disabled entry is a draft and does not interrupt normal launches.
+Release carousels are authored in `assets/highlights/manifest.json` and bundled with Grove; release notes are not converted into slides at runtime. Each release entry uses the exact installed version (for example `1.0.8`). Set `enabled: true` only for releases you want to show automatically. A disabled entry is a draft and does not interrupt normal launches.
 
 For an enabled release, Grove opens the media-first carousel once on first launch of that version and records that version as seen. You can dismiss it at any time. Other versions do not inherit that release's carousel. You can replay an enabled carousel from Settings → Changelog → View highlights.
 
@@ -189,14 +189,14 @@ Choose two to four user-visible changes, write a benefit-led title and a short d
 To test a draft without consuming its first-launch state, use a debug build:
 
 ```sh
-GROVE_HIGHLIGHTS_DEBUG=1 GROVE_HIGHLIGHTS_VERSION=1.0.2 cargo run
+GROVE_HIGHLIGHTS_DEBUG=1 GROVE_HIGHLIGHTS_VERSION=1.0.8 cargo run
 ```
 
 `GROVE_HIGHLIGHTS_DEBUG=1` opens the selected carousel at every launch of a debug build, including disabled drafts. `GROVE_HIGHLIGHTS_VERSION` selects an authored version for preview; it does not change normal release selection. Settings → Changelog → Preview release highlights reopens it as often as needed; in a debug build, `cmd+shift+h` on macOS (`ctrl+shift+h` elsewhere) also opens the preview. Release builds ignore the debug override. Use `GROVE_CONFIG_DIR=/tmp/grove-highlights-test` and `GROVE_TELEMETRY=off` for an isolated review workspace.
 
 The first `1.0.2` slide uses a two-state GIF captured from the native app, with a 1.5-second hold on the expanded and collapsed sidebar. The outlined toggle follows its real position in each state; The loop starts automatically; Pause animation keeps the poster still.
 
-The `1.0.2` entry is a disabled draft of changes since published `v1.0.1`: the compact sidebar, moving projects between workspaces, and confirmation before closing running sessions. Enable it when those highlights are ready to ship.
+The enabled `1.0.8` entry covers changes since `v1.0.2` in four slides: session navigation, cross-project launching, CLI and agent workflows, and updates. The original `1.0.2` entry and media remain available for explicit debug previews. See [release notes](RELEASE_NOTES.md) for the smaller changes and fixes.
 
 ## requirements
 
