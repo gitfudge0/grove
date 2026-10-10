@@ -112,6 +112,8 @@ when you start your first managed project session with `tmux` installed, grove a
 
 ## CLI and agent delegation
 
+`./install.sh` also installs `grove` into `${CARGO_HOME:-$HOME/.cargo}/bin` as a link to the installed desktop executable, replacing legacy Cargo-installed binaries. keep that directory on your `PATH`; updates then update both the desktop and CLI together. existing shells may need `hash -r` (bash) or `rehash` (zsh) after installation.
+
 with the desktop running, the `grove` CLI can discover projects, create worktrees, launch and inspect sessions, and track delegated tasks. control uses a private local Unix socket on linux/macOS; Windows CLI control is not supported yet. it does not start a headless service or open the desktop automatically. bare `grove` still opens the desktop; `grove --help` and `grove --version` work without it.
 
 ```sh
@@ -129,7 +131,7 @@ use the returned session/task IDs and `grove <command> --help` for command detai
 
 task records persist across restarts. workers receive `GROVE_TASK_ID` and `GROVE_CONFIG_DIR`, and explicitly submit a result with `grove tasks complete TASK_ID --result-file /path/to/result.json`; a result is a worker report that the coordinator still needs to verify. terminal activity and sidebar “done” signals do not establish success. native sessions end on desktop exit; tmux sessions can reconnect. check the returned backend because a failed tmux launch can fall back to native. launches honor Grove's existing agent permission settings.
 
-the repository includes a [Grove skill](skills/grove/SKILL.md) for agents coordinating independent tasks in separate worktrees. to install it for Codex, copy `skills/grove` into `~/.codex/skills/grove` (or your custom Codex skills directory), then use `$grove`. installation is optional; Grove does not install it automatically.
+the repository includes a [Grove skill](skills/grove/SKILL.md) for agents coordinating independent tasks in separate worktrees. to install it for Codex, run `grove skills install --agent codex` or use Settings → Skills, then use `$grove`. the user-scope location is `~/.agents/skills/grove`; add `--project /absolute/project` for project scope. installation is optional.
 
 ## keyboard
 
