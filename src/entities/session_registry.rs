@@ -278,6 +278,35 @@ impl SessionRegistry {
     }
 
     #[must_use]
+    pub(crate) fn control_metas(&self) -> Vec<SessionMeta> {
+        self.order
+            .iter()
+            .chain(self.home.iter())
+            .chain(self.wt.values().flat_map(|rows| rows.iter()))
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn control_terminal(&self, id: SessionId) -> Option<&Entity<TerminalSession>> {
+        self.terms
+            .get(&id)
+            .or_else(|| {
+                self.home
+                    .iter()
+                    .position(|meta| meta.id == id)
+                    .and_then(|i| self.home_terms.get(i))
+            })
+            .or_else(|| self.wt_terms.get(&id))
+    }
+
+    pub(crate) fn panel_shell_location(&self, id: SessionId) -> Option<(String, usize)> {
+        self.wt.iter().find_map(|(path, rows)| {
+            rows.iter()
+                .position(|meta| meta.id == id)
+                .map(|i| (path.clone(), i))
+        })
+    }
+
     pub fn all(&self) -> &[SessionMeta] {
         &self.order
     }

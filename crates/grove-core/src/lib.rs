@@ -13,6 +13,7 @@ pub mod multi_root;
 pub mod release_highlights;
 pub mod render_rows;
 pub mod session_meta;
+pub mod skill_install;
 pub mod storage;
 pub mod theme;
 pub mod theme_file;

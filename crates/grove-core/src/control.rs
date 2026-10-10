@@ -18,6 +18,87 @@ pub struct ControlRequest {
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlCommand {
     ListProjects,
+    SkillStatus {
+        agent: String,
+        project: Option<String>,
+    },
+    InstallSkill {
+        agent: String,
+        project: Option<String>,
+        overwrite: bool,
+    },
+    InitProjectGit {
+        project: String,
+    },
+    SkipWorktreeTeardown {
+        path: String,
+        confirm: String,
+    },
+    AddProject {
+        name: String,
+        path: String,
+        workspace: Option<u64>,
+    },
+    EditProject {
+        project: String,
+        name: Option<String>,
+        setup: Option<String>,
+        run: Option<String>,
+        teardown: Option<String>,
+    },
+    MoveProject {
+        project: String,
+        workspace: u64,
+    },
+    ArchiveProject {
+        project: String,
+    },
+    RestoreProject {
+        project: String,
+    },
+    DeleteProject {
+        project: String,
+        confirm: String,
+    },
+    RemoveProject {
+        project: String,
+        confirm: String,
+        remove_worktrees: bool,
+    },
+    ProjectRemovalStatus {
+        path: String,
+    },
+    ListWorkspaces,
+    CreateWorkspace {
+        name: String,
+    },
+    RenameWorkspace {
+        id: u64,
+        name: String,
+    },
+    SelectWorkspace {
+        id: u64,
+    },
+    DeleteWorkspace {
+        id: u64,
+        confirm: String,
+    },
+    RemoveWorktree {
+        project: String,
+        worktree: String,
+        confirm: String,
+    },
+    WorktreeRemovalStatus {
+        path: String,
+    },
+    RunScript {
+        project: String,
+        worktree: String,
+    },
+    SessionInput {
+        id: String,
+        text: String,
+    },
     ListWorktrees {
         project: String,
     },
@@ -25,8 +106,14 @@ pub enum ControlCommand {
         project: String,
         name: String,
         base: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
     },
     ListSessions,
+    StartShell {
+        project: Option<String>,
+        worktree: Option<String>,
+    },
     ShowSession {
         id: String,
     },
@@ -37,6 +124,8 @@ pub enum ControlCommand {
         prompt: Option<String>,
         backend: Option<bool>,
         task: Option<TaskSpec>,
+        #[serde(default)]
+        roots: Vec<String>,
     },
     Logs {
         id: String,
