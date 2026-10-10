@@ -114,6 +114,9 @@ jobs:
         with:
           tool: typos-cli,cargo-machete
 
+      - name: Verify CLI installation
+        run: python3 scripts/verify-cli-install.py
+
       - name: Check spelling
         run: typos
 

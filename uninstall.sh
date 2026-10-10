@@ -3,6 +3,15 @@
 set -euo pipefail
 
 OS="$(uname -s)"
+CLI_LINK="${CARGO_HOME:-$HOME/.cargo}/bin/grove"
+if [ -L "$CLI_LINK" ]; then
+  case "$(readlink "$CLI_LINK")" in
+    /Applications/Grove.app/Contents/MacOS/grove|"$HOME/Applications/Grove.app/Contents/MacOS/grove"|/usr/bin/grove|"$HOME/.local/bin/grove")
+      rm "$CLI_LINK"
+      echo "Removed CLI link $CLI_LINK"
+      ;;
+  esac
+fi
 
 case "$OS" in
   Darwin)
