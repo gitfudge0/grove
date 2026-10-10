@@ -87,7 +87,6 @@ pub struct SettingsPanel {
     page: Page,
     error: Option<String>,
     scroll: ScrollHandle,
-    skill_scope: InstallScope,
     _settings_observer: Subscription,
     _upgrade_observer: Subscription,
     _environment_observer: Subscription,
@@ -107,7 +106,6 @@ impl SettingsPanel {
             page: Page::Settings,
             error: None,
             scroll: ScrollHandle::new(),
-            skill_scope: InstallScope::User,
             _settings_observer: cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
             _upgrade_observer: cx.observe(&upgrade, |_, _, cx| cx.notify()),
             _environment_observer: cx.observe(&shell_environment, |_, _, cx| cx.notify()),
@@ -401,62 +399,41 @@ impl SettingsPanel {
     }
 
     fn install_skill(&mut self, agent: AgentTarget, cx: &mut Context<Self>) {
-        self.error = skill_install::install(agent, &self.skill_scope, false)
-            .err()
-            .map(|error| format!("Could not install Grove skill: {error}"));
+        match skill_install::install(agent, &InstallScope::User, false) {
+            Ok(_) => {
+                self.error = None;
+                self.runtime.read(cx).toast.clone().update(cx, |toast, cx| {
+                    toast.set_toast(format!("Grove skill synced for {}", agent.label()), cx);
+                });
+            }
+            Err(error) => self.error = Some(format!("Could not sync Grove skill: {error}")),
+        }
         cx.notify();
     }
 
     fn skill_body(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut scopes = div().flex().flex_wrap().gap(rpx(SPACE_SM)).child(
-            self.button(
-                "settings-skill-user",
-                "Install skill for your user",
-                self.skill_scope == InstallScope::User,
-                true,
-            )
-            .child("All projects")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.skill_scope = InstallScope::User;
-                this.error = None;
-                cx.notify();
-            })),
-        );
-        for project in &cx.global::<SettingsState>().store.projects {
-            let scope = InstallScope::Project(project.path.clone().into());
-            scopes = scopes.child(
-                self.button(
-                    format!("settings-skill-project-{}", project.path),
-                    format!("Install skill in {}", project.name),
-                    self.skill_scope == scope,
-                    true,
-                )
-                .child(project.name.clone())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.skill_scope = scope.clone();
-                    this.error = None;
-                    cx.notify();
-                })),
-            );
-        }
         let mut body = div()
             .flex()
             .flex_col()
             .gap(rpx(SPACE_LG))
             .child(Self::section("AGENT SKILL"))
-            .child(Self::setting_row(
-                "Install scope",
-                "Teach agents to manage projects, worktrees, and sessions through Grove.",
-                scopes,
-            ));
+            .child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(
+                    "Install globally to manage projects, worktrees, and sessions through Grove.",
+                ),
+            );
         for agent in AgentTarget::ALL {
-            let result = skill_install::status(agent, &self.skill_scope);
+            let result = skill_install::status(agent, &InstallScope::User);
             let (label, detail, enabled) = match result {
                 Ok(installation) => {
                     let (label, enabled) = match installation.status {
                         InstallStatus::Missing => ("Install", true),
-                        InstallStatus::UpdateAvailable => ("Update", true),
-                        InstallStatus::Installed => ("Installed", false),
+                        InstallStatus::UpdateAvailable | InstallStatus::Installed => {
+                            ("Refresh", true)
+                        }
                         InstallStatus::Conflict => ("Existing skill", false),
                     };
                     let detail = if installation.status == InstallStatus::Conflict {
@@ -483,12 +460,19 @@ impl SettingsPanel {
                 .child(label)
                 .when(enabled, |button| {
                     button
+                        .cursor_pointer()
+                        .hover(|style| style.bg(c::BG_HOVER()))
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
                         .on_click(cx.listener(move |this, _, _, cx| this.install_skill(agent, cx)))
                 }),
             ));
         }
-        body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-            .child("Start a new agent session, then ask it to use the grove skill. Project installs apply to that checkout."))
+        body.child(
+            div()
+                .text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG_DIM())
+                .child("Start a new agent session, then ask it to use the grove skill."),
+        )
     }
 
     fn settings_body(&self, cx: &mut Context<Self>) -> gpui::Div {
