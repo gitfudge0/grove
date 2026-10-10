@@ -1,6 +1,6 @@
 # Grove 1.0.8
 
-Changes since v1.0.2. The launch carousel groups these into four highlights.
+Changes since v1.0.2. The text-only launch carousel groups these into four highlights.
 
 ## Sessions and navigation
 
@@ -34,5 +34,5 @@ Changes since v1.0.2. The launch carousel groups these into four highlights.
 
 ## Release preparation
 
-- Bump Grove to 1.0.8 and enable its once-per-version launch highlights. Retain the original 1.0.2 manifest entry and media for debug previews.
+- Bump Grove to 1.0.8 and enable its once-per-version text-only launch highlights. Retain the original 1.0.2 manifest entry and media for debug previews.
 - Refresh release workflows and validation for CLI installation and complete runtime script output.
