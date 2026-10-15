@@ -94,6 +94,20 @@ pub fn pixel_to_abs(
     })
 }
 
+/// The top/bottom terminal-cell band scrolls a held selection. Vertical
+/// overshoot continues scrolling; horizontal departure leaves adjacent panes alone.
+pub fn drag_scroll_direction(x: f32, y: f32, width: f32, height: f32, cell_h: f32) -> Option<bool> {
+    if x < 0.0 || x >= width || height <= 0.0 || cell_h <= 0.0 {
+        None
+    } else if y <= cell_h {
+        Some(true)
+    } else if y >= height - cell_h {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// Re-resolves only the moving end of a drag after the viewport scrolls.
 /// Keeping the original absolute anchor retains already-selected off-screen
 /// rows.

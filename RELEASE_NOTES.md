@@ -1,3 +1,10 @@
+# Grove 1.0.9
+
+## Terminal selection
+
+- Restore ordinary drag selection in Claude Code and other terminal apps with mouse reporting enabled, while preserving clicks on app controls.
+- Scroll terminal history while holding a selection near the top or bottom edge, including past the viewport, and extend the selected text for copying. Stop scrolling when the pointer leaves the edge or the drag ends.
+
 # Grove 1.0.8
 
 Changes since v1.0.2. The text-only launch carousel groups these into four highlights.

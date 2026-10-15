@@ -350,6 +350,19 @@ impl TerminalSession {
     }
 
     #[cfg(test)]
+    pub(crate) fn native_for_test(cx: &mut Context<Self>) -> Self {
+        let mut session = Self::attach_existing("inert-test-session", 24, 80, cx);
+        session.backend = Backend::Native;
+        session.pending_attach = None;
+        session
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_input_for_test(&self) -> Option<Instant> {
+        self.last_input_at
+    }
+
+    #[cfg(test)]
     pub(crate) fn ingest_for_test(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         self.ingest(&[bytes.to_vec()], cx);
     }
@@ -427,6 +440,12 @@ impl TerminalSession {
         for _ in 0..mouse::scroll_notch_count(lines) {
             self.send_wheel_notch(up, col, row);
         }
+    }
+
+    /// Selection drags scroll history even when the inner app owns wheel events.
+    pub fn scroll_selection(&mut self, up: bool, lines: usize) {
+        self.last_scroll_at = Some(Instant::now());
+        self.scroll_view(up, lines);
     }
 
     pub fn scroll_page_lines(&self) -> usize {
