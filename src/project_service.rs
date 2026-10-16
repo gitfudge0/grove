@@ -762,10 +762,12 @@ impl ProjectService {
             .ok_or_else(|| "Project no longer exists.".to_string())?;
         let worktrees = git::list_worktrees_checked(project_path)
             .map_err(|error| format!("Could not list worktrees: {error}"))?;
-        let target = worktrees
-            .iter()
-            .find(|worktree| worktree.path == wt_path)
-            .ok_or_else(|| "Worktree is no longer listed by Git.".to_string())?;
+        let Some(target) = worktrees.iter().find(|worktree| worktree.path == wt_path) else {
+            // Another Git client may have removed it since the sidebar cached its inventory.
+            // Refresh that inventory, but never touch an unlisted folder or its sessions.
+            cx.emit(ProjectEvent::TreeInvalidated);
+            return Err("Worktree is no longer listed by Git.".into());
+        };
         if !removable_worktree(project_path, &target.path, target.is_main) {
             return Err("The main project checkout cannot be removed.".into());
         }
@@ -1627,6 +1629,63 @@ mod tests {
                 .iter()
                 .any(|w| w.path == wt));
             assert!(!Path::new(&wt).exists());
+        });
+    }
+
+    #[gpui::test]
+    fn stale_worktree_removal_refreshes_inventory_without_touching_replaced_folder(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let Some((_fixture, repo, wt)) = git_fixture() else {
+            return;
+        };
+        let (runtime, id) = cx.update(|cx| {
+            cx.set_global(SettingsState::new(storage::Store {
+                projects: vec![project("fixture", &repo)],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            assert!(runtime
+                .read(cx)
+                .tree
+                .read(cx)
+                .worktrees_for_project(0, 0)
+                .iter()
+                .any(|entry| entry.path == wt));
+            let registry = runtime.read(cx).registry.clone();
+            let id = registry.update(cx, |registry, _| {
+                registry.insert_meta(
+                    "fixture".into(),
+                    wt.clone(),
+                    grove_core::agent::Agent::Terminal,
+                )
+            });
+            (runtime, id)
+        });
+        // Another Git client removes the checkout while Grove still displays its cached row.
+        git::remove_worktree(&repo, &wt).unwrap();
+        fs::create_dir(&wt).unwrap();
+        let marker = Path::new(&wt).join("unrelated.txt");
+        fs::write(&marker, "keep me").unwrap();
+        cx.update(|cx| {
+            let service = runtime.read(cx).projects.clone();
+            let error = service.update(cx, |service, cx| {
+                service.remove_worktree_by_path(&repo, &wt, cx).unwrap_err()
+            });
+            assert_eq!(error, "Worktree is no longer listed by Git.");
+            assert!(service.read(cx).worktree_removal_status(&wt).is_none());
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let runtime = runtime.read(cx);
+            let inventory = runtime.tree.read(cx).worktrees_for_project(0, 0);
+            assert!(!inventory.iter().any(|entry| entry.path == wt));
+            assert!(inventory
+                .iter()
+                .any(|entry| entry.path == repo && entry.is_main));
+            assert!(runtime.registry.read(cx).meta(id).is_some());
+            assert_eq!(fs::read_to_string(&marker).unwrap(), "keep me");
         });
     }
 

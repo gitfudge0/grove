@@ -1,3 +1,7 @@
+# Grove 1.0.10
+
+- Refresh stale worktree entries after a removal attempt finds the worktree is no longer listed by Git. Preserve sessions and unrelated folders when removal is rejected.
+
 # Grove 1.0.9
 
 ## Terminal selection
