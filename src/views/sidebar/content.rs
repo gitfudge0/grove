@@ -556,6 +556,38 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let native = self.runtime.read(cx).registry.read(cx).codex(id).cloned();
+        let native_view = if let Some(session) = native.as_ref() {
+            let newly_created = !self.codex_views.contains_key(&id);
+            let view = self
+                .codex_views
+                .entry(id)
+                .or_insert_with(|| {
+                    cx.new(|cx| {
+                        super::super::codex_view::CodexView::new(session.clone(), window, cx)
+                    })
+                })
+                .clone();
+            self.canvas_focus_observers.entry(id).or_insert_with(|| {
+                cx.on_focus_in(&view.focus_handle(cx), window, move |this, _, cx| {
+                    this.select(Selection::Session(id), cx);
+                })
+            });
+            let grid_focus = self.pending_grid_workspace_focus == Some(id)
+                && self.grid_workspace_focus_allowed(window, cx);
+            if (grid_focus
+                || ((newly_created || self.pending_canvas_focus == Some(id))
+                    && self.canvas_focus_allowed(window, cx)))
+                && matches!(self.selection, Some(Selection::Session(selected)) if selected == id)
+            {
+                view.focus_handle(cx).focus(window, cx);
+                self.pending_canvas_focus = None;
+                self.pending_grid_workspace_focus = None;
+            }
+            Some(view)
+        } else {
+            None
+        };
         let registry = self.runtime.read(cx).registry.read(cx);
         let (meta, session) = if home {
             let index = registry
@@ -601,14 +633,26 @@ impl Sidebar {
         } else {
             self.runtime.read(cx).activity.read(cx).state_of(id)
         };
-        let state = canvas_state(
-            meta.agent,
-            activity,
-            error.is_some(),
-            pending,
-            session.is_none(),
-            exited,
-        );
+        let state = if let Some(native) = &native {
+            use grove_core::codex::Status;
+            match native.read(cx).state.status {
+                Status::Starting => CanvasState::Starting,
+                Status::Working => CanvasState::Working,
+                Status::Waiting => CanvasState::NeedsYou,
+                Status::Done => CanvasState::Done,
+                Status::Failed | Status::Disconnected => CanvasState::Failed,
+                Status::Idle | Status::Interrupted => CanvasState::Idle,
+            }
+        } else {
+            canvas_state(
+                meta.agent,
+                activity,
+                error.is_some(),
+                pending,
+                session.is_none(),
+                exited,
+            )
+        };
         let task = session_display_title(
             &meta,
             session
@@ -894,7 +938,7 @@ impl Sidebar {
                 }),
             )
             .when(!self.is_zen(), |pane| pane.child(header));
-        if let Some(message) = state.message(error.as_deref()) {
+        if let Some(message) = state.message(error.as_deref()).filter(|_| native.is_none()) {
             let mut banner = div()
                 .id(gpui::SharedString::from(format!(
                     "session-state-{}",
@@ -976,7 +1020,10 @@ impl Sidebar {
             }
             pane = pane.child(banner);
         }
-        pane = if let Some(terminal) = view {
+        let body = native_view
+            .map(gpui::IntoElement::into_any_element)
+            .or_else(|| view.map(gpui::IntoElement::into_any_element));
+        pane = if let Some(terminal) = body {
             pane.child(
                 div()
                     .flex_1()
@@ -2273,6 +2320,117 @@ mod tests {
             swapped
         );
     }
+    #[gpui::test]
+    fn native_codex_keeps_shared_header_and_grid_drag_controls(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "demo".into(),
+                    path: "/grove-native-chrome-fixture".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (handle, actions) = grove_core::codex::Handle::channel();
+        let (_updates, receive) = std::sync::mpsc::channel();
+        let (sidebar, cx) = cx.add_window_view(move |window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let registry = runtime.read(cx).registry.clone();
+            let id = registry.update(cx, |registry, _| {
+                registry.insert_meta(
+                    "demo".into(),
+                    "/grove-native-chrome-fixture".into(),
+                    Agent::Codex,
+                )
+            });
+            let saved = grove_core::codex::SavedSession {
+                provider: grove_core::codex::Provider::Codex,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+                key: "native-chrome".into(),
+                project: "demo".into(),
+                cwd: "/grove-native-chrome-fixture".into(),
+                label: "Codex".into(),
+                title: None,
+                roots: Vec::new(),
+                thread_id: Some("fixture-thread".into()),
+                items: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                config_args: Vec::new(),
+                task_id: None,
+            };
+            let mut state = grove_core::codex::Snapshot::new(saved);
+            state.status = grove_core::codex::Status::Idle;
+            let connection = grove_core::codex::Connection {
+                handle: handle.clone(),
+                updates: receive,
+            };
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(state, connection, cx)
+            });
+            registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.selection = Some(Selection::Session(id));
+            sidebar
+        });
+        draw(cx);
+        for selector in [
+            "terminal-header-1",
+            "terminal-header-left-1",
+            "terminal-header-center-1",
+            "terminal-header-right-1",
+            "canvas-close-1",
+        ] {
+            assert!(
+                cx.debug_bounds(selector).is_some(),
+                "missing shared native session control: {selector}"
+            );
+        }
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.mode = ViewMode::Grid;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.mode == ViewMode::Grid));
+        let header = cx.debug_bounds("terminal-header-1").unwrap();
+        cx.simulate_mouse_down(
+            header.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_some()));
+        cx.simulate_mouse_up(
+            header.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_none()));
+        let id = crate::entities::session_registry::SessionId::from_raw(1);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(Action::Retry(id), window, cx);
+                assert!(sidebar
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .codex(id)
+                    .is_some());
+            });
+        });
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, grove_core::codex::Action::Reconnect)));
+    }
+
     #[gpui::test]
     fn metadata_without_attached_terminal_renders_loading_header(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {

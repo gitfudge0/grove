@@ -1406,7 +1406,7 @@ mod tests {
             fs_err::create_dir_all(&root).unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "views::sidebar::projects::tests::project_move_picker_cancel_keyboard_and_persistence", "--nocapture"])
-                .env("GROVE_MOVE_PANEL_TEST_CHILD", "1").env("GROVE_CONFIG_DIR", &root).output().unwrap();
+                .env("GROVE_MOVE_PANEL_TEST_CHILD", "1").env("GROVE_CONFIG_DIR", &root).env("GROVE_TEST_CONFIG_DIR", &root).output().unwrap();
             assert!(
                 output.status.success(),
                 "{}\n{}",
@@ -1567,7 +1567,7 @@ mod tests {
                     .as_nanos()
             ));
             fs_err::create_dir_all(&root).unwrap();
-            let output=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","views::sidebar::projects::tests::project_editor_archive_restore_and_removal_keep_path_identity","--nocapture"]).env("GROVE_PROJECT_PANEL_TEST_CHILD","1").env("GROVE_CONFIG_DIR",&root).output().unwrap();
+            let output=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","views::sidebar::projects::tests::project_editor_archive_restore_and_removal_keep_path_identity","--nocapture"]).env("GROVE_PROJECT_PANEL_TEST_CHILD","1").env("GROVE_CONFIG_DIR",&root).env("GROVE_TEST_CONFIG_DIR", &root).output().unwrap();
             assert!(
                 output.status.success(),
                 "{}\n{}",

@@ -19,6 +19,7 @@ pub mod shell;
 pub mod tokens;
 mod worktree_launcher;
 
+mod codex_view;
 pub mod components;
 
 mod workspace_manager;

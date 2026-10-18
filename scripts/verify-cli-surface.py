@@ -21,7 +21,11 @@ import tempfile
 import time
 
 
+SKIP_WINDOW_CHECK = False
+
 def windows(pid):
+    if SKIP_WINDOW_CHECK:
+        return None
     """Count native layer-zero windows without Accessibility permissions."""
     if sys.platform != 'darwin':
         return None
@@ -70,7 +74,10 @@ def processes():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True, type=Path)
+    parser.add_argument('--skip-window-check', action='store_true', help='Verify process/CLI contracts without OS window inspection')
     args = parser.parse_args()
+    global SKIP_WINDOW_CHECK
+    SKIP_WINDOW_CHECK = args.skip_window_check
     binary = args.binary.expanduser().absolute()
     root = Path(tempfile.mkdtemp(prefix='grove-cli-surface-', dir='/tmp')).resolve()
     print('EVIDENCE=' + str(root), flush=True)
@@ -83,10 +90,65 @@ def main():
     for agent in ('codex', 'claude', 'opencode'):
         file = fakebin / agent
         file.write_text('#!/bin/sh\n' +
+                        # Background discovery (e.g. claude agents --json) must not overwrite launch evidence.
+                        'if [ -n "$GROVE_TASK_ID" ]; then\n' +
                         'printf "%s\\n" "$@" > "$GROVE_ACCEPTANCE_ROOT/' + agent + '-args.txt"\n' +
                         'printf "%s" "$GROVE_TASK_ID" > "$GROVE_ACCEPTANCE_ROOT/' + agent + '-task.txt"\n' +
+                        'fi\n' +
                         'exec /bin/sleep 300\n')
         file.chmod(0o755)
+    # Native Codex exercises the actual structured Rust transport with a deterministic protocol peer.
+    (fakebin / 'codex').write_text('#!' + sys.executable + '\n' + r'''import json, os, pathlib, sys
+root = pathlib.Path(os.environ["GROVE_ACCEPTANCE_ROOT"])
+(root / "codex-task.txt").write_text(os.environ.get("GROVE_TASK_ID", ""))
+thread = "fixture-codex-thread"
+items = []
+def send(message):
+    print(json.dumps(message), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    ident = request.get("id")
+    if method == "initialize":
+        send({"id": ident, "result": {"userAgent": "fixture"}})
+    elif method == "config/read":
+        send({"id": ident, "result": {"config": {"sandbox_workspace_write": {"writable_roots": []}}}})
+    elif method in ("thread/start", "thread/resume"):
+        send({"id": ident, "result": {"thread": {"id": thread, "turns": []}}})
+    elif method == "turn/start":
+        text = request["params"]["input"][0]["text"]
+        (root / "codex-args.txt").write_text(text)
+        turn = "fixture-turn-" + str(ident)
+        send({"id": ident, "result": {"turn": {"id": turn, "status": "inProgress"}}})
+        send({"method": "turn/started", "params": {"threadId": thread, "turn": {"id": turn}}})
+        send({"method": "item/completed", "params": {"threadId": thread, "turnId": turn, "item": {"id": str(ident), "type": "userMessage", "content": [{"type": "text", "text": text}]}}})
+        send({"method": "turn/completed", "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}}})
+''')
+    # Claude's SDK transport uses newline JSON rather than argv prompts.
+    (fakebin / 'claude').write_text('#!' + sys.executable + '\n' + r'''import json, os, pathlib, sys
+if "--input-format" not in sys.argv:
+    print("[]", flush=True)
+    raise SystemExit(0)
+root = pathlib.Path(os.environ["GROVE_ACCEPTANCE_ROOT"])
+(root / "claude-task.txt").write_text(os.environ.get("GROVE_TASK_ID", ""))
+(root / "claude-launch.json").write_text(json.dumps(sys.argv[1:]))
+thread = "fixture-claude-thread"
+def send(message):
+    print(json.dumps(message), flush=True)
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get("type") == "control_request":
+        kind = request["request"]["subtype"]
+        data = {"models": [{"value": "fixture-model", "displayName": "Fixture model"}], "commands": []} if kind in ("initialize", "list_models") else {}
+        send({"type": "control_response", "response": {"subtype": "success", "request_id": request["request_id"], "response": data}})
+    elif request.get("type") == "user":
+        text = "\n".join(block.get("text", "") for block in request["message"]["content"])
+        (root / "claude-args.txt").write_text(text)
+        send({"type": "system", "subtype": "init", "session_id": thread, "model": "fixture-model", "permissionMode": "default"})
+        send(dict(request, session_id=thread))
+        send({"type": "assistant", "session_id": thread, "parent_tool_use_id": None, "message": {"id": "fixture-assistant", "content": [{"type": "text", "text": "CLAUDE_NATIVE_FIXTURE_REPLY"}]}})
+        send({"type": "result", "subtype": "success", "session_id": thread, "is_error": False, "result": "CLAUDE_NATIVE_FIXTURE_REPLY"})
+''')
     shell_wrapper = root / 'fixture-shell'
     shell_wrapper.write_text('#!/bin/sh\n'
         'case "$1" in\n'
@@ -99,7 +161,7 @@ def main():
                GROVE_ACCEPTANCE_ROOT=str(root),
                PATH=str(fakebin) + os.pathsep + str(binary.parent) + os.pathsep + os.environ['PATH'])
     (config / 'projects.json').write_text(json.dumps({
-        'projects': [], 'tmux_enabled': False, 'onboarded': True,
+        'projects': [], 'tmux_enabled': False, 'native_agents_enabled': True, 'onboarded': True,
         'dangerously_skip_permissions_enabled': False, 'telemetry_enabled': False}))
     evidence = []
     owner = None
@@ -221,7 +283,7 @@ def main():
             raise AssertionError('Owner did not become ready with one window')
         time.sleep(.7)  # Let native window startup surfaces settle before baseline.
         owner_windows = windows(owner.pid)
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and not SKIP_WINDOW_CHECK:
             assert owner_windows >= 1, owner_windows
         check_surface()
         (root / 'owner.json').write_text(json.dumps({'pid': owner.pid,
@@ -293,9 +355,10 @@ def main():
         task_sessions = []
         for agent in ('codex', 'claude', 'opencode'):
             command = ['sessions', 'start', '--project', path, '--worktree', wt,
-                       '--agent', agent, '--backend', 'native', '--root', path,
+                       '--agent', agent, '--backend', 'native',
                        '--prompt-file', prompt, '--task-title', agent + ' stand-in',
                        '--task-file', prompt, '--request-id', 'surface-' + agent]
+            command += ['--root', path]
             if parent:
                 command += ['--parent-task', parent]
             session = cli(*command)
@@ -304,12 +367,28 @@ def main():
             task = session['task_id']
             parent = parent or task
             deadline = time.monotonic() + 10
-            while not (root / (agent + '-args.txt')).exists() and time.monotonic() < deadline:
+            recorded = recorded_task = ''
+            while time.monotonic() < deadline:
+                try:
+                    recorded = (root / (agent + '-args.txt')).read_text()
+                    recorded_task = (root / (agent + '-task.txt')).read_text()
+                except FileNotFoundError:
+                    pass
+                if 'DETERMINISTIC_STAND_IN_PROMPT' in recorded and recorded_task == task:
+                    break
                 time.sleep(.1)
-            recorded = (root / (agent + '-args.txt')).read_text()
             assert 'DETERMINISTIC_STAND_IN_PROMPT' in recorded, recorded
             assert 'dangerously' not in recorded, recorded
-            assert (root / (agent + '-task.txt')).read_text() == task
+            assert recorded_task == task, (recorded_task, task)
+            if agent == 'claude':
+                native = poll(('sessions', 'list'), lambda rows: any(
+                    row['id'] == session['id'] and str(row.get('native_status', '')).lower() == 'done'
+                    for row in rows))
+                transcript = cli('sessions', 'logs', session['id'], '--lines', '100')
+                assert 'CLAUDE_NATIVE_FIXTURE_REPLY' in json.dumps(transcript), transcript
+                launch_args = json.loads((root / 'claude-launch.json').read_text())
+                assert '--input-format' in launch_args and '--add-dir' in launch_args, launch_args
+                assert str(path) in launch_args, launch_args
             cli('tasks', 'list')
             cli('tasks', 'show', task)
             cli('tasks', 'wait', task, '--timeout', '0', ok=False)

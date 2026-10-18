@@ -180,6 +180,9 @@ ureq.workspace = true
 serde_json.workspace = true
 # Vendored, not a git dep: see vendor/gpui-component/README.md for the source,
 # rev, license and the full list of manifest edits.
+# Clipboard screenshots (including macOS TIFF) are validated off-thread and
+# normalized to provider-compatible PNG using the image version GPUI already uses.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 gpui-component.workspace = true
 
 [lints]

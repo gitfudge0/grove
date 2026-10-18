@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use gpui::{App, Context, HighlightStyle, WeakEntity};
+use gpui::{App, Context, HighlightStyle, Hsla, Pixels, WeakEntity};
 use ropey::Rope;
 use sum_tree::Bias;
 
@@ -11,11 +11,22 @@ use super::{InputState, RopeExt as _};
 pub struct TextDecoration {
     pub range: Range<usize>,
     pub style: HighlightStyle,
+    /// Optional outline around the shaped range; does not affect text metrics.
+    pub border: Option<(Pixels, Hsla)>,
 }
 
 impl TextDecoration {
     pub fn new(range: Range<usize>, style: HighlightStyle) -> Self {
-        Self { range, style }
+        Self {
+            range,
+            style,
+            border: None,
+        }
+    }
+
+    pub fn bordered(mut self, width: Pixels, color: Hsla) -> Self {
+        self.border = Some((width, color));
+        self
     }
 }
 
@@ -192,6 +203,7 @@ fn normalize(text: &Rope, decorations: Vec<TextDecoration>) -> Vec<TextDecoratio
             (!range.is_empty()).then_some(TextDecoration {
                 range,
                 style: decoration.style,
+                border: decoration.border,
             })
         })
         .collect()

@@ -333,6 +333,25 @@ impl ActivityStore {
 
         for (id, agent, wt_path, state_file) in &sessions {
             let Some(entity) = entities.get(id) else {
+                if let Some(session) = registry.read(cx).codex(*id) {
+                    use grove_core::codex::Status;
+                    let next = match session.read(cx).state.status {
+                        Status::Starting | Status::Working => ActivityState::Working,
+                        Status::Waiting => ActivityState::WaitingForInput,
+                        Status::Done => ActivityState::Done,
+                        Status::Failed | Status::Disconnected => ActivityState::Exited,
+                        Status::Idle | Status::Interrupted => ActivityState::Idle,
+                    };
+                    let tracker = self.trackers.entry(*id).or_default();
+                    if next == ActivityState::WaitingForInput && tracker.state != next {
+                        newly_waiting = true;
+                    }
+                    if next != tracker.state {
+                        tracker.state = next;
+                        tracker.state_since = Instant::now();
+                        changed = true;
+                    }
+                }
                 continue;
             };
             let focused = active_session == Some(*id) && window_focused;

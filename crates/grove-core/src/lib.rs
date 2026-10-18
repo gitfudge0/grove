@@ -2,9 +2,13 @@
 
 pub mod agent;
 pub mod attention;
+pub mod claude;
 pub mod claude_agents;
+pub mod codex;
 pub mod control;
+pub mod controls;
 pub mod diff;
+pub mod elicitation;
 pub mod env_path;
 pub mod error;
 pub mod git;

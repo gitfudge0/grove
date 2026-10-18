@@ -16,7 +16,7 @@ _Illustrated Grove UI with fictional project data. Music: [Happy Beats & Busines
 
 </div>
 
-grove is a native desktop app for managing git worktrees across projects and running ai coding agents (claude code, codex, opencode) in embedded PTY sessions inside each worktree. several agents run side by side, with optional tmux persistence when you want sessions to survive restarts. the old terminal UI has been removed; `grove` now opens the desktop app directly.
+grove is a native desktop app for managing git worktrees across projects and running ai coding agents side by side. enable **Native Agents (experimental)** in Settings to use Grove-owned Codex and Claude Code conversation UIs backed by their installed CLIs. the setting is off by default; both agents otherwise run in terminals. OpenCode and shells run in embedded PTYs, with optional tmux persistence. `grove` opens the desktop app directly.
 
 ## table of contents
 
@@ -38,12 +38,12 @@ grove is a native desktop app for managing git worktrees across projects and run
 if you regularly drive more than one ai coding agent at a time, you have probably ended up with a tab graveyard, a forest of detached tmux sessions, or a window manager full of nearly-identical terminals. grove collapses that into one focused surface.
 
 - **projects, worktrees, and sessions in one place.** the sidebar can show a project tree, a flat activity stream of every session, or a persistent home terminal.
-- **sessions are the unit of work.** every agent you spawn lives in a managed session with an embedded PTY. switch sessions without leaving grove, or open a worktree terminal beside an active agent.
+- **sessions are the unit of work.** every agent you spawn lives in a managed conversation or terminal session. switch sessions without leaving grove, or open a worktree terminal beside an active agent.
 - **worktrees, not branches.** grove treats `git worktree` as a first-class primitive. create, list, and destroy worktrees per project, and launch agents directly inside them.
-- **desktop app, terminal-native sessions.** `grove` opens the native app; sessions still run as real PTYs inside it.
+- **native Codex and Claude Code conversations.** streamed replies, expandable tool output, multiline prompts, explicit approval controls, interruption, and thread recovery belong to Grove's UI. agents still execute locally through their installed CLI.
 - **native PTYs.** agents run as real terminal sessions, so full-screen CLIs, mouse selection, paste, scrollback, and terminal output behave like terminal work.
 - **stays out of the way.** running sessions are visible in the sidebar without turning the app into a dashboard.
-- **persistent by default.** with tmux installed, sessions survive grove exits and are rediscovered on the next launch. without tmux, native mode runs PTYs directly.
+- **recoverable sessions.** native agent conversations save their thread identity, captured history, and draft. tmux-backed terminals keep their processes running across Grove exits; direct PTYs end on exit.
 
 ## install
 
@@ -87,7 +87,15 @@ the app exposes common actions as row controls, toolbar buttons, and keyboard sh
 
 ## sessions
 
-agents run as managed sessions rather than replacing grove. each session belongs to a project and worktree, and the active session renders as an embedded PTY.
+agents run as managed sessions rather than replacing grove. each session belongs to a project and worktree. with Native Agents (experimental) enabled, new Codex and Claude Code sessions render a native conversation; other sessions render an embedded PTY.
+
+native Codex and Claude Code conversations are available on macOS and Linux; Windows keeps its existing terminal sessions. Both agents use your installed CLI, existing sign-in, configured model, and permission settings. press Enter or use Send to submit a prompt; Shift+Enter inserts a new line. while a turn is running, Enter or Queue queues an input, and Codex’s Steer now sends it to the current turn. Claude Code supports queuing and interruption; steering an active turn is unavailable in its stream protocol. remove pending queued inputs individually; after a stop or failure, use Send next to explicitly resume the queue. queued inputs stay in session memory and are not restored after an app restart. paste text or clipboard images into the composer; image attachments appear before sending and can be removed. replies render Markdown, including code blocks and lists. drag to highlight conversation text and copy the selection, or use Copy for a complete message. expand a tool-call group, then an individual call to inspect live commands, reasoning, and output. active tool groups show a text shimmer. approvals display the command, directory, reason, and available file changes, with explicit approve-once and deny controls. unsupported interactions fail visibly; Grove never automatically approves them.
+
+native agent child processes stop when their session closes or Grove exits. on restart with Native Agents (experimental) enabled, Grove resumes saved threads for available projects/worktrees. disabling the setting leaves open conversations running and preserves saved threads for a later enabled restart. closing a session forgets Grove's recovery record without deleting the CLI's own history. a failed request is never automatically resubmitted: inspect the recovered conversation before retrying. recovery files live in `GROVE_CONFIG_DIR/codex-sessions` (or Grove's normal config directory) and contain conversation text and embedded image drafts.
+
+Claude Code uses its own permission modes (Ask for permission, Accept edits, Plan, Deny unapproved tools, and Bypass permissions); these are Claude checks rather than an operating-system sandbox. Claude skills and SDK commands appear as slash commands. Tool questions requiring structured answers fail visibly rather than being silently approved.
+
+native Codex preserves additional context roots and merges explicitly supplied writable roots with the effective Codex workspace-write configuration. existing tmux Codex sessions retain their terminal interface.
 
 the desktop app has three sidebar views:
 
@@ -101,14 +109,14 @@ from an active desktop session, the `term` control opens a right-docked shell fo
 
 the `mod+n` launcher doubles as a command palette: recent worktrees first, plus settings, and each project's setup/run/teardown scripts as row actions.
 
-grove supports two session backends:
+grove supports two terminal session backends. these settings do not change the native agent conversation transports:
 
 | backend | when to use | persistence |
 |---|---|---|
 | **tmux** | recommended when `tmux` is installed | sessions survive grove exits and are rediscovered on next launch |
 | **native** | no tmux dependency | sessions end when grove exits |
 
-when you start your first managed project session with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new sessions. existing sessions keep the backend they were started with.
+when you start your first managed project session with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new terminal sessions. with Native Agents (experimental) enabled, new Codex and Claude Code sessions use native conversations; explicitly launching either agent with CLI `--backend tmux` opens a legacy terminal session. existing sessions keep the backend they were started with.
 
 ## CLI and agent delegation
 
@@ -127,9 +135,9 @@ grove sessions logs SESSION_ID --lines 100 --json
 grove tasks wait TASK_ID --timeout 60 --json
 ```
 
-use the returned session/task IDs and `grove <command> --help` for command details. responses are versioned JSON envelopes with `{version, ok, data, error}` and the executed request ID; `--json` is accepted anywhere. reuse the same request ID and identical inputs when retrying a launch after a lost response. pending requests after a crash require inspecting sessions/tasks before recovery. logs return bounded current-screen text, not a historical transcript. if you set `GROVE_CONFIG_DIR` for the desktop, use the same value for CLI commands.
+use the returned session/task IDs and `grove <command> --help` for command details. responses are versioned JSON envelopes with `{version, ok, data, error}` and the executed request ID; `--json` is accepted anywhere. reuse the same request ID and identical inputs when retrying a launch after a lost response. pending requests after a crash require inspecting sessions/tasks before recovery. terminal logs return bounded current-screen text with `scope: live_screen`; native Codex and Claude Code logs return captured conversation text with `scope: transcript`. `sessions input` submits a complete prompt to native Codex or Claude Code and sends raw bytes to terminal sessions. native agent session rows include `native_status` for startup, active-turn, approval, and completion states; the existing `status` field retains its process-level meaning. if you set `GROVE_CONFIG_DIR` for the desktop, use the same value for CLI commands.
 
-task records persist across restarts. workers receive `GROVE_TASK_ID` and `GROVE_CONFIG_DIR`, and explicitly submit a result with `grove tasks complete TASK_ID --result-file /path/to/result.json`; a result is a worker report that the coordinator still needs to verify. terminal activity and sidebar “done” signals do not establish success. native sessions end on desktop exit; tmux sessions can reconnect. check the returned backend because a failed tmux launch can fall back to native. launches honor Grove's existing agent permission settings.
+task records persist across restarts. workers receive `GROVE_TASK_ID` and `GROVE_CONFIG_DIR`, and explicitly submit a result with `grove tasks complete TASK_ID --result-file /path/to/result.json`; a result is a worker report that the coordinator still needs to verify. terminal activity and sidebar “done” signals do not establish success. direct PTY sessions end on desktop exit; native Codex and Claude Code conversations resume from saved recovery records; tmux sessions keep running and reconnect. check the returned backend because a failed tmux launch can fall back to native. launches honor Grove's existing agent permission settings.
 
 the repository includes a [Grove skill](skills/grove/SKILL.md) for agents coordinating independent tasks in separate worktrees. to install it for Codex, run `grove skills install --agent codex` or use Settings → Skills, then use `$grove`. the user-scope location is `~/.agents/skills/grove`; add `--project /absolute/project` for project scope. installation is optional.
 

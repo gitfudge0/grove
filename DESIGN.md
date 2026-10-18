@@ -4,6 +4,8 @@ Status: approved dark-first target specification for the native Rust and GPUI ap
 
 One semantic scheme drives both appearances. Dark is the product default; light is its derived counterpart, not a separate theme family.
 
+The current dark chrome reference uses `#171716` for the sidebar and every shared sidebar surface (`BG_RAIL`), with `#111111` for the content canvas and opaque appbar/statusbar strips (`BG` and `BG_STRIP`). These values supersede the pending migration table below; the light palette is unchanged.
+
 The saved Sidebar appearance setting offers Frosted and Solid. Frosted is the default for existing settings: the sidebar rail and its appbar segment use a translucent theme tint over the window's blurred background. Solid uses the opaque rail color. The main canvas and the rest of the appbar remain opaque. Platform compositor support determines whether Frosted is blurred or simply translucent.
 
 The sidebar supports a 52 logical pixel icon rail. Expanded, its workspace header places Collapse directly after Settings; collapsed, that header contains only Expand. Workspace switching and current-view controls lead the compact scroll region, followed by project/session navigation and a separate standalone-terminal group. Settings, Archive, and Add project form the bottom utility group; Add terminal stays with standalone terminals. These groups share one scroll region under the fixed header. Compact tiles use contextual hover tooltips, accessible names, and keyboard focus; the current tooltip component does not show tooltips on focus. Collapse persists independently of the remembered expanded width. Custom macOS window buttons hide only while the compact navigation rail is visible, and Grid and Zen retain their existing layouts.

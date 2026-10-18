@@ -93,11 +93,11 @@ fn base_fg() -> Rgba {
 }
 
 pub fn BG() -> Hsla {
-    chrome(0x1a1a1a, 0xffffff)
+    chrome(0x111111, 0xffffff)
 }
 
 pub fn BG_RAIL() -> Hsla {
-    chrome(0x242424, 0xf7f7f8)
+    chrome(0x171716, 0xf7f7f8)
 }
 
 /// Sidebar tint over the compositor's blurred window background.
@@ -113,7 +113,7 @@ pub fn BG_RAIL_GLASS() -> Hsla {
 }
 
 pub fn BG_STRIP() -> Hsla {
-    chrome(0x1a1a1a, 0xf7f7f8)
+    chrome(0x111111, 0xf7f7f8)
 }
 
 pub fn BG_HOVER() -> Hsla {
@@ -176,17 +176,32 @@ pub fn CYAN() -> Hsla {
 pub fn MAGENTA() -> Hsla {
     theme::with_current(|t| ic(t.magenta)).into()
 }
-/// Pushes the one gpui-component colour Grove actually renders into that crate's
-/// own global theme.
-///
-/// `Input` draws its placeholder in `cx.theme().muted_foreground` — gpui-component's
-/// palette, not Grove's — while a real value inherits `text_style.color` (`FG()`,
-/// set on `panel_surface`). Left unsynced, a placeholder would sit at a fixed
-/// third-party grey that ignores Grove's fixed appearance palettes, and the
-/// placeholder-vs-value distinction §14 relies on would be whatever that grey
-/// happened to look like. Called at startup and on every theme change.
+/// Keep native editor, Markdown and selection colors in Grove's single palette.
+/// Called at startup and on every appearance change.
 pub fn sync_component_theme(cx: &mut gpui::App) {
-    gpui_component::Theme::global_mut(cx).muted_foreground = FG_MUTE();
+    let theme = gpui_component::Theme::global_mut(cx);
+    theme.mode = if is_dark() {
+        gpui_component::ThemeMode::Dark
+    } else {
+        gpui_component::ThemeMode::Light
+    };
+    theme.foreground = FG();
+    theme.background = BG();
+    theme.popover = SURFACE_RAISED();
+    theme.tokens.popover = SURFACE_RAISED().into();
+    theme.popover_foreground = FG();
+    theme.muted_foreground = FG_DIM();
+    theme.muted = FIELD_FILL();
+    // Markdown inline code and component hover/selected fills share this neutral role.
+    theme.accent = MENU_HOVER();
+    theme.tokens.accent = MENU_HOVER().into();
+    theme.accent_foreground = FG();
+    theme.input = FIELD_FILL();
+    theme.border = BORDER();
+    theme.caret = FG();
+    theme.selection = TEXT_SELECTION();
+    theme.link = BLUE();
+    theme.mono_font_family = crate::fonts::MONO_FAMILY.into();
 }
 
 pub fn GREEN() -> Hsla {
@@ -257,6 +272,10 @@ fn cyan_rgba() -> Rgba {
     theme::with_current(|t| ic(t.cyan))
 }
 
+/// Neutral, visible highlight for selectable native conversation and input text.
+pub fn TEXT_SELECTION() -> Hsla {
+    alpha_rgba(FG().into(), 0.22).into()
+}
 pub fn SEL_TINT_STRONG() -> Hsla {
     alpha_rgba(cyan_rgba(), 0.22).into()
 }
@@ -408,6 +427,58 @@ pub fn FORM_ERROR() -> Hsla {
 mod tests {
     use super::*;
 
+    #[gpui::test]
+    fn component_inline_code_contrast_tracks_appearance(cx: &mut gpui::TestAppContext) {
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = ActiveThemeGuard::capture();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            // Switch back as well: changing mode alone leaves the old accent behind.
+            for light in [false, true, false] {
+                set_chrome_light(light);
+                sync_component_theme(cx);
+                let component = gpui_component::Theme::global(cx);
+                assert_eq!(component.accent, MENU_HOVER());
+                assert_eq!(component.accent_foreground, FG());
+                assert_eq!(component.tokens.popover, SURFACE_RAISED().into());
+                assert_eq!(component.tokens.accent, MENU_HOVER().into());
+                assert_eq!(component.popover_foreground, FG());
+                let linear = |v: f32| {
+                    if v <= 0.04045 {
+                        v / 12.92
+                    } else {
+                        ((v + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                let luminance = |color: Rgba| {
+                    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+                };
+                for (role, foreground, background) in [
+                    ("inline code", component.foreground, component.accent),
+                    (
+                        "popup",
+                        component.popover_foreground,
+                        *component.tokens.popover,
+                    ),
+                    (
+                        "popup selected row",
+                        component.accent_foreground,
+                        component.accent,
+                    ),
+                ] {
+                    let (fg, bg) = (luminance(foreground.into()), luminance(background.into()));
+                    let contrast = (fg.max(bg) + 0.05) / (fg.min(bg) + 0.05);
+                    assert!(
+                        contrast >= 4.5,
+                        "{role} contrast {contrast} with light={light}"
+                    );
+                }
+            }
+        });
+    }
+
     fn lum_rgba(c: Rgba) -> f32 {
         0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
     }
@@ -483,7 +554,7 @@ mod tests {
         });
         let _restore = ActiveThemeGuard::capture();
         set_chrome_light(false);
-        assert_eq!(rgb_bytes(BG()), [0x1a, 0x1a, 0x1a]);
+        assert_eq!(rgb_bytes(BG()), [0x11, 0x11, 0x11]);
         assert_eq!(rgb_bytes(FG()), [0xf7, 0xf7, 0xf8]);
     }
 
@@ -573,7 +644,7 @@ mod tests {
             (
                 false,
                 [
-                    0x1a1a1a, 0x242424, 0x1a1a1a, 0x333337, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
+                    0x111111, 0x171716, 0x111111, 0x333337, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
                     0x515158,
                 ],
             ),

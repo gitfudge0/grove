@@ -26,6 +26,13 @@ fn managed_session_uses_tmux(preference: Option<bool>) -> bool {
     !cfg!(test) && saved_tmux_preference_enabled(preference)
 }
 
+pub(crate) fn native_codex_enabled(
+    store: &grove_core::storage::Store,
+    backend: Option<bool>,
+) -> bool {
+    store.native_agents_enabled && !cfg!(windows) && backend != Some(true)
+}
+
 fn should_choose_backend(preference: Option<bool>, tmux_available: impl FnOnce() -> bool) -> bool {
     preference.is_none() && tmux_available()
 }
@@ -95,6 +102,8 @@ pub struct Runtime {
     pub projects: Entity<crate::project_service::ProjectService>,
     last_pty_dims: (u16, u16),
     pending_managed_launch: Option<PendingManagedLaunch>,
+    pub(crate) restoring_codex: bool,
+    native_title_observers: HashMap<SessionId, gpui::Subscription>,
     _observers: Vec<gpui::Subscription>,
 }
 
@@ -125,7 +134,23 @@ impl Runtime {
             });
         }
         let observers = vec![
+            cx.on_app_quit(|runtime, cx| {
+                let stopped = runtime
+                    .registry
+                    .update(cx, |registry, _| registry.stop_codex_sessions());
+                let wait = cx.background_spawn(async move {
+                    for completion in stopped {
+                        let _ = completion.recv_timeout(std::time::Duration::from_secs(1));
+                    }
+                });
+                async move {
+                    wait.await;
+                }
+            }),
             cx.observe(&registry, |this, _, cx| {
+                let registry = this.registry.clone();
+                this.native_title_observers
+                    .retain(|id, _| registry.read(cx).codex(*id).is_some());
                 this.sync_grid_tiles(cx);
                 cx.notify();
             }),
@@ -146,6 +171,9 @@ impl Runtime {
             projects,
             last_pty_dims: (dims.rows, dims.cols),
             pending_managed_launch: None,
+            restoring_codex: !cfg!(test)
+                && native_codex_enabled(&cx.global::<SettingsState>().store, None),
+            native_title_observers: HashMap::new(),
             _observers: observers,
         };
         if cx.has_global::<crate::control_server::ControlEndpoint>() {
@@ -164,6 +192,9 @@ impl Runtime {
                     }
                 }
             }
+        }
+        if runtime.restoring_codex {
+            runtime.restore_native_codex(cx);
         }
         runtime
     }
@@ -328,6 +359,24 @@ impl Runtime {
                 .update(cx, |toast, cx| toast.set_error(error, cx));
             return false;
         }
+        if matches!(agent, Agent::Codex | Agent::Claude)
+            && native_codex_enabled(&cx.global::<SettingsState>().store, backend)
+        {
+            return self.spawn_native_codex(
+                PendingManagedLaunch {
+                    name,
+                    cwd,
+                    agent,
+                    args,
+                    context_roots,
+                    temp_bundle_path,
+                    record_recent: false,
+                },
+                focus,
+                task_id,
+                cx,
+            );
+        }
         if should_choose_backend(
             backend.or(cx.global::<SettingsState>().store.tmux_enabled),
             grove_core::tmux::available,
@@ -438,6 +487,154 @@ impl Runtime {
             });
         }
         spawn_error.is_none()
+    }
+
+    fn attach_native_codex(
+        &mut self,
+        saved: grove_core::codex::SavedSession,
+        args: Vec<String>,
+        task_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> SessionId {
+        let id = self.registry.update(cx, |registry, _| {
+            registry.insert_meta_with_context(
+                saved.project.clone(),
+                saved.cwd.clone(),
+                saved.provider.agent(),
+                saved.roots.clone(),
+                None,
+            )
+        });
+        let session = cx
+            .new(|cx| crate::entities::codex_session::CodexSession::new(saved, args, task_id, cx));
+        let handle = session.read(cx).handle.clone();
+        self.registry.update(cx, |registry, cx| {
+            registry.take_attention_args(id);
+            registry.attach_codex(id, session.clone(), handle);
+            cx.notify();
+        });
+        self.observe_native_title(id, &session, cx);
+        id
+    }
+    fn observe_native_title(
+        &mut self,
+        id: SessionId,
+        session: &Entity<crate::entities::codex_session::CodexSession>,
+        cx: &mut Context<Self>,
+    ) {
+        let title = session.read(cx).state.saved.title.clone();
+        self.registry.update(cx, |registry, cx| {
+            if registry.set_restored_title(id, title) {
+                cx.notify();
+            }
+        });
+        let observer = cx.observe(session, move |runtime, session, cx| {
+            let title = session.read(cx).state.saved.title.clone();
+            runtime.registry.update(cx, |registry, cx| {
+                if registry.set_restored_title(id, title) {
+                    cx.notify();
+                }
+            });
+        });
+        self.native_title_observers.insert(id, observer);
+    }
+    fn spawn_native_codex(
+        &mut self,
+        launch: PendingManagedLaunch,
+        focus: bool,
+        task_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let PendingManagedLaunch {
+            name: project,
+            cwd,
+            args,
+            context_roots: roots,
+            agent,
+            ..
+        } = launch;
+        let provider = if agent == Agent::Claude {
+            grove_core::codex::Provider::Claude
+        } else {
+            grove_core::codex::Provider::Codex
+        };
+        if let Err(error) = provider.launch_options(&args) {
+            self.toast
+                .update(cx, |toast, cx| toast.set_error(error, cx));
+            return false;
+        }
+        let key = match grove_core::control::random_id() {
+            Ok(key) => key,
+            Err(error) => {
+                self.toast
+                    .update(cx, |toast, cx| toast.set_error(error, cx));
+                return false;
+            }
+        };
+        let saved = grove_core::codex::SavedSession {
+            provider,
+            composer: grove_core::codex::ComposerSettings::default(),
+            context: None,
+            key,
+            project,
+            cwd,
+            label: provider.label().into(),
+            title: None,
+            roots,
+            thread_id: None,
+            items: Vec::new(),
+            draft: String::new(),
+            draft_images: Vec::new(),
+            config_args: Vec::new(),
+            task_id: task_id.clone(),
+        };
+        let id = self.attach_native_codex(saved, args, task_id, cx);
+        if focus {
+            let snap = self.snapshot(cx);
+            let old = self.state.read(cx).proj_idx();
+            ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
+            self.state.update(cx, |state, cx| {
+                state.select_session(id, &snap);
+                cx.notify();
+            });
+        }
+        true
+    }
+    fn restore_native_codex(&mut self, cx: &mut Context<Self>) {
+        let load = cx.background_spawn(async { grove_core::codex::load_sessions() });
+        cx.spawn(async move |this, cx| {
+            let loaded = load.await;
+            let _ = this.update(cx, |runtime, cx| {
+                runtime.restoring_codex = false;
+                if !native_codex_enabled(&cx.global::<SettingsState>().store, None) {
+                    return;
+                }
+                match loaded {
+                    Ok(recovery) => {
+                        if !recovery.warnings.is_empty() {
+                            runtime.toast.update(cx, |toast, cx| {
+                                toast.set_error(recovery.warnings.join("\n"), cx);
+                            });
+                        }
+                        for mut saved in recovery.sessions {
+                            let projects = &cx.global::<SettingsState>().store.projects;
+                            if let Ok(owner) =
+                                grove_core::session_meta::project_owner(projects, &saved.cwd)
+                            {
+                                if !owner.archived && std::path::Path::new(&saved.cwd).is_dir() {
+                                    saved.project.clone_from(&owner.name);
+                                    runtime.attach_native_codex(saved, Vec::new(), None, cx);
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => runtime
+                        .toast
+                        .update(cx, |toast, cx| toast.set_error(error, cx)),
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn has_pending_managed_launch(&self) -> bool {
@@ -628,10 +825,40 @@ impl Runtime {
         SettingsState::flush_now(cx);
     }
 
+    pub(crate) fn stop_codex(&mut self, cx: &mut Context<Self>) -> gpui::Task<()> {
+        self.shutdown(cx);
+        let completions = self
+            .registry
+            .update(cx, |registry, _| registry.stop_codex_sessions());
+        cx.background_spawn(async move {
+            for completion in completions {
+                let _ = completion.recv();
+            }
+        })
+    }
+    pub(crate) fn request_exit(&mut self, restart: bool, cx: &mut Context<Self>) {
+        let stopped = self.stop_codex(cx);
+        cx.spawn(async move |_, cx| {
+            stopped.await;
+            cx.update(|cx| {
+                if restart {
+                    cx.restart();
+                } else {
+                    cx.quit();
+                }
+            });
+        })
+        .detach();
+    }
+
     pub fn native_sessions_running(&self, cx: &mut App) -> usize {
         let ids: Vec<SessionId> = self.registry.read(cx).all().iter().map(|m| m.id).collect();
         ids.into_iter()
             .filter(|&id| {
+                if let Some(session) = self.registry.read(cx).codex(id) {
+                    return session.read(cx).state.status
+                        != grove_core::codex::Status::Disconnected;
+                }
                 let Some(term) = self.registry.read(cx).session(id).cloned() else {
                     return false;
                 };
@@ -973,6 +1200,19 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_codex_requires_opt_in_and_respects_tmux_override() {
+        let mut store = grove_core::storage::Store::default();
+        assert!(!native_codex_enabled(&store, None));
+        assert!(!native_codex_enabled(&store, Some(false)));
+        store.native_agents_enabled = true;
+        assert_eq!(native_codex_enabled(&store, None), !cfg!(windows));
+        assert_eq!(native_codex_enabled(&store, Some(false)), !cfg!(windows));
+        assert!(!native_codex_enabled(&store, Some(true)));
+        store.native_agents_enabled = false;
+        assert!(!native_codex_enabled(&store, Some(false)));
+    }
 
     #[test]
     fn managed_launch_requires_explicit_tmux_preference() {
@@ -1342,5 +1582,98 @@ mod tests {
             assert_ne!(registry.home_terminals()[0].id, first);
             assert_eq!(registry.home_terminals()[0].label, "terminal 2");
         });
+    }
+    #[gpui::test]
+    fn native_title_updates_existing_metadata_only_when_title_changes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (handle, _actions) = grove_core::codex::Handle::channel();
+        let (_updates, receive) = std::sync::mpsc::channel();
+        let (runtime, session, id) = cx.update(|cx| {
+            let runtime = init_script_runtime(cx, script_project("/native-title-fixture", "true"));
+            let registry = runtime.read(cx).registry.clone();
+            let id = registry.update(cx, |registry, _| {
+                registry.insert_meta(
+                    "script fixture".into(),
+                    "/native-title-fixture".into(),
+                    Agent::Codex,
+                )
+            });
+            let saved = grove_core::codex::SavedSession {
+                provider: grove_core::codex::Provider::Codex,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+                key: "native-title-test".into(),
+                project: "script fixture".into(),
+                cwd: "/native-title-fixture".into(),
+                label: "Codex".into(),
+                title: Some("Recovered conversation".into()),
+                roots: Vec::new(),
+                thread_id: Some("thread-title".into()),
+                items: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                config_args: Vec::new(),
+                task_id: None,
+            };
+            let connection = grove_core::codex::Connection {
+                handle: handle.clone(),
+                updates: receive,
+            };
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(
+                    grove_core::codex::Snapshot::new(saved),
+                    connection,
+                    cx,
+                )
+            });
+            registry.update(cx, |registry, _| {
+                registry.attach_codex(id, session.clone(), handle);
+            });
+            runtime.update(cx, |runtime, cx| {
+                runtime.observe_native_title(id, &session, cx);
+            });
+            (runtime, session, id)
+        });
+        cx.run_until_parked();
+        let registry = runtime.read_with(cx, |runtime, _| runtime.registry.clone());
+        let stable_label =
+            registry.read_with(cx, |registry, _| registry.meta(id).unwrap().label.clone());
+        assert_eq!(
+            registry.read_with(cx, |registry, _| registry
+                .meta(id)
+                .unwrap()
+                .restored_title
+                .clone()),
+            Some("Recovered conversation".into())
+        );
+        let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+        let seen = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(&registry, move |_, _| seen.set(seen.get() + 1)));
+        session.update(cx, |session, cx| {
+            session.state.saved.title = Some("Updated provider title".into());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            registry.read_with(cx, |registry, _| registry
+                .meta(id)
+                .unwrap()
+                .restored_title
+                .clone()),
+            Some("Updated provider title".into())
+        );
+        assert_eq!(notifications.get(), 1);
+        session.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1);
+        assert_eq!(
+            registry.read_with(cx, |registry, _| registry.meta(id).unwrap().label.clone()),
+            stable_label
+        );
+        assert_eq!(
+            registry.read_with(cx, |registry, _| registry.meta(id).unwrap().id),
+            id
+        );
     }
 }

@@ -1,27 +1,27 @@
 use gpui::Corners;
 use gpui::Half;
 use gpui::{
-    AnyElement, App, Bounds, Edges, Element, ElementId, ElementInputHandler, Entity,
-    GlobalElementId,
+    fill, point, px, relative, size, HighlightStyle, Hitbox, HitboxBehavior, Hsla,
+    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseMoveEvent, MouseUpEvent, Path,
+    Pixels, Point, Position, ShapedLine, SharedString, Size, Style, Styled as _, TextAlign,
+    TextRun, TextStyle, UnderlineStyle, Window,
 };
 use gpui::{
-    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement, LayoutId,
-    MouseButton, MouseMoveEvent, MouseUpEvent, Path, Pixels, Point, Position, ShapedLine,
-    SharedString, Size, Style, Styled as _, TextAlign, TextRun, TextStyle, UnderlineStyle, Window,
-    fill, point, px, relative, size,
+    AnyElement, App, Bounds, Edges, Element, ElementId, ElementInputHandler, Entity,
+    GlobalElementId,
 };
 use ropey::Rope;
 use smallvec::SmallVec;
 use std::{ops::Range, rc::Rc};
 
 use crate::{
-    ActiveTheme as _, Colorize, IconName, Root, Selectable, Sizable as _,
     button::{Button, ButtonVariants as _},
-    input::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout},
+    input::{blink_cursor::CURSOR_WIDTH, display_map::LineLayout, RopeExt as _},
     scroll::Scrollbar,
+    ActiveTheme as _, Colorize, IconName, Root, Selectable, Sizable as _,
 };
 
-use super::{InputState, LastLayout, TextDecoration, WhitespaceIndicators, mode::InputMode};
+use super::{mode::InputMode, InputState, LastLayout, TextDecoration, WhitespaceIndicators};
 
 const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
@@ -522,6 +522,15 @@ impl TextElement {
         last_layout: &LastLayout,
         bounds: &Bounds<Pixels>,
     ) -> Option<Path<Pixels>> {
+        Self::layout_decorated_range(range, last_layout, bounds, None)
+    }
+
+    fn layout_decorated_range(
+        range: Range<usize>,
+        last_layout: &LastLayout,
+        bounds: &Bounds<Pixels>,
+        stroke: Option<Pixels>,
+    ) -> Option<Path<Pixels>> {
         if range.is_empty() {
             return None;
         }
@@ -644,12 +653,16 @@ impl TextElement {
 
         let path_origin = bounds.origin + point(line_number_width, px(0.));
         let first_p = *points.get(0).unwrap();
-        let mut builder = gpui::PathBuilder::fill();
+        let mut builder = match stroke {
+            Some(width) => gpui::PathBuilder::stroke(width),
+            None => gpui::PathBuilder::fill(),
+        };
         builder.move_to(path_origin + first_p);
         for p in points.iter().skip(1) {
             builder.line_to(path_origin + *p);
         }
 
+        builder.close();
         builder.build().ok()
     }
 
@@ -1346,6 +1359,7 @@ pub(super) struct PrepaintState {
     cursor_scroll_offset: Point<Pixels>,
     current_row: Option<usize>,
     selection_path: Option<Path<Pixels>>,
+    decoration_borders: Vec<(Path<Pixels>, Hsla)>,
     hover_highlight_path: Option<Path<Pixels>>,
     search_match_paths: Vec<(Path<Pixels>, bool)>,
     document_color_paths: Vec<(Path<Pixels>, Hsla)>,
@@ -1715,6 +1729,21 @@ impl Element for TextElement {
             self.layout_document_colors(&document_colors, &last_layout, &bounds, cx);
 
         let state = self.state.read(cx);
+        let decoration_borders = state
+            .decorations
+            .iter()
+            .flatten()
+            .filter_map(|decoration| {
+                let (width, color) = decoration.border?;
+                Self::layout_decorated_range(
+                    decoration.range.clone(),
+                    &last_layout,
+                    &bounds,
+                    Some(width),
+                )
+                .map(|path| (path, color))
+            })
+            .collect();
         let line_numbers = if state.mode.line_number() {
             let mut line_numbers = Vec::with_capacity(last_layout.visible_buffer_lines.len());
             let other_line_runs = vec![TextRun {
@@ -1788,6 +1817,7 @@ impl Element for TextElement {
             cursor_scroll_offset,
             current_row,
             selection_path,
+            decoration_borders,
             search_match_paths,
             hover_highlight_path,
             hover_definition_hitbox,
@@ -1917,6 +1947,10 @@ impl Element for TextElement {
             if let Some(path) = prepaint.hover_highlight_path.take() {
                 window.paint_path(path, secondary_selection);
             }
+        }
+
+        for (path, color) in &prepaint.decoration_borders {
+            window.paint_path(path.clone(), *color);
         }
 
         for (path, color) in prepaint.document_color_paths.iter() {

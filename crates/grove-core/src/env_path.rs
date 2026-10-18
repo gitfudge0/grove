@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::ffi::OsString;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-type Environment = Arc<[(String, String)]>;
+pub(crate) type Environment = Arc<[(String, String)]>;
 
 #[derive(Default)]
 struct EnvironmentCache(RwLock<Option<Environment>>);

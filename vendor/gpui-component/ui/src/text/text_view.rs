@@ -240,10 +240,11 @@ impl Element for TextView {
             state.text_view_style = self.text_view_style.clone();
 
             if let Some(text) = self.text.clone() {
-                state.set_text(text.as_str(), cx);
+                state.set_text_incremental(text.as_str(), cx);
             }
         });
 
+        let selection_state = state.clone();
         let focus_handle = state.read(cx).focus_handle.clone();
         let list_state = state.read(cx).list_state.clone();
 
@@ -256,12 +257,21 @@ impl Element for TextView {
             .relative()
             .on_action(move |_: &crate::input::Copy, window, cx| {
                 use crate::WindowExt as _;
-                let text = window.selected_text(cx).trim().to_string();
-                if text.is_empty() {
+                let text = window.selected_text(cx);
+                if text.trim().is_empty() {
                     cx.propagate();
                     return;
                 }
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            })
+            .on_action(move |_: &crate::input::Escape, window, cx| {
+                use crate::WindowExt as _;
+                if window.selected_text(cx).is_empty() {
+                    cx.propagate();
+                    return;
+                }
+                crate::Root::try_update(window, cx, |root, _, cx| root.clear_text_selection(cx));
+                selection_state.update(cx, |state, cx| state.clear_selection(cx));
             })
             .on_action(window.listener_for(&state, TextViewState::on_action_select_all))
             .child(state.clone())

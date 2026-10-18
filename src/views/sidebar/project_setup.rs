@@ -811,6 +811,7 @@ mod tests {
                 ])
                 .env(MARKER, "1")
                 .env("GROVE_CONFIG_DIR", config.path())
+                .env("GROVE_TEST_CONFIG_DIR", config.path())
                 .status()
                 .unwrap();
             assert!(status.success());

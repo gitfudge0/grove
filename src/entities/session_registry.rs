@@ -108,6 +108,13 @@ pub struct SessionRegistry {
     /// Insertion order is the tree's within-worktree order.
     order: Vec<SessionMeta>,
     terms: HashMap<SessionId, Entity<TerminalSession>>,
+    codex: HashMap<
+        SessionId,
+        (
+            Entity<super::codex_session::CodexSession>,
+            grove_core::codex::Handle,
+        ),
+    >,
     home: Vec<SessionMeta>,
     home_terms: Vec<Entity<TerminalSession>>,
     /// Keyed by absolute worktree path, with an active index per path.
@@ -116,6 +123,7 @@ pub struct SessionRegistry {
     wt_active: HashMap<String, usize>,
     /// Awaiting the spawn call that consumes them ([`Self::take_attention_args`]).
     attention_args: HashMap<SessionId, Vec<String>>,
+    stopped_codex: Vec<std::sync::mpsc::Receiver<()>>,
     next_id: u64,
     home_terminal_seq: usize,
 }
@@ -225,9 +233,44 @@ impl SessionRegistry {
         }
     }
 
+    pub fn stop_codex_sessions(&mut self) -> Vec<std::sync::mpsc::Receiver<()>> {
+        let mut pending = std::mem::take(&mut self.stopped_codex);
+        pending.extend(
+            self.codex
+                .values()
+                .map(|(_, handle)| handle.stop_completion(false)),
+        );
+        pending
+    }
+    pub fn attach_codex(
+        &mut self,
+        id: SessionId,
+        session: Entity<super::codex_session::CodexSession>,
+        handle: grove_core::codex::Handle,
+    ) {
+        self.codex.insert(id, (session, handle));
+    }
+    pub fn codex(&self, id: SessionId) -> Option<&Entity<super::codex_session::CodexSession>> {
+        self.codex.get(&id).map(|(session, _)| session)
+    }
+
+    pub fn set_restored_title(&mut self, id: SessionId, title: Option<String>) -> bool {
+        let Some(meta) = self.order.iter_mut().find(|meta| meta.id == id) else {
+            return false;
+        };
+        if meta.restored_title == title {
+            return false;
+        }
+        meta.restored_title = title;
+        true
+    }
+
     /// Also cleans up attention files, so a killed session leaves no `.state` for the next GC to guess at (`session.rs:530-535`).
     pub fn remove(&mut self, id: SessionId) -> Option<SessionMeta> {
         self.terms.remove(&id);
+        if let Some((_, handle)) = self.codex.remove(&id) {
+            self.stopped_codex.push(handle.stop_completion(true));
+        }
         self.attention_args.remove(&id);
         let pos = self.order.iter().position(|m| m.id == id)?;
         let meta = self.order.remove(pos);
@@ -358,6 +401,14 @@ impl SessionRegistry {
                 }
             }
         }
+        for meta in &self.order {
+            if let Some((_, handle)) = self.codex.get(&meta.id) {
+                let _ = handle.send(grove_core::codex::Action::Metadata {
+                    project: meta.project.clone(),
+                    roots: meta.context_roots.clone(),
+                });
+            }
+        }
         count
     }
 
@@ -392,6 +443,14 @@ impl SessionRegistry {
                 }
             }
             count += usize::from(changed);
+        }
+        for meta in &self.order {
+            if let Some((_, handle)) = self.codex.get(&meta.id) {
+                let _ = handle.send(grove_core::codex::Action::Metadata {
+                    project: meta.project.clone(),
+                    roots: meta.context_roots.clone(),
+                });
+            }
         }
         Ok(count)
     }

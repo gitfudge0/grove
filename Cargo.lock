@@ -2782,6 +2782,7 @@ dependencies = [
  "gpui_platform",
  "grove-core",
  "grove-terminal",
+ "image",
  "objc",
  "portable-pty",
  "raw-window-handle",
@@ -2797,6 +2798,7 @@ dependencies = [
 name = "grove-core"
 version = "1.0.10"
 dependencies = [
+ "base64",
  "dirs 5.0.1",
  "fs-err",
  "libc",

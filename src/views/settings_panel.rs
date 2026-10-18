@@ -259,6 +259,12 @@ impl SettingsPanel {
         });
     }
 
+    fn toggle_native_agents(&mut self, cx: &mut Context<Self>) {
+        self.save(cx, |store| {
+            store.native_agents_enabled = !store.native_agents_enabled;
+        });
+    }
+
     fn toggle_telemetry(&mut self, cx: &mut Context<Self>) {
         let enabled = !SettingsState::telemetry_enabled(&cx.global::<SettingsState>().store);
         if self.save(cx, |store| store.telemetry_enabled = Some(enabled)) {
@@ -484,6 +490,7 @@ impl SettingsPanel {
         let tmux_available = grove_core::tmux::available();
         let skip = store.dangerously_skip_permissions_enabled.unwrap_or(false);
         let chrome = store.chrome_enabled.unwrap_or(false);
+        let native_agents = store.native_agents_enabled;
         let telemetry = SettingsState::telemetry_enabled(store);
         let reduce_motion = store.reduce_motion.unwrap_or(false);
         let archived = store.archived_count();
@@ -649,6 +656,17 @@ impl SettingsPanel {
             .button("settings-chrome", "Toggle Claude in Chrome", chrome, true)
             .child(if chrome { "On" } else { "Off" })
             .on_click(cx.listener(|this, _, _, cx| this.toggle_chrome(cx)));
+        let native_agents_button = self
+            .button(
+                "settings-native-agents",
+                "Toggle native agents",
+                native_agents,
+                !cfg!(windows),
+            )
+            .child(if native_agents { "On" } else { "Off" })
+            .when(!cfg!(windows), |el| {
+                el.on_click(cx.listener(|this, _, _, cx| this.toggle_native_agents(cx)))
+            });
         let environment = self.runtime.read(cx).shell_environment.clone();
         let environment_state = environment.read(cx).state();
         let refreshing = environment_state == RefreshState::Refreshing;
@@ -705,11 +723,16 @@ impl SettingsPanel {
                 .child(Self::setting_row(
                     "Backend",
                     if tmux_available {
-                        "New sessions use this backend"
+                        "New terminal sessions use this backend"
                     } else {
                         "tmux is unavailable on this system"
                     },
                     backend,
+                ))
+                .child(Self::setting_row(
+                    "Native Agents (experimental)",
+                    "Use native Codex and Claude Code for new sessions; saved conversations return after restart",
+                    native_agents_button,
                 ))
                 .child(Self::setting_row(
                     "Permissions",
@@ -825,8 +848,8 @@ impl SettingsPanel {
                     .child("Restart app")
                     .on_click(cx.listener(|this, _, _, cx| {
                         if restart_available(this.runtime.read(cx).upgrade.read(cx).state()) {
-                            this.runtime.update(cx, Runtime::shutdown);
-                            cx.restart();
+                            this.runtime
+                                .update(cx, |runtime, cx| runtime.request_exit(true, cx));
                         }
                     })),
             );

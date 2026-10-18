@@ -1162,7 +1162,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("GROVE_WORKSPACE_MOVE_TEST_CHILD", "1")
-                .env("GROVE_CONFIG_DIR", &config)
+                .env("GROVE_CONFIG_DIR", &config).env("GROVE_TEST_CONFIG_DIR", &config)
                 .output()
                 .unwrap();
             drop(fixture);
@@ -1786,7 +1786,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("GROVE_BULK_REMOVAL_TEST_CHILD", "1")
-                .env("GROVE_CONFIG_DIR", &config)
+                .env("GROVE_CONFIG_DIR", &config).env("GROVE_TEST_CONFIG_DIR", &config)
                 .output()
                 .unwrap();
             let _ = fs::remove_dir_all(&config);

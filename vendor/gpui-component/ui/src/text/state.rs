@@ -27,6 +27,7 @@ const MAX_COALESCED_UPDATES_PER_PARSE: usize = 64;
 
 pub(crate) fn init(cx: &mut App) {
     cx.bind_keys(vec![
+        KeyBinding::new("escape", input::Escape, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-c", input::Copy, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -96,8 +97,16 @@ impl TextViewState {
                             return;
                         }
 
+                        let mut appended = parsed_update.append;
                         match parsed_update.result {
                             Ok(content) => {
+                                if state.parsed_content.document.source == content.document.source {
+                                    return;
+                                }
+                                appended |= content
+                                    .document
+                                    .source
+                                    .starts_with(state.parsed_content.document.source.as_str());
                                 state.parsed_content = content;
                                 state.parsed_error = None;
                             }
@@ -106,7 +115,7 @@ impl TextViewState {
                             }
                         }
                         // Don't interrupt an active drag-selection; positions self-correct on the next mouse-move.
-                        if !state.is_selecting {
+                        if !state.is_selecting && !appended {
                             state.reset_selection();
                         }
                         cx.notify();
@@ -146,7 +155,7 @@ impl TextViewState {
         this
     }
 
-    pub(crate) fn source(&self) -> SharedString {
+    pub fn source(&self) -> SharedString {
         self.parsed_content.document.source.clone()
     }
 
@@ -182,6 +191,20 @@ impl TextViewState {
         self.text.push_str(text);
         self.parsed_error = None;
         self.increment_update(text, false, cx);
+    }
+
+    /// Updates streaming Markdown against the latest queued source, not the
+    /// asynchronously parsed document. Identical renders enqueue no work.
+    pub fn set_text_incremental(&mut self, text: &str, cx: &mut Context<Self>) {
+        if text == self.text {
+            return;
+        }
+        if let Some(append) = text.strip_prefix(self.text.as_str()) {
+            let append = append.to_owned();
+            self.push_str(&append, cx);
+        } else {
+            self.set_text(text, cx);
+        }
     }
 
     pub fn push_str(&mut self, new_text: &str, cx: &mut Context<Self>) {
@@ -245,6 +268,9 @@ impl TextViewState {
                 }
             }
             cx.notify();
+            // Keep the asynchronous parser's append base synchronized with full
+            // replacements, including the initial synchronous document.
+            _ = self.tx.try_send(update_options);
             return;
         }
 
@@ -252,7 +278,7 @@ impl TextViewState {
     }
 
     pub(super) fn update_bounds(&mut self, bounds: Bounds<Pixels>) {
-        if self.bounds.size != bounds.size {
+        if self.bounds.size.width != bounds.size.width {
             self.reset_selection();
         }
         self.bounds = bounds;
@@ -424,7 +450,7 @@ impl Render for TextViewState {
                 ),
             })
             .on_prepaint(move |bounds, window, cx| {
-                let size_changed = state.read(cx).bounds().size != bounds.size;
+                let size_changed = state.read(cx).bounds().size.width != bounds.size.width;
                 let id = state.entity_id();
                 state.update(cx, |state, _| {
                     state.update_bounds(bounds);
@@ -484,6 +510,7 @@ impl Future for UpdateFuture {
                     }
                     _ = self.tx_result.try_send(ParsedUpdate {
                         revision: options.revision,
+                        append: options.append,
                         result: res,
                     });
                     if hit_coalesce_budget {
@@ -520,6 +547,7 @@ impl UpdateOptions {
 
 struct ParsedUpdate {
     revision: usize,
+    append: bool,
     result: Result<ParsedContent, SharedString>,
 }
 

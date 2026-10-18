@@ -12,24 +12,18 @@ use crate::{
 };
 use gpui::{
     Anchor, AnyView, App, AppContext, Bounds, ClipboardItem, Context, DefiniteLength, ElementId,
-    Entity, EntityId, FocusHandle, Hitbox, InteractiveElement, IntoElement, KeyBinding,
-    ParentElement as _, Pixels, Render, StyleRefinement, Styled, WeakEntity, WeakFocusHandle,
-    Window, actions, div, prelude::FluentBuilder as _,
+    Entity, EntityId, FocusHandle, Hitbox, InteractiveElement, IntoElement, ParentElement as _,
+    Pixels, Render, StyleRefinement, Styled, WeakEntity, WeakFocusHandle, Window, actions, div,
+    prelude::FluentBuilder as _,
 };
 use std::{any::TypeId, collections::HashMap, rc::Rc};
 
 actions!(root, [Tab, TabPrev]);
 
 const CONTEXT: &str = "Root";
-pub(crate) fn init(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("tab", Tab, Some(CONTEXT)),
-        KeyBinding::new("shift-tab", TabPrev, Some(CONTEXT)),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-c", Copy, Some(CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-c", Copy, Some(CONTEXT)),
-    ]);
+pub(crate) fn init(_: &mut App) {
+    // Grove owns unconsumed Tab traversal and raw terminal keys. TextView and
+    // Input register their own scoped Copy bindings; Root adds no global keys.
 }
 
 /// The top-level view for the App window (must be the first view in the window); manages Sheet, Dialog, and Notification.
@@ -84,7 +78,7 @@ impl ActiveDialog {
 
 impl Root {
     pub fn new(view: impl Into<AnyView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        #[cfg(all(target_os = "macos", not(test)))]
+        #[cfg(all(target_os = "macos", not(test), not(feature = "grove-test-support")))]
         crate::macos_accessibility::install_window_hit_test_forwarder(window);
 
         Self {
@@ -498,8 +492,8 @@ impl Root {
     }
 
     fn on_action_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        let text = self.window_selected_text(cx).trim().to_string();
-        if text.is_empty() {
+        let text = self.window_selected_text(cx);
+        if text.trim().is_empty() {
             cx.propagate();
             return;
         }

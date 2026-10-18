@@ -472,6 +472,7 @@ pub struct Sidebar {
     diff_return_focus: Option<FocusHandle>,
     diff_observer: Option<gpui::Subscription>,
     terminal_views: HashMap<SessionId, Entity<TerminalView>>,
+    codex_views: HashMap<SessionId, Entity<super::codex_view::CodexView>>,
     home_terminal_views: HashMap<SessionId, Entity<TerminalView>>,
     available: [bool; 4],
     project_paths: HashMap<usize, String>,
@@ -528,11 +529,12 @@ impl Sidebar {
     }
     pub fn new(runtime: Entity<Runtime>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let rt = runtime.read(cx);
-        let (registry, activity, tree, projects) = (
+        let (registry, activity, tree, projects, shell_environment) = (
             rt.registry.clone(),
             rt.activity.clone(),
             rt.tree.clone(),
             rt.projects.clone(),
+            rt.shell_environment.clone(),
         );
         let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("billing-retry"));
         let worktree_branch =
@@ -542,6 +544,10 @@ impl Sidebar {
             cx.observe(&runtime, |_, _, cx| cx.notify()),
             cx.observe(&registry, |_, _, cx| cx.notify()),
             cx.observe(&activity, |_, _, cx| cx.notify()),
+            cx.observe(&shell_environment, |this, _, cx| {
+                this.available = WORKTREE_LAUNCH_AGENTS.map(Agent::available);
+                cx.notify();
+            }),
             cx.observe(&tree, |_, _, cx| cx.notify()),
             cx.subscribe(&projects, |this, _, event, cx| {
                 if let ProjectEvent::WorktreeRemovalChanged { path } = event {
@@ -645,6 +651,7 @@ impl Sidebar {
             diff_return_focus: None,
             diff_observer: None,
             terminal_views: HashMap::new(),
+            codex_views: HashMap::new(),
             home_terminal_views: HashMap::new(),
             available: WORKTREE_LAUNCH_AGENTS.map(Agent::available),
             project_paths: HashMap::new(),
@@ -955,6 +962,8 @@ impl Sidebar {
         self.canvas_focus_observers
             .retain(|id, _| live.contains(id));
         self.canvas_signatures.retain(|id, _| live.contains(id));
+        self.codex_views
+            .retain(|id, _| registry.meta(*id).is_some());
         self.terminal_views
             .retain(|id, _| registry.meta(*id).is_some());
         self.home_terminal_views
@@ -1927,22 +1936,22 @@ impl Sidebar {
             .zip(self.available)
             .any(|(candidate, available)| *candidate == agent && available)
         {
-            self.content_error = Some(format!(
-                "{} CLI not found. Install it, check that it runs in your shell, then restart Grove so it sees your PATH. You can start a Terminal session here now.",
+            self.show_launch_error(format!(
+                "{} CLI not found. Install it or refresh the shell environment in Settings, then retry. Check that its executable is on your shell PATH.",
                 match agent {
                     Agent::Codex => "Codex",
                     Agent::Claude => "Claude Code",
                     Agent::OpenCode => "OpenCode",
                     Agent::Terminal => "Terminal",
                 }
-            ));
-            if self.project_flyout.is_some() {
-                self.project_flyout_launch_error = self.content_error.clone();
-            }
-            cx.notify();
+            ), cx);
             return false;
         }
         let Some((name, path, agent)) = self.launch_target(project, path, agent, cx) else {
+            self.show_launch_error(
+                "This checkout is no longer available in this workspace. Select a current checkout and retry.".into(),
+                cx,
+            );
             return false;
         };
         if !self
@@ -1957,6 +1966,16 @@ impl Sidebar {
         self.content_error = None;
         cx.notify();
         true
+    }
+    fn show_launch_error(&mut self, error: String, cx: &mut Context<Self>) {
+        self.content_error = Some(error.clone());
+        if self.project_flyout.is_some() {
+            self.project_flyout_launch_error = Some(error.clone());
+        }
+        self.runtime.read(cx).toast.clone().update(cx, |toast, cx| {
+            toast.set_error(error, cx);
+        });
+        cx.notify();
     }
     /// Mirror a successful launch from the shell palette into the canvas selection.
     /// Runtime already owns the active session; keeping this local selection in sync
@@ -1978,7 +1997,11 @@ impl Sidebar {
         let Some(id) = self.select_active_session(cx) else {
             return;
         };
-        if let Some(view) = self.terminal_views.get(&id) {
+        if let Some(view) = self.codex_views.get(&id) {
+            self.pending_canvas_focus = None;
+            self.pending_grid_workspace_focus = None;
+            view.focus_handle(cx).focus(window, cx);
+        } else if let Some(view) = self.terminal_views.get(&id) {
             self.pending_canvas_focus = None;
             self.pending_grid_workspace_focus = None;
             view.focus_handle(cx).focus(window, cx);
@@ -2181,7 +2204,9 @@ impl Sidebar {
 
     fn navigate_to_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
         self.select(Selection::Session(id), cx);
-        if let Some(view) = self.terminal_views.get(&id) {
+        if let Some(view) = self.codex_views.get(&id) {
+            view.focus_handle(cx).focus(window, cx);
+        } else if let Some(view) = self.terminal_views.get(&id) {
             view.focus_handle(cx).focus(window, cx);
         } else {
             self.focus.focus(window, cx);
@@ -2801,9 +2826,22 @@ impl Sidebar {
                 }
             }
             Action::Launch(i, path, agent) => {
-                if self.launch(i, path, agent, cx) && was_project_flyout {
-                    self.dismiss_project_context(cx);
-                    self.focus_active_session_after_palette(window, cx);
+                if self.launch(i, path, agent, cx) {
+                    if was_project_flyout {
+                        self.dismiss_project_context(cx);
+                    }
+                    let native = self
+                        .runtime
+                        .read(cx)
+                        .state
+                        .read(cx)
+                        .active_session()
+                        .is_some_and(|id| {
+                            self.runtime.read(cx).registry.read(cx).codex(id).is_some()
+                        });
+                    if was_project_flyout || native {
+                        self.focus_active_session_after_palette(window, cx);
+                    }
                 }
             }
             Action::RunScript(project_path, path) => self.run_script(project_path, path, cx),
@@ -2828,6 +2866,12 @@ impl Sidebar {
                 }
             }
             Action::Retry(id) => {
+                if let Some(session) = self.runtime.read(cx).registry.read(cx).codex(id).cloned() {
+                    session.update(cx, |session, cx| {
+                        session.send(grove_core::codex::Action::Reconnect, cx);
+                    });
+                    return;
+                }
                 let meta = self.runtime.read(cx).registry.read(cx).meta(id).cloned();
                 if let Some(meta) = meta {
                     let extra_roots: Vec<_> = meta
@@ -3033,6 +3077,25 @@ impl Sidebar {
     fn status(&self, meta: &SessionMeta, cx: &App) -> (&'static str, gpui::Hsla) {
         let runtime = self.runtime.read(cx);
         let registry = runtime.registry.read(cx);
+        if let Some(session) = registry.codex(meta.id) {
+            let state = &session.read(cx).state;
+            return (
+                if state.status == grove_core::codex::Status::Disconnected {
+                    "Failed"
+                } else {
+                    state.status.label()
+                },
+                if state.status == grove_core::codex::Status::Failed
+                    || state.status == grove_core::codex::Status::Disconnected
+                {
+                    c::RED()
+                } else if state.status == grove_core::codex::Status::Waiting {
+                    c::AMBER()
+                } else {
+                    c::FG_DIM()
+                },
+            );
+        }
         let failed = registry
             .session(meta.id)
             .is_some_and(|t| t.read(cx).spawn_error().is_some());
@@ -7690,6 +7753,199 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
+    #[gpui::test]
+    fn codex_launch_action_creates_ready_native_chat_and_keeps_composer_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        if std::env::var_os("GROVE_NATIVE_LAUNCH_TEST_CHILD").is_none() {
+            use std::os::unix::fs::PermissionsExt;
+            let root = std::env::temp_dir().join(format!(
+                "grove-native-launch-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs_err::create_dir_all(root.join("bin")).unwrap();
+            fs_err::create_dir_all(root.join("config")).unwrap();
+            let provider = root.join("bin/codex");
+            fs_err::write(
+                &provider,
+                r#"#!/usr/bin/python3
+import json,sys
+from pathlib import Path
+Path(__file__).resolve().parent.parent.joinpath("provider-invocation").write_text(str(Path(__file__).resolve()))
+for line in sys.stdin:
+    request=json.loads(line)
+    method=request.get("method")
+    ident=request.get("id")
+    result=None
+    if method=="initialize": result={"userAgent":"fixture"}
+    elif method=="config/read": result={"config":{}}
+    elif method in ("thread/start","thread/resume"):
+        result={"thread":{"id":"fixture-chat","turns":[]}}
+    if result is not None:
+        print(json.dumps({"id":ident,"result":result}),flush=True)
+"#,
+            )
+            .unwrap();
+            fs_err::set_permissions(&provider, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let shell = root.join("bin/fixture-shell");
+            fs_err::write(
+                &shell,
+                "#!/bin/sh\nif [ \"$1\" = \"-lic\" ]; then\n  shift 3\n  exec \"$@\"\nfi\nexec /bin/sh \"$@\"\n",
+            )
+            .unwrap();
+            fs_err::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let path = std::env::join_paths(std::iter::once(root.join("bin")).chain(
+                std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+            ))
+            .unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "views::sidebar::tests::codex_launch_action_creates_ready_native_chat_and_keeps_composer_focus", "--nocapture"])
+                .env("GROVE_NATIVE_LAUNCH_TEST_CHILD", &root)
+                .env("GROVE_CONFIG_DIR", root.join("config"))
+                .env("GROVE_TEST_CONFIG_DIR", root.join("config"))
+                .env("SHELL", shell)
+                .env("PATH", path)
+                .output().unwrap();
+            let _ = fs_err::remove_dir_all(&root);
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let path = std::env::var("GROVE_NATIVE_LAUNCH_TEST_CHILD").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Native launch".into(),
+                    path: path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                tmux_enabled: Some(true),
+                native_agents_enabled: true,
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+            cx.set_global(crate::theme::ThemeState::new(
+                false,
+                "tokyonight".into(),
+                "tokyonight-day".into(),
+            ));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.mode = ViewMode::List;
+            sidebar
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(Action::Launch(0, path.clone(), Agent::Codex), window, cx);
+                assert!(sidebar.content_error.is_none());
+                assert_eq!(sidebar.runtime.read(cx).registry.read(cx).len(), 1);
+            });
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            cx.executor().advance_clock(Duration::from_millis(50));
+            draw(cx);
+            let (status, error) = sidebar.read_with(cx, |sidebar, cx| {
+                let registry = sidebar.runtime.read(cx).registry.read(cx);
+                let id = registry.all()[0].id;
+                assert!(
+                    registry.session(id).is_none(),
+                    "Codex must not attach a PTY"
+                );
+                let state = &registry.codex(id).unwrap().read(cx).state;
+                (state.status, state.error.clone())
+            });
+            if status == grove_core::codex::Status::Idle {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Native launch did not become ready: status={status:?}, error={error:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            fs_err::read_to_string(std::path::Path::new(&path).join("provider-invocation"))
+                .unwrap(),
+            std::path::Path::new(&path)
+                .join("bin/codex")
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy(),
+            "native launch must execute the isolated provider fixture"
+        );
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let id = sidebar.runtime.read(cx).registry.read(cx).all()[0].id;
+                let view = sidebar
+                    .codex_views
+                    .get(&id)
+                    .expect("native conversation rendered")
+                    .clone();
+                assert!(
+                    view.focus_handle(cx).contains_focused(window, cx),
+                    "new native chat must focus its composer"
+                );
+                sidebar.focus_active_session_after_palette(window, cx);
+                assert!(view.focus_handle(cx).contains_focused(window, cx));
+                assert!(sidebar.pending_canvas_focus.is_none());
+                assert!(sidebar.pending_grid_workspace_focus.is_none());
+                sidebar.focus.focus(window, cx);
+                sidebar.navigate_to_session(id, window, cx);
+                assert!(view.focus_handle(cx).contains_focused(window, cx));
+                sidebar.mode = ViewMode::Grid;
+                sidebar.focus_active_session_after_palette(window, cx);
+                assert!(view.focus_handle(cx).contains_focused(window, cx));
+                cx.global_mut::<SettingsState>().store.native_agents_enabled = false;
+                sidebar.act(Action::Launch(0, path.clone(), Agent::Codex), window, cx);
+                assert!(sidebar.content_error.is_none());
+                let fallback = {
+                    let registry = sidebar.runtime.read(cx).registry.read(cx);
+                    assert_eq!(registry.len(), 2);
+                    assert!(
+                        registry.codex(id).is_some(),
+                        "existing native chat stays open"
+                    );
+                    let fallback = registry.all().iter().find(|meta| meta.id != id).unwrap().id;
+                    assert!(registry.codex(fallback).is_none());
+                    assert!(
+                        registry.session(fallback).is_some(),
+                        "disabled native agents use a PTY"
+                    );
+                    fallback
+                };
+                sidebar
+                    .runtime
+                    .update(cx, |runtime, cx| runtime.kill_session(fallback, cx));
+                let stopped = sidebar
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .clone()
+                    .update(cx, |registry, _| registry.stop_codex_sessions());
+                for receiver in stopped {
+                    receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+            });
+        });
+    }
+
     #[gpui::test]
     fn palette_session_focus_reaches_new_terminal_in_list_and_grid(cx: &mut gpui::TestAppContext) {
         let path = env!("CARGO_MANIFEST_DIR").to_string();
@@ -8630,6 +8886,9 @@ mod tests {
                 assert_eq!(sidebar.pending_new_worktree, Some(0));
                 assert_eq!(sidebar.runtime.read(cx).registry.read(cx).len(), 0);
                 assert!(sidebar.content_error.as_deref().unwrap().contains("PATH"));
+                let toast = sidebar.runtime.read(cx).toast.read(cx).current().unwrap();
+                assert_eq!(toast.kind, crate::entities::toast::ToastKind::Error);
+                assert_eq!(Some(&toast.message), sidebar.content_error.as_ref());
                 sidebar.pending_new_worktree = None;
                 sidebar.available[2] = true;
                 cx.notify();
@@ -9474,6 +9733,7 @@ mod tests {
                 ])
                 .env("GROVE_MOVE_SIDEBAR_TEST_CHILD", "1")
                 .env("GROVE_CONFIG_DIR", &root)
+                .env("GROVE_TEST_CONFIG_DIR", &root)
                 .output()
                 .unwrap();
             assert!(

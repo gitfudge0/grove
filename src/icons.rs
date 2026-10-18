@@ -73,12 +73,30 @@ fn wrap_svg(inner: &str) -> String {
 fn svg_for(name: &str) -> String {
     let inner = match name {
         "plus" => r#"<path d="M8 3v10M3 8h10"/>"#,
+        "copy" => r#"<rect x="5" y="5" width="8" height="8" rx="1"/><path d="M10 5V3H3v7h2"/>"#,
         "minus" => r#"<path d="M3 8h10"/>"#,
         "close" => r#"<path d="M4 4l8 8M12 4l-8 8"/>"#,
         "check" => r#"<path d="M3 8l4 4 6-7"/>"#,
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z" fill="currentColor" stroke="none"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
         "chev-right" => r#"<path d="M6 4l4 4-4 4"/>"#,
+        "stop" => {
+            r#"<rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor" stroke="none"/>"#
+        }
+        "queue" => r#"<path d="M3 4h8M3 8h6M3 12h6M12 8v6M10 12l2 2 2-2"/>"#,
+        "arrow-up" => r#"<path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/>"#,
+        "paperclip" => {
+            r#"<path d="m5.5 8.5 4-4a2 2 0 0 1 2.8 2.8l-5.6 5.6a3.3 3.3 0 0 1-4.7-4.7l6-6"/><path d="m5 10 5.5-5.5"/>"#
+        }
+        "brain" => {
+            r#"<path d="M8 3v10M8 4C6 1 3 2 3 5c-3 1-2 5 0 5 0 3 4 4 5 1M8 4c2-3 5-2 5 1 3 1 2 5 0 5 0 3-4 4-5 1"/>"#
+        }
+        "lock" => {
+            r#"<rect x="3" y="7" width="10" height="7" rx="1"/><path d="M5 7V4a3 3 0 0 1 6 0v3"/>"#
+        }
+        "lock-open" => {
+            r#"<rect x="3" y="7" width="10" height="7" rx="1"/><path d="M5 7V4a3 3 0 0 1 6 0"/>"#
+        }
         "arrow-left" => r#"<path d="M13 8H3M7 4 3 8l4 4"/>"#,
         "arrow-right" => r#"<path d="M3 8h10M9 4l4 4-4 4"/>"#,
         // Chevron pointing into a vertical bar — "collapse panel to the right".
@@ -224,6 +242,7 @@ mod tests {
         // The names the sidebar rows and header actually ask for.
         for name in [
             "plus",
+            "copy",
             "sidebar-collapse",
             "sidebar-expand",
             "add-project",

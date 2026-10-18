@@ -17,7 +17,7 @@ fn test_config_dir() -> &'static std::path::Path {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
         if let Some(explicit) =
-            std::env::var_os(storage::CONFIG_DIR_ENV).filter(|dir| !dir.is_empty())
+            std::env::var_os("GROVE_TEST_CONFIG_DIR").filter(|dir| !dir.is_empty())
         {
             return explicit.into();
         }
@@ -161,6 +161,48 @@ mod tests {
         let _settings = SettingsState::new(Store::default());
         let actual = std::env::var_os(storage::CONFIG_DIR_ENV).map(std::path::PathBuf::from);
         assert_eq!(actual.as_deref(), Some(test_config_dir()));
+    }
+
+    #[test]
+    fn inherited_production_config_is_never_test_storage() {
+        const CHILD: &str = "GROVE_SETTINGS_ISOLATION_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let production =
+                std::path::PathBuf::from(std::env::var_os(storage::CONFIG_DIR_ENV).unwrap());
+            let _settings = SettingsState::new(Store::default());
+            assert_ne!(test_config_dir(), production);
+            storage::save(&Store::default()).unwrap();
+            assert!(test_config_dir().join("projects.json").is_file());
+            fs_err::remove_dir_all(test_config_dir()).unwrap();
+            return;
+        }
+        let production = std::env::temp_dir().join(format!(
+            "grove-production-config-sentinel-{}",
+            grove_core::control::random_id().unwrap()
+        ));
+        fs_err::create_dir(&production).unwrap();
+        let path = production.join("projects.json");
+        let sentinel = b"untouched production settings";
+        fs_err::write(&path, sentinel).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "settings::tests::inherited_production_config_is_never_test_storage",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(storage::CONFIG_DIR_ENV, &production)
+            .env_remove("GROVE_TEST_CONFIG_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs_err::read(path).unwrap(), sentinel);
+        fs_err::remove_dir_all(production).unwrap();
     }
 
     /// Points `grove_core::storage` at a private directory for this process

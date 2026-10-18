@@ -187,6 +187,8 @@ impl Runtime {
                             .map_err(|e| e.to_string())?;
                         id
                     }
+                } else if let Some(session) = self.registry.read(cx).codex(meta.id) {
+                    session.read(cx).state.saved.key.clone()
                 } else {
                     control::random_id()?
                 };
@@ -194,32 +196,52 @@ impl Runtime {
                 id
             };
             let term = self.registry.read(cx).control_terminal(meta.id).cloned();
-            let (status, error) = term.map_or(("unavailable", None), |term| {
-                term.update(cx, |term, _| {
-                    let error = term.spawn_error().map(str::to_owned);
-                    let alive = if let Some(name) = &meta.tmux_name {
-                        grove_core::tmux::has_session(name)
+            let native = self.registry.read(cx).codex(meta.id).cloned();
+            let (status, error) = if let Some(native) = native {
+                let state = &native.read(cx).state;
+                (
+                    if state.status == grove_core::codex::Status::Disconnected {
+                        "exited"
+                    } else if state.status == grove_core::codex::Status::Failed {
+                        "failed"
                     } else {
-                        term.alive()
-                    };
-                    (
-                        if error.is_some() {
-                            "failed"
-                        } else if alive {
-                            "running"
+                        "running"
+                    },
+                    state.error.clone(),
+                )
+            } else {
+                term.map_or(("unavailable", None), |term| {
+                    term.update(cx, |term, _| {
+                        let error = term.spawn_error().map(str::to_owned);
+                        let alive = if let Some(name) = &meta.tmux_name {
+                            grove_core::tmux::has_session(name)
                         } else {
-                            "exited"
-                        },
-                        error,
-                    )
+                            term.alive()
+                        };
+                        (
+                            if error.is_some() {
+                                "failed"
+                            } else if alive {
+                                "running"
+                            } else {
+                                "exited"
+                            },
+                            error,
+                        )
+                    })
                 })
-            });
+            };
             let task_id = owner
                 .state
                 .tasks()
                 .find(|task| task.session_id.as_deref() == Some(&id))
                 .map(|task| task.id.clone());
-            rows.push(json!({"id":id,"project":meta.project,"worktree":meta.wt_path,"agent":meta.agent,"label":meta.label,"context_roots":meta.context_roots,"backend":if meta.tmux {"tmux"} else {"native"},"status":status,"spawn_error":error,"task_id":task_id}));
+            let native_status = self
+                .registry
+                .read(cx)
+                .codex(meta.id)
+                .map(|session| session.read(cx).state.status.label());
+            rows.push(json!({"id":id,"project":meta.project,"worktree":meta.wt_path,"agent":meta.agent,"label":meta.label,"context_roots":meta.context_roots,"backend":if meta.tmux {"tmux"} else {"native"},"status":status,"native_status":native_status,"spawn_error":error,"task_id":task_id}));
         }
         let tasks: Vec<_> = owner
             .state
@@ -234,6 +256,7 @@ impl Runtime {
                 .and_then(|row| row["status"].as_str());
             match status {
                 Some("exited" | "failed") => owner.state.set_status(&id, "awaiting_result")?,
+                None if self.restoring_codex => {}
                 None => owner.state.set_status(
                     &id,
                     if owner.initialized {
@@ -245,7 +268,9 @@ impl Runtime {
                 _ => {}
             }
         }
-        owner.initialized = true;
+        if !self.restoring_codex {
+            owner.initialized = true;
+        }
         Ok(rows)
     }
     fn control_command(
@@ -382,6 +407,7 @@ impl Runtime {
             ControlCommand::SessionInput { id, text } => {
                 if text.len() > 512 * 1024 { return Err("Input exceeds 512 KiB".into()); }
                 let local = live_id(owner,&sessions,&id)?;
+                if let Some(session) = self.registry.read(cx).codex(local).cloned() { session.update(cx, |session, cx| session.prompt(text.clone(), cx))?; return Ok(json!({"id":id,"bytes":text.len(),"scope":"prompt"})); }
                 let term = self.registry.read(cx).control_terminal(local).cloned().ok_or("Session unavailable")?;
                 if term.read(cx).has_exited() { return Err("Session has exited".into()); }
                 term.update(cx, |term, cx| {
@@ -468,9 +494,17 @@ impl Runtime {
                         "Terminal sessions do not accept agent prompts or delegated tasks".into(),
                     );
                 }
-                let backend = backend
-                    .or(cx.global::<SettingsState>().store.tmux_enabled)
-                    .ok_or("Choose --backend native|tmux; no saved backend preference exists")?;
+                let backend = if matches!(agent, Agent::Codex | Agent::Claude)
+                    && crate::runtime::native_codex_enabled(
+                        &cx.global::<SettingsState>().store,
+                        backend,
+                    )
+                {
+                    Some(false)
+                } else {
+                    backend.or(cx.global::<SettingsState>().store.tmux_enabled)
+                }
+                .ok_or("Choose --backend native|tmux; no saved backend preference exists")?;
                 if backend && !grove_core::tmux::available() {
                     return Err("tmux is unavailable; choose --backend native".into());
                 }
@@ -632,6 +666,7 @@ impl Runtime {
                     return Err("Lines must be between 1 and 10000".into());
                 }
                 let local = live_id(owner, &sessions, &id)?;
+                if let Some(session) = self.registry.read(cx).codex(local) { let transcript = session.read(cx).state.transcript(); let tail = transcript.lines().rev().take(lines).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"); return Ok(json!({"id":id,"text":tail,"scope":"transcript","requested_lines":lines})); }
                 let term = self
                     .registry
                     .read(cx)
@@ -832,20 +867,18 @@ mod tests {
             )
             .ok
         );
-        assert!(
-            call(
-                cx,
-                ControlCommand::EditProject {
-                    project: "control fixture".into(),
-                    name: Some("renamed".into()),
-                    setup: None,
-                    run: Some("echo hello".into()),
-                    teardown: None
-                },
-                "edit"
-            )
-            .ok
+        let edited = call(
+            cx,
+            ControlCommand::EditProject {
+                project: "control fixture".into(),
+                name: Some("renamed".into()),
+                setup: None,
+                run: Some("echo hello".into()),
+                teardown: None,
+            },
+            "edit",
         );
+        assert!(edited.ok, "{edited:?}");
         assert!(
             call(
                 cx,

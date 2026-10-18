@@ -115,7 +115,16 @@ impl Statusbar {
             } else {
                 registry.session(id).cloned()
             };
-            let Some(session) = session else { continue };
+            let Some(session) = session else {
+                if let Some(session) = registry.codex(id) {
+                    summary.record(
+                        session.read(cx).state.status != grove_core::codex::Status::Disconnected,
+                        activity.read(cx).state_of(id),
+                        &crate::entities::terminal_session::Backend::Native,
+                    );
+                }
+                continue;
+            };
             if self
                 .session_observers
                 .get(&id)

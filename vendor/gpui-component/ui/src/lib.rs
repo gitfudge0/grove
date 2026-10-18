@@ -11,7 +11,7 @@ mod icon;
 mod index_path;
 #[cfg(any(feature = "inspector", debug_assertions))]
 mod inspector;
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(target_os = "macos", not(test), not(feature = "grove-test-support")))]
 mod macos_accessibility;
 mod root;
 mod styled;

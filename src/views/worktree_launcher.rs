@@ -16,6 +16,13 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use grove_core::agent::Agent;
 use std::collections::{HashMap, HashSet};
 
+fn missing_agent_message(agent: Agent) -> String {
+    format!(
+        "{} CLI not found. Install it or refresh the shell environment in Settings, then retry. Check that its executable is on your shell PATH.",
+        agent.label()
+    )
+}
+
 /// A palette row has an appbar-height body plus the design system's 8px row breathing room.
 const ROW_H: f32 = APPBAR_H + SPACE_LG;
 const OVERLAY_TOP: f32 = APPBAR_H + SPACE_3XL * 2.0;
@@ -474,8 +481,7 @@ impl WorktreeLauncher {
             return;
         };
         if !agent.available() {
-            self.error = Some(format!("{} is not installed.", agent.label()));
-            cx.notify();
+            self.show_launch_error(missing_agent_message(agent), cx);
             return;
         }
         if !valid_worktree(&project.path, &wt_path) {
@@ -499,8 +505,7 @@ impl WorktreeLauncher {
             return;
         }
         if !agent.available() {
-            self.error = Some(format!("{} is not installed.", agent.label()));
-            cx.notify();
+            self.show_launch_error(missing_agent_message(agent), cx);
             return;
         }
         let store = &cx.global::<SettingsState>().store;
@@ -530,6 +535,14 @@ impl WorktreeLauncher {
         self.finish_launch(did_launch, active_before, window, cx);
     }
 
+    fn show_launch_error(&mut self, error: String, cx: &mut Context<Self>) {
+        self.error = Some(error.clone());
+        self.runtime.read(cx).toast.clone().update(cx, |toast, cx| {
+            toast.set_error(error, cx);
+        });
+        cx.notify();
+    }
+
     /// A failed PTY still leaves a selected session in the registry so the sidebar can retry it.
     fn finish_launch(
         &mut self,
@@ -548,9 +561,18 @@ impl WorktreeLauncher {
                 sidebar.focus_active_session_after_palette(window, cx);
             });
         } else {
-            self.error =
-                Some("Could not start this session. Check the notification for details.".into());
-            cx.notify();
+            let message = self
+                .runtime
+                .read(cx)
+                .toast
+                .read(cx)
+                .current()
+                .filter(|toast| toast.kind == crate::entities::toast::ToastKind::Error)
+                .map_or_else(
+                    || "Could not start this session. Select a current checkout and retry.".into(),
+                    |toast| toast.message.clone(),
+                );
+            self.show_launch_error(message, cx);
         }
     }
 
@@ -704,8 +726,7 @@ impl WorktreeLauncher {
                                     this.error = None;
                                     this.focus.focus(window, cx);
                                 } else {
-                                    this.error =
-                                        Some(format!("{} is not installed.", agent.label()));
+                                    this.show_launch_error(missing_agent_message(agent), cx);
                                 }
                                 cx.notify();
                             }))
@@ -1914,6 +1935,29 @@ mod tests {
                 assert!(launcher.sidebar.read(cx).selected_session().is_none());
             });
         });
+    }
+
+    #[gpui::test]
+    fn rejected_launch_keeps_palette_open_and_explains_error(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.update(|window, cx| launcher.update(cx, |launcher, cx| {
+            launcher.open(window, cx);
+            launcher.runtime.read(cx).toast.clone().update(cx, |toast, cx| {
+                toast.set_error("Codex executable could not be started. Refresh the shell environment in Settings.", cx);
+            });
+            launcher.finish_launch(false, None, window, cx);
+            assert!(launcher.is_open());
+            let error = launcher.error.as_deref().unwrap();
+            assert!(error.contains("Refresh the shell environment"));
+            assert_eq!(launcher.runtime.read(cx).toast.read(cx).current().unwrap().message, error);
+            assert!(launcher.runtime.read(cx).registry.read(cx).all().is_empty());
+        }));
     }
 
     #[gpui::test]

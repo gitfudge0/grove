@@ -401,6 +401,9 @@ pub struct Store {
     /// None means the user has not made the one-time tmux/native choice yet.
     #[serde(default)]
     pub tmux_enabled: Option<bool>,
+    /// Opt-in native agent conversations. Missing settings retain terminal agents.
+    #[serde(default)]
+    pub native_agents_enabled: bool,
     #[serde(default)]
     pub ui_zoom: Option<f32>,
     /// Logical pixels; `None` falls back to the default `RAIL_W`.
@@ -734,6 +737,7 @@ pub(crate) mod tests {
             appearance: Some(AppearancePreference::System),
             sidebar_appearance: SidebarAppearance::Solid,
             tmux_enabled: Some(true),
+            native_agents_enabled: true,
             ui_zoom: Some(1.25),
             sidebar_width: Some(360.0),
             sidebar_collapsed: true,
@@ -776,6 +780,7 @@ pub(crate) mod tests {
         assert_eq!(recovered.appearance, Some(AppearancePreference::System));
         assert_eq!(recovered.sidebar_appearance, SidebarAppearance::Solid);
         assert_eq!(recovered.tmux_enabled, Some(true));
+        assert!(recovered.native_agents_enabled);
         assert!((recovered.ui_zoom.unwrap() - 1.25).abs() < f32::EPSILON);
         assert!((recovered.sidebar_width.unwrap() - 360.0).abs() < f32::EPSILON);
         assert!(recovered.sidebar_collapsed);
@@ -813,6 +818,7 @@ pub(crate) mod tests {
         assert!(store.default_agent.is_none());
         assert!(store.theme.is_none());
         assert!(store.tmux_enabled.is_none());
+        assert!(!store.native_agents_enabled);
         assert!(store.ui_zoom.is_none());
         assert!(store.sidebar_width.is_none());
         assert!(!store.sidebar_collapsed);

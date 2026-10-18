@@ -169,23 +169,27 @@ fn main() {
                 }),
                 ..Default::default()
             };
-            // Shell owns lifecycle and unconsumed Tab traversal. Keep it as the
-            // window root so component Root Copy bindings cannot intercept PTY input.
-            let window =
-                match cx.open_window(opts, |window, cx| cx.new(|cx| Shell::new(window, cx))) {
-                    Ok(w) => w,
-                    Err(e) => {
-                        tracing::error!("grove-gpui: could not open window: {e}");
-                        eprintln!("grove-gpui: could not open window: {e}");
-                        std::process::exit(1);
-                    }
-                };
-            // Seed OS appearance here so follow-system resolves on the first frame (`src/gui/mod.rs:63-68`).
-            let _ = window.update(cx, |view, window, cx| {
-                let handle = gpui::Focusable::focus_handle(view, cx);
+            // Root supplies native formatted-text drag selection and overlays.
+            // Copy key bindings stay scoped to TextView/Input, preserving PTYs.
+            let window = match cx.open_window(opts, |window, cx| {
+                let shell = cx.new(|cx| Shell::new(window, cx));
+                let handle = gpui::Focusable::focus_handle(shell.read(cx), cx);
                 window.focus(&handle, cx);
-                let mode = window.appearance();
-                theme::ThemeState::set_system_mode(cx, mode);
+                cx.new(|cx| {
+                    gpui_component::Root::new(shell, window, cx)
+                        .bordered(false)
+                        .bg(theme::alpha(theme::BG(), 0.0))
+                })
+            }) {
+                Ok(window) => window,
+                Err(error) => {
+                    tracing::error!("grove-gpui: could not open window: {error}");
+                    eprintln!("grove-gpui: could not open window: {error}");
+                    std::process::exit(1);
+                }
+            };
+            let _ = window.update(cx, |_, window, cx| {
+                theme::ThemeState::set_system_mode(cx, window.appearance());
             });
             cx.activate(true);
         });

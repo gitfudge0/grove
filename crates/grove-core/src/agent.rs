@@ -128,7 +128,13 @@ impl Agent {
                 }
                 #[cfg(not(windows))]
                 {
-                    (self.binary_name().to_string(), vec![])
+                    (
+                        resolve_unix_agent(self.binary_name()).map_or_else(
+                            || self.binary_name().to_string(),
+                            |p| p.to_string_lossy().into_owned(),
+                        ),
+                        vec![],
+                    )
                 }
             }
         }
@@ -179,26 +185,52 @@ impl Agent {
         }
     }
 
-    /// Cached for the process lifetime, since this runs on `view()`'s render path; a CLI installed after startup won't be noticed until restart.
+    /// Cached by the immutable session environment, so a successful shell refresh
+    /// invalidates availability without filesystem work on every render.
     pub fn available(self) -> bool {
-        match self {
-            Agent::Terminal => true,
-            Agent::Claude | Agent::Codex | Agent::OpenCode => {
-                static CACHE: OnceLock<[bool; 3]> = OnceLock::new();
-                let cached = CACHE.get_or_init(|| {
-                    [Agent::Claude, Agent::Codex, Agent::OpenCode].map(Agent::detect)
-                });
-                match self {
-                    Agent::Claude => cached[0],
-                    Agent::Codex => cached[1],
-                    Agent::OpenCode => cached[2],
-                    Agent::Terminal => unreachable!(),
-                }
-            }
+        type Cache = Option<(
+            Option<crate::env_path::Environment>,
+            Option<std::ffi::OsString>,
+            [bool; 3],
+        )>;
+        static CACHE: OnceLock<std::sync::Mutex<Cache>> = OnceLock::new();
+        if self == Agent::Terminal {
+            return true;
         }
+        let environment = crate::env_path::session_environment();
+        let path = std::env::var_os("PATH");
+        let mut cache = CACHE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let same_environment =
+            |old: &Option<crate::env_path::Environment>| match (old, &environment) {
+                (Some(old), Some(new)) => std::sync::Arc::ptr_eq(old, new),
+                (None, None) => true,
+                _ => false,
+            };
+        if cache
+            .as_ref()
+            .is_none_or(|(old_env, old_path, _)| !same_environment(old_env) || *old_path != path)
+        {
+            *cache = Some((
+                environment,
+                path,
+                [Agent::Claude, Agent::Codex, Agent::OpenCode].map(Agent::detect),
+            ));
+        }
+        let index = match self {
+            Agent::Claude => 0,
+            Agent::Codex => 1,
+            Agent::OpenCode => 2,
+            Agent::Terminal => return true,
+        };
+        cache
+            .as_ref()
+            .is_some_and(|(_, _, available)| available[index])
     }
 
-    /// Uncached; called once per variant from inside `available()`'s `OnceLock`.
+    /// Uncached; called only when the session environment changes.
     fn detect(self) -> bool {
         let name = self.binary_name();
         #[cfg(windows)]
@@ -207,9 +239,7 @@ impl Agent {
         }
         #[cfg(not(windows))]
         {
-            std::env::var_os("PATH").is_some_and(|paths| {
-                std::env::split_paths(&paths).any(|dir| is_executable(dir.join(name)))
-            })
+            resolve_unix_agent(name).is_some()
         }
     }
 
@@ -237,6 +267,45 @@ impl Agent {
             .find(|line| !line.is_empty())
             .map(str::to_string)
     }
+}
+
+/// Startup already captures the login shell environment. Also search standard user
+/// install locations when Finder's inherited PATH or a shell initialization failure
+/// omitted them. This same resolver serves availability and actual process launch.
+#[cfg(not(windows))]
+fn resolve_unix_agent(name: &str) -> Option<std::path::PathBuf> {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let captured = crate::env_path::session_environment();
+    let path = captured
+        .as_ref()
+        .and_then(|env| env.iter().find(|(k, _)| k == "PATH"))
+        .map_or(inherited, |(_, v)| std::ffi::OsString::from(v));
+    resolve_unix_agent_in(name, &path, std::env::var_os("HOME").as_deref())
+}
+#[cfg(not(windows))]
+fn resolve_unix_agent_in(
+    name: &str,
+    path: &std::ffi::OsStr,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    let mut dirs: Vec<_> = std::env::split_paths(path).collect();
+    if let Some(home) = home {
+        let home = std::path::Path::new(home);
+        dirs.extend(
+            [
+                ".npm-global/bin",
+                ".local/bin",
+                ".cargo/bin",
+                ".bun/bin",
+                ".volta/bin",
+            ]
+            .map(|dir| home.join(dir)),
+        );
+    }
+    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(std::path::PathBuf::from));
+    dirs.into_iter()
+        .map(|dir| dir.join(name))
+        .find(|path| is_executable(path.clone()))
 }
 
 /// A regular file with an execute bit set; falls back to `is_file()` on non-Unix targets.
@@ -277,6 +346,39 @@ fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn finder_path_resolves_standard_user_install_and_preserves_path_priority() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let install = home.path().join(".npm-global/bin");
+        fs_err::create_dir_all(&install).unwrap();
+        let program = install.join("codex");
+        fs_err::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            super::resolve_unix_agent_in(
+                "codex",
+                std::ffi::OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin"),
+                Some(home.path().as_os_str())
+            ),
+            Some(program)
+        );
+        let preferred = home.path().join("configured");
+        fs_err::create_dir_all(&preferred).unwrap();
+        let program = preferred.join("codex");
+        fs_err::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            super::resolve_unix_agent_in(
+                "codex",
+                preferred.as_os_str(),
+                Some(home.path().as_os_str())
+            ),
+            Some(program)
+        );
+    }
+
     use super::*;
 
     /// U1: the chrome toggle alone yields exactly `--chrome` for Claude.
@@ -436,12 +538,16 @@ mod tests {
     }
 
     #[test]
-    fn invocation_is_plain_binary_name_on_non_windows_or_when_unresolved() {
+    fn invocation_uses_shared_resolution_or_bare_name_when_unresolved() {
         // On Windows with no PATH match, falls back to the bare name to preserve the "not found" UX.
         let (program, prefix_args) = Agent::Claude.invocation();
         assert!(prefix_args.is_empty() || cfg!(windows));
         #[cfg(not(windows))]
-        assert_eq!(program, "claude");
+        assert_eq!(
+            program,
+            super::resolve_unix_agent("claude")
+                .map_or_else(|| "claude".into(), |p| p.to_string_lossy().into_owned())
+        );
     }
 
     #[cfg(not(windows))]
@@ -457,7 +563,11 @@ mod tests {
         assert_eq!(&invocation_args[..3], ["-lic", "exec \"$@\"", "--"]);
         assert_eq!(
             &invocation_args[3..],
-            ["codex".to_string(), args[0].clone(), args[1].clone()]
+            [
+                Agent::Codex.invocation().0,
+                args[0].clone(),
+                args[1].clone()
+            ]
         );
     }
 
@@ -470,7 +580,7 @@ mod tests {
         ];
         for agent in [Agent::Claude, Agent::Codex, Agent::OpenCode] {
             let (program, argv) = agent.session_invocation_with_environment(&args, true);
-            assert_eq!(program, agent.program());
+            assert_eq!(program, agent.invocation().0);
             assert_eq!(argv, args);
         }
     }

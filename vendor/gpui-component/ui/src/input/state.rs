@@ -118,7 +118,12 @@ actions!(
 #[derive(Clone)]
 pub enum InputEvent {
     Change,
-    PressEnter { secondary: bool, shift: bool },
+    /// Opt-in encoded clipboard image paste; ordinary inputs keep text behavior.
+    PasteImages(Vec<gpui::Image>),
+    PressEnter {
+        secondary: bool,
+        shift: bool,
+    },
     Focus,
     Blur,
 }
@@ -343,6 +348,7 @@ pub struct InputState {
     pub(super) masked: bool,
     pub(super) clean_on_escape: bool,
     pub(super) submit_on_enter: bool,
+    accept_image_paste: bool,
     pub(super) soft_wrap: bool,
     pub(super) scroll_beyond_last_line: Option<usize>,
     pub(super) cursor_surrounding_lines: Option<usize>,
@@ -444,6 +450,7 @@ impl InputState {
             masked: false,
             clean_on_escape: false,
             submit_on_enter: false,
+            accept_image_paste: false,
             soft_wrap: true,
             scroll_beyond_last_line: None,
             cursor_surrounding_lines: None,
@@ -497,6 +504,13 @@ impl InputState {
     }
 
     /// Set Input to use multi line mode (default rows is 2).
+    /// Emits `InputEvent::PasteImages` for encoded clipboard images when enabled.
+    /// Text entries are still inserted at the current selection as usual.
+    pub fn accept_image_paste(mut self, accept: bool) -> Self {
+        self.accept_image_paste = accept;
+        self
+    }
+
     pub fn multi_line(mut self, multi_line: bool) -> Self {
         self.mode = self.mode.multi_line(multi_line);
         self
@@ -505,6 +519,13 @@ impl InputState {
     pub fn auto_grow(mut self, min_rows: usize, max_rows: usize) -> Self {
         self.mode = InputMode::auto_grow(min_rows, max_rows);
         self
+    }
+
+    /// Change visible row limits without replacing text, selection, or undo history.
+    pub fn set_auto_grow(&mut self, min_rows: usize, max_rows: usize, cx: &mut Context<Self>) {
+        self.mode = InputMode::auto_grow(min_rows, max_rows);
+        self.mode.update_auto_grow(&self.display_map);
+        cx.notify();
     }
 
     /// Set Input to use [`InputMode::CodeEditor`] mode (syntax highlighting, auto indent, line numbers; up to 50K lines).
@@ -1773,9 +1794,26 @@ impl InputState {
 
     pub(super) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(clipboard) = cx.read_from_clipboard() {
-            let new_text = clipboard.text().unwrap_or_default();
-            self.replace_text_in_range_silent(None, &new_text, window, cx);
-            self.scroll_to(self.cursor(), None, cx);
+            if self.accept_image_paste {
+                let images: Vec<_> = clipboard
+                    .entries()
+                    .iter()
+                    .filter_map(|entry| {
+                        if let gpui::ClipboardEntry::Image(image) = entry {
+                            Some(image.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !images.is_empty() {
+                    cx.emit(InputEvent::PasteImages(images));
+                }
+            }
+            if let Some(new_text) = clipboard.text().filter(|text| !text.is_empty()) {
+                self.replace_text_in_range_silent(None, &new_text, window, cx);
+                self.scroll_to(self.cursor(), None, cx);
+            }
         }
     }
 

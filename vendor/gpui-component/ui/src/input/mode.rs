@@ -130,7 +130,8 @@ impl InputMode {
         match self {
             InputMode::PlainText { multi_line, .. } => *multi_line,
             InputMode::CodeEditor { multi_line, .. } => *multi_line,
-            InputMode::AutoGrow { max_rows, .. } => *max_rows > 1,
+            // Row limits control the viewport, not the document's newline semantics.
+            InputMode::AutoGrow { .. } => true,
         }
     }
 
@@ -439,6 +440,10 @@ mod tests {
 
     #[test]
     fn test_auto_grow() {
+        let compact = InputMode::auto_grow(1, 1);
+        assert!(compact.is_multi_line());
+        assert_eq!(compact.rows(), 1);
+
         let mut mode = InputMode::auto_grow(2, 5);
         assert_eq!(mode.is_code_editor(), false);
         assert_eq!(mode.is_multi_line(), true);

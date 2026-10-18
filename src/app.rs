@@ -92,7 +92,8 @@ pub fn boot(cx: &mut gpui::App) {
     cx.set_global(crate::zoom::CurrentPtyDims::default());
 
     // 9. Must run before `keymap::bindings()`: a modal's Input binding and gpui-component's plain "Input" binding tie-break by registration order, and Grove must win to claim ←/→/Tab back from the caret.
-    // Grove does NOT mount gpui-component's `Root` view, which binds ctrl-c to its own Copy action and would shadow the PTY's Ctrl+C.
+    // The component Root supplies native text selection. Copy bindings are scoped
+    // to TextView/Input so terminal Ctrl+C still reaches the PTY.
     gpui_component::init(cx);
     // Must follow init: it installs the global this overwrites.
     crate::theme::sync_component_theme(cx);

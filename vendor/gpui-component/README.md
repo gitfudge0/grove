@@ -140,3 +140,18 @@ Applied to `ui/src` (source, not manifests):
    `Cargo.toml`; edition 2021 selects feature resolver v2, which does not
    unify dev-dependency features into a normal `cargo build`, so the release
    binary still compiles and runs the real AppKit path.
+
+10. **Native Codex conversations mount `Root` for text selection.** Root no
+    longer installs window-wide Copy or Tab key bindings: focused TextView and
+    Input own Copy, and Grove's Shell owns unconsumed Tab traversal, preserving
+    PTY Ctrl+C and Tab. TextView copy preserves selected whitespace and Escape
+    clears its selection. Incremental Markdown updates compare authoritative
+    queued text, seed the async parser after synchronous replacements, and keep
+    selections through append-only height changes. Width changes still clear
+    selection. `grove-test-support` also skips the Root macOS accessibility
+    shim because TestWindow has no AppKit window handle.
+11. **Opt-in clipboard image paste for the native composer.** InputState's
+    `accept_image_paste(true)` emits encoded `InputEvent::PasteImages` entries;
+    default inputs retain text-only behavior. Text in a mixed clipboard item is
+    still inserted at the current selection, and image-only paste does not
+    replace selected text. Grove validates/normalizes image bytes off-thread.

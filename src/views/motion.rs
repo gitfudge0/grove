@@ -77,7 +77,7 @@ where
 }
 
 /// CSS cubic-bezier(.2,.8,.2,1), solved on x so progress follows elapsed time.
-fn ease_standard(progress: f32) -> f32 {
+pub(super) fn ease_standard(progress: f32) -> f32 {
     cubic_bezier(progress, 0.2, 0.8, 0.2, 1.0)
 }
 

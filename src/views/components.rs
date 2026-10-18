@@ -40,6 +40,15 @@ pub fn tooltip(
 }
 
 pub fn header_control(id: &'static str, label: &'static str) -> Stateful<Div> {
+    header_control_with_hover(id, label, c::BG_HOVER())
+}
+
+/// Shared control geometry with a semantic hover fill for inverse and disabled actions.
+pub fn header_control_with_hover(
+    id: &'static str,
+    label: &'static str,
+    hover: gpui::Hsla,
+) -> Stateful<Div> {
     div()
         .id(id)
         .role(gpui::Role::Button)
@@ -50,7 +59,7 @@ pub fn header_control(id: &'static str, label: &'static str) -> Stateful<Div> {
         .items_center()
         .justify_center()
         .rounded(rpx(RADIUS_CONTROL))
-        .hover(|s| s.bg(c::BG_HOVER()))
+        .hover(move |s| s.bg(hover))
         .on_mouse_down(MouseButton::Left, |_, window, cx| {
             window.prevent_default();
             cx.stop_propagation();
@@ -225,8 +234,8 @@ pub fn project_form_field(
 }
 
 pub fn form_action(
-    id: &'static str,
-    label: &'static str,
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
     primary: bool,
     window: &gpui::Window,
     cx: &gpui::App,
@@ -250,4 +259,80 @@ pub fn form_action(
         .rounded(gpui::px(
             RADIUS_PANEL * f32::from(window.rem_size()) / crate::zoom::REM_BASE,
         ))
+}
+
+/// Neutral selectable row for native question forms. The owner supplies interaction.
+pub fn question_choice(
+    id: impl Into<gpui::ElementId>,
+    label: String,
+    description: String,
+    multiple: bool,
+    selected: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .role(if multiple {
+            gpui::Role::CheckBox
+        } else {
+            gpui::Role::RadioButton
+        })
+        .aria_label(label.clone())
+        .aria_selected(selected)
+        .when(multiple, |row| {
+            row.aria_toggled(if selected {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
+        })
+        .tab_index(0)
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_start()
+        .gap(rpx(SPACE_LG))
+        .p(rpx(SPACE_LG))
+        .rounded(rpx(RADIUS_CONTROL))
+        .bg(if selected { c::BG_HL() } else { c::BG_RAIL() })
+        .hover(|style| style.bg(c::BG_HOVER()))
+        .focus_visible(|style| style.bg(c::BG_HOVER()).border_color(c::BORDER_STRONG()))
+        .border_1()
+        .border_color(c::BORDER_SOFT())
+        .child(
+            div()
+                .size(rpx(ICON_MD))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(c::FG_DIM())
+                .when(multiple, |shape| shape.rounded(rpx(RADIUS_CONTROL)))
+                .when(!multiple, gpui::Styled::rounded_full)
+                .when(selected, |shape| {
+                    if multiple {
+                        shape.child(crate::icons::icon("check", ICON_SM, c::FG()))
+                    } else {
+                        shape.child(div().size(rpx(SPACE_MD)).rounded_full().bg(c::FG()))
+                    }
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_XS))
+                .text_size(rpx(TEXT_BODY))
+                .child(label)
+                .when(!description.is_empty(), |row| {
+                    row.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(description),
+                    )
+                }),
+        )
 }

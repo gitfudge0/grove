@@ -395,8 +395,7 @@ impl Shell {
                                 traffic("window-close", "Close window", c::WINDOW_CLOSE(), "close")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         cx.stop_propagation();
-                                        this.flush(cx);
-                                        window.remove_window();
+                                        this.close_after_codex(window, cx);
                                     })),
                             )
                             .child(
@@ -489,10 +488,14 @@ impl Shell {
         motion::base(header, format!("app-header-grid-{grid}"), cx)
     }
 
-    fn flush(&self, cx: &mut Context<Self>) {
-        self.runtime.update(cx, Runtime::shutdown);
+    fn close_after_codex(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let stopped = self.runtime.update(cx, Runtime::stop_codex);
+        cx.spawn_in(window, async move |this, cx| {
+            stopped.await;
+            let _ = this.update_in(cx, |_, window, _| window.remove_window());
+        })
+        .detach();
     }
-
     fn activate_palette_command(
         &mut self,
         row: PaletteRow,
@@ -594,7 +597,9 @@ impl Shell {
             if !switcher_matches(&self.switcher_query, title, Some(&context)) {
                 continue;
             }
-            let status = if registry
+            let status = if let Some(session) = registry.codex(id) {
+                (session.read(cx).state.status.label(), c::FG_DIM())
+            } else if registry
                 .session(id)
                 .is_some_and(|session| session.read(cx).spawn_error().is_some())
             {
@@ -932,7 +937,7 @@ impl Shell {
                     .id("backend-choice-dialog")
                     .debug_selector(|| "backend-choice-dialog".into())
                     .role(gpui::Role::Dialog)
-                    .aria_label("Choose a session backend")
+                    .aria_label("Choose a terminal session backend")
                     .w(rpx(MODAL_W_SM))
                     .max_w_full()
                     .p(rpx(SPACE_3XL))
@@ -954,7 +959,7 @@ impl Shell {
                         div()
                             .text_size(rpx(TEXT_BODY))
                             .text_color(c::FG_DIM())
-                            .child("Choose before starting this session. You can change this later in Settings. Existing sessions keep their backend."),
+                            .child("Choose before starting this terminal session. You can change this later in Settings. Existing sessions keep their backend."),
                     )
                     .child(choices)
                     .child(
@@ -1390,9 +1395,15 @@ impl Render for Shell {
         }
         if self.window_observers.is_none() {
             let runtime = self.runtime.clone();
-            window.on_window_should_close(cx, move |_, cx| {
-                runtime.update(cx, Runtime::shutdown);
-                true
+            window.on_window_should_close(cx, move |window, cx| {
+                let stopped = runtime.update(cx, Runtime::stop_codex);
+                let handle = window.window_handle();
+                cx.spawn(async move |cx| {
+                    stopped.await;
+                    let _ = handle.update(cx, |_, window, _| window.remove_window());
+                })
+                .detach();
+                false
             });
             let runtime = self.runtime.clone();
             self.window_observers = Some(vec![
@@ -1468,12 +1479,11 @@ impl Render for Shell {
                 }),
             )
             .on_action(cx.listener(|this, _: &Quit, _, cx| {
-                this.flush(cx);
-                cx.quit();
+                this.runtime
+                    .update(cx, |runtime, cx| runtime.request_exit(false, cx));
             }))
             .on_action(cx.listener(|this, _: &CloseWindow, window, cx| {
-                this.flush(cx);
-                window.remove_window();
+                this.close_after_codex(window, cx);
             }))
             .on_action(cx.listener(|this, _: &k::NewSession, window, cx| {
                 if !this.shortcut_blocked(cx) {
