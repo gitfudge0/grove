@@ -3082,7 +3082,7 @@ mod tests {
         state.apply(&start);
         state.apply(&start);
         assert_eq!(state.saved.work_periods.len(), 1);
-        state.work_started = Some(Instant::now() - Duration::from_secs(3));
+        state.work_started = Some(Instant::now().checked_sub(Duration::from_secs(3)).unwrap());
         state
             .saved
             .items
