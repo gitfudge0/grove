@@ -185,6 +185,7 @@ serde_json.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 gpui-component.workspace = true
 # Offline Mermaid SVG generation; rasterize using the SVG stack already used by GPUI.
+markdown = "1.0.0"
 mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
 resvg = { version = "0.46", default-features = false, features = ["text"] }
 
@@ -197,6 +198,7 @@ objc = "0.2"
 raw-window-handle = "0.6"
 
 [dev-dependencies]
+tempfile.workspace = true
 # Tests construct a `grove_core::upgrade::Release`, whose `version` field is a
 # `semver::Version`.
 semver.workspace = true
@@ -214,3 +216,9 @@ gpui = { workspace = true, features = ["test-support"] }
 gpui-component = { path = "vendor/gpui-component/ui", features = [
     "grove-test-support",
 ] }
+
+[build-dependencies]
+cc = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

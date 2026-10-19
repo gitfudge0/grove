@@ -32,6 +32,9 @@ pub(super) enum InlineFlowItem {
         links: Vec<(Range<usize>, LinkMark)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     },
+    Custom {
+        element: Option<AnyElement>,
+    },
     Image {
         url: SharedUri,
         link: Option<LinkMark>,
@@ -71,6 +74,7 @@ enum PositionedFragment {
 }
 
 enum MeasureItem {
+    Custom(Size<Pixels>),
     Text {
         text: SharedString,
         links: Vec<(Range<usize>, LinkMark)>,
@@ -105,6 +109,66 @@ impl InlineFlow {
             id: id.into(),
             items,
         }
+    }
+
+    pub(super) fn render_links(
+        items: Vec<InlineFlowItem>,
+        extensions: &super::MarkdownExtensions,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<InlineFlowItem> {
+        let mut output = Vec::new();
+        for item in items {
+            let InlineFlowItem::Text {
+                text,
+                links,
+                highlights,
+                ..
+            } = &item
+            else {
+                output.push(item);
+                continue;
+            };
+            let mut cursor = 0;
+            let mut replacements = Vec::new();
+            for (range, link) in links {
+                if range.start < cursor || range.end > text.len() {
+                    continue;
+                }
+                if let Some(element) =
+                    extensions.render_link(&link.url, &text[range.clone()], window, cx)
+                {
+                    replacements.push((range.clone(), element));
+                    cursor = range.end;
+                }
+            }
+            if replacements.is_empty() {
+                output.push(item);
+                continue;
+            }
+            let text_item = |start, end| InlineFlowItem::Text {
+                state: Arc::new(Mutex::new(InlineState::default())),
+                text: text[start..end].to_string().into(),
+                links: slice_ranges(links, start, end, |range, link| (range, link.clone())),
+                highlights: slice_ranges(highlights, start, end, |range, highlight| {
+                    (range, *highlight)
+                }),
+            };
+            cursor = 0;
+            for (range, element) in replacements {
+                if cursor < range.start {
+                    output.push(text_item(cursor, range.start));
+                }
+                output.push(InlineFlowItem::Custom {
+                    element: Some(element),
+                });
+                cursor = range.end;
+            }
+            if cursor < text.len() {
+                output.push(text_item(cursor, text.len()));
+            }
+        }
+        output
     }
 
     fn image_element(
@@ -161,7 +225,24 @@ impl Element for InlineFlow {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let measure_items = self.items.iter().map(MeasureItem::from).collect::<Vec<_>>();
+        let measure_items = self
+            .items
+            .iter_mut()
+            .map(|item| {
+                if let InlineFlowItem::Custom {
+                    element: Some(element),
+                } = item
+                {
+                    MeasureItem::Custom(element.layout_as_root(
+                        size(AvailableSpace::MinContent, AvailableSpace::MinContent),
+                        window,
+                        cx,
+                    ))
+                } else {
+                    MeasureItem::from(&*item)
+                }
+            })
+            .collect::<Vec<_>>();
         let line_height = window.line_height();
         let rem_size = window.rem_size();
         let image_sizes = measure_items
@@ -178,6 +259,7 @@ impl Element for InlineFlow {
                     window,
                     cx,
                 )),
+                MeasureItem::Custom(size) => Some(*size),
                 MeasureItem::Text { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -272,19 +354,22 @@ impl Element for InlineFlow {
                     origin,
                     size: fragment_size,
                 } => {
-                    let InlineFlowItem::Image {
-                        url, link, title, ..
-                    } = &self.items[item_ix]
-                    else {
-                        continue;
+                    let mut element = match &mut self.items[item_ix] {
+                        InlineFlowItem::Custom { element } => match element.take() {
+                            Some(element) => element,
+                            None => continue,
+                        },
+                        InlineFlowItem::Image {
+                            url, link, title, ..
+                        } => Self::image_element(
+                            elements.len(),
+                            url,
+                            link,
+                            title.as_str(),
+                            fragment_size,
+                        ),
+                        InlineFlowItem::Text { .. } => continue,
                     };
-                    let mut element = Self::image_element(
-                        elements.len(),
-                        url,
-                        link,
-                        title.as_str(),
-                        fragment_size,
-                    );
                     element.prepaint_as_root(
                         bounds.origin + origin,
                         size(
@@ -321,6 +406,7 @@ impl Element for InlineFlow {
 impl From<&InlineFlowItem> for MeasureItem {
     fn from(item: &InlineFlowItem) -> Self {
         match item {
+            InlineFlowItem::Custom { .. } => MeasureItem::Custom(Size::default()),
             InlineFlowItem::Text {
                 state: _,
                 text,
@@ -347,7 +433,7 @@ impl MeasureItem {
     fn len(&self) -> usize {
         match self {
             MeasureItem::Text { text, .. } => text.len(),
-            MeasureItem::Image { .. } => IMAGE_LEN,
+            MeasureItem::Image { .. } | MeasureItem::Custom(_) => IMAGE_LEN,
         }
     }
 }
@@ -421,7 +507,7 @@ fn layout_flow(
                         });
                     }
                 }
-                MeasureItem::Image { .. } => {
+                MeasureItem::Image { .. } | MeasureItem::Custom(_) => {
                     if line_range.start <= item_start && item_end <= line_range.end {
                         let size = image_sizes[item_ix]
                             .expect("image size should be measured before layout");
@@ -495,7 +581,7 @@ fn line_ranges(
         .enumerate()
         .map(|(ix, item)| match item {
             MeasureItem::Text { text, .. } => WrapLineFragment::text(text),
-            MeasureItem::Image { .. } => WrapLineFragment::element(
+            MeasureItem::Image { .. } | MeasureItem::Custom(_) => WrapLineFragment::element(
                 image_sizes[ix]
                     .expect("image size should be measured before wrapping")
                     .width,

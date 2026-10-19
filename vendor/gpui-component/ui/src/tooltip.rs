@@ -355,6 +355,10 @@ pub struct TooltipOverlay {
 }
 
 impl TooltipOverlay {
+    pub(crate) fn is_visible(&self) -> bool {
+        self.content.is_some()
+    }
+
     pub fn new() -> Self {
         Self {
             content: None,

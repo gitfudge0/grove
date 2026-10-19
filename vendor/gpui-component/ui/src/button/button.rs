@@ -174,11 +174,13 @@ impl ButtonVariant {
 /// A Button element.
 #[derive(IntoElement)]
 pub struct Button {
+    focus_handle: Option<gpui::FocusHandle>,
     id: ElementId,
     base: Stateful<Div>,
     style: StyleRefinement,
     icon: Option<ButtonIcon>,
     label: Option<SharedString>,
+    accessibility_label: Option<SharedString>,
     children: Vec<AnyElement>,
     disabled: bool,
     pub(crate) selected: bool,
@@ -211,16 +213,23 @@ impl From<Button> for AnyElement {
 }
 
 impl Button {
+    /// Let an app restore focus to a persistent invoking control.
+    pub fn with_focus_handle(mut self, focus: gpui::FocusHandle) -> Self {
+        self.focus_handle = Some(focus);
+        self
+    }
     pub fn new(id: impl Into<ElementId>) -> Self {
         let id = id.into();
 
         Self {
             id: id.clone(),
+            focus_handle: None,
             // ID must be set after div is created; `dropdown_menu` uses this id to create the popup menu.
             base: div().flex_shrink_0().id(id),
             style: StyleRefinement::default(),
             icon: None,
             label: None,
+            accessibility_label: None,
             disabled: false,
             selected: false,
             variant: ButtonVariant::default(),
@@ -271,6 +280,13 @@ impl Button {
     /// Set label to the Button, if no label is set, the button will be in Icon Button mode.
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Hide the visible label while retaining its accessible name for an icon action.
+    /// Add the icon with `icon` or `child` before rendering.
+    pub fn icon_only(mut self) -> Self {
+        self.accessibility_label = self.label.take().or(self.accessibility_label);
         self
     }
 
@@ -426,10 +442,12 @@ impl RenderOnce for Button {
         };
         let has_content = self.icon.is_some() || self.label.is_some() || !self.children.is_empty();
 
-        let focus_handle = window
-            .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        let focus_handle = self.focus_handle.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
         let is_focused = focus_handle.is_focused(window);
 
         let rounding = match self.rounded {
@@ -446,9 +464,10 @@ impl RenderOnce for Button {
             } else {
                 Role::Button
             })
-            .when_some(self.label.as_ref(), |this, label| {
-                this.aria_label(label.clone())
-            })
+            .when_some(
+                self.accessibility_label.as_ref().or(self.label.as_ref()),
+                |this, label| this.aria_label(label.clone()),
+            )
             .aria_selected(self.selected)
             .when(!self.disabled, |this| {
                 this.track_focus(
@@ -1124,6 +1143,24 @@ impl ButtonVariant {
 mod tests {
     use super::*;
     use gpui::{linear_color_stop, linear_gradient};
+
+    #[test]
+    fn icon_only_retains_accessible_name_and_tooltip_without_visible_label() {
+        let button = Button::new("browser")
+            .label("Open in browser")
+            .tooltip("Open in browser")
+            .icon_only();
+        assert!(button.label.is_none());
+        assert_eq!(
+            button.accessibility_label.as_deref(),
+            Some("Open in browser")
+        );
+        assert_eq!(
+            button.tooltip.as_ref().map(|value| value.0.as_ref()),
+            Some("Open in browser")
+        );
+        assert!(button.tab_stop);
+    }
 
     #[gpui::test]
     fn custom_palette_preserves_distinct_foreground_and_state_fills(cx: &mut gpui::TestAppContext) {

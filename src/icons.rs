@@ -110,6 +110,7 @@ fn svg_for(name: &str) -> String {
             r#"<rect x="3" y="7" width="10" height="7" rx="1"/><path d="M5 7V4a3 3 0 0 1 6 0"/>"#
         }
         "arrow-left" => r#"<path d="M13 8H3M7 4 3 8l4 4"/>"#,
+        "external-link" => r#"<path d="M9 2h5v5M14 2 7 9M6 3H3v10h10v-3"/>"#,
         "arrow-right" => r#"<path d="M3 8h10M9 4l4 4-4 4"/>"#,
         // Chevron pointing into a vertical bar — "collapse panel to the right".
         "sidebar-collapse" => {

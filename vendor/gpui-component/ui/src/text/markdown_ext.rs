@@ -148,15 +148,42 @@ impl PartialEq for MarkdownNode {
     }
 }
 
+type MarkdownLinkRendererFn =
+    dyn Fn(&str, &str, &mut Window, &mut App) -> Option<AnyElement> + Send + Sync;
+
 #[derive(Clone, Default)]
 pub struct MarkdownExtensions {
     enable_mdx: bool,
     block_parsers: Vec<Arc<MarkdownBlockParserFn>>,
     block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
     revision: u64,
+    link_renderer: Option<Arc<MarkdownLinkRendererFn>>,
 }
 
 impl MarkdownExtensions {
+    /// App-owned inline link controls; None preserves ordinary text links.
+    pub fn link_renderer(
+        mut self,
+        render: impl Fn(&str, &str, &mut Window, &mut App) -> Option<AnyElement> + Send + Sync + 'static,
+    ) -> Self {
+        self.link_renderer = Some(Arc::new(render));
+        self.bump_revision();
+        self
+    }
+
+    pub(crate) fn has_link_renderer(&self) -> bool {
+        self.link_renderer.is_some()
+    }
+    pub(crate) fn render_link(
+        &self,
+        url: &str,
+        label: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        self.link_renderer.as_ref()?(url, label, window, cx)
+    }
+
     /// Disables raw HTML constructs, since markdown-rs gives HTML priority over MDX when both are enabled.
     pub fn mdx(mut self) -> Self {
         self.enable_mdx = true;

@@ -2162,6 +2162,19 @@ impl Sidebar {
         }
     }
 
+    pub(super) fn html_owner(&self, cx: &App) -> Option<gpui::EntityId> {
+        let Some(Selection::Session(id)) = self.selection else {
+            return None;
+        };
+        self.codex_views
+            .get(&id)
+            .map(|view| view.read(cx).html.entity_id())
+    }
+
+    pub(super) fn html_overlay_open(&self) -> bool {
+        !self.navigation_available() || self.project_flyout.is_some()
+    }
+
     pub(crate) fn highlights_blocked(&self) -> bool {
         !self.navigation_available()
     }

@@ -803,16 +803,29 @@ impl PartialEq for NodeContext {
 }
 
 impl Paragraph {
-    fn render(&self, node_cx: &NodeContext, _window: &mut Window, cx: &mut App) -> AnyElement {
+    fn render(&self, node_cx: &NodeContext, window: &mut Window, cx: &mut App) -> AnyElement {
         let span = self.span;
         let children = &self.children;
 
-        if self.should_render_inline_flow() {
-            return InlineFlow::new(
-                span.unwrap_or_default(),
+        let has_link = children
+            .iter()
+            .any(|child| child.marks.iter().any(|(_, mark)| mark.link.is_some()));
+        if self.should_render_inline_flow()
+            || (has_link && node_cx.markdown_extensions.has_link_renderer())
+        {
+            let items = InlineFlow::render_links(
                 self.inline_flow_items(node_cx, cx),
-            )
-            .into_any_element();
+                &node_cx.markdown_extensions,
+                window,
+                cx,
+            );
+            if self.should_render_inline_flow()
+                || items
+                    .iter()
+                    .any(|item| matches!(item, InlineFlowItem::Custom { .. }))
+            {
+                return InlineFlow::new(span.unwrap_or_default(), items).into_any_element();
+            }
         }
 
         let mut child_nodes: Vec<AnyElement> = vec![];

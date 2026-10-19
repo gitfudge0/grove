@@ -437,6 +437,14 @@ impl Root {
         Some(root.read(cx).native_menu_overlay.clone())
     }
 
+    /// Native child surfaces must yield to Metal-rendered overlays.
+    pub fn has_visible_overlay(&self, cx: &App) -> bool {
+        self.active_sheet.is_some()
+            || !self.active_dialogs.is_empty()
+            || self.tooltip_overlay.read(cx).is_visible()
+            || self.native_menu_overlay.read(cx).is_visible()
+    }
+
     pub fn view(&self) -> &AnyView {
         &self.view
     }

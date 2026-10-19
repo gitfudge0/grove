@@ -347,6 +347,7 @@ struct QueueMotionRow {
 
 pub struct CodexView {
     session: Entity<CodexSession>,
+    pub(super) html: Entity<super::inline_html::HtmlSession>,
     input: Entity<InputState>,
     checkout_context: Option<(String, String)>,
     expanded: HashSet<String>,
@@ -421,7 +422,7 @@ impl CodexView {
                 .placeholder(placeholder)
                 .default_value(draft)
         });
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.observe(&session, |_, _, cx| cx.notify()),
             cx.observe(&input, |this, _, cx| {
                 this.validate_picked_tokens(cx);
@@ -462,8 +463,19 @@ impl CodexView {
                 _ => {}
             }),
         ];
+        let scroll = gpui::ScrollHandle::new();
+        let html_scroll = scroll.clone();
+        let cwd = std::path::PathBuf::from(&session.read(cx).state.saved.cwd);
+        let html = cx.new(|_| super::inline_html::HtmlSession::new(cwd, html_scroll));
+        subscriptions.push(cx.observe(&html, |this, _, cx| {
+            this.smooth_follow = false;
+            this.follow_after_submit = false;
+            this.composer_pin_bottom = false;
+            cx.notify();
+        }));
         Self {
             session,
+            html,
             input,
             expanded: HashSet::new(),
             work_tick_pending: Rc::new(Cell::new(false)),
@@ -498,7 +510,7 @@ impl CodexView {
             images,
             previews,
             pending_image_pastes: 0,
-            scroll: gpui::ScrollHandle::new(),
+            scroll,
             last_content: String::new(),
             smooth_follow: false,
             last_follow_offset: None,
@@ -1598,6 +1610,14 @@ impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.restore_image_tokens(window, cx);
         let state = self.session.read(cx).state.clone();
+        // checkout_context contains chrome labels such as “Main checkout”, not
+        // filesystem paths. Resolve document links against the saved worktree.
+        let html_cwd = std::path::PathBuf::from(&state.saved.cwd);
+        let html_paused =
+            self.menu.is_some() || self.popup.is_some() || !self.file_suggestions.is_empty();
+        self.html.update(cx, |html, cx| {
+            html.sync(&state, html_cwd, html_paused, window, cx);
+        });
         self.sync_queue_editor(&state, window, cx);
         self.sync_queue_motion(&state, cx);
         if self
@@ -2393,17 +2413,27 @@ impl Render for CodexView {
                 );
             }
             if !tool {
+                let html_message = item["id"]
+                    .as_str()
+                    .map_or_else(|| format!("message-{index}"), str::to_owned);
+                let html_extensions = self
+                    .html
+                    .update(cx, |html, cx| html.extensions(&html_message, cx));
                 row = row.child(
                     div()
                         .id(format!("codex-message-body-{index}"))
                         .debug_selector(move || format!("codex-message-body-{index}"))
                         .child(
                             TextView::markdown(("codex-text", index), text)
-                                .markdown_extensions(super::mermaid::extensions())
+                                .markdown_extensions(html_extensions)
                                 .style(markdown_style(window))
                                 .selectable(true),
                         ),
                 );
+                let html_entity = self.html.clone();
+                let linked =
+                    html_entity.update(cx, |html, cx| html.linked(&html_message, window, cx));
+                row = row.children(linked);
                 if kind == "userMessage" {
                     if let Some(content) = item["content"].as_array() {
                         let images: Vec<_> = content
@@ -9765,17 +9795,11 @@ mod tests {
     fn native_markdown_links_open_artifacts_and_web_urls(cx: &mut gpui::TestAppContext) {
         let (_view, cx, _actions, updates) = fixture(cx);
         for (target, expected) in [
-            ("/tmp/option-c.html", "file:///tmp/option-c.html"),
-            (
-                "/tmp/Option C/设计.html#comparison",
-                "file:///tmp/Option%20C/%E8%AE%BE%E8%AE%A1.html#comparison",
-            ),
             (
                 "/tmp/Option%20C/main.rs#L42",
                 "file:///tmp/Option%20C/main.rs#L42",
             ),
             ("https://example.com/a?q=b#c", "https://example.com/a?q=b#c"),
-            ("file:///tmp/option-c.html", "file:///tmp/option-c.html"),
             ("mailto:hello@example.com", "mailto:hello@example.com"),
         ] {
             let mut response = snapshot();
@@ -9794,6 +9818,144 @@ mod tests {
             cx.simulate_click(position, gpui::Modifiers::default());
             assert_eq!(cx.opened_url().as_deref(), Some(expected), "{target}");
         }
+    }
+
+    #[gpui::test]
+    fn native_html_link_click_reveals_preview_without_external_open(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, updates) = fixture(cx);
+        let checkout = tempfile::tempdir().unwrap();
+        let cwd = checkout.path().to_string_lossy().into_owned();
+        fs_err::write(
+            checkout.path().join("launch.html"),
+            "<!doctype html><html><body>Launch</body></html>",
+        )
+        .unwrap();
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.set_checkout_context("Main checkout".into(), "main".into(), cx);
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.cwd.clone_from(&cwd);
+                    cx.notify();
+                });
+            });
+        });
+        let mut response = snapshot();
+        response.saved.cwd = cwd;
+        response.saved.items.push(serde_json::json!({"type":"agentMessage", "id":"answer", "text":"[Launch checklist](launch.html)"}));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.html.read(cx).opened_count()),
+            0
+        );
+        assert!(cx.debug_bounds("html-open-browser").is_some(), "relative HTML links must render the independent browser control even with a display checkout label");
+        let body = cx.debug_bounds("codex-message-body-0").unwrap();
+        cx.simulate_click(
+            body.origin + gpui::point(gpui::px(8.), gpui::px(8.)),
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.html.read(cx).opened_count()),
+            1
+        );
+        assert!(
+            cx.debug_bounds("html-artifact").is_some(),
+            "HtmlSession notifications must redraw the parent transcript immediately"
+        );
+        assert!(
+            cx.opened_url().is_none(),
+            "primary activation must not send HTML to the platform opener"
+        );
+    }
+
+    #[gpui::test]
+    fn native_html_completed_output_uses_real_cwd_with_display_checkout_label(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, updates) = fixture(cx);
+        let checkout = tempfile::tempdir().unwrap();
+        let cwd = checkout.path().to_string_lossy().into_owned();
+        fs_err::write(
+            checkout.path().join("launch.html"),
+            "<!doctype html><html><body>Completed launch output</body></html>",
+        )
+        .unwrap();
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.set_checkout_context("Main checkout".into(), "main".into(), cx);
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.cwd.clone_from(&cwd);
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        let mut completed = snapshot();
+        completed.saved.cwd = cwd;
+        completed.status = Status::Done;
+        completed.saved.items.push(serde_json::json!({"type":"agentMessage", "id":"completed-html", "text":"The completed output is [Launch checklist](launch.html)."}));
+        updates.send(completed).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("html-open-browser").is_some());
+        assert_eq!(view.read_with(cx, |view, cx| view.html.read(cx).opened_count()), 1, "a completed relative HTML output must auto-open using saved.cwd without a rendered busy snapshot");
+        assert!(
+            cx.debug_bounds("html-artifact").is_some(),
+            "completed output must actually appear inline"
+        );
+        let artifact_ids = view.read_with(cx, |view, cx| view.html.read(cx).artifact_ids());
+        cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+        draw(cx);
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.html.read(cx).artifact_ids()),
+            artifact_ids
+        );
+        assert!(cx.opened_url().is_none());
+    }
+
+    #[gpui::test]
+    fn native_html_multiple_fences_preserve_artifact_identity_during_streaming(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, updates) = fixture(cx);
+        let mut response = snapshot();
+        response.saved.items.push(serde_json::json!({"type":"agentMessage", "id":"answer", "text":"```html\n<html><body>First</body></html>\n```\n\n~~~html\n<html><body>Second</body></html>\n~~~\n\n```html\n<html>Unfinished"}));
+        updates.send(response.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.html.read(cx).artifact_count()),
+            2
+        );
+        let ids = view.read_with(cx, |view, cx| {
+            assert!(view
+                .html
+                .read(cx)
+                .artifact_owners_match(view.html.entity_id(), cx));
+            view.html.read(cx).artifact_ids()
+        });
+        response.saved.items[0]["text"] = serde_json::Value::String(format!(
+            "{} appended stream",
+            response.saved.items[0]["text"].as_str().unwrap()
+        ));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.html.read(cx).artifact_count()),
+            2,
+            "streaming outside complete fences must not mount replacement artifacts"
+        );
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.html.read(cx).artifact_ids()),
+            ids
+        );
     }
 
     #[gpui::test]

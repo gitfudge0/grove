@@ -4,3 +4,5 @@
 pub mod dock;
 
 pub mod window_chrome;
+
+pub mod inline_html;

@@ -156,3 +156,16 @@ Applied to `ui/src` (source, not manifests):
     default inputs retain text-only behavior. Text in a mixed clipboard item is
     still inserted at the current selection, and image-only paste does not
     replace selected text. Grove validates/normalizes image bytes off-thread.
+
+12. **App-owned HTML link controls and native surface coordination.**
+    `MarkdownExtensions::link_renderer` optionally replaces a resolved link with
+    app-owned inline controls. `InlineFlow` measures and paints these elements
+    in the existing text/image flow; ordinary paragraphs and unhandled links
+    retain their original renderer. Grove uses this for separate inline-preview
+    and explicit-browser targets, without changing other Markdown links.
+    `Button::with_focus_handle` permits Return to restore the exact invoking
+    control. `Button::icon_only` retains the label as the accessible name while
+    rendering only the app's shared icon, preserving button focus and activation.
+    `Root::has_visible_overlay` includes sheets, dialogs, managed
+    tooltips and fallback menus so AppKit surfaces yield to GPUI overlays.
+    These additions grant no JavaScript/native bridge and add no webview crate.

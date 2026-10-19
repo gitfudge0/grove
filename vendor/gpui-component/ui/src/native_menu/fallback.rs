@@ -22,6 +22,10 @@ struct ActiveMenu {
 }
 
 impl FallbackMenuOverlay {
+    pub(crate) fn is_visible(&self) -> bool {
+        self.active.is_some()
+    }
+
     pub(crate) fn new() -> Self {
         Self { active: None }
     }

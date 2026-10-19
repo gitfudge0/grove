@@ -1359,6 +1359,10 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let html_owner = self.sidebar.read(cx).html_owner(cx);
+        let html_blocked = self.shortcut_blocked(cx) || self.sidebar.read(cx).html_overlay_open();
+        super::inline_html::set_context(html_owner, html_blocked, cx);
+        let html_expanded = super::inline_html::render_expanded(window, cx);
         let project_hover_blocked = self.shortcut_blocked(cx);
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_project_hover_blocked(project_hover_blocked, cx);
@@ -1659,6 +1663,9 @@ impl Render for Shell {
             })
             .when_some(self.highlights.clone(), |root, carousel| {
                 root.child(gpui::deferred(carousel))
+            })
+            .when_some(html_expanded, |root, overlay| {
+                root.child(gpui::deferred(overlay))
             })
     }
 }
