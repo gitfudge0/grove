@@ -261,6 +261,40 @@ pub fn form_action(
         ))
 }
 
+/// Compact transcript actions; quiet actions share their surrounding surface.
+pub fn transcript_action(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+    primary: bool,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> gpui_component::button::Button {
+    use gpui_component::{
+        button::{Button, ButtonCustomVariant, ButtonVariants},
+        Sizable, Size,
+    };
+    let (fill, foreground, hover) = if primary {
+        (c::FG(), c::BG(), c::FG_DIM())
+    } else {
+        (c::BG_RAIL(), c::FG_DIM(), c::BG_HOVER())
+    };
+    Button::new(id)
+        .label(label)
+        .with_size(Size::XSmall)
+        .h(rpx(CONTROL_H))
+        .px(rpx(SPACE_LG))
+        .text_size(rpx(TEXT_SMALL))
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .color(fill)
+                .foreground(foreground)
+                .hover(hover)
+                .active(hover)
+                .shadow(false),
+        )
+        .rounded(rpx(RADIUS_CONTROL).to_pixels(window.rem_size()))
+}
+
 /// Neutral selectable row for native question forms. The owner supplies interaction.
 pub fn question_choice(
     id: impl Into<gpui::ElementId>,
@@ -335,4 +369,57 @@ pub fn question_choice(
                     )
                 }),
         )
+}
+
+/// Expandable question-list row, retaining neutral open and keyboard focus states.
+pub fn question_disclosure(
+    id: impl Into<gpui::ElementId>,
+    label: String,
+    summary: String,
+    expanded: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label.clone())
+        .aria_expanded(expanded)
+        .aria_description(if expanded {
+            "Expanded. Activate to collapse"
+        } else {
+            "Collapsed. Activate to expand"
+        })
+        .tab_index(0)
+        .tab_stop(true)
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_3XL))
+        .py(rpx(SPACE_2XL))
+        .border_t_1()
+        .border_color(c::BORDER_SOFT())
+        .when(expanded, |row| row.bg(c::FIELD_FILL()))
+        .hover(|row| row.bg(c::BG_HOVER()))
+        .focus_visible(|row| row.bg(c::BG_HOVER()))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_XS))
+                .child(div().child(label))
+                .child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(summary),
+                ),
+        )
+        .child(crate::icons::icon(
+            if expanded { "chev-down" } else { "chev-right" },
+            ICON_SM,
+            c::FG_DIM(),
+        ))
 }

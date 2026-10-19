@@ -6,7 +6,7 @@ Grove renders provider requests as live, inline controls, aligned with the conve
 
 | Provider request | Grove control and response |
 | --- | --- |
-| Codex `item/tool/requestUserInput`; Claude `can_use_tool` for `AskUserQuestion` | Grouped questions, single/multiple choices, custom or written answers, masked input, validation and cancellation. |
+| Codex `item/tool/requestUserInput`; Claude `can_use_tool` for `AskUserQuestion` | Inset question list at its original transcript position, expandable questions, single/multiple choices, custom or written answers, masked input, validation and cancellation. |
 | Codex `item/commandExecution/requestApproval` | Command or terminal-input review; allow once, allow for session, decline/continue, decline/stop; exact offered command-prefix and managed-network policy amendments. Command, directory, reason, additional sandbox permissions and policy proposals are visible. If `availableDecisions` is supplied, only its intersection with implemented decisions is offered. |
 | Codex `item/fileChange/requestApproval` | File-change review, root grant details, once/session/decline/stop decisions. |
 | Codex `item/permissions/requestApproval` | Display requested filesystem/network permissions; grant exactly that profile for the current turn or session, decline with no grant, or decline and interrupt the turn. |
@@ -17,6 +17,10 @@ Grove renders provider requests as live, inline controls, aligned with the conve
 | MCP URL elicitation | Explicit HTTP(S) browser opening and separate user completion confirmation; no automatic navigation or automatic acceptance. The accepted response omits form content. |
 
 Forms accept `form`, `openai/form` and `openaiForm` mode names when their schemas fit the supported typed subset. This does not advertise support for arbitrary extended JSON Schema. Unsupported patterns, nested objects and advanced constraints fail closed with an actionable message; they are not silently discarded. URL requests reject executable URL schemes and embedded credentials. Form errors prevent submission, including invalid numbers, dates, bounds, required fields and invalid choices.
+
+Question lists keep one row open at a time. Collapsed rows show the actual draft answer, and the header counts answered questions. Reopening a question preserves its draft. Choice selection never submits: one explicit **Send answers** action submits the whole group. The composer remains available while the list scrolls with the transcript.
+
+After a confirmed transport submission, the list becomes a compact read-only question → answer receipt in the same transcript position. A failed send preserves drafts for retry; cancellation and expired requests do not produce successful receipts. Secret answers appear only as **Provided securely** in summaries and receipts. Receipts are transient view state and are never added to `SavedSession`; reopening the view does not restore them. Confirmation means the answer was sent, without claiming the agent has resumed.
 
 ## Lifecycle and routing
 

@@ -2,7 +2,7 @@
 use super::{
     components::{
         form_action, header_control, header_control_with_hover, project_field_well,
-        question_choice, tooltip,
+        question_choice, question_disclosure, tooltip, transcript_action,
     },
     rpx,
     tokens::*,
@@ -137,15 +137,60 @@ struct QuestionDraft {
     input: Entity<InputState>,
     _subscription: Subscription,
 }
+
+#[derive(Clone, Debug)]
+struct QuestionReceipt {
+    anchor: usize,
+    title: Option<String>,
+    answers: Vec<(String, String)>,
+}
+
 struct QuestionGroupDraft {
     questions: Vec<QuestionDraft>,
+    expanded: Option<usize>,
+    row_focus: Vec<FocusHandle>,
+    anchor: usize,
+    ack_after: u64,
+    turn_bound: bool,
+    pending_receipt: Option<QuestionReceipt>,
     submitting: bool,
 }
+fn question_has_answer(question: &codex::Question, answers: &codex::QuestionAnswers) -> bool {
+    answers
+        .get(&question.id)
+        .is_some_and(|values| values.iter().any(|value| !value.trim().is_empty()))
+}
+
+fn question_answer_summary(question: &codex::Question, answers: &codex::QuestionAnswers) -> String {
+    if !question_has_answer(question, answers) {
+        "Not answered".into()
+    } else if question.secret {
+        "Provided securely".into()
+    } else {
+        let mut summary = answers[&question.id]
+            .iter()
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        if let codex::QuestionKind::Number(number) = &question.kind {
+            if let Some(unit) = &number.unit {
+                let _ = write!(summary, " {unit}");
+            }
+        }
+        summary
+    }
+}
+
 fn question_key(state: &codex::Snapshot, request: &codex::QuestionRequest) -> String {
     format!(
         "{}:{}:{}",
         state.saved.thread_id.as_deref().unwrap_or_default(),
-        state.turn_id.as_deref().unwrap_or_default(),
+        if request.turn_bound() {
+            state.turn_id.as_deref().unwrap_or_default()
+        } else {
+            ""
+        },
         request.id
     )
 }
@@ -235,6 +280,8 @@ pub struct CodexView {
     input: Entity<InputState>,
     expanded: HashSet<String>,
     question_drafts: HashMap<String, QuestionGroupDraft>,
+    question_receipts: Vec<QuestionReceipt>,
+    question_generation: u64,
     approval_drafts: HashMap<String, ApprovalDraft>,
     elicitation_drafts: HashMap<String, ElicitationDraft>,
     interaction_scope: String,
@@ -348,6 +395,8 @@ impl CodexView {
             input,
             expanded: HashSet::new(),
             question_drafts: HashMap::new(),
+            question_receipts: Vec::new(),
+            question_generation: 0,
             approval_drafts: HashMap::new(),
             elicitation_drafts: HashMap::new(),
             interaction_scope: String::new(),
@@ -1229,6 +1278,7 @@ impl Render for CodexView {
             self.animating_bubbles.clear();
             self.approval_drafts.clear();
             self.question_drafts.clear();
+            self.question_receipts.clear();
             self.elicitation_drafts.clear();
             self.follow_after_submit = true;
         }
@@ -1405,13 +1455,17 @@ impl Render for CodexView {
             .px(rpx(SPACE_20))
             .py(rpx(SPACE_3XL))
             .gap(rpx(SPACE_20));
-        if state.saved.items.is_empty() {
+        if state.saved.items.is_empty()
+            && state.questions.is_empty()
+            && self.question_receipts.is_empty()
+        {
             messages = messages.child(div().id("codex-empty").w_full().max_w(rpx(CHAT_MAX_W))
                 .flex_1().flex().flex_col().justify_center().gap(rpx(SPACE_LG))
                 .child(div().text_size(rpx(TEXT_DISPLAY)).child("What would you like to build?"))
                 .child(div().text_color(c::FG_DIM()).child(format!("Ask a question, describe a change, or paste an image. {provider} works in this worktree using your CLI sign-in."))));
         }
         for (index, item) in state.saved.items.iter().enumerate() {
+            messages = messages.children(self.question_blocks_at(index, &state, window, cx));
             let kind = item["type"].as_str().unwrap_or("tool");
             if kind == codex::COMPACTION_ITEM {
                 // A running compaction is shown by the live activity line instead.
@@ -1422,13 +1476,19 @@ impl Render for CodexView {
             }
             let tool = is_tool_item(item);
             if tool {
-                if index > 0 && is_tool_item(&state.saved.items[index - 1]) {
+                if index > 0
+                    && is_tool_item(&state.saved.items[index - 1])
+                    && !self.has_question_anchor(index)
+                {
                     continue;
                 }
                 let end = state.saved.items[index..]
                     .iter()
                     .position(|item| !is_tool_item(item))
                     .map_or(state.saved.items.len(), |offset| index + offset);
+                let end = (index + 1..end)
+                    .find(|anchor| self.has_question_anchor(*anchor))
+                    .unwrap_or(end);
                 let tools = &state.saved.items[index..end];
                 let group_id = format!("tools-{}", item["id"].as_str().unwrap_or_default());
                 let group_id = if item["id"].as_str().is_some() {
@@ -1904,6 +1964,8 @@ impl Render for CodexView {
                     .child(row),
             );
         }
+        messages =
+            messages.children(self.question_blocks_at(state.saved.items.len(), &state, window, cx));
         let mut surface = div()
             .id("codex-conversation")
             .size_full()
@@ -2008,12 +2070,8 @@ impl Render for CodexView {
                     .child(error.clone()),
             ));
         }
-        if !state.questions.is_empty()
-            || !state.approvals.is_empty()
-            || !state.elicitations.is_empty()
-        {
+        if !state.approvals.is_empty() || !state.elicitations.is_empty() {
             let approvals = self.approval_panel(&state, window, cx);
-            let questions = self.question_panel(&state, window, cx);
             let elicitations = self.elicitation_panel(&state, window, cx);
             surface = surface.child(
                 div()
@@ -2039,7 +2097,6 @@ impl Render for CodexView {
                             .gap(rpx(SPACE_3XL))
                             .py(rpx(SPACE_LG))
                             .child(approvals)
-                            .when(!state.questions.is_empty(), |panel| panel.child(questions))
                             .child(elicitations),
                     ),
             );
@@ -4822,6 +4879,13 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.question_generation != state.cleared_conversations
+            || (self.stream_thread.is_some() && self.stream_thread != state.saved.thread_id)
+        {
+            self.question_receipts.clear();
+            self.question_drafts.clear();
+            self.question_generation = state.cleared_conversations;
+        }
         let keys: HashSet<_> = state
             .questions
             .iter()
@@ -4829,14 +4893,36 @@ impl CodexView {
             .collect();
         let restore_focus = self.question_drafts.iter().any(|(key, group)| {
             !keys.contains(key)
-                && group.questions.iter().any(|question| {
-                    question.input.focus_handle(cx).is_focused(window)
-                        || question
-                            .choice_focus
-                            .iter()
-                            .any(|focus| focus.is_focused(window))
-                })
+                && (group.row_focus.iter().any(|focus| focus.is_focused(window))
+                    || group.questions.iter().any(|question| {
+                        question.input.focus_handle(cx).is_focused(window)
+                            || question
+                                .choice_focus
+                                .iter()
+                                .any(|focus| focus.is_focused(window))
+                    }))
         });
+        for (key, group) in &mut self.question_drafts {
+            if group.pending_receipt.is_some()
+                && state.question_answer_acks.iter().any(|ack| {
+                    ack.sequence > group.ack_after
+                        && format!(
+                            "{}:{}:{}",
+                            ack.thread_id.as_deref().unwrap_or_default(),
+                            if group.turn_bound {
+                                ack.turn_id.as_deref().unwrap_or_default()
+                            } else {
+                                ""
+                            },
+                            ack.id
+                        ) == *key
+                })
+            {
+                if let Some(receipt) = group.pending_receipt.take() {
+                    self.question_receipts.push(receipt);
+                }
+            }
+        }
         self.question_drafts.retain(|key, _| keys.contains(key));
         if restore_focus {
             self.input.focus_handle(cx).focus(window, cx);
@@ -4846,6 +4932,7 @@ impl CodexView {
             if let Some(draft) = self.question_drafts.get_mut(&key) {
                 if state.error.is_some() {
                     draft.submitting = false;
+                    draft.pending_receipt = None;
                 }
                 continue;
             }
@@ -4894,6 +4981,21 @@ impl CodexView {
                 key,
                 QuestionGroupDraft {
                     questions,
+                    expanded: request.questions.iter().position(|question| {
+                        !matches!(&question.kind, codex::QuestionKind::Number(number) if number.default_value.is_some())
+                    }).or(Some(0)),
+                    row_focus: request
+                        .questions
+                        .iter()
+                        .map(|_| cx.focus_handle())
+                        .collect(),
+                    anchor: state.saved.items.len(),
+                    ack_after: state
+                        .question_answer_acks
+                        .last()
+                        .map_or(0, |ack| ack.sequence),
+                    turn_bound: request.turn_bound(),
+                    pending_receipt: None,
                     submitting: false,
                 },
             );
@@ -4989,12 +5091,32 @@ impl CodexView {
             }
             Some(answers)
         };
+        let receipt = answers.as_ref().map(|answers| QuestionReceipt {
+            anchor: self.question_drafts[key].anchor,
+            title: request.title.clone(),
+            answers: request
+                .questions
+                .iter()
+                .map(|question| {
+                    (
+                        question.text.clone(),
+                        question_answer_summary(question, answers),
+                    )
+                })
+                .collect(),
+        });
+        let ack_after = state
+            .question_answer_acks
+            .last()
+            .map_or(0, |ack| ack.sequence);
         let Some(group) = self.question_drafts.get_mut(key) else {
             return;
         };
         if group.submitting {
             return;
         }
+        group.pending_receipt = receipt;
+        group.ack_after = ack_after;
         group.submitting = true;
         self.session.update(cx, |session, cx| {
             session.state.error = None;
@@ -5002,316 +5124,472 @@ impl CodexView {
         });
         cx.notify();
     }
-    fn question_panel(
+    fn toggle_question(
         &mut self,
+        key: &str,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(group) = self.question_drafts.get_mut(key) else {
+            return;
+        };
+        if group.submitting {
+            return;
+        }
+        group.expanded = if group.expanded == Some(index) {
+            None
+        } else {
+            Some(index)
+        };
+        group.row_focus[index].focus(window, cx);
+        cx.notify();
+    }
+
+    fn has_question_anchor(&self, anchor: usize) -> bool {
+        self.question_drafts
+            .values()
+            .any(|group| group.anchor == anchor)
+            || self
+                .question_receipts
+                .iter()
+                .any(|receipt| receipt.anchor == anchor)
+    }
+
+    fn question_blocks_at(
+        &mut self,
+        anchor: usize,
         state: &codex::Snapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let mut panel = div()
-            .id("agent-questions")
-            .debug_selector(|| "agent-questions".into())
-            .flex_shrink_0()
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_3XL))
-            .py(rpx(SPACE_LG));
-        for (request_index, request) in state.questions.iter().enumerate() {
-            let key = question_key(state, request);
-            let draft = &self.question_drafts[&key];
-            let submitting = draft.submitting;
-            let validation = request.validate(&self.question_answers(&key, request, cx));
-            let ready = !submitting && validation.is_ok();
+    ) -> Vec<gpui::AnyElement> {
+        let mut blocks = Vec::new();
+        for (index, receipt) in self
+            .question_receipts
+            .iter()
+            .enumerate()
+            .filter(|(_, receipt)| receipt.anchor == anchor)
+        {
             let mut group = div()
-                .id(("agent-question-group", request_index))
+                .id(("question-receipt", index))
+                .debug_selector(move || format!("question-receipt-{index}"))
                 .role(gpui::Role::Group)
-                .aria_label(format!("Questions from {}", state.saved.provider.label()))
+                .aria_label("Submitted answers")
+                .flex_shrink_0()
                 .w_full()
+                .max_w(rpx(CHAT_MAX_W))
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(rpx(SPACE_2XL))
+                .gap(rpx(SPACE_LG))
+                .px(rpx(SPACE_3XL))
+                .py(rpx(SPACE_2XL))
+                .rounded(rpx(RADIUS_GROUP))
+                .border_1()
+                .border_color(c::BORDER())
+                .bg(c::BG_RAIL())
                 .child(
                     div()
                         .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::AMBER())
-                        .child(format!(
-                            "{} needs your input · {} question{}",
-                            state.saved.provider.label(),
-                            request.questions.len(),
-                            if request.questions.len() == 1 {
-                                ""
-                            } else {
-                                "s"
-                            }
-                        )),
+                        .text_color(c::FG_DIM())
+                        .child("Answers sent"),
                 );
-            if let Some(title) = &request.title {
+            if let Some(title) = &receipt.title {
                 group = group.child(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(title.clone()),
                 );
             }
-            for (question_index, question) in request.questions.iter().enumerate() {
-                let question_draft = &draft.questions[question_index];
-                let mut field = div()
-                    .id(gpui::SharedString::from(format!(
-                        "question-{request_index}-{question_index}"
-                    )))
-                    .role(if question.multiple {
-                        gpui::Role::Group
-                    } else {
-                        gpui::Role::RadioGroup
-                    })
-                    .aria_label(question.text.clone())
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_SM))
-                    .when(!question.header.is_empty(), |field| {
-                        field.child(
+            for (question, answer) in &receipt.answers {
+                group = group.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_XS))
+                        .child(
                             div()
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
-                                .child(question.header.clone()),
+                                .child(question.clone()),
                         )
-                    })
-                    .child(div().child(question.text.clone()));
-                if let Some(description) = &question.description {
-                    field = field.child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(description.clone()),
-                    );
-                }
-                if let codex::QuestionKind::Number(number) = &question.kind {
-                    let mut hint = format!("{}–{}", number.min, number.max);
-                    if let Some(unit) = &number.unit {
-                        let _ = write!(hint, " {unit}");
-                    }
-                    if let Some(step) = number.step {
-                        let _ = write!(hint, " · increment {step}");
-                    }
-                    field = field.child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(hint),
-                    );
-                }
-                if question.multiple {
-                    field = field.child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child("Select all that apply"),
-                    );
-                }
-                for (option_index, option) in question.options.iter().enumerate() {
-                    let click_key = key.clone();
-                    let keyboard_key = key.clone();
-                    let multiple = question.multiple;
-                    let choice_count = question.options.len();
-                    let option_count = choice_count + usize::from(question.allow_custom);
-                    field = field.child(
-                        question_choice(
-                            gpui::SharedString::from(format!(
-                                "question-option-{request_index}-{question_index}-{option_index}"
-                            )),
-                            option.label.clone(),
-                            match &option.preview {
-                                Some(preview) if !option.description.is_empty() => {
-                                    format!("{}\n{preview}", option.description)
-                                }
-                                Some(preview) => preview.clone(),
-                                None => option.description.clone(),
-                            },
-                            multiple,
-                            question_draft.selected.contains(&option_index),
-                        )
-                        .track_focus(&question_draft.choice_focus[option_index])
-                        .debug_selector(move || {
-                            format!(
-                                "question-option-{request_index}-{question_index}-{option_index}"
-                            )
-                        })
-                        .when(submitting, |row| row.opacity(OPACITY_DISABLED))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_question_choice(
-                                &click_key,
-                                question_index,
-                                Some(option_index),
-                                multiple,
-                                window,
-                                cx,
-                            );
-                        }))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if event.is_held {
-                                    return;
-                                }
-                                let next = match event.keystroke.key.as_str() {
-                                    "enter" | "space" => Some(option_index),
-                                    "down" | "right" if !multiple => {
-                                        Some((option_index + 1) % option_count)
-                                    }
-                                    "up" | "left" if !multiple => {
-                                        Some((option_index + option_count - 1) % option_count)
-                                    }
-                                    _ => None,
-                                };
-                                if let Some(next) = next {
-                                    this.select_question_choice(
-                                        &keyboard_key,
-                                        question_index,
-                                        (next < choice_count).then_some(next),
-                                        multiple,
-                                        window,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }
-                            },
-                        )),
-                    );
-                }
-                if question.allow_custom && !question.options.is_empty() {
-                    let click_key = key.clone();
-                    let keyboard_key = key.clone();
-                    let multiple = question.multiple;
-                    let choice_count = question.options.len();
-                    field = field.child(
-                        question_choice(
-                            gpui::SharedString::from(format!(
-                                "question-other-{request_index}-{question_index}"
-                            )),
-                            "Other".into(),
-                            String::new(),
-                            multiple,
-                            question_draft.custom,
-                        )
-                        .track_focus(&question_draft.choice_focus[question.options.len()])
-                        .when(submitting, |row| row.opacity(OPACITY_DISABLED))
-                        .debug_selector(move || {
-                            format!("question-other-{request_index}-{question_index}")
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_question_choice(
-                                &click_key,
-                                question_index,
-                                None,
-                                multiple,
-                                window,
-                                cx,
-                            );
-                        }))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if event.is_held {
-                                    return;
-                                }
-                                let choice = match event.keystroke.key.as_str() {
-                                    "enter" | "space" => Some(None),
-                                    "up" | "left" if !multiple => Some(Some(choice_count - 1)),
-                                    "down" | "right" if !multiple => Some(Some(0)),
-                                    _ => None,
-                                };
-                                if let Some(choice) = choice {
-                                    this.select_question_choice(
-                                        &keyboard_key,
-                                        question_index,
-                                        choice,
-                                        multiple,
-                                        window,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }
-                            },
-                        )),
-                    );
-                }
-                if question_draft.custom {
-                    let focused = question_draft.input.focus_handle(cx).is_focused(window);
-                    field = field.child(
-                        project_field_well(focused, false)
-                            .debug_selector(move || {
-                                format!("question-input-{request_index}-{question_index}")
-                            })
-                            .child(
-                                Input::new(&question_draft.input)
-                                    .disabled(submitting)
-                                    .aria_label(format!("Answer: {}", question.text))
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .focus_bordered(false)
-                                    .text_color(c::FG())
-                                    .p_0(),
-                            ),
-                    );
-                }
-                group = group.child(field);
-            }
-            if let Err(error) = validation {
-                group = group.child(
-                    div()
-                        .id(gpui::SharedString::from(format!(
-                            "questions-validation-{request_index}"
-                        )))
-                        .debug_selector(move || format!("questions-validation-{request_index}"))
-                        .role(gpui::Role::Alert)
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(error),
+                        .child(div().child(answer.clone())),
                 );
             }
-            let cancel_key = key.clone();
-            let cancel_id = request.id.clone();
-            let submit_key = key.clone();
-            let submit_id = request.id.clone();
+            blocks.push(group.into_any_element());
+        }
+        for (index, request) in state.questions.iter().enumerate() {
+            if self
+                .question_drafts
+                .get(&question_key(state, request))
+                .is_some_and(|group| group.anchor == anchor)
+            {
+                blocks.push(
+                    div()
+                        .id(("inline-questions", index))
+                        .debug_selector(|| "agent-questions".into())
+                        .flex_shrink_0()
+                        .w_full()
+                        .max_w(rpx(CHAT_MAX_W))
+                        .min_w_0()
+                        .child(self.question_group(state, index, window, cx))
+                        .into_any_element(),
+                );
+            }
+        }
+        blocks
+    }
+
+    fn question_group(
+        &mut self,
+        state: &codex::Snapshot,
+        request_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let request = &state.questions[request_index];
+        let key = question_key(state, request);
+        let draft = &self.question_drafts[&key];
+        let submitting = draft.submitting;
+        let answers = self.question_answers(&key, request, cx);
+        let answered = request
+            .questions
+            .iter()
+            .filter(|question| question_has_answer(question, &answers))
+            .count();
+        let validation = request.validate(&answers);
+        let ready = !submitting && validation.is_ok();
+        let mut group = div()
+            .id(("agent-question-group", request_index))
+            .role(gpui::Role::Group)
+            .aria_label(format!("Questions from {}", state.saved.provider.label()))
+            .flex_shrink_0()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .rounded(rpx(RADIUS_GROUP))
+            .border_1()
+            .border_color(c::BORDER())
+            .bg(c::BG_RAIL())
+            .overflow_hidden()
+            .child(
+                div()
+                    .px(rpx(SPACE_3XL))
+                    .py(rpx(SPACE_2XL))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::AMBER())
+                    .child(format!(
+                        "{} needs your input · {answered} of {} answered · draft",
+                        state.saved.provider.label(),
+                        request.questions.len(),
+                    )),
+            );
+        if let Some(title) = &request.title {
             group = group.child(
                 div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(rpx(SPACE_LG))
-                    .child(
-                        form_action(
-                            gpui::SharedString::from(format!("questions-cancel-{request_index}")),
-                            "Cancel",
-                            false,
-                            window,
-                            cx,
-                        )
-                        .debug_selector(move || format!("questions-cancel-{request_index}"))
-                        .disabled(submitting)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.answer_questions(&cancel_key, cancel_id.clone(), true, cx);
-                        })),
-                    )
-                    .child(
-                        form_action(
-                            gpui::SharedString::from(format!("questions-submit-{request_index}")),
-                            "Submit answers",
-                            true,
-                            window,
-                            cx,
-                        )
-                        .debug_selector(move || format!("questions-submit-{request_index}"))
-                        .disabled(!ready)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.answer_questions(&submit_key, submit_id.clone(), false, cx);
-                        })),
-                    ),
+                    .px(rpx(SPACE_3XL))
+                    .pb(rpx(SPACE_2XL))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(title.clone()),
             );
-            panel = panel.child(group);
         }
-        panel
+        for (question_index, question) in request.questions.iter().enumerate() {
+            let question_draft = &draft.questions[question_index];
+            let expanded = draft.expanded == Some(question_index);
+            let click_key = key.clone();
+            let keyboard_key = key.clone();
+            group = group.child(
+                question_disclosure(
+                    gpui::SharedString::from(format!(
+                        "question-row-{request_index}-{question_index}"
+                    )),
+                    format!("{}. {}", question_index + 1, question.text),
+                    question_answer_summary(question, &answers),
+                    expanded,
+                )
+                .debug_selector(move || format!("question-row-{request_index}-{question_index}"))
+                .track_focus(&draft.row_focus[question_index])
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.toggle_question(&click_key, question_index, window, cx);
+                }))
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if action_key(event) {
+                            this.toggle_question(&keyboard_key, question_index, window, cx);
+                            cx.stop_propagation();
+                        }
+                    },
+                )),
+            );
+            if !expanded {
+                continue;
+            }
+            let mut field = div()
+                .id(gpui::SharedString::from(format!(
+                    "question-{request_index}-{question_index}"
+                )))
+                .role(if question.multiple {
+                    gpui::Role::Group
+                } else {
+                    gpui::Role::RadioGroup
+                })
+                .aria_label(question.text.clone())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_LG))
+                .px(rpx(SPACE_3XL))
+                .pb(rpx(SPACE_3XL))
+                .bg(c::FIELD_FILL())
+                .when(!question.header.is_empty(), |field| {
+                    field.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(question.header.clone()),
+                    )
+                });
+            if let Some(description) = &question.description {
+                field = field.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(description.clone()),
+                );
+            }
+            if let codex::QuestionKind::Number(number) = &question.kind {
+                let mut hint = format!("{}–{}", number.min, number.max);
+                if let Some(unit) = &number.unit {
+                    let _ = write!(hint, " {unit}");
+                }
+                if let Some(step) = number.step {
+                    let _ = write!(hint, " · increment {step}");
+                }
+                field = field.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(hint),
+                );
+            }
+            if question.multiple {
+                field = field.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("Select all that apply"),
+                );
+            }
+            for (option_index, option) in question.options.iter().enumerate() {
+                let click_key = key.clone();
+                let keyboard_key = key.clone();
+                let multiple = question.multiple;
+                let choice_count = question.options.len();
+                let option_count = choice_count + usize::from(question.allow_custom);
+                field = field.child(
+                    question_choice(
+                        gpui::SharedString::from(format!(
+                            "question-option-{request_index}-{question_index}-{option_index}"
+                        )),
+                        option.label.clone(),
+                        match &option.preview {
+                            Some(preview) if !option.description.is_empty() => {
+                                format!("{}\n{preview}", option.description)
+                            }
+                            Some(preview) => preview.clone(),
+                            None => option.description.clone(),
+                        },
+                        multiple,
+                        question_draft.selected.contains(&option_index),
+                    )
+                    .track_focus(&question_draft.choice_focus[option_index])
+                    .debug_selector(move || {
+                        format!("question-option-{request_index}-{question_index}-{option_index}")
+                    })
+                    .when(submitting, |row| row.opacity(OPACITY_DISABLED))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_question_choice(
+                            &click_key,
+                            question_index,
+                            Some(option_index),
+                            multiple,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if event.is_held {
+                                return;
+                            }
+                            let next = match event.keystroke.key.as_str() {
+                                "enter" | "space" => Some(option_index),
+                                "down" | "right" if !multiple => {
+                                    Some((option_index + 1) % option_count)
+                                }
+                                "up" | "left" if !multiple => {
+                                    Some((option_index + option_count - 1) % option_count)
+                                }
+                                _ => None,
+                            };
+                            if let Some(next) = next {
+                                this.select_question_choice(
+                                    &keyboard_key,
+                                    question_index,
+                                    (next < choice_count).then_some(next),
+                                    multiple,
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            }
+                        },
+                    )),
+                );
+            }
+            if question.allow_custom && !question.options.is_empty() {
+                let click_key = key.clone();
+                let keyboard_key = key.clone();
+                let multiple = question.multiple;
+                let choice_count = question.options.len();
+                field = field.child(
+                    question_choice(
+                        gpui::SharedString::from(format!(
+                            "question-other-{request_index}-{question_index}"
+                        )),
+                        "Other".into(),
+                        String::new(),
+                        multiple,
+                        question_draft.custom,
+                    )
+                    .track_focus(&question_draft.choice_focus[question.options.len()])
+                    .when(submitting, |row| row.opacity(OPACITY_DISABLED))
+                    .debug_selector(move || {
+                        format!("question-other-{request_index}-{question_index}")
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_question_choice(
+                            &click_key,
+                            question_index,
+                            None,
+                            multiple,
+                            window,
+                            cx,
+                        );
+                    }))
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if event.is_held {
+                                return;
+                            }
+                            let choice = match event.keystroke.key.as_str() {
+                                "enter" | "space" => Some(None),
+                                "up" | "left" if !multiple => Some(Some(choice_count - 1)),
+                                "down" | "right" if !multiple => Some(Some(0)),
+                                _ => None,
+                            };
+                            if let Some(choice) = choice {
+                                this.select_question_choice(
+                                    &keyboard_key,
+                                    question_index,
+                                    choice,
+                                    multiple,
+                                    window,
+                                    cx,
+                                );
+                                cx.stop_propagation();
+                            }
+                        },
+                    )),
+                );
+            }
+            if question_draft.custom {
+                let focused = question_draft.input.focus_handle(cx).is_focused(window);
+                field = field.child(
+                    project_field_well(focused, false)
+                        .debug_selector(move || {
+                            format!("question-input-{request_index}-{question_index}")
+                        })
+                        .child(
+                            Input::new(&question_draft.input)
+                                .disabled(submitting)
+                                .aria_label(format!("Answer: {}", question.text))
+                                .appearance(false)
+                                .bordered(false)
+                                .focus_bordered(false)
+                                .text_color(c::FG())
+                                .p_0(),
+                        ),
+                );
+            }
+            group = group.child(field);
+        }
+        if let Err(error) = validation {
+            group = group.child(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "questions-validation-{request_index}"
+                    )))
+                    .debug_selector(move || format!("questions-validation-{request_index}"))
+                    .role(gpui::Role::Alert)
+                    .px(rpx(SPACE_3XL))
+                    .pt(rpx(SPACE_2XL))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(error),
+            );
+        }
+        let cancel_key = key.clone();
+        let cancel_id = request.id.clone();
+        let submit_key = key.clone();
+        let submit_id = request.id.clone();
+        group = group.child(
+            div()
+                .px(rpx(SPACE_3XL))
+                .py(rpx(SPACE_2XL))
+                .border_t_1()
+                .border_color(c::BORDER_SOFT())
+                .flex()
+                .flex_wrap()
+                .justify_between()
+                .items_center()
+                .gap(rpx(SPACE_LG))
+                .child(
+                    transcript_action(
+                        gpui::SharedString::from(format!("questions-cancel-{request_index}")),
+                        "Cancel questions",
+                        false,
+                        window,
+                        cx,
+                    )
+                    .debug_selector(move || format!("questions-cancel-{request_index}"))
+                    .disabled(submitting)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.answer_questions(&cancel_key, cancel_id.clone(), true, cx);
+                    })),
+                )
+                .child(
+                    transcript_action(
+                        gpui::SharedString::from(format!("questions-submit-{request_index}")),
+                        if submitting {
+                            "Sending…"
+                        } else {
+                            "Send answers"
+                        },
+                        true,
+                        window,
+                        cx,
+                    )
+                    .debug_selector(move || format!("questions-submit-{request_index}"))
+                    .disabled(!ready)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.answer_questions(&submit_key, submit_id.clone(), false, cx);
+                    })),
+                ),
+        );
+        group
     }
 }
 
@@ -7143,6 +7421,29 @@ mod tests {
         assert!(cx.debug_bounds("question-input-0-0").is_some());
         cx.simulate_input("Only focus and scrolling");
         draw(cx);
+        let original_key = view.read_with(cx, |view, _| {
+            view.question_drafts.keys().next().unwrap().clone()
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.turn_id = None;
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(view.question_drafts.contains_key(&original_key));
+            assert_eq!(
+                view.question_drafts[&original_key].questions[0]
+                    .input
+                    .read(cx)
+                    .value()
+                    .as_ref(),
+                "Only focus and scrolling"
+            );
+        });
         let submit = cx.debug_bounds("questions-submit-0").unwrap();
         cx.simulate_click(submit.center(), gpui::Modifiers::default());
         draw(cx);
@@ -7155,6 +7456,26 @@ mod tests {
             .expect("native form sends an answer");
         assert_eq!(answer.0, json!("async-ui"));
         assert_eq!(answer.1["0"], vec!["Only focus and scrolling"]);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session
+                        .state
+                        .question_answer_acks
+                        .push(codex::QuestionAnswerAck {
+                            sequence: 1,
+                            id: json!("async-ui"),
+                            thread_id: session.state.saved.thread_id.clone(),
+                            turn_id: None,
+                        });
+                    session.state.questions.clear();
+                    session.state.turn_id = Some("async-answer-turn".into());
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("question-receipt-0").is_some());
         view.read_with(cx, |view, cx| {
             assert_eq!(view.input.read(cx).value().as_ref(), "Unrelated draft");
             assert_eq!(view.images, vec!["draft-image"]);
@@ -7196,7 +7517,7 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(cx.debug_bounds("question-input-0-0").is_some());
+        assert!(cx.debug_bounds("question-input-0-0").is_none());
         assert!(cx.debug_bounds("question-input-0-1").is_some());
         let key = view.read_with(cx, |view, cx| {
             question_key(&view.session.read(cx).state, &request)
@@ -7290,6 +7611,109 @@ mod tests {
     }
 
     #[gpui::test]
+    fn question_receipts_require_ack_and_redact_secrets(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _actions, _updates) = fixture(cx);
+        let request = codex::QuestionRequest::from_codex(
+            json!("secret-ack"),
+            &json!({"questions":[
+                {"id":"secret","question":"Enter access token","isSecret":true}
+            ]}),
+        )
+        .unwrap();
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Waiting;
+                    session.state.questions.push(request.clone());
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        let key = view.read_with(cx, |view, cx| {
+            question_key(&view.session.read(cx).state, &request)
+        });
+        let anchor = view.read_with(cx, |view, _| view.question_drafts[&key].anchor);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let input = view.question_drafts[&key].questions[0].input.clone();
+                input.update(cx, |input, cx| input.set_value("private-token", window, cx));
+                view.toggle_question(&key, 0, window, cx);
+                view.toggle_question(&key, 0, window, cx);
+                assert_eq!(
+                    view.question_drafts[&key].questions[0]
+                        .input
+                        .read(cx)
+                        .value()
+                        .as_ref(),
+                    "private-token"
+                );
+                view.answer_questions(&key, request.id.clone(), false, cx);
+                let pending = view.question_drafts[&key].pending_receipt.as_ref().unwrap();
+                assert_eq!(pending.answers[0].1, "Provided securely");
+                assert!(view.question_receipts.is_empty());
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("question-receipt-0").is_none());
+        // Transport failure keeps drafts, enables retry, and never creates a receipt.
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.error = Some("Transport failed".into());
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        view.read_with(cx, |view, _| {
+            assert!(!view.question_drafts[&key].submitting);
+            assert!(view.question_drafts[&key].pending_receipt.is_none());
+            assert!(view.question_receipts.is_empty());
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.answer_questions(&key, request.id.clone(), false, cx);
+            });
+        });
+        // A successful acknowledgement and turn transition may arrive in the same snapshot.
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session
+                        .state
+                        .question_answer_acks
+                        .push(codex::QuestionAnswerAck {
+                            sequence: 1,
+                            id: request.id.clone(),
+                            thread_id: session.state.saved.thread_id.clone(),
+                            turn_id: session.state.turn_id.clone(),
+                        });
+                    session.state.questions.clear();
+                    session.state.turn_id = Some("next-turn".into());
+                    session.state.saved.items.push(
+                        json!({"type":"agentMessage","id":"after-answer","text":"Continuing"}),
+                    );
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        let receipt = cx.debug_bounds("question-receipt-0").unwrap();
+        let continuation = cx.debug_bounds("codex-message-row-0").unwrap();
+        assert!(
+            receipt.bottom() <= continuation.top(),
+            "receipt stays before later agent activity"
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.question_drafts.is_empty());
+            assert_eq!(view.question_receipts.len(), 1);
+            assert_eq!(view.question_receipts[0].anchor, anchor);
+            assert_eq!(view.question_receipts[0].answers[0].1, "Provided securely");
+        });
+    }
+
+    #[gpui::test]
     fn grouped_questions_preserve_drafts_and_submit_all_answers(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);
         let request = codex::QuestionRequest::from_codex(json!("ask"), &json!({"questions":[
@@ -7314,7 +7738,7 @@ mod tests {
         draw(cx);
         let composer = cx.debug_bounds("codex-composer").unwrap();
         let messages = cx.debug_bounds("codex-messages").unwrap();
-        let questions = cx.debug_bounds("agent-controls").unwrap();
+        let questions = cx.debug_bounds("agent-questions").unwrap();
         assert!(
             composer.bottom() <= gpui::px(480.0),
             "composer footer must remain inside a short viewport: {composer:?}"
@@ -7324,11 +7748,19 @@ mod tests {
             "questions must leave visible transcript space"
         );
         assert!(
-            questions.size.height < gpui::px(QUESTION_PANEL_MAX_H),
-            "questions must shrink and scroll in a short viewport"
+            cx.debug_bounds("agent-controls").is_none(),
+            "questions belong in the transcript"
         );
+        assert!(questions.size.width <= messages.size.width);
         cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
         draw(cx);
+        for selector in ["questions-cancel-0", "questions-submit-0"] {
+            assert_eq!(
+                cx.debug_bounds(selector).unwrap().size.height,
+                gpui::px(CONTROL_H),
+                "question footer uses compact controls"
+            );
+        }
         let key = view.read_with(cx, |view, cx| {
             question_key(&view.session.read(cx).state, &request)
         });
@@ -7346,9 +7778,11 @@ mod tests {
         );
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
+                view.toggle_question(&key, 1, window, cx);
                 view.question_drafts[&key].questions[1].choice_focus[0].focus(window, cx);
             });
         });
+        draw(cx);
         cx.simulate_keystrokes("space");
         draw(cx);
         cx.update(|window, cx| {
@@ -7409,6 +7843,10 @@ mod tests {
         });
         draw(cx);
         assert!(view.read_with(cx, |view, _| view.question_drafts.is_empty()));
+        assert!(
+            view.read_with(cx, |view, _| view.question_receipts.is_empty()),
+            "disappearance without acknowledgement is not successful submission"
+        );
         assert!(cx.debug_bounds("agent-questions").is_none());
     }
 

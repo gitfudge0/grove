@@ -892,13 +892,18 @@ impl Actor {
                     .position(|q| q.id == id)
                     .ok_or("This question request has expired")?;
                 let request = &self.state.questions[at];
+                let answered = answers.is_some();
                 let response = if let Some(answers) = answers {
                     request.validate(&answers)?;
                     request.claude_response(answers)
                 } else {
                     json!({"behavior":"deny","message":"The user cancelled these questions."})
                 };
-                self.respond(id, response)?;
+                self.respond(id.clone(), response)?;
+                if answered {
+                    let ack = self.state.question_answer_ack(id);
+                    self.state.question_answer_acks.push(ack);
+                }
                 self.state.questions.remove(at);
                 self.state.status = if self.state.approvals.is_empty()
                     && self.state.questions.is_empty()
@@ -1963,6 +1968,8 @@ mod tests {
             json!({"type":"control_response","response":{"subtype":"success","request_id":"questions","response":{"behavior":"allow","updatedInput":expected}}})
         );
         assert!(actor.state.questions.is_empty());
+        assert_eq!(actor.state.question_answer_acks.len(), 1);
+        assert_eq!(actor.state.question_answer_acks[0].id, json!("questions"));
         assert!(actor
             .action(Action::AnswerQuestions(json!("questions"), None))
             .is_err());
@@ -1973,6 +1980,11 @@ mod tests {
         assert_eq!(
             read(&mut reader)["response"]["response"]["behavior"],
             "deny"
+        );
+        assert_eq!(
+            actor.state.question_answer_acks.len(),
+            1,
+            "denial is not an answer"
         );
         actor.message(frame).unwrap();
         actor

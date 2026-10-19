@@ -175,6 +175,7 @@ pub struct QuestionRequest {
     pub title: Option<String>,
     pub(crate) claude_input: Option<Value>,
     source: QuestionSource,
+    instance: u64,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum QuestionSource {
@@ -218,6 +219,11 @@ pub struct QuestionOption {
 }
 pub type QuestionAnswers = HashMap<String, Vec<String>>;
 impl QuestionRequest {
+    /// Async message questions remain live after their originating turn ends.
+    pub fn turn_bound(&self) -> bool {
+        self.source != QuestionSource::AsyncMessage
+    }
+
     // Async questions are assistant-message metadata, not pending JSON-RPC requests.
     // Their answers enter the conversation as ordinary user input.
     fn from_async_message(item: &Value) -> Option<Self> {
@@ -363,6 +369,10 @@ impl QuestionRequest {
             title: input["title"].as_str().map(str::to_owned),
             claude_input: claude.then(|| input.clone()),
             source: QuestionSource::ServerRequest,
+            instance: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
         })
     }
     pub fn validate(&self, answers: &QuestionAnswers) -> Result<(), String> {
@@ -427,6 +437,14 @@ impl QuestionRequest {
         json!({"behavior":"allow","updatedInput":input})
     }
 }
+/// Ephemeral successful answer delivery; deliberately contains no answer content.
+#[derive(Clone, Debug)]
+pub struct QuestionAnswerAck {
+    pub sequence: u64,
+    pub id: Value,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+}
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub saved: SavedSession,
@@ -434,6 +452,7 @@ pub struct Snapshot {
     pub turn_id: Option<String>,
     pub approvals: Vec<Value>,
     pub questions: Vec<QuestionRequest>,
+    pub question_answer_acks: Vec<QuestionAnswerAck>,
     pub elicitations: Vec<crate::elicitation::ElicitationRequest>,
     pub error: Option<String>,
     pub sandbox: Option<Value>,
@@ -492,6 +511,18 @@ impl Status {
     }
 }
 impl Snapshot {
+    pub(crate) fn question_answer_ack(&self, id: Value) -> QuestionAnswerAck {
+        QuestionAnswerAck {
+            sequence: self
+                .question_answer_acks
+                .last()
+                .map_or(1, |ack| ack.sequence + 1),
+            id,
+            thread_id: self.saved.thread_id.clone(),
+            turn_id: self.turn_id.clone(),
+        }
+    }
+
     pub(crate) fn mark_queue_uncertain(&mut self) {
         for id in &self.queue_sending {
             if !self.queue_uncertain.contains(id) {
@@ -565,6 +596,7 @@ impl Snapshot {
             turn_id: None,
             approvals: Vec::new(),
             questions: Vec::new(),
+            question_answer_acks: Vec::new(),
             elicitations: Vec::new(),
             error: None,
             sandbox: None,
@@ -1515,6 +1547,8 @@ enum Pending {
     },
     AsyncAnswer {
         question_id: Value,
+        request_instance: u64,
+        ack: QuestionAnswerAck,
     },
     Compact,
     Interrupt {
@@ -2175,7 +2209,7 @@ impl Actor {
                     request.validate(answers)?;
                 }
                 if request.source == QuestionSource::AsyncMessage {
-                    if self.pending.values().any(|pending| matches!(&pending.kind, Pending::AsyncAnswer { question_id } if *question_id == id)) {
+                    if self.pending.values().any(|pending| matches!(&pending.kind, Pending::AsyncAnswer { request_instance, .. } if *request_instance == request.instance)) {
                         return Err("This answer is already being submitted".into());
                     }
                     if let Some(answers) = answers {
@@ -2183,7 +2217,11 @@ impl Actor {
                         self.request(
                             "turn/start",
                             self.turn_params(self.input(&text, Vec::new())),
-                            Pending::AsyncAnswer { question_id: id },
+                            Pending::AsyncAnswer {
+                                question_id: id.clone(),
+                                request_instance: request.instance,
+                                ack: self.state.question_answer_ack(id),
+                            },
                         )?;
                         self.state.error = None;
                     } else {
@@ -2201,8 +2239,13 @@ impl Actor {
                     }
                     return Ok(true);
                 }
+                let answered = answers.is_some();
                 let response = request.codex_response(answers.unwrap_or_default());
                 self.write(&json!({"id":id,"result":response}))?;
+                if answered {
+                    let ack = self.state.question_answer_ack(id);
+                    self.state.question_answer_acks.push(ack);
+                }
                 self.state.questions.remove(at);
                 self.state.status = if self.state.approvals.is_empty()
                     && self.state.questions.is_empty()
@@ -2718,8 +2761,26 @@ impl Actor {
                     self.prompt(prompt)?;
                 }
             }
-            Pending::AsyncAnswer { question_id } => {
-                self.state.resolve_async_question(&question_id);
+            Pending::AsyncAnswer {
+                question_id,
+                request_instance,
+                mut ack,
+            } => {
+                // A cancelled or expired request cannot become an answered receipt.
+                if self
+                    .state
+                    .questions
+                    .iter()
+                    .any(|request| request.instance == request_instance)
+                {
+                    ack.sequence = self
+                        .state
+                        .question_answer_acks
+                        .last()
+                        .map_or(1, |old| old.sequence + 1);
+                    self.state.question_answer_acks.push(ack);
+                    self.state.resolve_async_question(&question_id);
+                }
                 if let Some(turn) = result["turn"]["id"]
                     .as_str()
                     .filter(|id| !self.state.settled_turns.iter().any(|old| old == id))
@@ -3933,6 +3994,7 @@ mod tests {
             .unwrap();
         assert_eq!(actor.state.status, Status::Waiting);
         assert_eq!(actor.state.questions.len(), 1);
+        assert!(actor.state.question_answer_acks.is_empty());
         actor.state.turn_id = None;
         actor
             .action(Action::AnswerQuestions(
@@ -3948,6 +4010,14 @@ mod tests {
             .unwrap();
         assert!(actor.state.questions.is_empty());
         assert_eq!(actor.state.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(actor.state.question_answer_acks.len(), 1);
+        let ack = &actor.state.question_answer_acks[0];
+        assert_eq!(ack.id, json!("async-question"));
+        assert_eq!(ack.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(
+            ack.turn_id, None,
+            "capture submission scope, not acknowledged turn"
+        );
         assert_eq!(actor.state.saved.draft, "Unsent draft");
         assert_eq!(actor.state.saved.draft_images, vec!["draft.png"]);
         actor.state.turn_id = Some("turn-1".into());
@@ -3963,6 +4033,44 @@ mod tests {
             actor.pending.is_empty(),
             "dismissal must not send a provider RPC"
         );
+        let mut cancelled = async_question_message();
+        cancelled["params"]["item"]["id"] = json!("cancelled-in-flight");
+        actor.message(cancelled).unwrap();
+        actor
+            .action(Action::AnswerQuestions(
+                json!("cancelled-in-flight"),
+                Some(HashMap::from([
+                    ("0".into(), vec!["All".into()]),
+                    ("1".into(), vec!["Details".into()]),
+                ])),
+            ))
+            .unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let submitted: Value = serde_json::from_str(&line).unwrap();
+        actor
+            .state
+            .resolve_async_question(&json!("cancelled-in-flight"));
+        // A provider can reuse its wire id for a new request before the old reply arrives.
+        let mut replacement_item = async_question_message()["params"]["item"].clone();
+        replacement_item["id"] = json!("cancelled-in-flight");
+        let replacement = QuestionRequest::from_async_message(&replacement_item).unwrap();
+        assert!(!replacement.turn_bound());
+        actor.state.questions.push(replacement);
+        actor
+            .message(json!({"id":submitted["id"],"result":{"turn":{"id":"turn-3"}}}))
+            .unwrap();
+        assert_eq!(
+            actor.state.question_answer_acks.len(),
+            1,
+            "late success after cancellation is not an answer receipt"
+        );
+        assert_eq!(
+            actor.state.questions.len(),
+            1,
+            "late success must not remove the replacement request"
+        );
+        assert_eq!(actor.state.questions[0].id, json!("cancelled-in-flight"));
     }
     #[cfg(unix)]
     #[test]
@@ -4017,6 +4125,13 @@ mod tests {
         assert!(!serde_json::to_string(&actor.state.saved)
             .unwrap()
             .contains("private-token"));
+        assert_eq!(actor.state.question_answer_acks.len(), 1);
+        assert_eq!(actor.state.question_answer_acks[0].id, json!(81));
+        assert_eq!(actor.state.question_answer_acks[0].sequence, 1);
+        assert!(!format!("{:?}", actor.state.question_answer_acks).contains("private-token"));
+        assert!(!serde_json::to_string(&actor.state.saved)
+            .unwrap()
+            .contains("question_answer_acks"));
         assert!(actor.state.questions.is_empty());
         assert!(actor
             .action(Action::AnswerQuestions(json!(81), None))
@@ -4031,6 +4146,11 @@ mod tests {
             serde_json::from_str::<Value>(&line).unwrap(),
             json!({"id":82,"result":{"answers":{}}})
         );
+        assert_eq!(
+            actor.state.question_answer_acks.len(),
+            1,
+            "cancellation is not an answer"
+        );
         actor.message(json!({"id":83,"method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-1","questions":[{"id":"q","question":"Continue?"}]}})).unwrap();
         actor.message(json!({"method":"serverRequest/resolved","params":{"threadId":"thread-1","requestId":83}})).unwrap();
         assert!(actor
@@ -4042,6 +4162,40 @@ mod tests {
         assert!(actor
             .action(Action::AnswerQuestions(json!(84), None))
             .is_err());
+    }
+    #[test]
+    fn failed_question_transport_does_not_acknowledge_or_remove_request() {
+        let mut actor = actor();
+        actor.state.questions.push(
+            QuestionRequest::from_codex(
+                json!(91),
+                &json!({"questions":[{"id":"q","question":"Name?"}]}),
+            )
+            .unwrap(),
+        );
+        assert!(actor
+            .action(Action::AnswerQuestions(
+                json!(91),
+                Some(HashMap::from([("q".into(), vec!["Alice".into()]),]))
+            ))
+            .is_err());
+        assert!(actor.state.question_answer_acks.is_empty());
+        assert_eq!(actor.state.questions.len(), 1);
+        assert!(actor.state.questions[0].turn_bound());
+    }
+    #[test]
+    fn question_acknowledgements_are_ephemeral_across_restart_and_new_conversation() {
+        let mut snapshot = state();
+        snapshot
+            .question_answer_acks
+            .push(snapshot.question_answer_ack(json!(91)));
+        let serialized = serde_json::to_value(&snapshot.saved).unwrap();
+        assert!(serialized.get("question_answer_acks").is_none());
+        let restored: SavedSession = serde_json::from_value(serialized).unwrap();
+        assert!(Snapshot::new(restored).question_answer_acks.is_empty());
+        assert!(Snapshot::new(snapshot.saved.fresh_conversation())
+            .question_answer_acks
+            .is_empty());
     }
     #[test]
     fn question_validation_rejects_ambiguous_ids_and_unoffered_answers() {
