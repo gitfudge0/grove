@@ -38,8 +38,7 @@ const COMPOSER_MENU_MAX_H: f32 = 280.0;
 const COMPOSER_MIN_H: f32 = 72.0;
 const USER_BUBBLE_MAX_W: f32 = 600.0;
 const IMAGE_PREVIEW_EDGE: f32 = 56.0;
-const COMPOSER_TOKEN_BORDER: f32 = 1.0;
-const COMPOSER_TOKEN_FILL_OPACITY: f32 = 0.14;
+const COMPOSER_TOKEN_UNDERLINE: f32 = 1.0;
 const TOOL_SHIMMER_PERIOD: std::time::Duration = std::time::Duration::from_millis(1600);
 const TOOL_SHIMMER_WIDTH: f32 = 0.2;
 const QUEUED_PROMPTS_MAX_H: f32 = 144.0;
@@ -159,6 +158,28 @@ fn content_rail(child: impl IntoElement) -> gpui::Div {
         .px(rpx(SPACE_20))
         .child(div().w_full().min_w_0().max_w(rpx(CHAT_MAX_W)).child(child))
 }
+/// Attached backing shared by completion choices and queued messages.
+fn composer_tray(window: &Window) -> gpui::Div {
+    div()
+        .mx(rpx(
+            if window.viewport_size().width < gpui::px(CHAT_MAX_W) {
+                SPACE_2XL
+            } else {
+                SPACE_20
+            },
+        ))
+        .mb(-rpx(SPACE_2XL + SPACE_MD))
+        .pb(rpx(SPACE_2XL + SPACE_MD))
+        .px(rpx(SPACE_2XL))
+        .pt(rpx(SPACE_LG))
+        .rounded_t(rpx(SPACE_20))
+        .border_1()
+        .border_color(c::BORDER_SOFT())
+        .bg(c::BG_RAIL())
+        .flex()
+        .flex_col()
+}
+
 /// Keep decoded image dimensions out of attachment layout in both message surfaces.
 fn attachment_preview(image: Arc<gpui::Image>) -> gpui::Div {
     div()
@@ -230,6 +251,7 @@ pub struct CodexView {
     dismissed_suggestions: Option<String>,
     submitted: Option<String>,
     submitted_ack: Option<u64>,
+    pending_clear: Option<(u64, String, Vec<String>)>,
     queue_selected: Option<u64>,
     queue_collapsed: bool,
     queue_editor: Option<QueueEditor>,
@@ -242,6 +264,13 @@ pub struct CodexView {
     pending_image_pastes: usize,
     scroll: gpui::ScrollHandle,
     last_content: String,
+    smooth_follow: bool,
+    last_follow_offset: Option<gpui::Pixels>,
+    last_follow_max: gpui::Pixels,
+    motion_frame: Option<std::time::Instant>,
+    motion_frame_pending: Rc<Cell<bool>>,
+    stream_text: HashMap<String, (String, usize)>,
+    stream_thread: Option<String>,
     follow_after_submit: bool,
     composer_collapsed: bool,
     pending_composer_scroll: Option<bool>,
@@ -256,6 +285,7 @@ pub struct CodexView {
 }
 impl CodexView {
     pub fn new(session: Entity<CodexSession>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let stream_thread = session.read(cx).state.saved.thread_id.clone();
         let draft = session.read(cx).state.saved.draft.clone();
         let images = session.read(cx).state.saved.draft_images.clone();
         let previews = images
@@ -284,7 +314,7 @@ impl CodexView {
                     shift: false,
                 } => {
                     if this.session.read(cx).state.status.busy() {
-                        this.submit_mode(SubmissionMode::Queue, cx);
+                        this.submit_mode(SubmissionMode::Queue, window, cx);
                     } else {
                         this.submit(window, cx);
                     }
@@ -293,7 +323,7 @@ impl CodexView {
                     secondary: false,
                     shift: false,
                 } => this.submit(window, cx),
-                InputEvent::PasteImages(images) => this.paste_images(images.clone(), cx),
+                InputEvent::PasteImages(images) => this.paste_images(images.clone(), window, cx),
                 InputEvent::Focus => this.set_composer_collapsed(false, cx),
                 InputEvent::Change => {
                     this.set_composer_collapsed(false, cx);
@@ -334,6 +364,7 @@ impl CodexView {
             dismissed_suggestions: None,
             submitted: None,
             submitted_ack: None,
+            pending_clear: None,
             queue_selected: None,
             queue_collapsed: false,
             queue_editor: None,
@@ -346,6 +377,13 @@ impl CodexView {
             pending_image_pastes: 0,
             scroll: gpui::ScrollHandle::new(),
             last_content: String::new(),
+            smooth_follow: false,
+            last_follow_offset: None,
+            last_follow_max: gpui::Pixels::ZERO,
+            motion_frame: None,
+            motion_frame_pending: Rc::default(),
+            stream_text: HashMap::new(),
+            stream_thread,
             follow_after_submit: true,
             composer_collapsed: false,
             pending_composer_scroll: None,
@@ -661,26 +699,9 @@ impl CodexView {
             count
         };
         let collapsed = self.queue_collapsed;
-        let mut tray = div()
+        let mut tray = composer_tray(window)
             .id("codex-queued-prompts")
             .debug_selector(|| "codex-queued-prompts".into())
-            .mx(rpx(
-                if window.viewport_size().width < gpui::px(CHAT_MAX_W) {
-                    SPACE_2XL
-                } else {
-                    SPACE_20
-                },
-            ))
-            .mb(-rpx(SPACE_2XL + SPACE_MD))
-            .pb(rpx(SPACE_2XL + SPACE_MD))
-            .px(rpx(SPACE_2XL))
-            .pt(rpx(SPACE_LG))
-            .rounded_t(rpx(SPACE_20))
-            .border_1()
-            .border_color(c::BORDER_SOFT())
-            .bg(c::BG_RAIL())
-            .flex()
-            .flex_col()
             .child(
                 div()
                     .flex()
@@ -1067,6 +1088,7 @@ impl CodexView {
     fn transcript_scrolled(&mut self, toward_bottom: bool, cx: &mut Context<Self>) {
         // The next render observes the final offset after native wheel dispatch.
         // Keep this separate from layout/content updates, which never enter browse mode.
+        self.smooth_follow = false;
         self.pending_composer_scroll = Some(toward_bottom);
         self.composer_pin_bottom = false;
         cx.notify();
@@ -1081,11 +1103,13 @@ impl CodexView {
             self.begin_queue_edit(id, cx);
             return;
         }
-
-        if self.draft_action_pending(cx) {
+        if self.submitted.is_some() {
             return;
         }
         if self.run_command(window, cx) {
+            return;
+        }
+        if self.draft_action_pending(cx) {
             return;
         }
         let mode = if self.session.read(cx).state.status.busy() {
@@ -1093,7 +1117,7 @@ impl CodexView {
         } else {
             SubmissionMode::Send
         };
-        self.submit_mode(mode, cx);
+        self.submit_mode(mode, window, cx);
     }
     fn interrupt(&mut self, cx: &mut Context<Self>) {
         let state = &self.session.read(cx).state;
@@ -1113,12 +1137,14 @@ impl CodexView {
         }
         cx.notify();
     }
-    fn submit_mode(&mut self, mode: SubmissionMode, cx: &mut Context<Self>) {
+    fn submit_mode(&mut self, mode: SubmissionMode, window: &mut Window, cx: &mut Context<Self>) {
         if self.queue_editor.is_some() {
             self.save_queue_edit(cx);
             return;
         }
-
+        if self.submitted.is_none() && self.run_command(window, cx) {
+            return;
+        }
         let state = &self.session.read(cx).state;
         if self.draft_action_pending(cx)
             || (mode == SubmissionMode::Steer
@@ -1168,9 +1194,43 @@ impl Focusable for CodexView {
 }
 impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_image_tokens(window, cx);
         let state = self.session.read(cx).state.clone();
         self.sync_queue_editor(&state, window, cx);
         self.sync_queue_motion(&state, cx);
+        if self
+            .pending_clear
+            .as_ref()
+            .is_some_and(|(generation, _, _)| state.cleared_conversations > *generation)
+        {
+            if let Some((_, draft, images)) = self.pending_clear.take() {
+                if self.input.read(cx).value().as_ref() == draft {
+                    self.input
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                    self.picked_tokens.clear();
+                    self.file_suggestions.clear();
+                    self.file_query.clear();
+                    self.file_lookup = None;
+                    self.dismissed_suggestions = None;
+                }
+                if self.images == images {
+                    self.images.clear();
+                }
+            }
+            self.submitted = None;
+            self.submitted_ack = None;
+            self.expanded.clear();
+            self.menu = None;
+            self.popup = None;
+            self.popup_subscription = None;
+            self.interrupt_requested_for_turn = None;
+            self.bubble_entrances.clear();
+            self.animating_bubbles.clear();
+            self.approval_drafts.clear();
+            self.question_drafts.clear();
+            self.elicitation_drafts.clear();
+            self.follow_after_submit = true;
+        }
         let provider = state.saved.provider.label();
         let scope = format!("{:?}:{:?}", state.saved.thread_id, state.turn_id);
         if self.interaction_scope != scope {
@@ -1237,33 +1297,90 @@ impl Render for CodexView {
             }
             if restoring_bottom {
                 self.composer_pin_bottom = true;
-                self.scroll.scroll_to_bottom();
+                self.smooth_follow = true;
             }
         }
         if self.follow_after_submit {
             self.composer_pin_bottom = true;
             self.set_composer_collapsed(false, cx);
         }
+        let changed_thread = self.stream_thread != state.saved.thread_id;
+        if changed_thread {
+            self.stream_text.clear();
+            self.stream_thread = state.saved.thread_id.clone();
+        }
+        if cx.reduce_motion() {
+            // A later preference toggle must not resurrect an older partial prefix.
+            for (text, shown) in self.stream_text.values_mut() {
+                *shown = text.len();
+            }
+        }
+        let initial_transcript = self.last_content.is_empty() || changed_thread;
+        let stream_keys: HashSet<_> = state
+            .saved
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                item["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("message-{index}"))
+            })
+            .collect();
+        self.stream_text.retain(|key, _| stream_keys.contains(key));
+        if self.follow_after_submit {
+            self.last_follow_offset = None;
+        }
+        let now = cx.background_executor().now();
+        let elapsed = self
+            .motion_frame
+            .replace(now)
+            .map_or(0.0, |previous| now.duration_since(previous).as_secs_f32());
         if self.follow_after_submit
-            || (content != self.last_content && near_bottom && !self.composer_collapsed)
+            || (content != self.last_content
+                && (near_bottom || self.smooth_follow)
+                && !self.composer_collapsed)
         {
-            let previous_bottom = -self.scroll.max_offset().y;
-            let threshold = rpx(SPACE_20).to_pixels(window.rem_size());
-            self.scroll.scroll_to_bottom();
-            // Markdown may measure its new height one frame after its parent. Follow that
-            // layout too, unless the user moved away while the frame was pending.
-            let owner = cx.entity().downgrade();
-            window.on_next_frame(move |_, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    let offset = this.scroll.offset().y;
-                    if offset == previous_bottom || this.scroll.max_offset().y + offset <= threshold
-                    {
-                        this.scroll.scroll_to_bottom();
-                        cx.notify();
-                    }
-                });
-            });
+            self.smooth_follow = true;
             self.follow_after_submit = false;
+        }
+        if self.scroll.max_offset().y == self.last_follow_max
+            && self
+                .last_follow_offset
+                .is_some_and(|offset| offset != self.scroll.offset().y)
+            && !near_bottom
+        {
+            self.smooth_follow = false;
+        }
+        if self.smooth_follow {
+            let target = -self.scroll.max_offset().y;
+            let current = self.scroll.offset();
+            let fraction = if cx.reduce_motion() {
+                1.0
+            } else {
+                1.0 - (-elapsed / (MOTION_FAST_MS as f32 / 1000.0)).exp()
+            };
+            let next = current.y + (target - current.y) * fraction;
+            let settled = (target - next).abs() <= gpui::px(0.5);
+            self.scroll
+                .set_offset(gpui::point(current.x, if settled { target } else { next }));
+            self.last_follow_offset = Some(self.scroll.offset().y);
+            self.last_follow_max = self.scroll.max_offset().y;
+            if !settled || content != self.last_content {
+                let owner = cx.entity().downgrade();
+                let pending = self.motion_frame_pending.clone();
+                if !pending.replace(true) {
+                    cx.spawn(async move |_, cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(16))
+                            .await;
+                        pending.set(false);
+                        let _ = owner.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
+                }
+            }
         }
         self.last_content = content;
         let mut messages = div()
@@ -1552,6 +1669,65 @@ impl Render for CodexView {
                 });
             let text = if tool { tool_detail(item) } else { text };
             let copy = text.clone();
+            let text = if kind == "agentMessage" && !cx.reduce_motion() {
+                let key = item["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("message-{index}"));
+                let entry = self.stream_text.entry(key).or_insert_with(|| {
+                    let shown = if state.status.busy()
+                        && !initial_transcript
+                        && index + 1 == state.saved.items.len()
+                    {
+                        0
+                    } else {
+                        text.len()
+                    };
+                    (text.clone(), shown)
+                });
+                if !text.starts_with(&entry.0[..entry.1.min(entry.0.len())]) {
+                    entry.1 = text.len();
+                }
+                entry.0 = text.clone();
+                if !state.status.busy() {
+                    entry.1 = text.len();
+                }
+                if entry.1 < text.len() {
+                    self.smooth_follow |= near_bottom && !self.composer_collapsed;
+                    // Catch up over a short interval without replaying the existing prefix.
+                    let remaining = text[entry.1..].chars().count();
+                    let advance = ((remaining as f32
+                        * (elapsed.min(1.0 / 30.0) / (MOTION_FAST_MS as f32 / 1000.0)).min(1.0))
+                    .ceil() as usize)
+                        .max(1);
+                    entry.1 = text[entry.1..]
+                        .char_indices()
+                        .nth(advance)
+                        .map_or(text.len(), |(offset, _)| entry.1 + offset);
+                    let owner = cx.entity().downgrade();
+                    let pending = self.motion_frame_pending.clone();
+                    if !pending.replace(true) {
+                        cx.spawn(async move |_, cx| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(16))
+                                .await;
+                            pending.set(false);
+                            let _ = owner.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                    }
+                }
+                text[..entry.1].to_owned()
+            } else {
+                if kind == "agentMessage" {
+                    let key = item["id"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("message-{index}"));
+                    self.stream_text.insert(key, (text.clone(), text.len()));
+                }
+                text
+            };
             let toggle = id.clone();
             row = row.child(
                 div()
@@ -1746,7 +1922,7 @@ impl Render for CodexView {
                 cx.listener(|this, _: &crate::keymap::ToggleZen, window, cx| {
                     if this.input.focus_handle(cx).is_focused(window) {
                         if this.session.read(cx).state.status.busy() {
-                            this.submit_mode(SubmissionMode::Queue, cx);
+                            this.submit_mode(SubmissionMode::Queue, window, cx);
                         } else {
                             this.submit(window, cx);
                         }
@@ -1900,13 +2076,12 @@ impl Render for CodexView {
                             header_control("codex-remove-image", "Remove attached image")
                                 .tab_index(0)
                                 .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    move |this, event: &gpui::KeyDownEvent, window, cx| {
                                         if matches!(event.keystroke.key.as_str(), "enter" | "space")
                                             && this.submitted.is_none()
                                             && !event.is_held
                                         {
-                                            this.images.remove(index);
-                                            this.persist_images(cx);
+                                            this.remove_image(index, window, cx);
                                             cx.stop_propagation();
                                         }
                                     },
@@ -1921,12 +2096,11 @@ impl Render for CodexView {
                                 .group_hover("codex-image", |style| style.opacity(1.0))
                                 .focus_visible(|style| style.opacity(1.0))
                                 .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .on_click(cx.listener(move |this, _, window, cx| {
                                     if this.submitted.is_some() {
                                         return;
                                     }
-                                    this.images.remove(index);
-                                    this.persist_images(cx);
+                                    this.remove_image(index, window, cx);
                                 })),
                         ),
                 );
@@ -2000,7 +2174,7 @@ impl Render for CodexView {
                         let changed = body_height.replace(bounds.size.height) != bounds.size.height;
                         let _ = height_owner.update(cx, |this, cx| {
                             if changed && this.composer_pin_bottom {
-                                this.scroll.scroll_to_bottom();
+                                this.smooth_follow = true;
                                 cx.notify();
                             }
                             if this.composer_motion_finished.get() {
@@ -2199,10 +2373,10 @@ impl Render for CodexView {
                                                 )
                                             ).child(
                                                 composer_icon("codex-queue", "Queue · ⌘Enter · Send after the current turn finishes", "queue", draft_disabled, false)
-                                                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                                                        if action_key(event) { this.submit_mode(SubmissionMode::Queue, cx); cx.stop_propagation(); }
+                                                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                                                        if action_key(event) { this.submit_mode(SubmissionMode::Queue, window, cx); cx.stop_propagation(); }
                                                     }))
-                                                    .on_click(cx.listener(|this, _, _, cx| this.submit_mode(SubmissionMode::Queue, cx)))
+                                                    .on_click(cx.listener(|this, _, window, cx| this.submit_mode(SubmissionMode::Queue, window, cx)))
                                             ))
                                             .child(
                                                 composer_icon("codex-send", primary_label, "arrow-up", primary_disabled, true)
@@ -2232,12 +2406,22 @@ impl Render for CodexView {
                                     .gap(rpx(SPACE_SM))
                                     .text_size(rpx(TEXT_MICRO))
                                     .text_color(c::FG_DIM())
-                                    .child(div()
-                                    .child(if stopping { "Stopping…" }
-                                        else if self.submitted.is_some() { "Sending…" }
-                                        else if busy && !steer_available { "Steer unavailable · ⌘ + Enter Queue · Shift + Enter New line" }
-                                        else if busy { "Enter Steer now · ⌘ + Enter Queue · Shift + Enter New line" }
-                                        else { "Enter Send · Shift + Enter New line" }))
+                                    .child(if stopping || self.submitted.is_some() {
+                                        div().child(if stopping { "Stopping…" } else { "Sending…" })
+                                    } else {
+                                        div().flex().items_center().flex_wrap().gap(rpx(SPACE_LG))
+                                            .child(div().flex().items_center().gap(rpx(SPACE_SM))
+                                                .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
+                                                .child(if busy && !steer_available { "Steer unavailable" } else if busy { "Steer now" } else { "Send" }))
+                                            .when(busy, |row| row.child(div().flex().items_center().gap(rpx(SPACE_SM))
+                                                .child(crate::icons::icon("command", ICON_SM, c::FG_DIM()))
+                                                .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
+                                                .child("Queue")))
+                                            .child(div().flex().items_center().gap(rpx(SPACE_SM))
+                                                .child(crate::icons::icon("shift", ICON_SM, c::FG_DIM()))
+                                                .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
+                                                .child("New line"))
+                                    })
                             ),
                     ),
             );
@@ -2681,18 +2865,18 @@ impl CodexView {
         let following_space = text[range.end..]
             .chars()
             .next()
-            .is_some_and(char::is_whitespace);
-        let suffix = if following_space || (value.starts_with('@') && value.ends_with('/')) {
-            ""
-        } else {
-            " "
-        };
+            .filter(|character| character.is_whitespace());
+        let suffix =
+            if following_space.is_some() || (value.starts_with('@') && value.ends_with('/')) {
+                ""
+            } else {
+                " "
+            };
         self.input.update(cx, |input, cx| {
             input.set_selected_range(range.clone(), cx);
             input.replace(format!("{value}{suffix}"), window, cx);
-            if following_space {
-                let caret =
-                    start + value.len() + text[range.end..].chars().next().unwrap().len_utf8();
+            if let Some(character) = following_space {
+                let caret = start + value.len() + character.len_utf8();
                 input.set_selected_range(caret..caret, cx);
             }
         });
@@ -2703,13 +2887,14 @@ impl CodexView {
                     vec![TextDecoration::new(
                         start..start + value.len(),
                         gpui::HighlightStyle {
-                            background_color: Some(c::BLUE().opacity(COMPOSER_TOKEN_FILL_OPACITY)),
+                            underline: Some(gpui::UnderlineStyle {
+                                thickness: rpx(COMPOSER_TOKEN_UNDERLINE)
+                                    .to_pixels(window.rem_size()),
+                                color: Some(c::BORDER_STRONG()),
+                                ..Default::default()
+                            }),
                             ..Default::default()
                         },
-                    )
-                    .bordered(
-                        rpx(COMPOSER_TOKEN_BORDER).to_pixels(window.rem_size()),
-                        c::BLUE(),
                     )],
                     cx,
                 )
@@ -2737,30 +2922,21 @@ impl CodexView {
     fn composer_choices(
         &self,
         state: &codex::Snapshot,
-        _window: &Window,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let Some((choices, title)) = self.suggestion_choices(state, cx) else {
             return div().into_any_element();
         };
-        let mut panel = div()
-            .id("codex-composer-options")
+        let choice_count = choices.len();
+        let mut rows = div()
+            .id("codex-composer-option-rows")
             .max_h(rpx(QUEUED_PROMPTS_MAX_H))
             .overflow_y_scroll()
             .flex()
-            .flex_col()
-            .gap(rpx(SPACE_XS))
-            .pb(rpx(SPACE_LG))
-            .border_b_1()
-            .border_color(c::BORDER_SOFT())
-            .child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child(title),
-            );
+            .flex_col();
         if choices.is_empty() {
-            panel = panel.child(
+            rows = rows.child(
                 div()
                     .text_size(rpx(TEXT_SMALL))
                     .text_color(c::FG_MUTE())
@@ -2769,16 +2945,22 @@ impl CodexView {
         }
         for (index, (value, label)) in choices.into_iter().enumerate() {
             let keyboard_value = value.clone();
-            panel = panel.child(
+            let (name, description) = label
+                .split_once(" · ")
+                .map(|(name, description)| (name.to_string(), Some(description.to_string())))
+                .unwrap_or_else(|| (label.clone(), None));
+            rows = rows.child(
                 header_control("codex-composer-option", "Select composer option")
                     .id(("codex-composer-option", index))
                     .aria_label(label.clone())
                     .aria_description("Tab to insert this option")
                     .when(index == self.suggestion_index, |row| row.bg(c::BG_HOVER()))
+                    .debug_selector(move || format!("codex-composer-option-{index}"))
                     .w_full()
                     .h_auto()
                     .min_h(rpx(CONTROL_H))
                     .justify_start()
+                    .gap(rpx(SPACE_LG))
                     .px(rpx(SPACE_LG))
                     .py(rpx(SPACE_SM))
                     .tab_index(0)
@@ -2788,8 +2970,20 @@ impl CodexView {
                             .min_w_0()
                             .truncate()
                             .text_size(rpx(TEXT_SMALL))
-                            .child(label),
+                            .text_color(c::FG())
+                            .child(name),
                     )
+                    .when_some(description, |row, description| {
+                        row.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(description),
+                        )
+                    })
                     .on_key_down(cx.listener(
                         move |this, event: &gpui::KeyDownEvent, window, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space")
@@ -2809,7 +3003,33 @@ impl CodexView {
                     })),
             );
         }
-        panel.into_any_element()
+        composer_tray(window)
+            .id("codex-composer-options")
+            .debug_selector(|| "codex-composer-options".into())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .pb(rpx(SPACE_SM))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_MUTE())
+                            .child(choice_count.to_string()),
+                    ),
+            )
+            .child(rows)
+            .into_any_element()
     }
     fn choose_option(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
         if value == "__configured" {
@@ -2836,27 +3056,75 @@ impl CodexView {
     }
     fn run_command(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let text = self.input.read(cx).value().to_string();
-        let command = text.trim();
-        match command {
-            "/model" => self.open_menu(ComposerMenu::Model, window, cx),
-            "/effort" => self.open_menu(ComposerMenu::Effort, window, cx),
-            "/access" => self.open_menu(ComposerMenu::Access, window, cx),
-            "/stop" => self.interrupt(cx),
-            "/queue" => self
-                .session
-                .update(cx, |session, cx| session.send(Action::ResumeQueue, cx)),
-            "/compact" => self.session.update(cx, |session, cx| {
-                if let Err(error) = session.compact(cx) {
-                    session.state.error = Some(error);
-                    cx.notify();
+        let mut parts = text.split_whitespace();
+        let Some(command) = parts.next() else {
+            return false;
+        };
+        if !command.strip_prefix('/').is_some_and(host_command) {
+            return false;
+        }
+        let result = if parts.next().is_some() {
+            Err(format!(
+                "{command} does not accept arguments in Grove. Run {command} on its own."
+            ))
+        } else if self.pending_image_pastes > 0 {
+            Err("Wait for attached images to finish loading before running a command.".into())
+        } else {
+            match command {
+                "/model" | "/effort" | "/access" => {
+                    self.open_menu(
+                        match command {
+                            "/model" => ComposerMenu::Model,
+                            "/effort" => ComposerMenu::Effort,
+                            _ => ComposerMenu::Access,
+                        },
+                        window,
+                        cx,
+                    );
+                    Ok(())
                 }
-            }),
-            "/clear" => {}
-            _ => return false,
+                "/stop" => {
+                    let state = &self.session.read(cx).state;
+                    if !state.status.busy() || state.turn_id.is_none() {
+                        Err("There is no active turn to interrupt.".into())
+                    } else if self.interrupt_requested_for_turn.as_ref() == state.turn_id.as_ref() {
+                        Err("The current turn is already stopping.".into())
+                    } else {
+                        self.interrupt(cx);
+                        self.session
+                            .read(cx)
+                            .state
+                            .error
+                            .clone()
+                            .map_or(Ok(()), Err)
+                    }
+                }
+                "/queue" => self.session.update(cx, CodexSession::resume_queue),
+                "/compact" => self.session.update(cx, CodexSession::compact),
+                "/clear" => self.session.update(cx, CodexSession::clear_conversation),
+                _ => unreachable!(),
+            }
+        };
+        if let Err(error) = result {
+            self.session.update(cx, |session, cx| {
+                session.state.error = Some(error);
+                cx.notify();
+            });
+            return true;
+        }
+        if command == "/clear" {
+            self.pending_clear = Some((
+                self.session.read(cx).state.cleared_conversations,
+                text,
+                self.images.clone(),
+            ));
+            cx.notify();
+            return true;
         }
         self.input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.session.update(cx, |session, cx| {
+            session.state.error = None;
             session.send(Action::Draft(String::new()), cx);
         });
         cx.notify();
@@ -2942,7 +3210,7 @@ impl CodexView {
                 }
                 let (references, images) = attachments;
                 if !images.is_empty() {
-                    this.paste_images(images, cx);
+                    this.paste_images(images, window, cx);
                 }
                 if !references.is_empty() {
                     this.input.update(cx, |input, cx| {
@@ -2964,6 +3232,90 @@ impl CodexView {
         }
         cx.notify();
     }
+    fn restore_image_tokens(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.validate_picked_tokens(cx);
+        let text = self.input.read(cx).value();
+        for number in 1..=self.images.len() {
+            let value = format!("Image {number}");
+            for (start, _) in text.match_indices(&value) {
+                let range = start..start + value.len();
+                if text[..range.start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| !c.is_whitespace())
+                    || text[range.end..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| !c.is_whitespace())
+                    || self.picked_tokens.iter().any(|token| {
+                        token.value == value && token.decoration.get_ranges(cx).contains(&range)
+                    })
+                {
+                    continue;
+                }
+                let decoration = self.input.update(cx, |input, cx| {
+                    input.create_decorations_collection(
+                        vec![TextDecoration::new(
+                            range,
+                            gpui::HighlightStyle {
+                                background_color: Some(c::BG_HL()),
+                                underline: Some(gpui::UnderlineStyle {
+                                    thickness: rpx(COMPOSER_TOKEN_UNDERLINE)
+                                        .to_pixels(window.rem_size()),
+                                    color: Some(c::BORDER_STRONG()),
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            },
+                        )],
+                        cx,
+                    )
+                });
+                self.picked_tokens.push(ComposerToken {
+                    value: value.clone(),
+                    decoration,
+                });
+            }
+        }
+    }
+    fn remove_image(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let mut edits = Vec::new();
+        for token in &self.picked_tokens {
+            if let Some(number) = token
+                .value
+                .strip_prefix("Image ")
+                .and_then(|n| n.parse::<usize>().ok())
+            {
+                if number >= index + 1 {
+                    if let Some(range) = token.decoration.get_ranges(cx).first().cloned() {
+                        edits.push((
+                            range,
+                            if number == index + 1 {
+                                String::new()
+                            } else {
+                                format!("Image {}", number - 1)
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+        self.input.update(cx, |input, cx| {
+            for (range, replacement) in edits {
+                input.set_selected_range(range, cx);
+                input.replace(replacement, window, cx);
+            }
+        });
+        self.images.remove(index);
+        self.restore_image_tokens(window, cx);
+        let text = self.input.read(cx).value().to_string();
+        if self.queue_editor.is_none() {
+            self.session
+                .update(cx, |session, cx| session.send(Action::Draft(text), cx));
+        }
+        self.persist_images(cx);
+    }
     fn persist_images(&mut self, cx: &mut Context<Self>) {
         if self.queue_editor.is_some() {
             cx.notify();
@@ -2974,19 +3326,46 @@ impl CodexView {
         });
         cx.notify();
     }
-    fn paste_images(&mut self, images: Vec<gpui::Image>, cx: &mut Context<Self>) {
+    fn paste_images(
+        &mut self,
+        images: Vec<gpui::Image>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.submitted.is_some() {
             return;
         }
+        let editor = self.queue_editor.as_ref().map(|editor| editor.id);
+        let cursor = self.input.read(cx).cursor();
+        let original = self.input.read(cx).value();
+        let previous = original[..cursor]
+            .char_indices()
+            .next_back()
+            .map(|(offset, _)| offset);
+        let anchor = previous.map(|start| {
+            self.input.update(cx, |input, cx| {
+                input.create_decorations_collection(
+                    vec![TextDecoration::new(start..cursor, Default::default())],
+                    cx,
+                )
+            })
+        });
         self.pending_image_pastes += 1;
         cx.notify();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move { prepare_images(images) })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.pending_image_pastes -= 1;
+                if this.queue_editor.as_ref().map(|editor| editor.id) != editor {
+                    if let Some(anchor) = &anchor {
+                        anchor.clear(cx);
+                    }
+                    cx.notify();
+                    return;
+                }
                 match result {
                     Ok(images) => {
                         let size = this.images.iter().map(String::len).sum::<usize>()
@@ -2998,9 +3377,76 @@ impl CodexView {
                                 cx.notify();
                             });
                         } else {
+                            let selection = this.input.read(cx).selected_range();
+                            let insertion = anchor
+                                .as_ref()
+                                .and_then(|anchor| {
+                                    anchor.get_ranges(cx).first().map(|range| range.end)
+                                })
+                                .unwrap_or(0)
+                                .min(this.input.read(cx).value().len());
+                            this.input.update(cx, |input, cx| {
+                                input.set_selected_range(insertion..insertion, cx)
+                            });
+                            let mut inserted = 0;
                             for (url, image) in images {
+                                let value = format!("Image {}", this.images.len() + 1);
+                                let start = this.input.read(cx).cursor();
+                                let prefix = if start > 0
+                                    && !this.input.read(cx).value()[..start]
+                                        .ends_with(char::is_whitespace)
+                                {
+                                    " "
+                                } else {
+                                    ""
+                                };
+                                this.input.update(cx, |input, cx| {
+                                    input.insert(format!("{prefix}{value} "), window, cx);
+                                });
+                                let start = start + prefix.len();
+                                let decoration = this.input.update(cx, |input, cx| {
+                                    input.create_decorations_collection(
+                                        vec![TextDecoration::new(
+                                            start..start + value.len(),
+                                            gpui::HighlightStyle {
+                                                background_color: Some(c::BG_HL()),
+                                                underline: Some(gpui::UnderlineStyle {
+                                                    thickness: rpx(COMPOSER_TOKEN_UNDERLINE)
+                                                        .to_pixels(window.rem_size()),
+                                                    color: Some(c::BORDER_STRONG()),
+                                                    ..Default::default()
+                                                }),
+                                                ..Default::default()
+                                            },
+                                        )],
+                                        cx,
+                                    )
+                                });
+                                inserted += prefix.len() + value.len() + 1;
+                                this.picked_tokens.push(ComposerToken { value, decoration });
                                 this.previews.insert(url.clone(), image);
                                 this.images.push(url);
+                            }
+                            if selection != (cursor..cursor) {
+                                let shift = |offset| {
+                                    if offset >= insertion {
+                                        offset + inserted
+                                    } else {
+                                        offset
+                                    }
+                                };
+                                this.input.update(cx, |input, cx| {
+                                    input.set_selected_range(
+                                        shift(selection.start)..shift(selection.end),
+                                        cx,
+                                    )
+                                });
+                            }
+                            let text = this.input.read(cx).value().to_string();
+                            if this.queue_editor.is_none() {
+                                this.session.update(cx, |session, cx| {
+                                    session.send(Action::Draft(text), cx)
+                                });
                             }
                             this.persist_images(cx);
                         }
@@ -3009,6 +3455,9 @@ impl CodexView {
                         session.state.error = Some(error);
                         cx.notify();
                     }),
+                }
+                if let Some(anchor) = &anchor {
+                    anchor.clear(cx);
                 }
                 cx.notify();
             });
@@ -3431,7 +3880,7 @@ fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> 
         ("/stop", "Interrupt the current turn"),
         ("/compact", "Compact conversation context"),
         ("/queue", "Send the next queued prompt"),
-        ("/clear", "Clear this draft"),
+        ("/clear", "Start a new conversation"),
     ]
     .into_iter()
     .filter(|(command, _)| command[1..].starts_with(query))
@@ -3440,7 +3889,10 @@ fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> 
     if state.saved.provider == codex::Provider::Claude {
         choices.extend(state.skills.iter().filter_map(|skill| {
             let name = skill["name"].as_str()?;
-            (name.starts_with(query) && !host_command(name)).then(|| {
+            (name.starts_with(query)
+                && !host_command(name)
+                && skill["enabled"].as_bool() != Some(false))
+            .then(|| {
                 (
                     format!("/{name}"),
                     format!(
@@ -3483,7 +3935,7 @@ fn completion_trigger(text: &str, cursor: usize) -> Option<(std::ops::Range<usiz
     let start = prefix.rfind(char::is_whitespace).map_or(0, |at| at + 1);
     let token = &prefix[start..];
     let trigger = token.chars().next()?;
-    if !matches!(trigger, '@' | '$') && !(trigger == '/' && start == 0) {
+    if !(matches!(trigger, '@' | '$') || trigger == '/' && start == 0) {
         return None;
     }
     let end = text[cursor..]
@@ -4401,15 +4853,25 @@ impl CodexView {
                 .iter()
                 .map(|question| {
                     let input = cx.new(|cx| {
-                        let input = InputState::new(window, cx).placeholder(
-                            if question.options.is_empty() {
-                                "Type your answer…"
+                        let placeholder = question.placeholder.clone().unwrap_or_else(|| {
+                            if let codex::QuestionKind::Number(number) = &question.kind {
+                                format!("e.g. {}", number.min)
+                            } else if question.options.is_empty() {
+                                "Type your answer…".into()
                             } else {
-                                "Type a different answer…"
-                            },
-                        );
+                                "Type a different answer…".into()
+                            }
+                        });
+                        let mut input = InputState::new(window, cx).placeholder(placeholder);
+                        if let codex::QuestionKind::Number(number) = &question.kind {
+                            if let Some(value) = number.default_value {
+                                input = input.default_value(value.to_string());
+                            }
+                        }
                         if question.secret {
                             input.masked(true)
+                        } else if matches!(question.kind, codex::QuestionKind::Number(_)) {
+                            input
                         } else {
                             input.auto_grow(1, 4)
                         }
@@ -4559,10 +5021,8 @@ impl CodexView {
             let key = question_key(state, request);
             let draft = &self.question_drafts[&key];
             let submitting = draft.submitting;
-            let ready = !submitting
-                && request
-                    .validate(&self.question_answers(&key, request, cx))
-                    .is_ok();
+            let validation = request.validate(&self.question_answers(&key, request, cx));
+            let ready = !submitting && validation.is_ok();
             let mut group = div()
                 .id(("agent-question-group", request_index))
                 .role(gpui::Role::Group)
@@ -4587,6 +5047,13 @@ impl CodexView {
                             }
                         )),
                 );
+            if let Some(title) = &request.title {
+                group = group.child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(title.clone()),
+                );
+            }
             for (question_index, question) in request.questions.iter().enumerate() {
                 let question_draft = &draft.questions[question_index];
                 let mut field = div()
@@ -4613,6 +5080,29 @@ impl CodexView {
                         )
                     })
                     .child(div().child(question.text.clone()));
+                if let Some(description) = &question.description {
+                    field = field.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(description.clone()),
+                    );
+                }
+                if let codex::QuestionKind::Number(number) = &question.kind {
+                    let mut hint = format!("{}–{}", number.min, number.max);
+                    if let Some(unit) = &number.unit {
+                        hint.push_str(&format!(" {unit}"));
+                    }
+                    if let Some(step) = number.step {
+                        hint.push_str(&format!(" · increment {step}"));
+                    }
+                    field = field.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(hint),
+                    );
+                }
                 if question.multiple {
                     field = field.child(
                         div()
@@ -4633,7 +5123,13 @@ impl CodexView {
                                 "question-option-{request_index}-{question_index}-{option_index}"
                             )),
                             option.label.clone(),
-                            option.description.clone(),
+                            match &option.preview {
+                                Some(preview) if !option.description.is_empty() => {
+                                    format!("{}\n{preview}", option.description)
+                                }
+                                Some(preview) => preview.clone(),
+                                None => option.description.clone(),
+                            },
                             multiple,
                             question_draft.selected.contains(&option_index),
                         )
@@ -4688,6 +5184,7 @@ impl CodexView {
                     let click_key = key.clone();
                     let keyboard_key = key.clone();
                     let multiple = question.multiple;
+                    let choice_count = question.options.len();
                     field = field.child(
                         question_choice(
                             gpui::SharedString::from(format!(
@@ -4699,6 +5196,7 @@ impl CodexView {
                             question_draft.custom,
                         )
                         .track_focus(&question_draft.choice_focus[question.options.len()])
+                        .when(submitting, |row| row.opacity(OPACITY_DISABLED))
                         .debug_selector(move || {
                             format!("question-other-{request_index}-{question_index}")
                         })
@@ -4714,13 +5212,20 @@ impl CodexView {
                         }))
                         .on_key_down(cx.listener(
                             move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                    && !event.is_held
-                                {
+                                if event.is_held {
+                                    return;
+                                }
+                                let choice = match event.keystroke.key.as_str() {
+                                    "enter" | "space" => Some(None),
+                                    "up" | "left" if !multiple => Some(Some(choice_count - 1)),
+                                    "down" | "right" if !multiple => Some(Some(0)),
+                                    _ => None,
+                                };
+                                if let Some(choice) = choice {
                                     this.select_question_choice(
                                         &keyboard_key,
                                         question_index,
-                                        None,
+                                        choice,
                                         multiple,
                                         window,
                                         cx,
@@ -4734,19 +5239,36 @@ impl CodexView {
                 if question_draft.custom {
                     let focused = question_draft.input.focus_handle(cx).is_focused(window);
                     field = field.child(
-                        project_field_well(focused, false).child(
-                            Input::new(&question_draft.input)
-                                .disabled(submitting)
-                                .aria_label(format!("Answer: {}", question.text))
-                                .appearance(false)
-                                .bordered(false)
-                                .focus_bordered(false)
-                                .text_color(c::FG())
-                                .p_0(),
-                        ),
+                        project_field_well(focused, false)
+                            .debug_selector(move || {
+                                format!("question-input-{request_index}-{question_index}")
+                            })
+                            .child(
+                                Input::new(&question_draft.input)
+                                    .disabled(submitting)
+                                    .aria_label(format!("Answer: {}", question.text))
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .focus_bordered(false)
+                                    .text_color(c::FG())
+                                    .p_0(),
+                            ),
                     );
                 }
                 group = group.child(field);
+            }
+            if let Err(error) = validation {
+                group = group.child(
+                    div()
+                        .id(gpui::SharedString::from(format!(
+                            "questions-validation-{request_index}"
+                        )))
+                        .debug_selector(move || format!("questions-validation-{request_index}"))
+                        .role(gpui::Role::Alert)
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(error),
+                );
             }
             let cancel_key = key.clone();
             let cancel_id = request.id.clone();
@@ -4765,6 +5287,7 @@ impl CodexView {
                             window,
                             cx,
                         )
+                        .debug_selector(move || format!("questions-cancel-{request_index}"))
                         .disabled(submitting)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.answer_questions(&cancel_key, cancel_id.clone(), true, cx);
@@ -4778,6 +5301,7 @@ impl CodexView {
                             window,
                             cx,
                         )
+                        .debug_selector(move || format!("questions-submit-{request_index}"))
                         .disabled(!ready)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.answer_questions(&submit_key, submit_id.clone(), false, cx);
@@ -5103,7 +5627,7 @@ mod tests {
                     input.set_selected_range(9..9, cx);
                 });
                 view.input.focus_handle(cx).focus(window, cx);
-            })
+            });
         });
         draw(cx);
         cx.simulate_keystrokes("tab");
@@ -5130,14 +5654,14 @@ mod tests {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, _| {
-                    session.state.skills = vec![json!({"name":"review","enabled":true})]
+                    session.state.skills = vec![json!({"name":"review","enabled":true})];
                 });
                 view.input.update(cx, |input, cx| {
                     input.set_value("Use $rev", window, cx);
                     input.set_selected_range(8..8, cx);
                 });
                 view.input.focus_handle(cx).focus(window, cx);
-            })
+            });
         });
         draw(cx);
         cx.simulate_keystrokes("tab");
@@ -5152,14 +5676,14 @@ mod tests {
                     input.set_selected_range(0..0, cx);
                     input.insert("Please ", window, cx);
                 });
-            })
+            });
         });
         draw(cx);
         view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.picked_tokens[0].decoration.get_ranges(cx),
                 vec![11..18]
-            )
+            );
         });
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
@@ -5167,7 +5691,7 @@ mod tests {
                     input.set_selected_range(15..15, cx);
                     input.insert("x", window, cx);
                 });
-            })
+            });
         });
         draw(cx);
         view.read_with(cx, |view, _| assert!(view.picked_tokens.is_empty()));
@@ -5183,7 +5707,7 @@ mod tests {
                     input.set_selected_range(4..4, cx);
                 });
                 view.input.focus_handle(cx).focus(window, cx);
-            })
+            });
         });
         draw(cx);
         cx.simulate_keystrokes("tab");
@@ -5454,6 +5978,222 @@ mod tests {
         );
     }
     #[gpui::test]
+    fn clear_waits_for_actor_ack_and_preserves_rejected_draft(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        for (status, compacting, expected) in [
+            (Status::Starting, false, codex::CLEAR_BUSY),
+            (Status::Working, false, codex::CLEAR_BUSY),
+            (Status::Idle, true, codex::CLEAR_BUSY),
+            (Status::Disconnected, false, codex::CLEAR_DISCONNECTED),
+        ] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, _| {
+                        session.state.status = status;
+                        session.state.compacting = compacting;
+                    });
+                    view.images = vec!["attached.png".into()];
+                    view.input
+                        .update(cx, |input, cx| input.set_value("/clear", window, cx));
+                    view.submit(window, cx);
+                    assert_eq!(view.input.read(cx).value().as_ref(), "/clear");
+                    assert_eq!(view.images, vec!["attached.png"]);
+                    assert_eq!(view.session.read(cx).state.error.as_deref(), Some(expected));
+                });
+            });
+        }
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::ClearConversation)));
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, _| {
+                    session.state.status = Status::Idle;
+                    session.state.compacting = false;
+                });
+                view.submit(window, cx);
+                assert_eq!(view.input.read(cx).value().as_ref(), "/clear");
+                assert_eq!(view.images, vec!["attached.png"]);
+            });
+        });
+        assert_eq!(
+            actions
+                .try_iter()
+                .filter(|action| matches!(action, Action::ClearConversation))
+                .count(),
+            1
+        );
+        view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.cleared_conversations += 1;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(view.input.read(cx).value().is_empty());
+            assert!(view.images.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn clear_in_queue_and_steer_modes_preserves_edits_after_dispatch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        for mode in [SubmissionMode::Queue, SubmissionMode::Steer] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.input
+                        .update(cx, |input, cx| input.set_value("/clear", window, cx));
+                    view.images = vec!["old.png".into()];
+                    view.submit_mode(mode, window, cx);
+                    // New composer edits must survive an asynchronous provider reset.
+                    view.input
+                        .update(cx, |input, cx| input.set_value("new draft", window, cx));
+                    view.images = vec!["new.png".into()];
+                    view.session.update(cx, |session, cx| {
+                        session.state.cleared_conversations += 1;
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.input.read(cx).value().as_ref(), "new draft");
+                assert_eq!(view.images, vec!["new.png"]);
+                assert!(view.pending_clear.is_none());
+            });
+        }
+        let sent = actions.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            sent.iter()
+                .filter(|action| matches!(action, Action::ClearConversation))
+                .count(),
+            2
+        );
+        assert!(!sent.iter().any(|action| matches!(
+            action,
+            Action::Submit { .. } | Action::SubmitWithMode { .. }
+        )));
+    }
+
+    #[gpui::test]
+    fn host_arguments_are_rejected_in_every_submission_mode(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        for command in [
+            "model", "effort", "access", "stop", "queue", "compact", "clear",
+        ] {
+            for mode in [
+                SubmissionMode::Send,
+                SubmissionMode::Queue,
+                SubmissionMode::Steer,
+            ] {
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        let draft = format!("/{command} unexpected argument");
+                        view.input
+                            .update(cx, |input, cx| input.set_value(draft.clone(), window, cx));
+                        view.images = vec!["attached.png".into()];
+                        view.submit_mode(mode, window, cx);
+                        assert_eq!(view.input.read(cx).value().as_ref(), draft);
+                        assert_eq!(view.images, vec!["attached.png"]);
+                        assert!(view
+                            .session
+                            .read(cx)
+                            .state
+                            .error
+                            .as_deref()
+                            .unwrap()
+                            .contains("does not accept arguments"));
+                        assert!(view.menu.is_none());
+                    });
+                });
+            }
+        }
+        assert!(!actions.try_iter().any(|action| matches!(
+            action,
+            Action::Submit { .. }
+                | Action::SubmitWithMode { .. }
+                | Action::ClearConversation
+                | Action::Compact
+                | Action::Interrupt
+                | Action::ResumeQueue
+        )));
+    }
+
+    #[gpui::test]
+    fn queue_entry_routes_host_commands_and_reports_unavailable_actions(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                for (draft, error) in [
+                    ("/stop", "There is no active turn"),
+                    ("/queue", "There are no queued prompts"),
+                ] {
+                    view.input
+                        .update(cx, |input, cx| input.set_value(draft, window, cx));
+                    view.submit_mode(SubmissionMode::Queue, window, cx);
+                    assert_eq!(view.input.read(cx).value().as_ref(), draft);
+                    assert!(view
+                        .session
+                        .read(cx)
+                        .state
+                        .error
+                        .as_deref()
+                        .unwrap()
+                        .contains(error));
+                }
+                view.input
+                    .update(cx, |input, cx| input.set_value("/access", window, cx));
+                view.submit_mode(SubmissionMode::Queue, window, cx);
+                assert!(view.menu == Some(ComposerMenu::Access));
+                assert!(view.input.read(cx).value().is_empty());
+            });
+        });
+        assert!(!actions.try_iter().any(|action| matches!(
+            action,
+            Action::Submit { .. } | Action::SubmitWithMode { .. }
+        )));
+    }
+
+    #[gpui::test]
+    fn claude_provider_commands_pass_through_with_arguments(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, _| {
+                    session.state.saved.provider = codex::Provider::Claude;
+                });
+                view.input.update(cx, |input, cx| {
+                    input.set_value("/my-skill useful instructions", window, cx);
+                });
+                view.submit(window, cx);
+            });
+        });
+        assert!(actions.try_iter().any(|action| matches!(action, Action::Submit { text, .. } if text == "/my-skill useful instructions")));
+        let mut claude = snapshot();
+        claude.saved.provider = codex::Provider::Claude;
+        claude.skills = vec![
+            json!({"name":"disabled","enabled":false}),
+            json!({"name":"enabled"}),
+            json!({"name":"clear"}),
+        ];
+        let choices = slash_choices(&claude, "");
+        assert!(!choices.iter().any(|(value, _)| value == "/disabled"));
+        assert!(choices.iter().any(|(value, _)| value == "/enabled"));
+        assert_eq!(
+            choices
+                .iter()
+                .filter(|(value, _)| value == "/clear")
+                .count(),
+            1
+        );
+    }
+
+    #[gpui::test]
     fn compact_command_is_hosted_once_and_rejected_inline_while_busy(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -5479,7 +6219,6 @@ mod tests {
                     view.input
                         .update(cx, |input, cx| input.set_value("/compact", window, cx));
                     view.submit(window, cx);
-                    assert!(view.input.read(cx).value().is_empty());
                 });
             });
         };
@@ -5670,7 +6409,7 @@ mod tests {
                 view.input
                     .update(cx, |input, cx| input.set_value("follow up", window, cx));
                 view.input.focus_handle(cx).focus(window, cx);
-            })
+            });
         });
         draw(cx);
         cx.simulate_keystrokes("enter");
@@ -5715,11 +6454,9 @@ mod tests {
                     .size_full()
                     .child(self.chat.clone())
                     .child(div().track_focus(&self.outside))
-                    .on_action(
-                        cx.listener(|this, _: &crate::keymap::ToggleZen, _, _| {
-                            this.zen_toggles += 1
-                        }),
-                    )
+                    .on_action(cx.listener(|this, _: &crate::keymap::ToggleZen, _, _| {
+                        this.zen_toggles += 1;
+                    }))
             }
         }
         cx.update(|cx| {
@@ -5758,7 +6495,7 @@ mod tests {
                 view.input
                     .update(cx, |input, cx| input.set_value("queue this", window, cx));
                 view.input.focus_handle(cx).focus(window, cx);
-            })
+            });
         });
         draw(cx);
         cx.simulate_keystrokes("cmd-enter");
@@ -5778,7 +6515,7 @@ mod tests {
                 view.input
                     .update(cx, |input, cx| input.set_value("line", window, cx));
                 view.input.focus_handle(cx).focus(window, cx);
-            })
+            });
         });
         draw(cx);
         cx.simulate_keystrokes("shift-enter");
@@ -5796,7 +6533,7 @@ mod tests {
                 });
                 view.input
                     .update(cx, |input, cx| input.set_value("send this", window, cx));
-            })
+            });
         });
         draw(cx);
         cx.simulate_keystrokes("cmd-enter");
@@ -5839,7 +6576,7 @@ mod tests {
                 view.submitted = Some("awaiting acknowledgement".into());
                 view.submit(window, cx);
                 assert_eq!(view.input.read(cx).value().as_ref(), "/stop");
-            })
+            });
         });
         assert!(!actions
             .try_iter()
@@ -5852,7 +6589,7 @@ mod tests {
                     .update(cx, |input, cx| input.set_value("/stop", window, cx));
                 view.submit(window, cx);
                 assert_eq!(view.input.read(cx).value().as_ref(), "/stop");
-            })
+            });
         });
         assert_eq!(
             actions
@@ -5877,10 +6614,10 @@ mod tests {
                 });
                 view.input
                     .update(cx, |input, cx| input.set_value("follow up", window, cx));
-                view.submit_mode(SubmissionMode::Queue, cx);
+                view.submit_mode(SubmissionMode::Queue, window, cx);
                 view.interrupt(cx);
                 view.interrupt(cx);
-            })
+            });
         });
         let sent = actions.try_iter().collect::<Vec<_>>();
         assert_eq!(
@@ -5889,13 +6626,13 @@ mod tests {
                 .count(),
             1
         );
-        cx.update(|_, cx| {
+        cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.submitted = None;
                 view.submitted_ack = None;
-                view.submit_mode(SubmissionMode::Queue, cx);
-                view.submit_mode(SubmissionMode::Steer, cx);
-            })
+                view.submit_mode(SubmissionMode::Queue, window, cx);
+                view.submit_mode(SubmissionMode::Steer, window, cx);
+            });
         });
         assert!(!actions.try_iter().any(|action| matches!(
             action,
@@ -5907,8 +6644,8 @@ mod tests {
                     session.state.status = Status::Done;
                     session.state.turn_id = None;
                     cx.notify();
-                })
-            })
+                });
+            });
         });
         draw(cx);
         assert!(view.read_with(cx, |view, _| view.interrupt_requested_for_turn.is_none()));
@@ -6066,6 +6803,12 @@ mod tests {
         scroll(400.0, cx);
         view.read_with(cx, |view, _| assert!(view.composer_collapsed));
         scroll(-100000.0, cx);
+        // Restoring the taller composer moves the transcript through the follow animation.
+        for _ in 0..80 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            draw(cx);
+        }
         view.read_with(cx, |view, cx| {
             assert!(
                 !view.composer_collapsed,
@@ -6141,6 +6884,83 @@ mod tests {
     }
 
     #[gpui::test]
+    fn removing_images_removes_and_renumbers_inline_references(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.images = vec!["first".into(), "second".into()];
+                view.input.update(cx, |input, cx| {
+                    input.set_value("Compare Image 1 with Image 2", window, cx)
+                });
+                view.restore_image_tokens(window, cx);
+                assert_eq!(view.picked_tokens.len(), 2);
+                view.remove_image(0, window, cx);
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    "Compare  with Image 1"
+                );
+                assert_eq!(view.picked_tokens.len(), 1);
+                view.remove_image(0, window, cx);
+                assert_eq!(view.input.read(cx).value().as_ref(), "Compare  with ");
+                assert!(view.picked_tokens.is_empty());
+                assert!(view.images.is_empty());
+            })
+        });
+    }
+
+    #[gpui::test]
+    fn stream_reveal_preserves_history_and_reveals_only_appended_text(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.last_content.clear(); // Model mounting an existing saved transcript.
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    session.state.saved.items =
+                        vec![json!({"id":"history","type":"agentMessage","text":"Saved history"})];
+                    cx.notify();
+                });
+            })
+        });
+        draw(cx);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.stream_text["history"].1, "Saved history".len())
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    session.state.saved.items[0]["text"] =
+                        json!("Saved history with a Unicode continuation 界界界界界界界界界界界界");
+                    cx.notify();
+                });
+                let _ = view.render(window, cx);
+                let (text, shown) = &view.stream_text["history"];
+                assert!(*shown >= "Saved history".len());
+                assert!(
+                    *shown < text.len(),
+                    "status={:?}, reduced={}, shown={shown}",
+                    view.session.read(cx).state.status,
+                    cx.reduce_motion()
+                );
+                assert!(text.is_char_boundary(*shown));
+            })
+        });
+        draw(cx);
+        for _ in 0..80 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            draw(cx);
+        }
+        view.read_with(cx, |view, _| {
+            let (text, shown) = &view.stream_text["history"];
+            assert_eq!(*shown, text.len());
+        });
+    }
+
+    #[gpui::test]
     fn streaming_preserves_manual_scroll_and_follows_only_near_bottom(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -6154,7 +6974,11 @@ mod tests {
                 });
             }));
             draw(cx);
-            draw(cx);
+            for _ in 0..120 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(16));
+                draw(cx);
+            }
         };
         stream(40, cx);
         view.read_with(cx, |view, _| {
@@ -6214,8 +7038,27 @@ mod tests {
             });
         });
         draw(cx);
+        let before = view.read_with(cx, |view, _| view.scroll.offset().y);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        draw(cx);
         view.read_with(cx, |view, _| {
-            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
+            assert!(
+                view.scroll.offset().y < before,
+                "automatic following must move between frames"
+            );
+            assert!(
+                view.scroll.offset().y > -view.scroll.max_offset().y,
+                "automatic following must animate before reaching its endpoint"
+            );
+        });
+        for _ in 0..120 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            draw(cx);
+        }
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y)
         });
     }
     #[gpui::test]
@@ -6266,6 +7109,183 @@ mod tests {
         );
         draw(cx);
         assert!(view.read_with(cx, |view, _| view.popup.is_none()));
+    }
+
+    #[gpui::test]
+    fn async_metadata_renders_native_choices_and_custom_answer_without_replacing_composer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, updates) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input.update(cx, |input, cx| {
+                    input.set_value("Unrelated draft", window, cx)
+                });
+                view.images = vec!["draft-image".into()];
+            });
+        });
+        let mut state = snapshot();
+        assert!(state.apply(&json!({"method":"item/completed","params":{"threadId":"thread-ui","turnId":"turn-ui","item":{
+            "type":"agentMessage","id":"async-ui","text":"Choose scope: All or Composer.","delivery":"async",
+            "questions":[{"title":"Choose scope","options":["All","Composer"]}]
+        }}})));
+        updates.send(state).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("agent-questions").is_some());
+        let other = cx
+            .debug_bounds("question-other-0-0")
+            .expect("async choices include custom answer");
+        cx.simulate_click(other.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("question-input-0-0").is_some());
+        cx.simulate_input("Only focus and scrolling");
+        draw(cx);
+        let submit = cx.debug_bounds("questions-submit-0").unwrap();
+        cx.simulate_click(submit.center(), gpui::Modifiers::default());
+        draw(cx);
+        let answer = actions
+            .try_iter()
+            .find_map(|action| match action {
+                Action::AnswerQuestions(id, Some(answers)) => Some((id, answers)),
+                _ => None,
+            })
+            .expect("native form sends an answer");
+        assert_eq!(answer.0, json!("async-ui"));
+        assert_eq!(answer.1["0"], vec!["Only focus and scrolling"]);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.input.read(cx).value().as_ref(), "Unrelated draft");
+            assert_eq!(view.images, vec!["draft-image"]);
+        });
+    }
+
+    #[gpui::test]
+    fn extended_number_and_text_questions_render_defaults_validate_and_cancel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let mut request = codex::QuestionRequest::from_codex(
+            json!("extended"),
+            &json!({"questions":[
+                {"id":"count","question":"How many slides?"},
+                {"id":"title","question":"What title?"}
+            ]}),
+        )
+        .unwrap();
+        // Core tests cover the Claude wire decoder; this exercises its typed view contract.
+        request.title = Some("Before building".into());
+        request.questions[0].kind = codex::QuestionKind::Number(codex::QuestionNumber {
+            min: 1.,
+            max: 20.,
+            step: Some(1.),
+            default_value: Some(8.),
+            unit: Some("slides".into()),
+        });
+        request.questions[0].description = Some("For the briefing.".into());
+        request.questions[1].placeholder = Some("e.g. Quarterly briefing".into());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = codex::Provider::Claude;
+                    session.state.status = Status::Waiting;
+                    session.state.questions.push(request.clone());
+                    cx.notify();
+                })
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("question-input-0-0").is_some());
+        assert!(cx.debug_bounds("question-input-0-1").is_some());
+        let key = view.read_with(cx, |view, cx| {
+            question_key(&view.session.read(cx).state, &request)
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                assert_eq!(
+                    view.question_drafts[&key].questions[0]
+                        .input
+                        .read(cx)
+                        .value()
+                        .as_ref(),
+                    "8"
+                );
+                let title = view.question_drafts[&key].questions[1].input.clone();
+                title.update(cx, |input, cx| {
+                    input.set_value("Quarterly briefing", window, cx)
+                });
+                let number = view.question_drafts[&key].questions[0].input.clone();
+                number.update(cx, |input, cx| input.set_value("21", window, cx));
+                view.answer_questions(&key, json!("extended"), false, cx);
+            });
+        });
+        draw(cx);
+        assert!(actions
+            .try_iter()
+            .all(|action| !matches!(action, Action::AnswerQuestions(_, _))));
+        assert!(cx.debug_bounds("questions-validation-0").is_some());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let input = view.question_drafts[&key].questions[0].input.clone();
+                input.update(cx, |input, cx| input.set_value("12", window, cx));
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("questions-validation-0").is_none());
+        let submit = cx.debug_bounds("questions-submit-0").unwrap();
+        cx.simulate_click(submit.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions.try_iter().any(|action| matches!(action, Action::AnswerQuestions(_, Some(answers)) if answers["count"] == vec!["12"] && answers["title"] == vec!["Quarterly briefing"])));
+        // A provider error permits cancelling the same live request without losing the answers.
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.error = Some("Retry input".into());
+                    cx.notify();
+                })
+            });
+        });
+        draw(cx);
+        let cancel = cx.debug_bounds("questions-cancel-0").unwrap();
+        cx.simulate_click(cancel.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::AnswerQuestions(_, None))));
+    }
+
+    #[gpui::test]
+    fn custom_radio_choice_supports_arrow_navigation_back_to_named_options(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        let request = codex::QuestionRequest::from_codex(json!("arrow"), &json!({"questions":[{"id":"layout","question":"Which layout?","isOther":true,"options":[{"label":"Compact","preview":"A compact preview"},{"label":"Roomy"}]}]})).unwrap();
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.questions.push(request.clone());
+                    cx.notify();
+                })
+            });
+        });
+        draw(cx);
+        let key = view.read_with(cx, |view, cx| {
+            question_key(&view.session.read(cx).state, &request)
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.question_drafts[&key].questions[0].choice_focus[2].focus(window, cx)
+            });
+        });
+        cx.simulate_keystrokes("left");
+        draw(cx);
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.question_drafts[&key].questions[0].selected,
+                HashSet::from([1])
+            );
+            assert!(!view.question_drafts[&key].questions[0].custom);
+        });
     }
 
     #[gpui::test]
@@ -6807,6 +7827,41 @@ mod tests {
         )));
     }
     #[gpui::test]
+    fn native_markdown_links_open_artifacts_and_web_urls(cx: &mut gpui::TestAppContext) {
+        let (_view, cx, _actions, updates) = fixture(cx);
+        for (target, expected) in [
+            ("/tmp/option-c.html", "file:///tmp/option-c.html"),
+            (
+                "/tmp/Option C/设计.html#comparison",
+                "file:///tmp/Option%20C/%E8%AE%BE%E8%AE%A1.html#comparison",
+            ),
+            (
+                "/tmp/Option%20C/main.rs#L42",
+                "file:///tmp/Option%20C/main.rs#L42",
+            ),
+            ("https://example.com/a?q=b#c", "https://example.com/a?q=b#c"),
+            ("file:///tmp/option-c.html", "file:///tmp/option-c.html"),
+            ("mailto:hello@example.com", "mailto:hello@example.com"),
+        ] {
+            let mut response = snapshot();
+            response.saved.items.push(serde_json::json!({
+                "type":"agentMessage", "id":"answer",
+                "text":format!("[three variations](<{target}>)")
+            }));
+            updates.send(response).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            let body = cx
+                .debug_bounds("codex-message-body-0")
+                .expect("rendered Markdown body");
+            let position = body.origin + gpui::point(gpui::px(8.), gpui::px(8.));
+            cx.simulate_click(position, gpui::Modifiers::default());
+            assert_eq!(cx.opened_url().as_deref(), Some(expected), "{target}");
+        }
+    }
+
+    #[gpui::test]
     fn native_markdown_drag_selects_and_copies_live_response(cx: &mut gpui::TestAppContext) {
         let (_view, cx, _actions, updates) = fixture(cx);
         let mut response = snapshot();
@@ -7012,7 +8067,7 @@ mod tests {
             })
             .collect();
         assert!(
-            sent.iter().any(|(text, images)| text.trim().is_empty()
+            sent.iter().any(|(text, images)| text.trim() == "Image 1"
                 && images.len() == 1
                 && images[0].starts_with("data:image/png;base64,")),
             "sent={sent:?}; error={:?}; input={:?}; focused={}",
@@ -7148,6 +8203,7 @@ mod tests {
             view.update(cx, |view, cx| {
                 view.paste_images(
                     vec![gpui::Image::from_bytes(gpui::ImageFormat::Png, png)],
+                    window,
                     cx,
                 );
                 let _ = window;
@@ -7232,6 +8288,7 @@ mod tests {
                 });
                 view.paste_images(
                     vec![gpui::Image::from_bytes(gpui::ImageFormat::Tiff, tiff)],
+                    window,
                     cx,
                 );
                 assert_eq!(view.pending_image_pastes, 1);
@@ -7246,6 +8303,6 @@ mod tests {
         assert!(view.read_with(cx, |view, _| view.images[0]
             .starts_with("data:image/png;base64,")));
         cx.update(|window, cx| view.update(cx, |view, cx| view.submit(window, cx)));
-        assert!(actions.try_iter().any(|action| matches!(action, Action::Submit {text,images,..} if text=="inspect screenshot" && images.len()==1 && images[0].starts_with("data:image/png;base64,"))));
+        assert!(actions.try_iter().any(|action| matches!(action, Action::Submit {text,images,..} if text.trim()=="Image 1 inspect screenshot" && images.len()==1 && images[0].starts_with("data:image/png;base64,"))));
     }
 }

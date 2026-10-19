@@ -1819,6 +1819,9 @@ impl Sidebar {
                     })
                 },
             )
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                gpui_component::global_state::GlobalState::suppress_text_selection(cx);
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.act(click.clone(), window, cx);
@@ -2209,6 +2212,8 @@ impl Sidebar {
         } else if let Some(view) = self.terminal_views.get(&id) {
             view.focus_handle(cx).focus(window, cx);
         } else {
+            self.pending_canvas_focus = Some(id);
+            self.pending_grid_workspace_focus = (self.mode == ViewMode::Grid).then_some(id);
             self.focus.focus(window, cx);
         }
     }
@@ -2601,9 +2606,12 @@ impl Sidebar {
             }
             Action::Select(s) => {
                 let leaving_project_panel = self.project_panel.is_some();
+                if let Selection::Session(id) = s {
+                    self.navigate_to_session(id, window, cx);
+                    return;
+                }
                 self.select(s.clone(), cx);
                 let view = match s {
-                    Selection::Session(id) => self.terminal_views.get(&id),
                     Selection::Home(id) => self.home_terminal_views.get(&id),
                     _ => None,
                 };
@@ -5167,6 +5175,115 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    struct NavigationSelectionFixture {
+        sidebar: Entity<Sidebar>,
+        text: Entity<gpui_component::text::TextViewState>,
+    }
+
+    impl Render for NavigationSelectionFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let control = self.sidebar.update(cx, |sidebar, cx| {
+                sidebar
+                    .control(
+                        "selection-session",
+                        "Session",
+                        Action::Select(Selection::Session(SessionId::from_raw(1))),
+                        cx,
+                    )
+                    .debug_selector(|| "selection-session".into())
+                    .w(gpui::px(100.))
+                    .h(gpui::px(40.))
+            });
+            div()
+                .size_full()
+                .child(control)
+                .child(
+                    div()
+                        .id("consumed-navigation")
+                        .debug_selector(|| "consumed-navigation".into())
+                        .h(gpui::px(40.))
+                        .on_click(|_, _, cx| cx.stop_propagation()),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "selection-transcript".into())
+                        .h(gpui::px(80.))
+                        .child(gpui_component::text::TextView::new(&self.text).selectable(true)),
+                )
+        }
+    }
+
+    fn navigation_selection_fixture(cx: &mut gpui::TestAppContext) -> &mut gpui::VisualTestContext {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+            let text = cx.new(|cx| {
+                gpui_component::text::TextViewState::markdown(
+                    "Transcript must remain unselected",
+                    cx,
+                )
+            });
+            let fixture = cx.new(|_| NavigationSelectionFixture { sidebar, text });
+            gpui_component::Root::new(fixture, window, cx)
+        });
+        draw(cx);
+        cx
+    }
+
+    #[gpui::test]
+    fn consumed_navigation_click_cannot_select_transcript_after_release(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let cx = navigation_selection_fixture(cx);
+        let navigation = cx.debug_bounds("consumed-navigation").unwrap();
+        let transcript = cx.debug_bounds("selection-transcript").unwrap();
+        cx.simulate_click(navigation.center(), gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            transcript.origin + gpui::point(gpui::px(100.), gpui::px(8.)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            cx.update(gpui_component::WindowExt::selected_text),
+            "",
+            "released navigation click must not select transcript"
+        );
+    }
+
+    #[gpui::test]
+    fn sidebar_session_press_cannot_start_transcript_selection(cx: &mut gpui::TestAppContext) {
+        let cx = navigation_selection_fixture(cx);
+        let session = cx.debug_bounds("selection-session").unwrap();
+        let transcript = cx.debug_bounds("selection-transcript").unwrap();
+        cx.simulate_mouse_down(
+            session.center(),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            transcript.origin + gpui::point(gpui::px(100.), gpui::px(8.)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(
+            cx.update(gpui_component::WindowExt::selected_text),
+            "",
+            "session navigation owns its press, including small pointer slips"
+        );
+        cx.simulate_mouse_up(
+            transcript.center(),
+            MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+    }
+
     fn assert_empty_cross_project_launch(
         cx: &mut gpui::TestAppContext,
         collapsed: bool,
@@ -5919,20 +6036,16 @@ mod tests {
                         format!("compact-{kind}-status-{id}").into_boxed_str(),
                     ))
                     .unwrap();
-                assert_eq!(status.center().y, row.center().y, "{row_selector}");
-                assert_eq!(
-                    status.left() - glyph.right(),
-                    gpui::px(SPACE_SM),
-                    "{row_selector}"
-                );
-                assert_eq!(
-                    glyph.left() - row.left(),
-                    row.right() - status.right(),
-                    "{row_selector}"
-                );
-            } else {
-                assert_eq!(glyph.center().x, expand.center().x, "{glyph_selector}");
+                assert_eq!(status.left(), row.center().x, "{row_selector}");
+                assert_eq!(status.top(), row.center().y, "{row_selector}");
+                assert_eq!(status.size.width, gpui::px(ICON_SM), "{row_selector}");
+                assert_eq!(status.size.height, gpui::px(ICON_SM), "{row_selector}");
+                assert!(status.left() < glyph.right(), "{row_selector}");
+                assert!(status.top() < glyph.bottom(), "{row_selector}");
+                assert!(status.right() <= row.right(), "{row_selector}");
+                assert!(status.bottom() <= row.bottom(), "{row_selector}");
             }
+            assert_eq!(glyph.center().x, expand.center().x, "{glyph_selector}");
             assert_eq!(glyph.center().y, row.center().y, "{glyph_selector}");
             assert!(
                 row.left() >= rail.left() && row.right() <= rail.right(),
@@ -7909,7 +8022,13 @@ for line in sys.stdin:
                 sidebar.focus.focus(window, cx);
                 sidebar.navigate_to_session(id, window, cx);
                 assert!(view.focus_handle(cx).contains_focused(window, cx));
+                sidebar.focus.focus(window, cx);
+                sidebar.act(Action::Select(Selection::Session(id)), window, cx);
+                assert!(view.focus_handle(cx).contains_focused(window, cx));
                 sidebar.mode = ViewMode::Grid;
+                sidebar.focus.focus(window, cx);
+                sidebar.act(Action::Select(Selection::Session(id)), window, cx);
+                assert!(view.focus_handle(cx).contains_focused(window, cx));
                 sidebar.focus_active_session_after_palette(window, cx);
                 assert!(view.focus_handle(cx).contains_focused(window, cx));
                 cx.global_mut::<SettingsState>().store.native_agents_enabled = false;

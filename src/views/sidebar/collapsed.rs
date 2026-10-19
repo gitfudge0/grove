@@ -5,7 +5,21 @@ pub(super) const COMPACT_ROW_H: f32 = 32.0;
 pub(super) const COMPACT_ITEM_W: f32 = 36.0;
 const DISCLOSURE_D: f32 = 8.0;
 const PROJECT_INITIAL_W: f32 = 10.0;
-const COMPACT_STATUS_SIZE: f32 = 11.0;
+// Variant A: 12px circular clearance around a 10px lower-right status glyph.
+const COMPACT_STATUS_LEFT: f32 = COMPACT_ITEM_W / 2.0;
+const COMPACT_STATUS_TOP: f32 = COMPACT_ROW_H / 2.0;
+
+fn compact_status_badge(id: SessionId, status: &str, cx: &App) -> Div {
+    div()
+        .absolute()
+        .left(rpx(COMPACT_STATUS_LEFT))
+        .top(rpx(COMPACT_STATUS_TOP))
+        .size(rpx(ICON_SM))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(session_status_icon_sized(id, status, ICON_XS, cx))
+}
 
 impl Sidebar {
     pub(super) fn collapse_control(&self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -58,6 +72,17 @@ impl Sidebar {
     ) -> Stateful<Div> {
         let glyph_id = format!("compact-glyph-{id}");
         let agent_identity = matches!(action, Action::Select(Selection::Session(_)));
+        let status_overlay = matches!(
+            action,
+            Action::Select(Selection::Session(_) | Selection::Home(_))
+        );
+        // Cut out the backing circle rather than paint over the agent: the actual
+        // rail (including Frosted), selected, hover and focus fill shows through.
+        let glyph = if status_overlay {
+            format!("compact-status-{glyph}")
+        } else {
+            glyph.to_string()
+        };
         let selection_bar =
             selected && matches!(action, Action::Select(_) | Action::ToggleProject(_));
         self.control(SharedString::from(id.clone()), label, action, cx)
@@ -91,8 +116,8 @@ impl Sidebar {
                     .items_center()
                     .justify_center()
                     .child(icon(
-                        glyph,
-                        16.0,
+                        &glyph,
+                        ICON_LG,
                         if agent_identity {
                             c::MAGENTA()
                         } else if selected {
@@ -315,20 +340,9 @@ impl Sidebar {
                 cx,
             )
             .child(
-                div()
+                compact_status_badge(id, status, cx)
                     .id(("compact-session-status", id.raw()))
-                    .debug_selector(move || format!("compact-session-status-{}", id.raw()))
-                    .size(rpx(COMPACT_STATUS_SIZE))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(session_status_icon_sized(
-                        id,
-                        status,
-                        COMPACT_STATUS_SIZE,
-                        cx,
-                    )),
+                    .debug_selector(move || format!("compact-session-status-{}", id.raw())),
             )
             .group("compact-session-row")
             .when(!flyout_owns_close, |row| {
@@ -695,15 +709,9 @@ impl Sidebar {
                     )
                     .group("compact-home-row")
                     .child(
-                        div()
+                        compact_status_badge(id, status, cx)
                             .id(("compact-home-status", id.raw()))
-                            .debug_selector(move || format!("compact-home-status-{}", id.raw()))
-                            .size(rpx(COMPACT_STATUS_SIZE))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(session_status_icon_sized(id, status, COMPACT_STATUS_SIZE, cx)),
+                            .debug_selector(move || format!("compact-home-status-{}", id.raw())),
                     )
                     .child(
                         self.control(("compact-close-home", id.raw()), format!("Close {}", meta.label), Action::CloseHome(id), cx)

@@ -61,6 +61,17 @@ pub fn svg_for_path(path: &str) -> Option<String> {
             r#"<path d="M8 1.5a6.5 6.5 0 1 1-4.6 1.9" transform="rotate({deg} 8 8)"/>"#
         )));
     }
+    if let Some(glyph) = name.strip_prefix("compact-status-") {
+        // Variant A's 12px clearance circle is centered at (14,14) in the
+        // centered 16px agent. Removing its pixels preserves the real surface
+        // underneath, including translucent rails and keyboard/hover fills.
+        let source = svg_for(glyph);
+        let (root, body) = source.split_once('>')?;
+        let body = body.strip_suffix("</svg>")?;
+        return Some(format!(
+            r#"{root}><defs><mask id="compact-status-clearance" maskUnits="userSpaceOnUse" x="-16" y="-16" width="48" height="48"><rect x="-16" y="-16" width="48" height="48" fill="white" stroke="none"/><circle cx="14" cy="14" r="6" fill="black" stroke="none"/></mask></defs><g mask="url(#compact-status-clearance)">{body}</g></svg>"#
+        ));
+    }
     Some(svg_for(name))
 }
 
@@ -222,6 +233,8 @@ fn svg_for(name: &str) -> String {
         }
         // ⌘ command / place-of-interest mark — macOS shortcut modifier.
         // Source: Bootstrap Icons (16×16 grid, fill-based like claude/codex).
+        "enter" => r#"<path d="M13 3v5H3m4-4L3 8l4 4"/>"#,
+        "shift" => r#"<path d="m3 7 5-5 5 5h-3v6H6V7z"/>"#,
         "command" => {
             r#"<path fill="currentColor" stroke="none" d="M3.5 2A1.5 1.5 0 0 1 5 3.5V5H3.5a1.5 1.5 0 1 1 0-3M6 5V3.5A2.5 2.5 0 1 0 3.5 6H5v4H3.5A2.5 2.5 0 1 0 6 12.5V11h4v1.5a2.5 2.5 0 1 0 2.5-2.5H11V6h1.5A2.5 2.5 0 1 0 10 3.5V5zm4 1v4H6V6zm1-1V3.5A1.5 1.5 0 1 1 12.5 5zm0 6h1.5a1.5 1.5 0 1 1-1.5 1.5zm-6 0v1.5A1.5 1.5 0 1 1 3.5 11zM5 5H3.5A1.5 1.5 0 0 1 5 3.5z"/>"#
         }
@@ -293,6 +306,78 @@ mod tests {
         assert!(svg_for_path("fonts/BlexMono.ttf").is_none());
         assert!(svg_for_path("icons/plus").is_none());
         assert!(svg_for_path("plus.svg").is_none());
+    }
+
+    #[test]
+    fn compact_status_clearance_removes_only_the_lower_right_circle() {
+        let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(crate::assets::Assets));
+        for glyph in ["codex", "claude", "opencode", "terminal"] {
+            let masked = svg_for_path(&format!("icons/compact-status-{glyph}.svg")).unwrap();
+            let source = svg_for(glyph);
+            let original = renderer
+                .render_single_frame(source.as_bytes(), 8.0)
+                .unwrap();
+            let cleared = renderer
+                .render_single_frame(masked.as_bytes(), 8.0)
+                .unwrap();
+            // resvg isolates masked groups in an offscreen layer, which can
+            // change edge AA. A no-op mask provides an equivalent-layer control.
+            let cutout = r#"<circle cx="14" cy="14" r="6" fill="black" stroke="none"/>"#;
+            assert_eq!(
+                masked.matches(cutout).count(),
+                1,
+                "{glyph}: expected one clearance circle"
+            );
+            let control_source = masked.replacen(cutout, "", 1);
+            let control = renderer
+                .render_single_frame(control_source.as_bytes(), 8.0)
+                .unwrap();
+            let width = original.size(0).width.0 as usize;
+            let pixels_per_unit = width as f32 / 16.0;
+            let original = original.as_bytes(0).unwrap();
+            let cleared = cleared.as_bytes(0).unwrap();
+            let control = control.as_bytes(0).unwrap();
+            let mut removed = 0;
+            let mut preserved = 0;
+            let mut exterior_differences = 0;
+            let mut exterior_max_delta = 0;
+            let mut exterior_total_delta = 0u64;
+            let mut original_exterior_alpha = 0u64;
+            let mut cleared_exterior_alpha = 0u64;
+            for (index, ((before, after), control)) in original
+                .chunks_exact(4)
+                .zip(cleared.chunks_exact(4))
+                .zip(control.chunks_exact(4))
+                .enumerate()
+            {
+                let x = (index % width) as f32 / pixels_per_unit;
+                let y = (index / width) as f32 / pixels_per_unit;
+                let distance = ((x - 14.0).powi(2) + (y - 14.0).powi(2)).sqrt();
+                if distance < 5.5 {
+                    assert_eq!(after[3], 0, "{glyph}: clearance at ({x}, {y})");
+                    removed += usize::from(before[3] > 0);
+                } else if distance > 6.5 {
+                    let delta = before[3].abs_diff(after[3]);
+                    exterior_differences += usize::from(delta > 0);
+                    exterior_max_delta = exterior_max_delta.max(delta);
+                    exterior_total_delta += u64::from(delta);
+                    assert_eq!(
+                        control, after,
+                        "{glyph}: clearance changed exterior at ({x}, {y})"
+                    );
+                    original_exterior_alpha += u64::from(before[3]);
+                    cleared_exterior_alpha += u64::from(after[3]);
+                    preserved += usize::from(after[3] > 0);
+                }
+            }
+            eprintln!("{glyph}: exterior differing={exterior_differences}, max alpha delta={exterior_max_delta}, total alpha delta={exterior_total_delta}, retained alpha={cleared_exterior_alpha}/{original_exterior_alpha}");
+            assert!(
+                cleared_exterior_alpha * 100 >= original_exterior_alpha * 99,
+                "{glyph}: at least 99% of exterior identity alpha must survive"
+            );
+            assert!(removed > 0, "{glyph}: mask must remove some glyph pixels");
+            assert!(preserved > 0, "{glyph}: identity must remain visible");
+        }
     }
 
     #[test]

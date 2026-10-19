@@ -98,6 +98,34 @@ impl CodexSession {
         cx.notify();
         Ok(id)
     }
+    /// Start a fresh provider conversation in the existing pane.
+    pub fn clear_conversation(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if self.state.status == codex::Status::Disconnected {
+            return Err(codex::CLEAR_DISCONNECTED.into());
+        }
+        if self.state.status.busy() || self.state.turn_id.is_some() || self.state.compacting {
+            return Err(codex::CLEAR_BUSY.into());
+        }
+        self.handle.send(Action::ClearConversation)?;
+        self.state.error = None;
+        cx.notify();
+        Ok(())
+    }
+    pub fn resume_queue(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if self.state.status == codex::Status::Disconnected {
+            return Err("Reconnect before resuming queued inputs".into());
+        }
+        if self.state.status.busy() || self.state.turn_id.is_some() || self.state.compacting {
+            return Err("Wait for the current turn before resuming queued inputs".into());
+        }
+        if self.state.queued_prompts.is_empty() {
+            return Err("There are no queued prompts to send.".into());
+        }
+        self.handle.send(Action::ResumeQueue)?;
+        self.state.error = None;
+        cx.notify();
+        Ok(())
+    }
     /// Host `/compact`. Rejected inline, never sent, while a turn is active.
     pub fn compact(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
         if self.state.status == codex::Status::Disconnected {

@@ -78,6 +78,16 @@ pub struct SavedSession {
     pub context: Option<ContextUsage>,
 }
 impl SavedSession {
+    pub(crate) fn fresh_conversation(&self) -> Self {
+        let mut saved = self.clone();
+        saved.thread_id = None;
+        saved.title = None;
+        saved.items.clear();
+        saved.draft.clear();
+        saved.draft_images.clear();
+        saved.context = None;
+        saved
+    }
     /// Consume the accepted composer copy, preserving any newer text/attachment pair.
     pub(crate) fn clear_submitted_draft(&mut self, text: &str, images: &[String]) {
         if self.draft == text && self.draft_images == images {
@@ -102,6 +112,11 @@ impl ContextUsage {
         ((self.used as f64 / self.window as f64 * 100.0).round() as u32).min(100)
     }
 }
+/// Inline error when clearing is requested while provider work is active.
+pub const CLEAR_BUSY: &str =
+    "Wait for the current turn to finish before clearing the conversation.";
+/// Inline error when clearing is requested without a live provider process.
+pub const CLEAR_DISCONNECTED: &str = "Reconnect before clearing the conversation.";
 
 /// Inline error when compaction is requested while a turn is active.
 pub const COMPACT_BUSY: &str = "Wait for the current turn to finish before compacting.";
@@ -157,7 +172,14 @@ pub struct QueuedPrompt {
 pub struct QuestionRequest {
     pub id: Value,
     pub questions: Vec<Question>,
+    pub title: Option<String>,
     pub(crate) claude_input: Option<Value>,
+    source: QuestionSource,
+}
+#[derive(Clone, Debug, PartialEq)]
+enum QuestionSource {
+    ServerRequest,
+    AsyncMessage,
 }
 #[derive(Clone, Debug)]
 pub struct Question {
@@ -168,15 +190,60 @@ pub struct Question {
     pub multiple: bool,
     pub allow_custom: bool,
     pub secret: bool,
+    pub kind: QuestionKind,
+    pub placeholder: Option<String>,
+    pub description: Option<String>,
+}
+#[derive(Clone, Debug)]
+pub enum QuestionKind {
+    Choice,
+    Text,
+    Number(QuestionNumber),
+}
+#[derive(Clone, Debug)]
+pub struct QuestionNumber {
+    pub min: f64,
+    pub max: f64,
+    pub step: Option<f64>,
+    pub default_value: Option<f64>,
+    pub unit: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct QuestionOption {
     pub label: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub preview: Option<String>,
 }
 pub type QuestionAnswers = HashMap<String, Vec<String>>;
 impl QuestionRequest {
+    // Async questions are assistant-message metadata, not pending JSON-RPC requests.
+    // Their answers enter the conversation as ordinary user input.
+    fn from_async_message(item: &Value) -> Option<Self> {
+        if item["type"] != "agentMessage"
+            || item["delivery"] != "async"
+            || item["groveQuestionResolved"] == true
+        {
+            return None;
+        }
+        let id = item["id"].as_str()?.to_owned();
+        let rows = item["questions"].as_array()?;
+        let normalized = rows.iter().enumerate().map(|(index, row)| {
+            json!({"id":index.to_string(),"question":row["title"],"isOther":true,
+                "options":row["options"].as_array().map(|options| options.iter().map(|label| json!({"label":label})).collect::<Vec<_>>())})
+        }).collect::<Vec<_>>();
+        let mut request = Self::parse(json!(id), &json!({"questions":normalized}), false).ok()?;
+        request.source = QuestionSource::AsyncMessage;
+        Some(request)
+    }
+    fn answer_text(&self, answers: &QuestionAnswers) -> String {
+        self.questions
+            .iter()
+            .map(|question| format!("{}\n{}", question.text, answers[&question.id].join(", ")))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
     /// Decode the app-server's structured input request without retaining answers.
     pub fn from_codex(id: Value, params: &Value) -> Result<Self, String> {
         Self::parse(id, params, false)
@@ -220,6 +287,61 @@ impl QuestionRequest {
                     return Err("The question choices need unique nonempty labels".into());
                 }
             }
+            let kind = if claude {
+                match row["kind"].as_str().unwrap_or("choice") {
+                    "choice" => QuestionKind::Choice,
+                    "text" => QuestionKind::Text,
+                    "number" => {
+                        let min = row["min"]
+                            .as_f64()
+                            .filter(|value| value.is_finite())
+                            .ok_or("The numeric question minimum is missing")?;
+                        let max = row["max"]
+                            .as_f64()
+                            .filter(|value| value.is_finite())
+                            .ok_or("The numeric question maximum is missing")?;
+                        let number_field = |key: &str| -> Result<Option<f64>, String> {
+                            match row.get(key) {
+                                None => Ok(None),
+                                Some(value) => value
+                                    .as_f64()
+                                    .filter(|number| number.is_finite())
+                                    .map(Some)
+                                    .ok_or_else(|| {
+                                        format!("The numeric question {key} must be a number")
+                                    }),
+                            }
+                        };
+                        let step = number_field("step")?;
+                        let default_value = number_field("defaultValue")?;
+                        if min >= max
+                            || step.is_some_and(|value| !value.is_finite() || value <= 0.0)
+                            || default_value.is_some_and(|value| {
+                                !value.is_finite() || value < min || value > max
+                            })
+                        {
+                            return Err("The numeric question constraints are invalid".into());
+                        }
+                        QuestionKind::Number(QuestionNumber {
+                            min,
+                            max,
+                            step,
+                            default_value,
+                            unit: row["unit"].as_str().map(str::to_owned),
+                        })
+                    }
+                    _ => return Err("Unsupported question kind".into()),
+                }
+            } else if options.is_empty() {
+                QuestionKind::Text
+            } else {
+                QuestionKind::Choice
+            };
+            if !matches!(kind, QuestionKind::Choice)
+                && (!options.is_empty() || row["multiSelect"] == true)
+            {
+                return Err("Text and number questions cannot have choices".into());
+            }
             questions.push(Question {
                 id: key,
                 header: row["header"].as_str().unwrap_or_default().to_owned(),
@@ -230,12 +352,17 @@ impl QuestionRequest {
                 multiple: claude && row["multiSelect"].as_bool().unwrap_or(false),
                 secret: row["isSecret"].as_bool().unwrap_or(false),
                 options,
+                kind,
+                placeholder: row["placeholder"].as_str().map(str::to_owned),
+                description: row["description"].as_str().map(str::to_owned),
             });
         }
         Ok(Self {
             id,
             questions,
+            title: input["title"].as_str().map(str::to_owned),
             claude_input: claude.then(|| input.clone()),
+            source: QuestionSource::ServerRequest,
         })
     }
     pub fn validate(&self, answers: &QuestionAnswers) -> Result<(), String> {
@@ -256,6 +383,29 @@ impl QuestionRequest {
                 })
             {
                 return Err("Choose or enter a valid answer for every question".into());
+            }
+            if let QuestionKind::Number(number) = &question.kind {
+                let text = values[0].trim();
+                let unsigned = text.strip_prefix('-').unwrap_or(text);
+                let mut pieces = unsigned.split('.');
+                let whole = pieces.next().unwrap_or_default();
+                let fraction = pieces.next();
+                let decimal = !whole.is_empty()
+                    && whole.bytes().all(|byte| byte.is_ascii_digit())
+                    && fraction.is_none_or(|part| {
+                        !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                    && pieces.next().is_none();
+                let valid = decimal
+                    && text.parse::<f64>().ok().is_some_and(|value| {
+                        value.is_finite() && value >= number.min && value <= number.max
+                    });
+                if !valid {
+                    return Err(format!(
+                        "Enter a number between {} and {}",
+                        number.min, number.max
+                    ));
+                }
             }
         }
         Ok(())
@@ -297,6 +447,7 @@ pub struct Snapshot {
     pub resolved_access: Option<String>,
     /// Monotonic local acknowledgement; only a successful turn/start response advances it.
     pub accepted_prompts: u64,
+    pub cleared_conversations: u64,
     pub accepted_submission: Option<u64>,
     pub rejected_submission: Option<u64>,
     pub queued_prompts: Vec<QueuedPrompt>,
@@ -426,6 +577,7 @@ impl Snapshot {
             resolved_effort: None,
             resolved_access: None,
             accepted_prompts: 0,
+            cleared_conversations: 0,
             accepted_submission: None,
             rejected_submission: None,
             queued_prompts: Vec::new(),
@@ -437,6 +589,34 @@ impl Snapshot {
             compact_requested: false,
             context_tokens,
             settled_turns: Vec::new(),
+        }
+    }
+    fn resolve_async_question(&mut self, id: &Value) {
+        if let Some(item) = self.saved.items.iter_mut().find(|item| item["id"] == *id) {
+            item["groveQuestionResolved"] = json!(true);
+        }
+        self.questions.retain(|question| question.id != *id);
+    }
+    fn restore_async_questions(&mut self) {
+        let start = self
+            .saved
+            .items
+            .iter()
+            .rposition(|item| item["type"] == "userMessage")
+            .map_or(0, |index| index + 1);
+        for (index, item) in self.saved.items.iter_mut().enumerate() {
+            if index < start && item["groveQuestionPending"] != true {
+                continue;
+            }
+            if let Some(question) = QuestionRequest::from_async_message(item) {
+                item["groveQuestionPending"] = json!(true);
+                if !self.questions.iter().any(|old| old.id == question.id) {
+                    self.questions.push(question);
+                }
+            }
+        }
+        if !self.questions.is_empty() {
+            self.status = Status::Waiting;
         }
     }
     pub fn transcript(&self) -> String {
@@ -523,14 +703,15 @@ impl Snapshot {
                 self.compacting = false;
                 self.compact_requested = false;
                 self.approvals.clear();
-                self.questions.clear();
+                self.questions
+                    .retain(|q| q.source == QuestionSource::AsyncMessage);
                 self.elicitations.retain(|r| r.turn_id.is_none());
                 self.status = match p["turn"]["status"].as_str() {
                     Some("failed") => Status::Failed,
                     Some("interrupted") => Status::Interrupted,
                     _ => Status::Done,
                 };
-                if !self.elicitations.is_empty() {
+                if !self.elicitations.is_empty() || !self.questions.is_empty() {
                     self.status = Status::Waiting;
                 }
                 self.error = p["turn"]["error"]["message"].as_str().map(str::to_owned);
@@ -583,7 +764,23 @@ impl Snapshot {
                 self.record_context(used, p["tokenUsage"]["modelContextWindow"].as_u64());
             }
             "item/started" | "item/completed" => {
-                let item = p["item"].clone();
+                let mut item = p["item"].clone();
+                if let Some(old) = self.saved.items.iter().find(|old| old["id"] == item["id"]) {
+                    for marker in ["groveQuestionResolved", "groveQuestionPending"] {
+                        if old[marker] == true {
+                            item[marker] = json!(true);
+                        }
+                    }
+                }
+                if message["method"] == "item/completed" {
+                    if let Some(question) = QuestionRequest::from_async_message(&item) {
+                        item["groveQuestionPending"] = json!(true);
+                        if !self.questions.iter().any(|q| q.id == question.id) {
+                            self.questions.push(question);
+                            self.status = Status::Waiting;
+                        }
+                    }
+                }
                 if self.saved.title.is_none() && item["type"] == "userMessage" {
                     self.saved.title = prompt_title(&item_text(&item));
                 }
@@ -914,6 +1111,8 @@ fn prompt_input(text: &str, images: Vec<String>) -> Vec<Value> {
     input
 }
 pub enum Action {
+    /// Start a fresh provider conversation while retaining the Grove session.
+    ClearConversation,
     ResetConfiguration,
     Configure {
         model: Option<String>,
@@ -1164,7 +1363,7 @@ pub fn launch_options(args: &[String]) -> Result<(Vec<String>, Option<String>), 
             flag if flag.starts_with('-') => {
                 return Err(format!(
                     "Native Codex does not support launcher option {flag}"
-                ))
+                ));
             }
             text => {
                 if prompt.is_some() {
@@ -1313,6 +1512,9 @@ enum Pending {
     },
     QueuedTurn {
         id: u64,
+    },
+    AsyncAnswer {
+        question_id: Value,
     },
     Compact,
     Interrupt {
@@ -1530,7 +1732,10 @@ impl Actor {
             || self.pending.values().any(|r| {
                 matches!(
                     r.kind,
-                    Pending::Turn { .. } | Pending::QueuedTurn { .. } | Pending::Compact
+                    Pending::Turn { .. }
+                        | Pending::QueuedTurn { .. }
+                        | Pending::Compact
+                        | Pending::AsyncAnswer { .. }
                 )
             })
         {
@@ -1627,6 +1832,7 @@ impl Actor {
                         | Pending::QueuedTurn { .. }
                         | Pending::Steer { .. }
                         | Pending::Compact
+                        | Pending::AsyncAnswer { .. }
                 )
             })
         {
@@ -1661,6 +1867,7 @@ impl Actor {
                         | Pending::QueuedTurn { .. }
                         | Pending::Steer { .. }
                         | Pending::Compact
+                        | Pending::AsyncAnswer { .. }
                 )
             })
         {
@@ -1687,9 +1894,58 @@ impl Actor {
         self.state.error = None;
         Ok(())
     }
-
+    fn clear_conversation(
+        &mut self,
+        persist_saved: impl FnOnce(&SavedSession) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.state.status.busy()
+            || self.state.turn_id.is_some()
+            || self.state.compacting
+            || self.pending.values().any(|r| {
+                matches!(
+                    r.kind,
+                    Pending::Turn { .. }
+                        | Pending::QueuedTurn { .. }
+                        | Pending::Steer { .. }
+                        | Pending::Compact
+                        | Pending::AsyncAnswer { .. }
+                        | Pending::Interrupt { .. }
+                )
+            })
+        {
+            return Err(CLEAR_BUSY.into());
+        }
+        if self.process.is_none() {
+            return Err(CLEAR_DISCONNECTED.into());
+        }
+        // Persist the empty identity before publishing it or replacing the transport.
+        // A crash during restart must never resume the conversation being cleared.
+        let args = launch_options(&self.args)?.0;
+        let saved = self.state.saved.fresh_conversation();
+        persist_saved(&saved).map_err(|e| format!("Could not clear conversation: {e}"))?;
+        self.pid.store(0, Ordering::SeqCst);
+        self.process = None;
+        self.pending.clear();
+        self.interrupt_retry = None;
+        self.queue_ready = false;
+        self.queue_paused = false;
+        self.initial = None;
+        self.args = args;
+        let cleared = self.state.cleared_conversations + 1;
+        self.state = Snapshot::new(saved);
+        self.state.cleared_conversations = cleared;
+        Ok(())
+    }
     fn action(&mut self, action: Action) -> Result<bool, String> {
         match action {
+            Action::ClearConversation => {
+                self.clear_conversation(persist)?;
+                if let Err(error) = self.start() {
+                    self.state.fail(error);
+                    self.pid.store(0, Ordering::SeqCst);
+                    self.process = None;
+                }
+            }
             Action::ResetConfiguration => {
                 self.state.model = None;
                 self.state.effort = None;
@@ -1917,6 +2173,33 @@ impl Actor {
                 let request = &self.state.questions[at];
                 if let Some(answers) = &answers {
                     request.validate(answers)?;
+                }
+                if request.source == QuestionSource::AsyncMessage {
+                    if self.pending.values().any(|pending| matches!(&pending.kind, Pending::AsyncAnswer { question_id } if *question_id == id)) {
+                        return Err("This answer is already being submitted".into());
+                    }
+                    if let Some(answers) = answers {
+                        let text = request.answer_text(&answers);
+                        self.request(
+                            "turn/start",
+                            self.turn_params(self.input(&text, Vec::new())),
+                            Pending::AsyncAnswer { question_id: id },
+                        )?;
+                        self.state.error = None;
+                    } else {
+                        self.state.resolve_async_question(&id);
+                        self.state.status = if !self.state.questions.is_empty()
+                            || !self.state.approvals.is_empty()
+                            || !self.state.elicitations.is_empty()
+                        {
+                            Status::Waiting
+                        } else if self.state.turn_id.is_some() {
+                            Status::Working
+                        } else {
+                            Status::Done
+                        };
+                    }
+                    return Ok(true);
                 }
                 let response = request.codex_response(answers.unwrap_or_default());
                 self.write(&json!({"id":id,"result":response}))?;
@@ -2182,6 +2465,16 @@ impl Actor {
                 );
                 return Ok(());
             }
+            if matches!(request.kind, Pending::AsyncAnswer { .. }) {
+                self.state.error = Some(
+                    error["message"]
+                        .as_str()
+                        .unwrap_or("Codex rejected the answer")
+                        .into(),
+                );
+                self.state.status = Status::Waiting;
+                return Ok(());
+            }
             self.queue_paused = true;
             self.queue_ready = false;
             let message = error["message"]
@@ -2346,7 +2639,10 @@ impl Actor {
                                         .any(|value| value.as_str() == Some(&root.wt_path))
                                 })
                         {
-                            return Err(format!("Codex did not honor writable context root {}. No prompt was submitted.",root.wt_path));
+                            return Err(format!(
+                                "Codex did not honor writable context root {}. No prompt was submitted.",
+                                root.wt_path
+                            ));
                         }
                     }
                 }
@@ -2365,7 +2661,21 @@ impl Actor {
                         // History carries no Grove metadata; keep known compaction figures.
                         let items = items
                             .into_iter()
-                            .map(|item| {
+                            .map(|mut item| {
+                                if let Some(old) = self
+                                    .state
+                                    .saved
+                                    .items
+                                    .iter()
+                                    .find(|old| old["id"] == item["id"])
+                                {
+                                    for marker in ["groveQuestionResolved", "groveQuestionPending"]
+                                    {
+                                        if old[marker] == true {
+                                            item[marker] = json!(true);
+                                        }
+                                    }
+                                }
                                 if item["type"] != COMPACTION_ITEM {
                                     return item;
                                 }
@@ -2403,9 +2713,29 @@ impl Actor {
                         }
                     }
                 }
+                self.state.restore_async_questions();
                 if let Some(prompt) = self.initial.take() {
                     self.prompt(prompt)?;
                 }
+            }
+            Pending::AsyncAnswer { question_id } => {
+                self.state.resolve_async_question(&question_id);
+                if let Some(turn) = result["turn"]["id"]
+                    .as_str()
+                    .filter(|id| !self.state.settled_turns.iter().any(|old| old == id))
+                {
+                    self.state.turn_id = Some(turn.to_owned());
+                }
+                self.state.status = if !self.state.questions.is_empty()
+                    || !self.state.approvals.is_empty()
+                    || !self.state.elicitations.is_empty()
+                {
+                    Status::Waiting
+                } else if self.state.turn_id.is_some() {
+                    Status::Working
+                } else {
+                    Status::Done
+                };
             }
             Pending::Turn { submission } => {
                 if let Some(submission) = submission {
@@ -3491,6 +3821,149 @@ mod tests {
         assert!(actor.state.approvals.is_empty());
         assert_eq!(actor.state.status, Status::Working);
     }
+    fn async_question_message() -> Value {
+        // Recorded request_user_input_async AgentMessage, exposed by app-server as
+        // camelCase ThreadItem metadata (Codex 0.163.0 schema).
+        json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{
+            "type":"agentMessage","id":"async-question","text":"Which changes?\n- All\n- Composer",
+            "phase":"final_answer","delivery":"async","questions":[
+                {"title":"Which changes?","options":["All","Composer"]},
+                {"title":"Any details?","options":null}
+            ]
+        }}})
+    }
+    #[test]
+    fn async_question_metadata_survives_completion_and_history_without_duplicates() {
+        let mut state = state();
+        let message = async_question_message();
+        state.apply(&message);
+        state.apply(&message);
+        assert_eq!(state.questions.len(), 1);
+        let request = &state.questions[0];
+        assert_eq!(request.questions.len(), 2);
+        assert_eq!(request.questions[0].options[1].label, "Composer");
+        assert!(request
+            .questions
+            .iter()
+            .all(|question| question.allow_custom));
+        assert!(request.questions[1].options.is_empty());
+        state.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}));
+        assert_eq!(state.status, Status::Waiting);
+        assert_eq!(state.questions.len(), 1);
+        state.questions.clear();
+        state.restore_async_questions();
+        assert_eq!(state.questions.len(), 1);
+        state.resolve_async_question(&json!("async-question"));
+        state.apply(&message);
+        state.restore_async_questions();
+        assert!(state.questions.is_empty());
+    }
+    #[test]
+    fn async_questions_reject_invalid_metadata_and_survive_unrelated_user_reply() {
+        let mut state = state();
+        let mut message = async_question_message();
+        message["params"]["item"]["questions"][0]["options"] = json!(["All", "All"]);
+        state.apply(&message);
+        assert!(state.questions.is_empty());
+        state.apply(&async_question_message());
+        state.apply(&json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"userMessage","id":"reply","content":[{"type":"text","text":"All"}]}}}));
+        assert_eq!(state.questions.len(), 1);
+        state.questions.clear();
+        state.restore_async_questions();
+        state.apply(&async_question_message());
+        assert_eq!(state.questions.len(), 1);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn async_question_answers_use_user_input_preserve_draft_and_retry() {
+        use std::os::unix::process::CommandExt;
+        let mut actor = actor();
+        let mut child = Command::new("cat")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let input = child.stdin.take().unwrap();
+        let (_, lines) = mpsc::channel();
+        actor.process = Some(Process {
+            child,
+            input,
+            lines,
+        });
+        actor.state.saved.draft = "Unsent draft".into();
+        actor.state.saved.draft_images = vec!["draft.png".into()];
+        actor.message(async_question_message()).unwrap();
+        let answers = HashMap::from([
+            ("0".into(), vec!["All".into()]),
+            ("1".into(), vec!["Keep it tidy".into()]),
+        ]);
+        actor
+            .action(Action::AnswerQuestions(
+                json!("async-question"),
+                Some(answers.clone()),
+            ))
+            .unwrap();
+        assert!(actor
+            .action(Action::AnswerQuestions(
+                json!("async-question"),
+                Some(answers.clone())
+            ))
+            .is_err());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let sent: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(sent["method"], "turn/start");
+        assert_eq!(sent["params"]["threadId"], "thread-1");
+        assert_eq!(
+            sent["params"]["input"][0]["text"],
+            "Which changes?\nAll\n\nAny details?\nKeep it tidy"
+        );
+        assert_eq!(
+            actor.state.questions.len(),
+            1,
+            "retain until acknowledgement"
+        );
+        // An echoed user message can arrive before the request acknowledgement.
+        // It must neither dismiss this card nor turn a rejection into data loss.
+        actor.message(json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"userMessage","id":"echo","content":[{"type":"text","text":"Which changes?\nAll"}]}}})).unwrap();
+        actor
+            .message(json!({"id":sent["id"],"error":{"message":"Try again"}}))
+            .unwrap();
+        assert_eq!(actor.state.status, Status::Waiting);
+        assert_eq!(actor.state.questions.len(), 1);
+        actor.state.turn_id = None;
+        actor
+            .action(Action::AnswerQuestions(
+                json!("async-question"),
+                Some(answers),
+            ))
+            .unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let retry: Value = serde_json::from_str(&line).unwrap();
+        actor
+            .message(json!({"id":retry["id"],"result":{"turn":{"id":"turn-2"}}}))
+            .unwrap();
+        assert!(actor.state.questions.is_empty());
+        assert_eq!(actor.state.turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(actor.state.saved.draft, "Unsent draft");
+        assert_eq!(actor.state.saved.draft_images, vec!["draft.png"]);
+        actor.state.turn_id = Some("turn-1".into());
+        let mut new_question = async_question_message();
+        new_question["params"]["item"]["id"] = json!("dismiss");
+        actor.message(new_question.clone()).unwrap();
+        actor
+            .action(Action::AnswerQuestions(json!("dismiss"), None))
+            .unwrap();
+        actor.message(new_question).unwrap();
+        assert!(actor.state.questions.is_empty());
+        assert!(
+            actor.pending.is_empty(),
+            "dismissal must not send a provider RPC"
+        );
+    }
     #[cfg(unix)]
     #[test]
     fn question_requests_roundtrip_grouped_answers_and_expire() {
@@ -3968,7 +4441,95 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         serde_json::from_str(&line).unwrap()
     }
-
+    #[test]
+    fn clear_conversation_persists_fresh_identity_and_fences_old_transport() {
+        let (mut actor, _) = idle_actor();
+        actor.args = vec![
+            "-c".into(),
+            "model=chosen".into(),
+            "old launch prompt".into(),
+        ];
+        actor.state.saved.draft = "old draft".into();
+        actor.state.saved.draft_images = vec!["old image".into()];
+        actor.state.saved.context = Some(ContextUsage {
+            used: 99,
+            window: 100,
+        });
+        actor.state.saved.composer.model = Some("chosen".into());
+        let before = actor.state.saved.clone();
+        let dir = tempfile::tempdir().unwrap();
+        persist_in_dir(&before, dir.path()).unwrap();
+        actor
+            .clear_conversation(|saved| persist_in_dir(saved, dir.path()))
+            .unwrap();
+        let restored = load_from_dir(dir.path()).unwrap().sessions.remove(0);
+        assert_eq!(restored.key, before.key);
+        assert_eq!(restored.cwd, before.cwd);
+        assert_eq!(restored.composer.model, before.composer.model);
+        assert!(restored.thread_id.is_none());
+        assert!(restored.items.is_empty());
+        assert!(restored.title.is_none());
+        assert!(restored.context.is_none());
+        assert!(restored.draft.is_empty());
+        assert!(restored.draft_images.is_empty());
+        assert!(actor.process.is_none());
+        assert!(actor.pending.is_empty());
+        assert_eq!(actor.state.cleared_conversations, 1);
+        assert_eq!(launch_options(&actor.args).unwrap().1, None);
+        actor.message(json!({"method":"item/completed","params":{"threadId":"thread-1","item":{"id":"late","type":"agentMessage","text":"old"}}})).unwrap();
+        assert!(actor.state.saved.items.is_empty());
+        // Use a fresh fake transport and inspect the actual provider boundary.
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let input = child.stdin.take().unwrap();
+        let (_, lines) = mpsc::channel();
+        actor.process = Some(Process {
+            child,
+            input,
+            lines,
+        });
+        actor.start_thread(None).unwrap();
+        let request = read_line(&mut reader);
+        assert_eq!(request["method"], "thread/start");
+        assert!(request["params"].get("threadId").is_none());
+        actor
+            .message(
+                json!({"id":request["id"],"result":{"thread":{"id":"fresh-thread","turns":[]}}}),
+            )
+            .unwrap();
+        actor.prompt("new question".into()).unwrap();
+        let turn = read_line(&mut reader);
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(turn["params"]["threadId"], "fresh-thread");
+        assert_eq!(turn["params"]["input"][0]["text"], "new question");
+    }
+    #[test]
+    fn clear_conversation_rejects_busy_disconnected_and_save_failure_without_mutation() {
+        let mut actor = actor();
+        assert_eq!(
+            actor.action(Action::ClearConversation).unwrap_err(),
+            CLEAR_BUSY
+        );
+        actor.state.status = Status::Done;
+        actor.state.turn_id = None;
+        assert_eq!(
+            actor.action(Action::ClearConversation).unwrap_err(),
+            CLEAR_DISCONNECTED
+        );
+        let (mut actor, _) = idle_actor();
+        let old = actor.state.saved.thread_id.clone();
+        assert!(actor
+            .clear_conversation(|_| Err("disk full".into()))
+            .unwrap_err()
+            .contains("disk full"));
+        assert_eq!(actor.state.saved.thread_id, old);
+        assert!(actor.process.is_some());
+        assert_eq!(actor.state.cleared_conversations, 0);
+    }
     #[test]
     fn token_usage_tracks_last_turn_context_and_survives_recovery() {
         let mut state = state();

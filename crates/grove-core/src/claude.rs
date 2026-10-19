@@ -77,7 +77,7 @@ pub fn launch_options(args: &[String]) -> Result<(Vec<String>, Option<String>), 
                 break;
             }
             _ if arg.starts_with('-') => {
-                return Err(format!("Unsupported native Claude Code option: {arg}"))
+                return Err(format!("Unsupported native Claude Code option: {arg}"));
             }
             _ => {
                 if prompt.replace(arg.clone()).is_some() {
@@ -119,8 +119,11 @@ impl Drop for Process {
         let _ = self.child.wait();
     }
 }
-
-fn spawn(args: &[String], saved: &SavedSession, task_id: Option<&str>) -> Result<Process, String> {
+fn launch_command(
+    args: &[String],
+    saved: &SavedSession,
+    task_id: Option<&str>,
+) -> Result<Command, String> {
     let argv = vec![
         "--print".into(),
         "--verbose".into(),
@@ -146,6 +149,8 @@ fn spawn(args: &[String], saved: &SavedSession, task_id: Option<&str>) -> Result
         command.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
     }
     command.env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1");
+    // The native question panel renders the extended text and number schema.
+    command.env("CLAUDE_CODE_QUESTION_EXTENDED", "1");
     command.env(
         "GROVE_CONFIG_DIR",
         crate::storage::config_dir().map_err(|e| e.to_string())?,
@@ -172,6 +177,10 @@ fn spawn(args: &[String], saved: &SavedSession, task_id: Option<&str>) -> Result
             command.arg("--add-dir").arg(&root.wt_path);
         }
     }
+    Ok(command)
+}
+fn spawn(args: &[String], saved: &SavedSession, task_id: Option<&str>) -> Result<Process, String> {
+    let mut command = launch_command(args, saved, task_id)?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -674,9 +683,53 @@ impl Actor {
         self.state.accepted_submission = Some(prompt.id);
         self.state.rejected_submission = None;
     }
-
+    fn clear_conversation(
+        &mut self,
+        persist_saved: impl FnOnce(&SavedSession) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.state.status.busy()
+            || self.state.turn_id.is_some()
+            || self.state.compacting
+            || self.compact_pending
+            || self.in_flight.is_some()
+            || self.deferred.is_some()
+            || self.configuring
+            || self.interrupting
+            || self.pending_completion.is_some()
+            || (self.tracks_session_state && !self.session_idle)
+        {
+            return Err(codex::CLEAR_BUSY.into());
+        }
+        if self.process.is_none() {
+            return Err(codex::CLEAR_DISCONNECTED.into());
+        }
+        let args = launch_options(&self.args)?.0;
+        let saved = self.state.saved.fresh_conversation();
+        persist_saved(&saved).map_err(|e| format!("Could not clear conversation: {e}"))?;
+        // Dropping the process also drops its event receiver, fencing late events.
+        self.process.take();
+        self.pid.store(0, Ordering::SeqCst);
+        self.initial = None;
+        self.args = args;
+        self.pending.clear();
+        self.blocks.clear();
+        self.message_id.clear();
+        self.input_uuid = None;
+        self.context_model = None;
+        self.queue_ready = true;
+        let cleared = self.state.cleared_conversations + 1;
+        self.state = Snapshot::new(saved);
+        self.state.cleared_conversations = cleared;
+        Ok(())
+    }
     fn action(&mut self, action: Action) -> Result<(), String> {
         match action {
+            Action::ClearConversation => {
+                self.clear_conversation(codex::persist)?;
+                if let Err(error) = self.start() {
+                    self.fail(error);
+                }
+            }
             Action::Prompt(text) => self.submit(0, text, Vec::new())?,
             Action::Compact => {
                 if self.process.is_none() {
@@ -1154,10 +1207,18 @@ impl Actor {
                 }
                 if request["subtype"] != "can_use_tool" {
                     let subtype = request["subtype"].as_str().unwrap_or("unknown");
-                    self.state.error=Some(format!("Claude requested unsupported host interaction: {subtype}. Use a terminal session for this capability."));
+                    self.state.error = Some(format!(
+                        "Claude requested unsupported host interaction: {subtype}. Use a terminal session for this capability."
+                    ));
                     if subtype == "request_user_dialog" {
-                        self.state.error=Some(format!("Claude requested unsupported dialog: {}. Grove does not advertise this dialog kind; use a terminal session.",request["dialog_kind"].as_str().unwrap_or("unknown")));
-                        return self.respond(id, json!({"behavior":"cancelled"}));
+                        self.state.error = Some(format!(
+                            "Claude requested unsupported dialog: {}. Grove does not advertise this dialog kind; use a terminal session.",
+                            request["dialog_kind"].as_str().unwrap_or("unknown")
+                        ));
+                        // Undeclared dialogs can belong to another attached client.
+                        // A cancellation would falsely settle that client's question.
+                        // Claude ignores error-shaped responses and keeps it pending.
+                        return self.write(json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"Grove does not advertise this dialog kind."}}));
                     }
                     return self.write(json!({"type":"control_response","response":{"subtype":"error","request_id":id,"error":"Grove does not register this host capability. Use the Claude CLI for this interaction."}}));
                 }
@@ -1675,6 +1736,83 @@ mod tests {
     }
 
     #[test]
+    fn clear_conversation_drops_resume_identity_and_old_event_receiver() {
+        let mut actor = actor();
+        let _reader = transport(&mut actor);
+        actor.state.status = Status::Done;
+        actor.state.saved.thread_id = Some("old-session".into());
+        actor
+            .state
+            .saved
+            .items
+            .push(json!({"type":"agentMessage","text":"old"}));
+        actor.state.saved.title = Some("Old title".into());
+        actor.state.saved.draft = "draft".into();
+        actor.args = vec![
+            "--model".into(),
+            "sonnet".into(),
+            "old launch prompt".into(),
+        ];
+        let before = actor.state.saved.clone();
+        let mut restored = None;
+        actor
+            .clear_conversation(|saved| {
+                restored = Some(codex::recover_saved_for_test(saved));
+                Ok(())
+            })
+            .unwrap();
+        let restored = restored.unwrap();
+        assert_eq!(restored.key, before.key);
+        assert_eq!(restored.cwd, before.cwd);
+        assert!(restored.thread_id.is_none());
+        assert!(restored.items.is_empty());
+        assert!(restored.title.is_none());
+        assert!(restored.draft.is_empty());
+        assert!(actor.process.is_none());
+        assert_eq!(actor.state.cleared_conversations, 1);
+        assert_eq!(launch_options(&actor.args).unwrap().1, None);
+        let command = launch_command(&actor.args, &restored, None).unwrap();
+        let args = command
+            .get_args()
+            .map(|v| v.to_string_lossy())
+            .collect::<Vec<_>>();
+        assert!(!args
+            .iter()
+            .any(|arg| arg == "--resume" || arg == "old-session" || arg == "old launch prompt"));
+        // A new CLI's identity is accepted rather than filtered by the old one.
+        actor
+            .message(json!({"type":"system","subtype":"init","session_id":"fresh-session"}))
+            .unwrap();
+        assert_eq!(
+            actor.state.saved.thread_id.as_deref(),
+            Some("fresh-session")
+        );
+        actor.message(json!({"type":"assistant","session_id":"old-session","message":{"content":[{"type":"text","text":"late old text"}]}})).unwrap();
+        assert!(actor.state.saved.items.is_empty());
+    }
+    #[test]
+    fn clear_conversation_rejections_preserve_existing_claude_context() {
+        let mut actor = actor();
+        actor.state.saved.thread_id = Some("old-session".into());
+        actor.state.status = Status::Working;
+        assert_eq!(
+            actor.action(Action::ClearConversation).unwrap_err(),
+            codex::CLEAR_BUSY
+        );
+        actor.state.status = Status::Done;
+        assert_eq!(
+            actor.action(Action::ClearConversation).unwrap_err(),
+            codex::CLEAR_DISCONNECTED
+        );
+        let _reader = transport(&mut actor);
+        assert!(actor
+            .clear_conversation(|_| Err("disk full".into()))
+            .is_err());
+        assert_eq!(actor.state.saved.thread_id.as_deref(), Some("old-session"));
+        assert!(actor.process.is_some());
+        assert_eq!(actor.state.cleared_conversations, 0);
+    }
+    #[test]
     fn launch_preserves_config_and_rejects_transport_takeover() {
         assert_eq!(
             launch_options(&["--model=sonnet".into(), "hello".into()]).unwrap(),
@@ -1844,6 +1982,167 @@ mod tests {
         assert!(actor
             .action(Action::AnswerQuestions(json!("questions"), None))
             .is_err());
+    }
+    #[test]
+    fn extended_questions_roundtrip_text_number_and_reject_invalid_answers() {
+        let mut actor = actor();
+        actor.state.status = Status::Working;
+        let mut reader = transport(&mut actor);
+        let input = json!({"title":"Before building", "questions":[
+            {"header":"Title","question":"What title?","kind":"text","placeholder":"e.g. Quarterly briefing","description":"Shown on the cover."},
+            {"header":"Size","question":"How many slides?","kind":"number","min":1,"max":20,"step":1,"defaultValue":8,"unit":"slides"}
+        ]});
+        let frame = json!({"type":"control_request","request_id":"extended","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":input}});
+        actor.message(frame.clone()).unwrap();
+        assert_eq!(actor.state.questions.len(), 1);
+        assert_eq!(actor.state.status, Status::Waiting);
+        let answers = |number: &str| {
+            HashMap::from([
+                ("What title?".into(), vec!["Quarterly briefing".into()]),
+                ("How many slides?".into(), vec![number.into()]),
+            ])
+        };
+        for invalid in ["21", "NaN", "eight"] {
+            assert!(actor
+                .action(Action::AnswerQuestions(
+                    json!("extended"),
+                    Some(answers(invalid))
+                ))
+                .is_err());
+            assert_eq!(actor.state.questions.len(), 1);
+        }
+        actor
+            .action(Action::AnswerQuestions(
+                json!("extended"),
+                Some(answers("8")),
+            ))
+            .unwrap();
+        let mut expected = input;
+        expected["answers"] = json!({"What title?":"Quarterly briefing","How many slides?":"8"});
+        assert_eq!(
+            read(&mut reader),
+            json!({"type":"control_response","response":{"subtype":"success","request_id":"extended","response":{"behavior":"allow","updatedInput":expected}}})
+        );
+        actor.message(frame.clone()).unwrap();
+        actor
+            .action(Action::AnswerQuestions(json!("extended"), None))
+            .unwrap();
+        assert_eq!(
+            read(&mut reader)["response"]["response"]["behavior"],
+            "deny"
+        );
+        actor.message(frame).unwrap();
+        actor
+            .message(json!({"type":"control_cancel_request","request_id":"extended"}))
+            .unwrap();
+        assert!(actor.state.questions.is_empty());
+        assert!(actor
+            .action(Action::AnswerQuestions(
+                json!("extended"),
+                Some(answers("8"))
+            ))
+            .is_err());
+    }
+    #[test]
+    fn mcp_questions_reject_invalid_form_answers_and_roundtrip_decline_cancel() {
+        let mut actor = actor();
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("turn".into());
+        let mut reader = transport(&mut actor);
+        let form = json!({"type":"control_request","request_id":"form","request":{
+            "subtype":"elicitation","mcp_server_name":"server","message":"Choose settings",
+            "requested_schema":{"type":"object","properties":{
+                "name":{"type":"string","minLength":2},
+                "count":{"type":"integer","minimum":1,"maximum":10},
+                "ready":{"type":"boolean"},
+                "color":{"type":"string","enum":["blue","green"]},
+                "features":{"type":"array","items":{"type":"string","enum":["a","b"]},"minItems":1}
+            },"required":["name","count","ready","color","features"]}
+        }});
+        actor.message(form.clone()).unwrap();
+        assert_eq!(actor.state.elicitations.len(), 1);
+        let valid =
+            json!({"name":"Deck","count":8,"ready":false,"color":"blue","features":["a","b"]});
+        for (field, invalid) in [
+            ("name", json!("x")),
+            ("count", json!(11)),
+            ("ready", json!("yes")),
+            ("color", json!("red")),
+            ("features", json!([])),
+        ] {
+            let mut content = valid.clone();
+            content[field] = invalid;
+            assert!(actor
+                .action(Action::RespondElicitation {
+                    id: json!("form"),
+                    action: "accept".into(),
+                    content: Some(content)
+                })
+                .is_err());
+            assert_eq!(actor.state.elicitations.len(), 1);
+        }
+        actor
+            .action(Action::RespondElicitation {
+                id: json!("form"),
+                action: "accept".into(),
+                content: Some(valid.clone()),
+            })
+            .unwrap();
+        assert_eq!(
+            read(&mut reader)["response"]["response"],
+            json!({"action":"accept","content":valid})
+        );
+        for action in ["decline", "cancel"] {
+            actor.message(form.clone()).unwrap();
+            actor
+                .action(Action::RespondElicitation {
+                    id: json!("form"),
+                    action: action.into(),
+                    content: None,
+                })
+                .unwrap();
+            assert_eq!(
+                read(&mut reader)["response"]["response"],
+                json!({"action":action})
+            );
+        }
+    }
+    #[test]
+    fn malformed_extended_question_constraints_are_denied_without_waiting() {
+        for row in [
+            json!({"kind":"number","min":10,"max":1}),
+            json!({"kind":"number","min":1}),
+            json!({"kind":"number","min":1,"max":10,"step":0}),
+            json!({"kind":"number","min":1,"max":10,"defaultValue":11}),
+            json!({"kind":"number","min":1,"max":10,"multiSelect":true}),
+            json!({"kind":"text","options":[{"label":"A"}]}),
+        ] {
+            let mut actor = actor();
+            actor.state.status = Status::Working;
+            let mut reader = transport(&mut actor);
+            let mut row = row;
+            row["question"] = json!("How many?");
+            row["header"] = json!("Size");
+            actor.message(json!({"type":"control_request","request_id":"invalid","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[row]}}})).unwrap();
+            assert!(actor.state.questions.is_empty());
+            assert_eq!(actor.state.status, Status::Working);
+            assert_eq!(
+                read(&mut reader)["response"]["response"]["behavior"],
+                "deny"
+            );
+        }
+    }
+    #[test]
+    fn launch_advertises_only_rendered_extended_question_schema() {
+        let actor = actor();
+        let command = launch_command(&[], &actor.state.saved, None).unwrap();
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(name, _)| *name == "CLAUDE_CODE_QUESTION_EXTENDED")
+                .and_then(|(_, value)| value),
+            Some(std::ffi::OsStr::new("1"))
+        );
     }
     #[test]
     fn accepted_prompt_recovery_preserves_newer_text_and_attachments() {
@@ -2272,8 +2571,8 @@ mod tests {
             .is_err());
         actor.message(json!({"type":"control_request","request_id":"dialog","request":{"subtype":"request_user_dialog","dialog_kind":"future_dialog","payload":{}}})).unwrap();
         assert_eq!(
-            read(&mut reader)["response"]["response"],
-            json!({"behavior":"cancelled"})
+            read(&mut reader),
+            json!({"type":"control_response","response":{"subtype":"error","request_id":"dialog","error":"Grove does not advertise this dialog kind."}})
         );
         assert!(actor
             .state

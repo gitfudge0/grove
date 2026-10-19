@@ -649,8 +649,11 @@ impl Element for TextSelectionController {
             });
         });
 
-        window.on_mouse_event(move |_: &MouseUpEvent, phase, window, cx| {
-            if !phase.bubble() {
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            // Custom controls and links can consume mouse-up while handling their click.
+            // Finish the drag before those bubble handlers, or later pointer movement
+            // would extend a selection even though the left button was released.
+            if !phase.capture() || event.button != MouseButton::Left {
                 return;
             }
             Root::update(window, cx, |root, _, cx| root.end_text_selection(cx));
