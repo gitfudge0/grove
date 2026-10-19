@@ -85,8 +85,7 @@ fn message_minimap_entries(items: &[serde_json::Value]) -> Vec<MessageMinimapEnt
                 .rev()
                 .find(|item| item["phase"] == "final_answer")
                 .or_else(|| replies.last())
-                .map(|item| codex::item_text(item))
-                .unwrap_or_else(|| "No response yet".into());
+                .map_or_else(|| "No response yet".into(), |item| codex::item_text(item));
             let prompt = codex::item_text(&items[index]);
             MessageMinimapEntry {
                 item_index: index,
@@ -1393,7 +1392,7 @@ impl CodexView {
             - rpx(SPACE_3XL).to_pixels(window.rem_size()))
         .max(rpx(CHROME_CONTROL_H).to_pixels(window.rem_size()))
         .min(rpx(MINIMAP_PREVIEW_W - SPACE_3XL).to_pixels(window.rem_size()));
-        let mut rail = div()
+        let rail = div()
             .id("codex-message-minimap")
             .debug_selector(|| "codex-message-minimap".into())
             .role(gpui::Role::Group)
@@ -1405,6 +1404,18 @@ impl CodexView {
             .flex()
             .flex_col()
             .py(rpx(SPACE_3XL));
+        // Auto margins center short stacks and resolve to zero on overflow.
+        // Override the shared header control's fixed height and flex basis so
+        // markers form compact rows, compressing only to their minimum hit area.
+        let marker_count = anchors.len() as f32;
+        let mut stack = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .my_auto()
+            .h(rpx(marker_count * SPACE_LG))
+            .min_h(rpx(marker_count * SPACE_SM))
+            .flex_shrink_1();
         for entry in entries {
             let Some((_, child)) = anchors.iter().find(|(index, _)| *index == entry.item_index)
             else {
@@ -1415,7 +1426,7 @@ impl CodexView {
             let selected = active == Some(index);
             let prompt = minimap_excerpt(&entry.prompt);
             let response = minimap_excerpt(&entry.response);
-            rail = rail.child(
+            stack = stack.child(
                 header_control_with_tooltip(
                     "codex-minimap-message",
                     "Go to message",
@@ -1444,10 +1455,12 @@ impl CodexView {
                 .id(("codex-minimap-message", index))
                 .debug_selector(move || format!("codex-minimap-message-{index}"))
                 .w_full()
+                .h(rpx(SPACE_LG))
                 .flex_1()
+                .flex_basis(rpx(SPACE_LG))
                 .flex_shrink_1()
                 .min_h(rpx(SPACE_SM))
-                .max_h(rpx(SPACE_20))
+                .max_h(rpx(SPACE_LG))
                 .tab_index(0)
                 .aria_label(format!("Go to message: {}", entry.prompt))
                 .aria_description(format!("Response: {}", entry.response))
@@ -1471,7 +1484,7 @@ impl CodexView {
                 )),
             );
         }
-        rail.into_any_element()
+        rail.child(stack).into_any_element()
     }
 
     fn transcript_scrolled(&mut self, toward_bottom: bool, cx: &mut Context<Self>) {
@@ -1894,7 +1907,7 @@ impl Render for CodexView {
                                     },
                                 ))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.toggle_expansion(&key, cx)
+                                    this.toggle_expansion(&key, cx);
                                 })),
                         ),
                 );
@@ -2531,7 +2544,10 @@ impl Render for CodexView {
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
             .when(!focused_launch, |surface| surface.child(transcript))
-            .when(focused_launch, |surface| surface.overflow_y_scroll())
+            .when(
+                focused_launch,
+                gpui::StatefulInteractiveElement::overflow_y_scroll,
+            )
             // Cmd+Enter resolves to the shell's global Zen action before Input's
             // secondary-enter binding. Own it only while the main draft has focus.
             .on_action(
@@ -4097,15 +4113,17 @@ fn tool_visible(state: &codex::Snapshot, index: usize) -> bool {
         .iter()
         .rev()
         .find(|period| period.end_item.is_none())
-        .map(|period| period.start_item)
-        .unwrap_or_else(|| {
-            state
-                .saved
-                .items
-                .iter()
-                .rposition(|item| item["type"] == "userMessage")
-                .unwrap_or(0)
-        });
+        .map_or_else(
+            || {
+                state
+                    .saved
+                    .items
+                    .iter()
+                    .rposition(|item| item["type"] == "userMessage")
+                    .unwrap_or(0)
+            },
+            |period| period.start_item,
+        );
     if index < start {
         return true;
     }
@@ -6361,7 +6379,18 @@ mod tests {
             });
         }));
         draw(cx);
+        let rail = cx.debug_bounds("codex-message-minimap").unwrap();
+        let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
         let mark = cx.debug_bounds("codex-minimap-message-3").unwrap();
+        let last = cx.debug_bounds("codex-minimap-message-5").unwrap();
+        let row_height = rpx(SPACE_LG).to_pixels(gpui::px(16.0));
+        assert!((mark.top() - first.bottom()).abs() < gpui::px(1.0));
+        assert!(mark.size.height <= row_height);
+        for bounds in [first, mark, last] {
+            assert!((bounds.center().x - rail.center().x).abs() < gpui::px(1.0));
+        }
+        let stack_center = (first.top() + last.bottom()) / 2.0;
+        assert!((stack_center - rail.center().y).abs() < gpui::px(1.0));
         cx.simulate_click(mark.center(), gpui::Modifiers::default());
         draw(cx);
         let transcript = cx.debug_bounds("codex-messages").unwrap();
@@ -6382,7 +6411,7 @@ mod tests {
                     session.state.saved.items[6]["text"] = json!("Streaming more.\n\n".repeat(60));
                     cx.notify();
                 });
-            })
+            });
         });
         draw(cx);
         assert_eq!(view.read_with(cx, |view, _| view.scroll.offset().y), offset);
@@ -6473,7 +6502,7 @@ mod tests {
         cx.simulate_click(last.center(), gpui::Modifiers::default());
         draw(cx);
         view.read_with(cx, |view, _| {
-            assert!(view.scroll.offset().y < gpui::Pixels::ZERO)
+            assert!(view.scroll.offset().y < gpui::Pixels::ZERO);
         });
         scroll_rail(100000.0, cx);
         let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
@@ -6718,7 +6747,7 @@ mod tests {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.input.update(cx, |input, cx| {
-                    input.set_value("My existing request", window, cx)
+                    input.set_value("My existing request", window, cx);
                 });
             });
         });
@@ -7697,7 +7726,7 @@ mod tests {
                     session.state.status = Status::Done;
                     session.state.saved.items[5]["status"] = json!("completed");
                     cx.notify();
-                })
+                });
             });
         });
         draw(cx);

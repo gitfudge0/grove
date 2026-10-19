@@ -1026,7 +1026,7 @@ impl Sidebar {
         }
         if let Some(view) = native_view.as_ref() {
             view.update(cx, |view, cx| {
-                view.set_checkout_context(launch_location, branch.clone(), cx)
+                view.set_checkout_context(launch_location, branch.clone(), cx);
             });
         }
         let body = native_view

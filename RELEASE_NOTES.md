@@ -2,6 +2,7 @@
 
 ## Native conversations
 
+- Keep conversation minimap markers compact, vertically centered, and aligned for easier navigation.
 - Answer inline question lists and review confirmed answer receipts in the conversation.
 - Navigate native conversations more easily, with turn timing and rendered Mermaid diagrams.
 - Inspect clearer tool details and work disclosures, with tighter activity spacing and a shimmer limited to the latest work entry.
