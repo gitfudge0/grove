@@ -127,7 +127,7 @@ impl InlineFlow {
                     .on_click(move |_, window, cx| {
                         window.end_text_selection(cx);
                         cx.stop_propagation();
-                        cx.open_url(&link.url);
+                        link.open(cx);
                     })
             })
             .into_any_element()

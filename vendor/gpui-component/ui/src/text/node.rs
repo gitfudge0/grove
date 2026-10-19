@@ -268,6 +268,22 @@ pub struct LinkMark {
     pub title: Option<SharedString>,
 }
 
+impl LinkMark {
+    pub(super) fn open(&self, cx: &App) {
+        // Markdown artifact links can be absolute filesystem paths. The platform
+        // URL opener (NSWorkspace on macOS) requires a file URL, not a bare path.
+        // Parse as a URL to encode spaces/Unicode while preserving existing
+        // percent escapes and fragments, such as an HTML section or #L42.
+        if self.url.starts_with('/') && !self.url.starts_with("//") {
+            if let Ok(url) = gpui::http_client::Url::parse(&format!("file://{}", self.url)) {
+                cx.open_url(url.as_str());
+                return;
+            }
+        }
+        cx.open_url(&self.url);
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TextMark {
     pub bold: bool,
@@ -841,7 +857,7 @@ impl Paragraph {
                                 .on_click(move |_, window, cx| {
                                     window.end_text_selection(cx);
                                     cx.stop_propagation();
-                                    cx.open_url(&link.url);
+                                    link.open(cx);
                                 })
                         })
                         .into_any_element(),
