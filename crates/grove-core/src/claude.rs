@@ -119,6 +119,7 @@ impl Drop for Process {
         let _ = self.child.wait();
     }
 }
+
 fn spawn(args: &[String], saved: &SavedSession, task_id: Option<&str>) -> Result<Process, String> {
     let argv = vec![
         "--print".into(),
@@ -431,6 +432,7 @@ impl Actor {
                 self.publish();
             }
             if self.initialized
+                && self.state.queue_uncertain.is_empty()
                 && !self.state.status.busy()
                 && (self.queue_ready || self.deferred.is_some() || self.initial.is_some())
             {
@@ -445,7 +447,13 @@ impl Actor {
                         })
                     })
                     .or_else(|| {
-                        if !self.queue_ready || self.state.queued_prompts.is_empty() {
+                        if !self.queue_ready
+                            || self.state.queued_prompts.is_empty()
+                            || self.state.queued_prompts.first().is_some_and(|p| {
+                                self.state.queue_edit == Some(p.id)
+                                    || self.state.queue_sending.contains(&p.id)
+                            })
+                        {
                             None
                         } else {
                             self.state.queued_prompts.first().cloned()
@@ -476,6 +484,7 @@ impl Actor {
         let _ = self.updates.send(self.state.clone());
     }
     fn fail(&mut self, error: String) {
+        self.state.mark_queue_uncertain();
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
         self.initialized = false;
@@ -518,6 +527,9 @@ impl Actor {
         self.write(json!({"type":"control_request","request_id":id,"request":request}))
     }
     fn start(&mut self) -> Result<(), String> {
+        if self.in_flight.is_some() {
+            self.state.mark_queue_uncertain();
+        }
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
         if self.stopping.load(Ordering::SeqCst) {
@@ -580,6 +592,7 @@ impl Actor {
     fn submit(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
         let result = self.submit_inner(id, text, images);
         if result.is_err() {
+            self.state.mark_queue_uncertain();
             self.state.rejected_submission = Some(id);
         }
         result
@@ -590,6 +603,11 @@ impl Actor {
             return Err(
                 "Claude Code is busy; queue this message to send it after the current turn".into(),
             );
+        }
+        if self.state.queued_prompts.iter().any(|p| p.id == id)
+            && !self.state.queue_sending.contains(&id)
+        {
+            self.state.queue_sending.push(id);
         }
         if self.reconfigure {
             self.deferred = Some(QueuedPrompt { id, text, images });
@@ -642,16 +660,21 @@ impl Actor {
         if self.state.saved.title.is_none() {
             self.state.saved.title = Some(prompt.text.chars().take(80).collect());
         }
-        self.state
-            .saved
-            .clear_submitted_draft(&prompt.text, &prompt.images);
+        if !self.state.queued_prompts.iter().any(|p| p.id == prompt.id) {
+            self.state
+                .saved
+                .clear_submitted_draft(&prompt.text, &prompt.images);
+        }
         self.state
             .queued_prompts
             .retain(|queued| queued.id != prompt.id);
+        self.state.queue_sending.retain(|id| *id != prompt.id);
+        self.state.queue_uncertain.retain(|id| *id != prompt.id);
         self.state.accepted_prompts += 1;
         self.state.accepted_submission = Some(prompt.id);
         self.state.rejected_submission = None;
     }
+
     fn action(&mut self, action: Action) -> Result<(), String> {
         match action {
             Action::Prompt(text) => self.submit(0, text, Vec::new())?,
@@ -699,12 +722,44 @@ impl Actor {
                     self.state.accepted_submission = Some(id);
                 }
             },
-            Action::RemoveQueued(id) => self.state.queued_prompts.retain(|prompt| prompt.id != id),
-            Action::ResumeQueue => {
-                self.queue_ready = true;
-                if self.process.is_none() {
-                    self.start()?;
+            Action::BeginQueuedEdit(id) => self.state.begin_queue_edit(id)?,
+            Action::SaveQueuedEdit { id, text, images } => {
+                self.state.save_queue_edit(id, text, images)?;
+            }
+            Action::CancelQueuedEdit(id) => {
+                if self.state.queue_edit == Some(id) {
+                    self.state.queue_edit = None;
                 }
+            }
+            Action::SteerQueued(_) => {
+                return Err("Claude Code does not support steering an active turn".into());
+            }
+            Action::RemoveQueued(id) => self.state.remove_queued(id)?,
+            Action::DismissUncertainQueued(id) => {
+                self.state.dismiss_uncertain_queued(id)?;
+                if self.deferred.as_ref().is_some_and(|p| p.id == id) {
+                    self.deferred = None;
+                }
+                self.queue_ready = false;
+            }
+            Action::ResumeQueue => {
+                if !self.state.queue_uncertain.is_empty() {
+                    return Err(
+                        "Inspect and dismiss unconfirmed deliveries before resuming queued inputs"
+                            .into(),
+                    );
+                }
+                if self.state.queued_prompts.is_empty() {
+                    return Err("There are no queued prompts to send.".into());
+                }
+                if self.state.status.busy() || self.state.turn_id.is_some() || self.state.compacting
+                {
+                    return Err("Wait for the current turn before resuming queued inputs".into());
+                }
+                if self.process.is_none() {
+                    return Err("Reconnect before resuming queued inputs".into());
+                }
+                self.queue_ready = true;
             }
             Action::Draft(text) => {
                 if text.len() > 512 * 1024 {
@@ -1230,6 +1285,7 @@ impl Actor {
                     // An immediate interrupt can finish a turn before the SDK
                     // echoes its input. Settle without acknowledging delivery;
                     // retain queued input and any composer edits for retry.
+                    self.state.mark_queue_uncertain();
                     if let Some(prompt) = self.in_flight.take() {
                         self.state.rejected_submission = Some(prompt.id);
                         if !self
@@ -1501,6 +1557,123 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
     }
+    #[test]
+    fn deferred_queue_copy_is_locked_before_reconfiguration() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.reconfigure = true;
+        actor.state.queued_prompts.push(QueuedPrompt {
+            id: 41,
+            text: "original".into(),
+            images: Vec::new(),
+        });
+        actor.submit(41, "original".into(), Vec::new()).unwrap();
+        let _ = read(&mut reader);
+        assert_eq!(actor.deferred.as_ref().unwrap().id, 41);
+        assert_eq!(actor.state.queue_sending, vec![41]);
+        assert!(actor.action(Action::BeginQueuedEdit(41)).is_err());
+        assert!(actor.action(Action::RemoveQueued(41)).is_err());
+        assert_eq!(actor.state.queued_prompts[0].text, "original");
+    }
+
+    #[test]
+    fn dismissing_uncertain_deferred_input_prevents_replay_after_configuration_failure() {
+        let mut actor = actor();
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.reconfigure = true;
+        actor.state.queued_prompts.push(QueuedPrompt {
+            id: 41,
+            text: "deferred".into(),
+            images: Vec::new(),
+        });
+        // No transport: the configuration control cannot be delivered, leaving a deferred copy.
+        assert!(actor.submit(41, "deferred".into(), Vec::new()).is_err());
+        assert_eq!(actor.deferred.as_ref().unwrap().id, 41);
+        assert_eq!(actor.state.queue_uncertain, vec![41]);
+        actor.action(Action::DismissUncertainQueued(41)).unwrap();
+        assert!(actor.deferred.is_none());
+        assert!(actor.state.queued_prompts.is_empty());
+        assert!(!actor.queue_ready);
+    }
+
+    #[test]
+    fn queued_ack_preserves_independent_same_text_composer() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.state.queued_prompts.push(QueuedPrompt {
+            id: 41,
+            text: "repeat".into(),
+            images: Vec::new(),
+        });
+        actor.submit(41, "repeat".into(), Vec::new()).unwrap();
+        let sent = read(&mut reader);
+        actor.state.saved.draft = "repeat".into();
+        actor.acknowledge_input(&sent["uuid"]);
+        assert_eq!(actor.state.saved.draft, "repeat");
+        assert!(actor.state.queued_prompts.is_empty());
+    }
+
+    #[test]
+    fn uncertain_queue_dismissal_keeps_next_paused() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.state.queued_prompts = vec![
+            QueuedPrompt {
+                id: 41,
+                text: "unknown".into(),
+                images: Vec::new(),
+            },
+            QueuedPrompt {
+                id: 42,
+                text: "next".into(),
+                images: Vec::new(),
+            },
+        ];
+        actor.submit(41, "unknown".into(), Vec::new()).unwrap();
+        let _ = read(&mut reader);
+        actor.fail("disconnected before echo".into());
+        assert_eq!(actor.state.queue_uncertain, vec![41]);
+        assert!(actor.action(Action::ResumeQueue).is_err());
+        actor.action(Action::DismissUncertainQueued(41)).unwrap();
+        assert!(!actor.queue_ready);
+        assert_eq!(actor.state.queued_prompts[0].id, 42);
+    }
+
+    #[test]
+    fn queued_edit_and_remove_respect_provider_sending_lock() {
+        let mut actor = actor();
+        actor.state.queued_prompts.push(QueuedPrompt {
+            id: 41,
+            text: "original".into(),
+            images: Vec::new(),
+        });
+        actor.action(Action::BeginQueuedEdit(41)).unwrap();
+        actor
+            .action(Action::SaveQueuedEdit {
+                id: 41,
+                text: "revised".into(),
+                images: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(actor.state.queued_prompts[0].text, "revised");
+        assert_eq!(actor.state.queue_edit, None);
+        assert!(actor.action(Action::SteerQueued(41)).is_err());
+        actor.state.queue_sending.push(41);
+        assert!(actor.action(Action::BeginQueuedEdit(41)).is_err());
+        assert!(actor.action(Action::RemoveQueued(41)).is_err());
+        assert_eq!(actor.state.queued_prompts.len(), 1);
+        actor.state.queue_sending.clear();
+        actor.action(Action::RemoveQueued(41)).unwrap();
+        assert!(actor.state.queued_prompts.is_empty());
+    }
+
     #[test]
     fn launch_preserves_config_and_rejects_transport_takeover() {
         assert_eq!(

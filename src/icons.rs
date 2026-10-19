@@ -84,6 +84,7 @@ fn svg_for(name: &str) -> String {
             r#"<rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor" stroke="none"/>"#
         }
         "queue" => r#"<path d="M3 4h8M3 8h6M3 12h6M12 8v6M10 12l2 2 2-2"/>"#,
+        "steer" => r#"<path d="M3 13V8a3 3 0 0 1 3-3h7M9 1l4 4-4 4"/>"#,
         "arrow-up" => r#"<path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/>"#,
         "paperclip" => {
             r#"<path d="m5.5 8.5 4-4a2 2 0 0 1 2.8 2.8l-5.6 5.6a3.3 3.3 0 0 1-4.7-4.7l6-6"/><path d="m5 10 5.5-5.5"/>"#

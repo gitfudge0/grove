@@ -102,6 +102,7 @@ impl ContextUsage {
         ((self.used as f64 / self.window as f64 * 100.0).round() as u32).min(100)
     }
 }
+
 /// Inline error when compaction is requested while a turn is active.
 pub const COMPACT_BUSY: &str = "Wait for the current turn to finish before compacting.";
 /// Inline error when compaction is requested before any conversation exists.
@@ -299,6 +300,10 @@ pub struct Snapshot {
     pub accepted_submission: Option<u64>,
     pub rejected_submission: Option<u64>,
     pub queued_prompts: Vec<QueuedPrompt>,
+    pub queue_edit: Option<u64>,
+    pub queue_sending: Vec<u64>,
+    pub queue_steering: Vec<u64>,
+    pub queue_uncertain: Vec<u64>,
     /// The provider is compacting the conversation context right now.
     pub compacting: bool,
     /// Grove asked for the next compaction, so it is labelled manual.
@@ -336,6 +341,67 @@ impl Status {
     }
 }
 impl Snapshot {
+    pub(crate) fn mark_queue_uncertain(&mut self) {
+        for id in &self.queue_sending {
+            if !self.queue_uncertain.contains(id) {
+                self.queue_uncertain.push(*id);
+            }
+        }
+    }
+    pub(crate) fn dismiss_uncertain_queued(&mut self, id: u64) -> Result<(), String> {
+        if !self.queue_uncertain.contains(&id) {
+            return Err("This queued input has no unconfirmed delivery".into());
+        }
+        self.queued_prompts.retain(|p| p.id != id);
+        self.queue_sending.retain(|p| *p != id);
+        self.queue_steering.retain(|p| *p != id);
+        self.queue_uncertain.retain(|p| *p != id);
+        Ok(())
+    }
+
+    pub fn queue_editable(&self, id: u64) -> bool {
+        self.queued_prompts.iter().any(|p| p.id == id)
+            && !self.queue_sending.contains(&id)
+            && !self.queue_uncertain.contains(&id)
+    }
+    pub(crate) fn begin_queue_edit(&mut self, id: u64) -> Result<(), String> {
+        if !self.queue_editable(id) || self.queue_edit.is_some_and(|held| held != id) {
+            return Err("This queued input cannot be edited right now".into());
+        }
+        self.queue_edit = Some(id);
+        Ok(())
+    }
+    pub(crate) fn save_queue_edit(
+        &mut self,
+        id: u64,
+        text: String,
+        images: Vec<String>,
+    ) -> Result<(), String> {
+        if self.queue_edit != Some(id) || !self.queue_editable(id) {
+            return Err("This queued input is no longer being edited".into());
+        }
+        validate_prompt(&text, &images)?;
+        let prompt = self
+            .queued_prompts
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("This queued input is no longer being edited")?;
+        prompt.text = text;
+        prompt.images = images;
+        self.queue_edit = None;
+        Ok(())
+    }
+    pub(crate) fn remove_queued(&mut self, id: u64) -> Result<(), String> {
+        if self.queue_sending.contains(&id) || self.queue_uncertain.contains(&id) {
+            return Err("This queued input is already being sent".into());
+        }
+        self.queued_prompts.retain(|p| p.id != id);
+        if self.queue_edit == Some(id) {
+            self.queue_edit = None;
+        }
+        Ok(())
+    }
+
     pub fn new(mut saved: SavedSession) -> Self {
         if saved.title.is_none() {
             saved.title = first_prompt_title(&saved.items);
@@ -363,6 +429,10 @@ impl Snapshot {
             accepted_submission: None,
             rejected_submission: None,
             queued_prompts: Vec::new(),
+            queue_edit: None,
+            queue_sending: Vec::new(),
+            queue_steering: Vec::new(),
+            queue_uncertain: Vec::new(),
             compacting: false,
             compact_requested: false,
             context_tokens,
@@ -857,6 +927,15 @@ pub enum Action {
         mode: SubmissionMode,
     },
     RemoveQueued(u64),
+    BeginQueuedEdit(u64),
+    SaveQueuedEdit {
+        id: u64,
+        text: String,
+        images: Vec<String>,
+    },
+    CancelQueuedEdit(u64),
+    SteerQueued(u64),
+    DismissUncertainQueued(u64),
     ResumeQueue,
     Submit {
         id: u64,
@@ -1230,6 +1309,7 @@ enum Pending {
         submission: u64,
         turn: String,
         draft: QueuedPrompt,
+        from_queue: bool,
     },
     QueuedTurn {
         id: u64,
@@ -1345,6 +1425,7 @@ impl Actor {
         if self.state.saved.thread_id.is_none() {
             self.initial = initial;
         }
+        self.state.mark_queue_uncertain();
         self.queue_ready = false;
         self.queue_paused = !self.state.queued_prompts.is_empty();
         self.pending.clear();
@@ -1506,7 +1587,10 @@ impl Actor {
                     .ok_or("No active Codex turn to steer")?;
                 let input = self.input(&text, images.clone());
                 let draft = QueuedPrompt { id, text, images };
-                self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft })?;
+                self.state.queued_prompts.push(draft.clone());
+                self.state.queue_sending.push(id);
+                self.state.queue_steering.push(id);
+                self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: false }).inspect_err(|_| { self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
                 self.state.error = None;
             }
             SubmissionMode::Queue => {
@@ -1567,6 +1651,7 @@ impl Actor {
     fn dispatch_queue(&mut self) -> Result<(), String> {
         if !self.queue_ready
             || self.queue_paused
+            || !self.state.queue_sending.is_empty()
             || self.state.turn_id.is_some()
             || self.state.status.busy()
             || self.pending.values().any(|r| {
@@ -1584,16 +1669,25 @@ impl Actor {
         let Some(prompt) = self.state.queued_prompts.first().cloned() else {
             return Ok(());
         };
+        if self.state.queue_edit == Some(prompt.id) || self.state.queue_sending.contains(&prompt.id)
+        {
+            return Ok(());
+        }
+        self.state.queue_sending.push(prompt.id);
         self.request(
             "turn/start",
             self.turn_params(self.input(&prompt.text, prompt.images)),
             Pending::QueuedTurn { id: prompt.id },
-        )?;
+        )
+        .inspect_err(|_| {
+            self.state.mark_queue_uncertain();
+        })?;
         self.queue_ready = false;
         self.state.status = Status::Working;
         self.state.error = None;
         Ok(())
     }
+
     fn action(&mut self, action: Action) -> Result<bool, String> {
         match action {
             Action::ResetConfiguration => {
@@ -1662,8 +1756,23 @@ impl Actor {
                     access: self.state.access.clone(),
                 };
             }
+            Action::DismissUncertainQueued(id) => {
+                self.state.dismiss_uncertain_queued(id)?;
+                self.queue_paused = true;
+                self.queue_ready = false;
+            }
             Action::ResumeQueue => {
-                if self.state.status.busy() || self.state.turn_id.is_some() {
+                if !self.state.queue_uncertain.is_empty() {
+                    return Err(
+                        "Inspect and dismiss unconfirmed deliveries before resuming queued inputs"
+                            .into(),
+                    );
+                }
+                if self.state.queued_prompts.is_empty() {
+                    return Err("There are no queued prompts to send.".into());
+                }
+                if self.state.status.busy() || self.state.turn_id.is_some() || self.state.compacting
+                {
                     return Err("Wait for the current turn before resuming queued inputs".into());
                 }
                 if self.process.is_none() {
@@ -1673,15 +1782,46 @@ impl Actor {
                 self.queue_ready = true;
                 self.dispatch_queue()?;
             }
-            Action::RemoveQueued(id) => {
-                if self
-                    .pending
-                    .values()
-                    .any(|r| matches!(r.kind, Pending::QueuedTurn { id: pending } if pending == id))
-                {
-                    return Err("This queued input is already being sent".into());
+            Action::BeginQueuedEdit(id) => self.state.begin_queue_edit(id)?,
+            Action::SaveQueuedEdit { id, text, images } => {
+                self.state.save_queue_edit(id, text, images)?;
+                self.dispatch_queue()?;
+            }
+            Action::CancelQueuedEdit(id) => {
+                if self.state.queue_edit == Some(id) {
+                    self.state.queue_edit = None;
                 }
-                self.state.queued_prompts.retain(|p| p.id != id);
+                self.dispatch_queue()?;
+            }
+            Action::RemoveQueued(id) => {
+                self.state.remove_queued(id)?;
+                self.dispatch_queue()?;
+            }
+            Action::SteerQueued(id) => {
+                if !self.state.queue_editable(id) || self.state.queue_edit == Some(id) {
+                    return Err("This queued input cannot be steered right now".into());
+                }
+                let turn = self
+                    .state
+                    .turn_id
+                    .clone()
+                    .filter(|_| self.state.status.busy())
+                    .ok_or("No active Codex turn to steer")?;
+                let draft = self
+                    .state
+                    .queued_prompts
+                    .iter()
+                    .find(|p| p.id == id)
+                    .ok_or("This queued input cannot be steered right now")?
+                    .clone();
+                let input = self.input(&draft.text, draft.images.clone());
+                if self.process.is_none() {
+                    return Err("Reconnect before steering a queued input".into());
+                }
+                self.state.queue_sending.push(id);
+                self.state.queue_steering.push(id);
+                self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: true }).inspect_err(|_| { self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
+                self.state.error = None;
             }
             Action::SubmitWithMode {
                 id,
@@ -2017,7 +2157,20 @@ impl Actor {
                 );
                 return Ok(());
             }
-            if let Pending::Steer { submission, .. } = request.kind {
+            if let Pending::QueuedTurn { id } = &request.kind {
+                self.state.queue_sending.retain(|sending| sending != id);
+            }
+            if let Pending::Steer {
+                submission,
+                from_queue,
+                ..
+            } = request.kind
+            {
+                self.state.queue_sending.retain(|id| *id != submission);
+                self.state.queue_steering.retain(|id| *id != submission);
+                if !from_queue {
+                    self.state.queued_prompts.retain(|p| p.id != submission);
+                }
                 self.queue_paused = true;
                 self.queue_ready = false;
                 self.state.rejected_submission = Some(submission);
@@ -2272,21 +2425,32 @@ impl Actor {
                 submission,
                 turn,
                 draft,
+                from_queue,
             } => {
                 if result["turnId"].as_str() != Some(turn.as_str()) {
+                    self.state.mark_queue_uncertain();
+                    self.queue_paused = true;
+                    self.queue_ready = false;
                     self.state.rejected_submission = Some(submission);
                     self.state.error = Some("Codex returned an unexpected steering turn".into());
                 } else {
-                    self.state
-                        .saved
-                        .clear_submitted_draft(&draft.text, &draft.images);
-                    self.state.accepted_submission = Some(submission);
+                    if !from_queue {
+                        self.state
+                            .saved
+                            .clear_submitted_draft(&draft.text, &draft.images);
+                        self.state.accepted_submission = Some(submission);
+                    }
+                    self.state.queued_prompts.retain(|p| p.id != submission);
+                    self.state.queue_sending.retain(|id| *id != submission);
+                    self.state.queue_steering.retain(|id| *id != submission);
+                    self.state.queue_uncertain.retain(|id| *id != submission);
                 }
             }
             Pending::QueuedTurn { id } => {
                 let Some(turn) = result["turn"]["id"].as_str().filter(|id| !id.is_empty()) else {
                     self.queue_paused = true;
                     self.queue_ready = false;
+                    self.state.mark_queue_uncertain();
                     self.state.error = Some("Codex returned no queued turn identity; inspect the conversation before resuming".into());
                     if self.state.turn_id.is_none() {
                         self.state.status = Status::Failed;
@@ -2301,11 +2465,14 @@ impl Actor {
                 {
                     self.queue_paused = true;
                     self.queue_ready = false;
+                    self.state.mark_queue_uncertain();
                     self.state.error =
                         Some("Codex returned an unexpected queued turn identity".into());
                     return Ok(());
                 }
                 self.state.queued_prompts.retain(|p| p.id != id);
+                self.state.queue_sending.retain(|sending| *sending != id);
+                self.state.queue_uncertain.retain(|sending| *sending != id);
                 if self.state.status == Status::Working {
                     self.state.turn_id = result["turn"]["id"]
                         .as_str()
@@ -2319,6 +2486,7 @@ impl Actor {
         Ok(())
     }
     fn reject_pending_submission(&mut self) {
+        self.state.mark_queue_uncertain();
         self.queue_paused = true;
         self.queue_ready = false;
         if let Some(id) = self
@@ -2405,6 +2573,7 @@ impl Actor {
                     self.queue_paused = true;
                     self.queue_ready = false;
                     self.state.rejected_submission = Some(submission);
+                    self.state.mark_queue_uncertain();
                     self.state.error = Some("Steering acknowledgement timed out; inspect the conversation before retrying".into());
                     self.dirty = true;
                 }
@@ -2479,6 +2648,200 @@ mod tests {
         actor.state = state();
         actor
     }
+    #[test]
+    #[cfg(unix)]
+    fn uncertain_delivery_requires_explicit_dismissal_then_resume() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor
+            .submit_mode(41, "unknown".into(), Vec::new(), SubmissionMode::Queue)
+            .unwrap();
+        actor
+            .submit_mode(42, "next".into(), Vec::new(), SubmissionMode::Queue)
+            .unwrap();
+        actor.action(Action::SteerQueued(41)).unwrap();
+        actor
+            .message(json!({"id":1,"result":{"turnId":"wrong"}}))
+            .unwrap();
+        assert_eq!(actor.state.queue_uncertain, vec![41]);
+        actor.state.turn_id = None;
+        actor.state.status = Status::Idle;
+        assert!(actor.action(Action::ResumeQueue).is_err());
+        assert!(actor.action(Action::BeginQueuedEdit(41)).is_err());
+        assert!(actor.action(Action::RemoveQueued(41)).is_err());
+        assert!(actor.action(Action::DismissUncertainQueued(42)).is_err());
+        actor.action(Action::DismissUncertainQueued(41)).unwrap();
+        assert!(actor.queue_paused);
+        assert!(!actor.queue_ready);
+        assert!(actor.pending.is_empty());
+        assert_eq!(actor.state.queued_prompts[0].id, 42);
+        actor.action(Action::ResumeQueue).unwrap();
+        assert_eq!(actor.state.queue_sending, vec![42]);
+    }
+
+    #[test]
+    fn queue_edit_preserves_identity_position_and_attachments() {
+        let mut actor = actor();
+        actor.state.queued_prompts = vec![
+            QueuedPrompt {
+                id: 41,
+                text: "first".into(),
+                images: Vec::new(),
+            },
+            QueuedPrompt {
+                id: 42,
+                text: "second".into(),
+                images: Vec::new(),
+            },
+        ];
+        actor.action(Action::BeginQueuedEdit(42)).unwrap();
+        assert_eq!(actor.state.queue_edit, Some(42));
+        assert!(actor.action(Action::BeginQueuedEdit(41)).is_err());
+        assert!(actor
+            .action(Action::SaveQueuedEdit {
+                id: 41,
+                text: "wrong".into(),
+                images: Vec::new()
+            })
+            .is_err());
+        assert!(actor
+            .action(Action::SaveQueuedEdit {
+                id: 42,
+                text: String::new(),
+                images: Vec::new()
+            })
+            .is_err());
+        assert_eq!(actor.state.queue_edit, Some(42));
+        let images = vec!["data:image/png;base64,aGVsbG8=".into()];
+        actor
+            .action(Action::SaveQueuedEdit {
+                id: 42,
+                text: "revised".into(),
+                images: images.clone(),
+            })
+            .unwrap();
+        assert_eq!(actor.state.queue_edit, None);
+        assert_eq!(actor.state.queued_prompts[0].id, 41);
+        assert_eq!(
+            actor.state.queued_prompts[1],
+            QueuedPrompt {
+                id: 42,
+                text: "revised".into(),
+                images
+            }
+        );
+        actor.action(Action::BeginQueuedEdit(42)).unwrap();
+        actor.action(Action::CancelQueuedEdit(42)).unwrap();
+        assert_eq!(actor.state.queued_prompts[1].text, "revised");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn held_queue_head_blocks_fifo_until_released() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor
+            .submit_mode(41, "first".into(), Vec::new(), SubmissionMode::Queue)
+            .unwrap();
+        actor
+            .submit_mode(42, "second".into(), Vec::new(), SubmissionMode::Queue)
+            .unwrap();
+        actor.action(Action::BeginQueuedEdit(41)).unwrap();
+        actor.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}})).unwrap();
+        assert!(actor.pending.is_empty());
+        actor.action(Action::CancelQueuedEdit(41)).unwrap();
+        assert_eq!(actor.state.queue_sending, vec![41]);
+        assert!(actor.action(Action::BeginQueuedEdit(41)).is_err());
+        assert!(actor.action(Action::RemoveQueued(41)).is_err());
+        // Editing a later row does not prevent the earlier request's acknowledgement.
+        actor.action(Action::BeginQueuedEdit(42)).unwrap();
+        actor
+            .message(json!({"id":1,"result":{"turn":{"id":"turn-2"}}}))
+            .unwrap();
+        assert_eq!(actor.state.queued_prompts[0].id, 42);
+        assert_eq!(actor.state.queue_edit, Some(42));
+        assert!(actor.state.queue_sending.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn queued_steering_is_atomic_and_preserves_row_on_rejection_or_uncertainty() {
+        for response in [
+            json!({"id":1,"error":{"message":"rejected"}}),
+            json!({"id":1,"result":{"turnId":"wrong"}}),
+            json!({"id":1,"result":{"turnId":"turn-1"}}),
+        ] {
+            let mut actor = actor();
+            actor.process = Some(fixture_process());
+            actor.state.saved.draft = "unrelated draft".into();
+            actor
+                .submit_mode(41, "queued".into(), Vec::new(), SubmissionMode::Queue)
+                .unwrap();
+            actor.action(Action::SteerQueued(41)).unwrap();
+            assert_eq!(actor.state.queued_prompts.len(), 1);
+            assert_eq!(actor.state.queue_sending, vec![41]);
+            assert!(actor.action(Action::SteerQueued(41)).is_err());
+            assert!(actor.action(Action::RemoveQueued(41)).is_err());
+            actor.message(response.clone()).unwrap();
+            assert_eq!(actor.state.saved.draft, "unrelated draft");
+            if response["result"]["turnId"] == "turn-1" {
+                assert!(actor.state.queued_prompts.is_empty());
+                assert!(actor.state.queue_sending.is_empty());
+            } else {
+                assert_eq!(actor.state.queued_prompts[0].id, 41);
+                assert_eq!(
+                    actor.state.queue_editable(41),
+                    response.get("error").is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pending_steer_blocks_fifo_after_turn_completes_before_ack() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor
+            .submit_mode(41, "first".into(), Vec::new(), SubmissionMode::Queue)
+            .unwrap();
+        actor
+            .submit_mode(42, "steering".into(), Vec::new(), SubmissionMode::Queue)
+            .unwrap();
+        actor.action(Action::SteerQueued(42)).unwrap();
+        assert_eq!(actor.state.queue_steering, vec![42]);
+        actor.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}})).unwrap();
+        assert_eq!(actor.pending.len(), 1);
+        assert_eq!(actor.state.queue_sending, vec![42]);
+        actor
+            .message(json!({"id":1,"result":{"turnId":"turn-1"}}))
+            .unwrap();
+        assert_eq!(actor.pending.len(), 1);
+        assert_eq!(actor.state.queue_sending, vec![41]);
+        assert!(actor.state.queue_steering.is_empty());
+        assert_eq!(actor.state.queued_prompts.len(), 1);
+        assert_eq!(actor.state.queued_prompts[0].id, 41);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn composer_steer_has_visible_locked_row_until_acknowledged() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.saved.draft = "steer".into();
+        actor
+            .submit_mode(41, "steer".into(), Vec::new(), SubmissionMode::Steer)
+            .unwrap();
+        assert_eq!(actor.state.queued_prompts[0].id, 41);
+        assert!(!actor.state.queue_editable(41));
+        actor
+            .message(json!({"id":1,"result":{"turnId":"turn-1"}}))
+            .unwrap();
+        assert!(actor.state.queued_prompts.is_empty());
+        assert!(actor.state.queue_sending.is_empty());
+        assert!(actor.state.saved.draft.is_empty());
+    }
+
     #[test]
     fn composer_overrides_are_explicit_and_native() {
         let mut actor = actor();
@@ -3605,6 +3968,7 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         serde_json::from_str(&line).unwrap()
     }
+
     #[test]
     fn token_usage_tracks_last_turn_context_and_survives_recovery() {
         let mut state = state();
