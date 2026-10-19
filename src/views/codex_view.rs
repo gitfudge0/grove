@@ -7961,7 +7961,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn shell_cmd_enter_steers_only_from_main_input_and_preserves_zen_elsewhere(
+    fn shell_shortcut_steers_only_from_main_input_and_preserves_zen_elsewhere(
         cx: &mut gpui::TestAppContext,
     ) {
         struct ShellProbe {
@@ -8007,6 +8007,7 @@ mod tests {
             }
         });
         let view = chat.unwrap();
+        let shell_enter = format!("{}enter", crate::keymap::platform_mod_prefix());
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, _| {
@@ -8019,7 +8020,7 @@ mod tests {
             });
         });
         draw(cx);
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes(&shell_enter);
         draw(cx);
         assert!(actions.try_iter().any(|action| matches!(
             action,
@@ -8057,7 +8058,7 @@ mod tests {
             });
         });
         draw(cx);
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes(&shell_enter);
         draw(cx);
         assert!(actions
             .try_iter()
@@ -8068,7 +8069,7 @@ mod tests {
             focus.focus(window, cx);
         });
         draw(cx);
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes(&shell_enter);
         draw(cx);
         assert_eq!(shell.read_with(cx, |shell, _| shell.zen_toggles), 1);
         cx.update(|window, cx| {
@@ -8076,7 +8077,7 @@ mod tests {
             focus.focus(window, cx);
         });
         draw(cx);
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes(&shell_enter);
         draw(cx);
         assert_eq!(shell.read_with(cx, |shell, _| shell.zen_toggles), 2);
     }
