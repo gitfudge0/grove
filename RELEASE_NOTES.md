@@ -1,3 +1,21 @@
+# Grove 1.0.11
+
+## Native agent conversations
+
+- Run Codex and Claude Code in native chat sessions, with conversation history, tool activity, approval prompts, model controls, attachments, and session status inside Grove.
+- Answer structured questions directly in chat, including choices, free text, numbers, secrets, and forms. Keep your composer draft while answering a question.
+
+## Messages and composer
+
+- Queue messages while an agent works, then edit or remove them in the pending message tray before they are sent.
+- Refine chat bubbles, composer scrolling, and keyboard focus. Preserve manual scroll position while responses stream.
+- Fix transcript text selection and Markdown artifact links in native conversations.
+
+## Session navigation
+
+- Refresh session and project navigation, including clearer native agent activity and question states.
+- Keep the agent icon centered in the compact sidebar, with its working indicator at the lower-right corner.
+
 # Grove 1.0.10
 
 - Refresh stale worktree entries after a removal attempt finds the worktree is no longer listed by Git. Preserve sessions and unrelated folders when removal is rejected.

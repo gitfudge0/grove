@@ -28,6 +28,7 @@ use grove_core::elicitation::{ElicitationKind, ElicitationMode, ElicitationReque
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
+    fmt::Write as _,
     rc::Rc,
     sync::Arc,
 };
@@ -1307,7 +1308,7 @@ impl Render for CodexView {
         let changed_thread = self.stream_thread != state.saved.thread_id;
         if changed_thread {
             self.stream_text.clear();
-            self.stream_thread = state.saved.thread_id.clone();
+            self.stream_thread.clone_from(&state.saved.thread_id);
         }
         if cx.reduce_motion() {
             // A later preference toggle must not resurrect an older partial prefix.
@@ -1324,8 +1325,7 @@ impl Render for CodexView {
             .map(|(index, item)| {
                 item["id"]
                     .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("message-{index}"))
+                    .map_or_else(|| format!("message-{index}"), str::to_owned)
             })
             .collect();
         self.stream_text.retain(|key, _| stream_keys.contains(key));
@@ -1672,8 +1672,7 @@ impl Render for CodexView {
             let text = if kind == "agentMessage" && !cx.reduce_motion() {
                 let key = item["id"]
                     .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| format!("message-{index}"));
+                    .map_or_else(|| format!("message-{index}"), str::to_owned);
                 let entry = self.stream_text.entry(key).or_insert_with(|| {
                     let shown = if state.status.busy()
                         && !initial_transcript
@@ -1688,7 +1687,7 @@ impl Render for CodexView {
                 if !text.starts_with(&entry.0[..entry.1.min(entry.0.len())]) {
                     entry.1 = text.len();
                 }
-                entry.0 = text.clone();
+                entry.0.clone_from(&text);
                 if !state.status.busy() {
                     entry.1 = text.len();
                 }
@@ -1722,8 +1721,7 @@ impl Render for CodexView {
                 if kind == "agentMessage" {
                     let key = item["id"]
                         .as_str()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| format!("message-{index}"));
+                        .map_or_else(|| format!("message-{index}"), str::to_owned);
                     self.stream_text.insert(key, (text.clone(), text.len()));
                 }
                 text
@@ -1878,13 +1876,13 @@ impl Render for CodexView {
                         gpui::SharedString::from(format!("codex-send-{id}")),
                         gpui::Animation::new(std::time::Duration::from_millis(MOTION_SLOW_MS))
                             .with_easing(super::motion::ease_standard),
-                        move |row, progress| {
-                            // Preserve elapsed progress if this row is temporarily unmounted.
+                        move |row, _progress| {
+                            // One executor clock preserves progress across temporary unmounts
+                            // and keeps virtual-time tests independent of wall-clock delays.
                             let elapsed = executor.now().duration_since(started).as_secs_f32()
                                 / std::time::Duration::from_millis(MOTION_SLOW_MS).as_secs_f32();
-                            let progress =
-                                progress.max(super::motion::ease_standard(elapsed.min(1.0)));
-                            finished.set(elapsed >= 1.0 || progress >= 1.0);
+                            let progress = super::motion::ease_standard(elapsed.min(1.0));
+                            finished.set(elapsed >= 1.0);
                             // Rise from the composer, then settle with a small overshoot.
                             let remaining = 1.0 - progress;
                             row.top(rpx(SPACE_3XL
@@ -2945,10 +2943,10 @@ impl CodexView {
         }
         for (index, (value, label)) in choices.into_iter().enumerate() {
             let keyboard_value = value.clone();
-            let (name, description) = label
-                .split_once(" · ")
-                .map(|(name, description)| (name.to_string(), Some(description.to_string())))
-                .unwrap_or_else(|| (label.clone(), None));
+            let (name, description) = label.split_once(" · ").map_or_else(
+                || (label.clone(), None),
+                |(name, description)| (name.to_string(), Some(description.to_string())),
+            );
             rows = rows.child(
                 header_control("codex-composer-option", "Select composer option")
                     .id(("codex-composer-option", index))
@@ -3286,7 +3284,7 @@ impl CodexView {
                 .strip_prefix("Image ")
                 .and_then(|n| n.parse::<usize>().ok())
             {
-                if number >= index + 1 {
+                if number > index {
                     if let Some(range) = token.decoration.get_ranges(cx).first().cloned() {
                         edits.push((
                             range,
@@ -3345,7 +3343,10 @@ impl CodexView {
         let anchor = previous.map(|start| {
             self.input.update(cx, |input, cx| {
                 input.create_decorations_collection(
-                    vec![TextDecoration::new(start..cursor, Default::default())],
+                    vec![TextDecoration::new(
+                        start..cursor,
+                        gpui::HighlightStyle::default(),
+                    )],
                     cx,
                 )
             })
@@ -3386,7 +3387,7 @@ impl CodexView {
                                 .unwrap_or(0)
                                 .min(this.input.read(cx).value().len());
                             this.input.update(cx, |input, cx| {
-                                input.set_selected_range(insertion..insertion, cx)
+                                input.set_selected_range(insertion..insertion, cx);
                             });
                             let mut inserted = 0;
                             for (url, image) in images {
@@ -3439,13 +3440,13 @@ impl CodexView {
                                     input.set_selected_range(
                                         shift(selection.start)..shift(selection.end),
                                         cx,
-                                    )
+                                    );
                                 });
                             }
                             let text = this.input.read(cx).value().to_string();
                             if this.queue_editor.is_none() {
                                 this.session.update(cx, |session, cx| {
-                                    session.send(Action::Draft(text), cx)
+                                    session.send(Action::Draft(text), cx);
                                 });
                             }
                             this.persist_images(cx);
@@ -5091,10 +5092,10 @@ impl CodexView {
                 if let codex::QuestionKind::Number(number) = &question.kind {
                     let mut hint = format!("{}–{}", number.min, number.max);
                     if let Some(unit) = &number.unit {
-                        hint.push_str(&format!(" {unit}"));
+                        let _ = write!(hint, " {unit}");
                     }
                     if let Some(step) = number.step {
-                        hint.push_str(&format!(" · increment {step}"));
+                        let _ = write!(hint, " · increment {step}");
                     }
                     field = field.child(
                         div()
@@ -6890,7 +6891,7 @@ mod tests {
             view.update(cx, |view, cx| {
                 view.images = vec!["first".into(), "second".into()];
                 view.input.update(cx, |input, cx| {
-                    input.set_value("Compare Image 1 with Image 2", window, cx)
+                    input.set_value("Compare Image 1 with Image 2", window, cx);
                 });
                 view.restore_image_tokens(window, cx);
                 assert_eq!(view.picked_tokens.len(), 2);
@@ -6904,7 +6905,7 @@ mod tests {
                 assert_eq!(view.input.read(cx).value().as_ref(), "Compare  with ");
                 assert!(view.picked_tokens.is_empty());
                 assert!(view.images.is_empty());
-            })
+            });
         });
     }
 
@@ -6922,11 +6923,11 @@ mod tests {
                         vec![json!({"id":"history","type":"agentMessage","text":"Saved history"})];
                     cx.notify();
                 });
-            })
+            });
         });
         draw(cx);
         view.read_with(cx, |view, _| {
-            assert_eq!(view.stream_text["history"].1, "Saved history".len())
+            assert_eq!(view.stream_text["history"].1, "Saved history".len());
         });
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
@@ -6946,7 +6947,7 @@ mod tests {
                     cx.reduce_motion()
                 );
                 assert!(text.is_char_boundary(*shown));
-            })
+            });
         });
         draw(cx);
         for _ in 0..80 {
@@ -7058,7 +7059,7 @@ mod tests {
             draw(cx);
         }
         view.read_with(cx, |view, _| {
-            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y)
+            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
         });
     }
     #[gpui::test]
@@ -7119,7 +7120,7 @@ mod tests {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.input.update(cx, |input, cx| {
-                    input.set_value("Unrelated draft", window, cx)
+                    input.set_value("Unrelated draft", window, cx);
                 });
                 view.images = vec!["draft-image".into()];
             });
@@ -7191,7 +7192,7 @@ mod tests {
                     session.state.status = Status::Waiting;
                     session.state.questions.push(request.clone());
                     cx.notify();
-                })
+                });
             });
         });
         draw(cx);
@@ -7212,7 +7213,7 @@ mod tests {
                 );
                 let title = view.question_drafts[&key].questions[1].input.clone();
                 title.update(cx, |input, cx| {
-                    input.set_value("Quarterly briefing", window, cx)
+                    input.set_value("Quarterly briefing", window, cx);
                 });
                 let number = view.question_drafts[&key].questions[0].input.clone();
                 number.update(cx, |input, cx| input.set_value("21", window, cx));
@@ -7242,7 +7243,7 @@ mod tests {
                 view.session.update(cx, |session, cx| {
                     session.state.error = Some("Retry input".into());
                     cx.notify();
-                })
+                });
             });
         });
         draw(cx);
@@ -7265,7 +7266,7 @@ mod tests {
                 view.session.update(cx, |session, cx| {
                     session.state.questions.push(request.clone());
                     cx.notify();
-                })
+                });
             });
         });
         draw(cx);
@@ -7274,7 +7275,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
-                view.question_drafts[&key].questions[0].choice_focus[2].focus(window, cx)
+                view.question_drafts[&key].questions[0].choice_focus[2].focus(window, cx);
             });
         });
         cx.simulate_keystrokes("left");

@@ -1672,7 +1672,11 @@ mod tests {
                     launcher
                         .rows(cx)
                         .iter()
-                        .filter(|row| matches!(row, PaletteRow::Recent { proj: 0, .. } | PaletteRow::Combo { proj: 0, .. }))
+                        .filter(|row| matches!(row,
+                            PaletteRow::Recent { proj: 0, wt_path, .. }
+                                | PaletteRow::Combo { proj: 0, wt_path, .. }
+                                if wt_path == env!("CARGO_MANIFEST_DIR")
+                        ))
                         .count(),
                     1
                 );

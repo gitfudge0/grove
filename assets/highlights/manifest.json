@@ -2,6 +2,33 @@
   "schema_version": 1,
   "releases": [
     {
+      "version": "1.0.11",
+      "enabled": true,
+      "title": "What's new in Grove",
+      "slides": [
+        {
+          "id": "native-conversations",
+          "title": "Keep agent conversations in Grove",
+          "description": "Work with Codex and Claude Code in native chat. Follow tool activity, handle approvals, and answer structured questions without losing your message draft."
+        },
+        {
+          "id": "pending-messages",
+          "title": "Refine your next message",
+          "description": "Queue messages while your agent works, then edit or remove them in the pending message tray before they are sent."
+        },
+        {
+          "id": "chat-interactions",
+          "title": "Stay in control of the conversation",
+          "description": "Keep your place while replies stream, select transcript text, and open Markdown artifact links. Refined chat bubbles and composer behavior make longer conversations easier to follow."
+        },
+        {
+          "id": "session-status",
+          "title": "See which sessions need you",
+          "description": "Clearer native agent activity and question states help you find the next session to visit. Compact sidebar icons keep the agent centered with its working indicator in the lower-right corner."
+        }
+      ]
+    },
+    {
       "version": "1.0.8",
       "enabled": true,
       "title": "What's new in Grove",
