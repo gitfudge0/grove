@@ -185,6 +185,14 @@ struct ComposerToken {
     decoration: TextDecorationCollection,
 }
 
+/// A local send can be acknowledged before its transcript item arrives.
+struct BubbleEntrance {
+    submission: u64,
+    existing: HashSet<String>,
+    thread: Option<String>,
+    text: String,
+}
+
 pub struct CodexView {
     session: Entity<CodexSession>,
     input: Entity<InputState>,
@@ -207,6 +215,8 @@ pub struct CodexView {
     dismissed_suggestions: Option<String>,
     submitted: Option<String>,
     submitted_ack: Option<u64>,
+    bubble_entrances: Vec<BubbleEntrance>,
+    animating_bubbles: HashMap<String, (std::time::Instant, Rc<Cell<bool>>)>,
     interrupt_requested_for_turn: Option<String>,
     images: Vec<String>,
     previews: HashMap<String, Arc<gpui::Image>>,
@@ -215,7 +225,7 @@ pub struct CodexView {
     last_content: String,
     follow_after_submit: bool,
     composer_collapsed: bool,
-    pending_composer_scroll: bool,
+    pending_composer_scroll: Option<bool>,
     composer_pin_bottom: bool,
     composer_body_height: Rc<Cell<gpui::Pixels>>,
     composer_body_target: Rc<Cell<gpui::Pixels>>,
@@ -302,6 +312,8 @@ impl CodexView {
             dismissed_suggestions: None,
             submitted: None,
             submitted_ack: None,
+            bubble_entrances: Vec::new(),
+            animating_bubbles: HashMap::new(),
             interrupt_requested_for_turn: None,
             images,
             previews,
@@ -310,7 +322,7 @@ impl CodexView {
             last_content: String::new(),
             follow_after_submit: true,
             composer_collapsed: false,
-            pending_composer_scroll: false,
+            pending_composer_scroll: None,
             composer_pin_bottom: false,
             composer_body_height: Rc::default(),
             composer_body_target: Rc::default(),
@@ -320,6 +332,49 @@ impl CodexView {
             composer_motion_finished: Rc::new(Cell::new(true)),
             _subscriptions: subscriptions,
         }
+    }
+    fn sync_bubble_entrances(
+        &mut self,
+        state: &codex::Snapshot,
+        reduced_motion: bool,
+        now: std::time::Instant,
+    ) {
+        self.animating_bubbles.retain(|_, (started, finished)| {
+            !finished.get()
+                && !reduced_motion
+                && now.duration_since(*started) < std::time::Duration::from_millis(MOTION_SLOW_MS)
+        });
+        let mut consumed = HashSet::new();
+        self.bubble_entrances.retain_mut(|pending| {
+            if pending
+                .thread
+                .as_ref()
+                .is_some_and(|thread| state.saved.thread_id.as_ref() != Some(thread))
+                || state.rejected_submission == Some(pending.submission)
+                || state.status == codex::Status::Disconnected
+            {
+                return false;
+            }
+            pending.existing.extend(consumed.iter().cloned());
+            let id = state.saved.items.iter().find_map(|item| {
+                let id = item["id"].as_str()?;
+                (item["type"] == "userMessage"
+                    && !pending.existing.contains(id)
+                    && !consumed.contains(id)
+                    && codex::item_text(item) == pending.text)
+                    .then_some(id)
+            });
+            if let Some(id) = id {
+                consumed.insert(id.to_owned());
+                if !reduced_motion {
+                    self.animating_bubbles
+                        .insert(id.to_owned(), (now, Rc::new(Cell::new(false))));
+                }
+                false
+            } else {
+                true
+            }
+        });
     }
     fn draft_action_pending(&self, cx: &App) -> bool {
         let state = &self.session.read(cx).state;
@@ -335,7 +390,7 @@ impl CodexView {
     }
     fn set_composer_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
         if !collapsed {
-            self.pending_composer_scroll = false;
+            self.pending_composer_scroll = None;
         }
         if self.composer_collapsed == collapsed {
             return;
@@ -355,10 +410,10 @@ impl CodexView {
         cx.notify();
     }
 
-    fn transcript_scrolled(&mut self, cx: &mut Context<Self>) {
+    fn transcript_scrolled(&mut self, toward_bottom: bool, cx: &mut Context<Self>) {
         // The next render observes the final offset after native wheel dispatch.
         // Keep this separate from layout/content updates, which never enter browse mode.
-        self.pending_composer_scroll = true;
+        self.pending_composer_scroll = Some(toward_bottom);
         self.composer_pin_bottom = false;
         cx.notify();
     }
@@ -413,6 +468,20 @@ impl CodexView {
             session.submit_with_mode(text.clone(), self.images.clone(), mode, cx)
         });
         if let Ok(submission) = result {
+            self.bubble_entrances.push(BubbleEntrance {
+                submission,
+                existing: self
+                    .session
+                    .read(cx)
+                    .state
+                    .saved
+                    .items
+                    .iter()
+                    .filter_map(|item| item["id"].as_str().map(str::to_owned))
+                    .collect(),
+                thread: self.session.read(cx).state.saved.thread_id.clone(),
+                text: text.clone(),
+            });
             self.submitted = Some(text);
             self.submitted_ack = Some(submission);
             self.follow_after_submit = true;
@@ -463,6 +532,7 @@ impl Render for CodexView {
                 self.input.focus_handle(cx).focus(window, cx);
             }
         }
+        self.sync_bubble_entrances(&state, cx.reduce_motion(), cx.background_executor().now());
         self.sync_questions(&state, window, cx);
         self.sync_approvals(&state, window, cx);
         self.sync_elicitations(&state, window, cx);
@@ -488,9 +558,13 @@ impl Render for CodexView {
         let content = serde_json::to_string(&state.saved.items).unwrap_or_default();
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
             <= rpx(SPACE_20).to_pixels(window.rem_size());
-        if std::mem::take(&mut self.pending_composer_scroll) {
-            let restoring_bottom = near_bottom && self.composer_collapsed;
-            self.set_composer_collapsed(!near_bottom, cx);
+        if let Some(toward_bottom) = self.pending_composer_scroll.take() {
+            // Collapsing enlarges the transcript viewport and can clamp its offset to
+            // the new bottom. That layout change must not reverse an upward gesture.
+            let restoring_bottom = toward_bottom && near_bottom && self.composer_collapsed;
+            if restoring_bottom || (!toward_bottom && !near_bottom) {
+                self.set_composer_collapsed(!restoring_bottom, cx);
+            }
             if restoring_bottom {
                 self.composer_pin_bottom = true;
                 self.scroll.scroll_to_bottom();
@@ -530,12 +604,12 @@ impl Render for CodexView {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .on_scroll_wheel(cx.listener(|this, event: &gpui::ScrollWheelEvent, _, cx| {
-                let vertical = match event.delta {
-                    gpui::ScrollDelta::Lines(delta) => delta.y != 0.0,
-                    gpui::ScrollDelta::Pixels(delta) => delta.y != gpui::px(0.0),
+                let delta_y = match event.delta {
+                    gpui::ScrollDelta::Lines(delta) => delta.y,
+                    gpui::ScrollDelta::Pixels(delta) => f32::from(delta.y),
                 };
-                if vertical {
-                    this.transcript_scrolled(cx);
+                if delta_y != 0.0 {
+                    this.transcript_scrolled(delta_y < 0.0, cx);
                 }
             }))
             .flex()
@@ -804,7 +878,7 @@ impl Render for CodexView {
                 .when(kind == "userMessage", |row| {
                     row.p(rpx(SPACE_2XL))
                         .rounded(rpx(RADIUS_PANEL))
-                        .bg(c::BG_HOVER())
+                        .bg(c::BG_RAIL())
                 });
             let text = if tool { tool_detail(item) } else { text };
             let copy = text.clone();
@@ -949,6 +1023,34 @@ impl Render for CodexView {
                         ),
                 );
             }
+            let row = if let Some((started, finished)) = self.animating_bubbles.get(&id) {
+                let started = *started;
+                let executor = cx.background_executor().clone();
+                let finished = finished.clone();
+                row.relative()
+                    .with_animation(
+                        gpui::SharedString::from(format!("codex-send-{id}")),
+                        gpui::Animation::new(std::time::Duration::from_millis(MOTION_SLOW_MS))
+                            .with_easing(super::motion::ease_standard),
+                        move |row, progress| {
+                            // Preserve elapsed progress if this row is temporarily unmounted.
+                            let elapsed = executor.now().duration_since(started).as_secs_f32()
+                                / std::time::Duration::from_millis(MOTION_SLOW_MS).as_secs_f32();
+                            let progress =
+                                progress.max(super::motion::ease_standard(elapsed.min(1.0)));
+                            finished.set(elapsed >= 1.0 || progress >= 1.0);
+                            // Rise from the composer, then settle with a small overshoot.
+                            let remaining = 1.0 - progress;
+                            row.top(rpx(SPACE_3XL
+                                * remaining
+                                * remaining
+                                * (1.0 - 2.0 * progress)))
+                        },
+                    )
+                    .into_any_element()
+            } else {
+                row.into_any_element()
+            };
             messages = messages.child(
                 div()
                     .w_full()
@@ -1173,6 +1275,8 @@ impl Render for CodexView {
                                         if matches!(event.keystroke.key.as_str(), "enter" | "space")
                                             && !event.is_held
                                         {
+                                            this.bubble_entrances
+                                                .retain(|pending| pending.submission != id);
                                             this.session.update(cx, |session, cx| {
                                                 session.send(Action::RemoveQueued(id), cx);
                                             });
@@ -1181,6 +1285,8 @@ impl Render for CodexView {
                                     },
                                 ))
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.bubble_entrances
+                                        .retain(|pending| pending.submission != id);
                                     this.session.update(cx, |session, cx| {
                                         session.send(Action::RemoveQueued(id), cx);
                                     });
@@ -4386,6 +4492,98 @@ mod tests {
         )));
     }
     #[gpui::test]
+    fn sent_bubble_entrance_is_local_once_and_respects_reduced_motion(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let mut state = snapshot();
+                state.saved.items =
+                    vec![json!({"id":"history","type":"userMessage","content":[{"text":"hello"}]})];
+                view.sync_bubble_entrances(&state, false, cx.background_executor().now());
+                assert!(view.animating_bubbles.is_empty());
+                view.bubble_entrances.push(BubbleEntrance {
+                    submission: 1,
+                    existing: HashSet::from(["history".into()]),
+                    thread: state.saved.thread_id.clone(),
+                    text: "hello".into(),
+                });
+                view.sync_bubble_entrances(&state, false, cx.background_executor().now());
+                assert!(view.animating_bubbles.is_empty());
+                state
+                    .saved
+                    .items
+                    .push(json!({"id":"fresh","type":"userMessage","content":[{"text":"hello"}]}));
+                view.sync_bubble_entrances(&state, false, cx.background_executor().now());
+                assert!(view.bubble_entrances.is_empty());
+                let clock = view.animating_bubbles["fresh"].1.clone();
+                view.sync_bubble_entrances(&state, false, cx.background_executor().now());
+                assert!(Rc::ptr_eq(&clock, &view.animating_bubbles["fresh"].1));
+                clock.set(true);
+                view.sync_bubble_entrances(&state, false, cx.background_executor().now());
+                assert!(view.animating_bubbles.is_empty());
+                view.sync_bubble_entrances(&state, false, cx.background_executor().now());
+                assert!(view.animating_bubbles.is_empty());
+                view.bubble_entrances.push(BubbleEntrance {
+                    submission: 2,
+                    existing: HashSet::new(),
+                    thread: state.saved.thread_id.clone(),
+                    text: "hello".into(),
+                });
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                assert!(view.bubble_entrances.is_empty());
+                assert!(view.animating_bubbles.is_empty());
+                view.sync_bubble_entrances(&state, false, cx.background_executor().now());
+                assert!(view.animating_bubbles.is_empty());
+            });
+        });
+    }
+    #[gpui::test]
+    fn sending_bubble_rises_and_settles_without_replay(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, updates) = fixture(cx);
+        draw(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input
+                    .update(cx, |input, cx| input.set_value("hello", window, cx));
+                view.input.focus_handle(cx).focus(window, cx);
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| view.update(cx, |view, cx| view.submit(window, cx)));
+        draw(cx);
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Submit { text, .. } if text == "hello")));
+        let mut state = snapshot();
+        state.accepted_submission = view.read_with(cx, |view, _| view.submitted_ack);
+        state
+            .saved
+            .items
+            .push(json!({"id":"fresh","type":"userMessage","content":[{"text":"hello"}]}));
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        let entering = cx.debug_bounds("codex-message-row-0").unwrap();
+        assert!(view.read_with(cx, |view, _| view.animating_bubbles.contains_key("fresh")));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS));
+        draw(cx);
+        // A normal redraw consumes the finished clock without creating a new one.
+        view.update(cx, |_, cx| cx.notify());
+        draw(cx);
+        let settled = cx.debug_bounds("codex-message-row-0").unwrap();
+        assert!(entering.top() > settled.top());
+        updates.send(state).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert_eq!(settled, cx.debug_bounds("codex-message-row-0").unwrap());
+        assert!(view.read_with(cx, |view, _| view.animating_bubbles.is_empty()));
+    }
+    #[gpui::test]
     fn user_messages_are_narrower_and_right_aligned(cx: &mut gpui::TestAppContext) {
         let (_view, cx, _, updates) = fixture(cx);
         let mut state = snapshot();
@@ -5137,6 +5335,61 @@ mod tests {
             action,
             Action::Submit { .. } | Action::SubmitWithMode { .. }
         )));
+    }
+
+    #[gpui::test]
+    fn tiny_upward_scroll_stays_collapsed_after_viewport_reaches_bottom(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.items = vec![json!({"id":"long","type":"agentMessage","text":"Earlier response.\n\n".repeat(80)})];
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        draw(cx);
+        let scroll = |delta, cx: &mut gpui::VisualTestContext| {
+            let bounds = cx.debug_bounds("codex-messages").unwrap();
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: bounds.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(delta))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            draw(cx);
+            draw(cx);
+        };
+        // Cross the browse threshold by less than the composer's height change.
+        scroll(SPACE_20 + 1.0, cx);
+        view.read_with(cx, |view, _| {
+            assert!(view.composer_collapsed);
+            assert_eq!(
+                view.scroll.offset().y,
+                -view.scroll.max_offset().y,
+                "collapsing the composer clamps the transcript to its new bottom"
+            );
+        });
+        for _ in 0..4 {
+            scroll(1.0, cx);
+            view.read_with(cx, |view, _| {
+                assert!(view.composer_collapsed, "continued upward scrolling must not restore the composer at a layout-created bottom");
+            });
+        }
+        scroll(-1.0, cx);
+        view.read_with(cx, |view, _| {
+            assert!(
+                !view.composer_collapsed,
+                "downward scrolling near the bottom restores the composer"
+            );
+            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
+        });
+        scroll(-1.0, cx);
+        view.read_with(cx, |view, _| assert!(!view.composer_collapsed));
     }
 
     #[gpui::test]
