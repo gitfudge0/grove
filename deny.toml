@@ -53,6 +53,17 @@ ignore = [
     # dump is compiled into the syntect crate itself), and no upgrade
     # exists. Revisit if syntect moves off bincode 1.x.
     "RUSTSEC-2025-0141",
+    # zvariant 5.13.1, zbus_names 4.3.4 and zvariant_derive 5.13.1 are
+    # unmaintained standalone crates, merged into zbus 6. These advisories
+    # report maintenance status, not vulnerabilities; no safe in-place
+    # upgrade is available. Pinned GPUI's Linux platform reaches them via
+    # accesskit_unix -> accesskit_atspi_common/atspi -> zbus 5, and via
+    # oo7/ashpd. Grove cannot substitute zbus 6 across these major-version
+    # API boundaries. Remove these exceptions when GPUI's Linux accessibility
+    # and portal/keyring dependencies migrate to zbus 6 without these crates.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]
 
 [bans]
