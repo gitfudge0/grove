@@ -260,6 +260,13 @@ impl QuestionRequest {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+    /// The ordinary user message emitted when answering an asynchronous question.
+    /// Never retain secret answers for transcript deduplication.
+    pub fn answer_echo_text(&self, answers: &QuestionAnswers) -> Option<String> {
+        (self.source == QuestionSource::AsyncMessage
+            && self.questions.iter().all(|question| !question.secret))
+        .then(|| self.answer_text(answers))
+    }
     /// Decode the app-server's structured input request without retaining answers.
     pub fn from_codex(id: Value, params: &Value) -> Result<Self, String> {
         Self::parse(id, params, false)
@@ -3054,6 +3061,22 @@ impl Actor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn answer_echo_text_is_only_for_nonsecret_async_questions() {
+        let params = serde_json::json!({"questions":[{"id":"scope", "question":"Which scope?"}]});
+        let mut request =
+            super::QuestionRequest::from_codex(serde_json::json!("ask"), &params).unwrap();
+        let answers = std::collections::HashMap::from([("scope".into(), vec!["All".into()])]);
+        assert_eq!(request.answer_echo_text(&answers), None);
+        request.source = super::QuestionSource::AsyncMessage;
+        assert_eq!(
+            request.answer_echo_text(&answers).as_deref(),
+            Some("Which scope?\nAll")
+        );
+        request.questions[0].secret = true;
+        assert_eq!(request.answer_echo_text(&answers), None);
+    }
+
     use super::*;
     fn saved() -> SavedSession {
         SavedSession {

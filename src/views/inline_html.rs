@@ -817,6 +817,22 @@ impl HtmlArtifact {
     }
 }
 
+/// Icon treatment for document toolbar actions, retaining shared button behavior.
+fn document_action(
+    id: &'static str,
+    label: &'static str,
+    glyph: &'static str,
+    window: &Window,
+    cx: &App,
+) -> gpui_component::button::Button {
+    transcript_action(id, label, false, window, cx)
+        .icon_only()
+        .tooltip(label)
+        .w(rpx(CONTROL_H))
+        .px_0()
+        .child(crate::icons::icon(glyph, ICON_MD, c::FG_DIM()))
+}
+
 impl Render for HtmlArtifact {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let expanded = expanded(&cx.entity(), cx);
@@ -848,7 +864,7 @@ impl Render for HtmlArtifact {
                     .child(title),
             )
             .child(
-                transcript_action("html-preview", "Preview", false, window, cx)
+                document_action("html-preview", "Preview", "unified", window, cx)
                     .selected(!self.source)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.source = false;
@@ -856,7 +872,7 @@ impl Render for HtmlArtifact {
                     })),
             )
             .child(
-                transcript_action("html-source", "Source", false, window, cx)
+                document_action("html-source", "Source", "terminal", window, cx)
                     .selected(self.source)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.source = true;
@@ -865,30 +881,42 @@ impl Render for HtmlArtifact {
             );
         if self.version.pending.is_some() {
             header = header.child(
-                transcript_action("html-new-version", "Load new version", false, window, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if this.version.adopt() {
-                            this.load(cx);
-                        }
-                        cx.notify();
-                    })),
+                document_action(
+                    "html-new-version",
+                    "Load new version",
+                    "restore",
+                    window,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if this.version.adopt() {
+                        this.load(cx);
+                    }
+                    cx.notify();
+                })),
             );
         }
         if self.path.is_some() {
             header = header.child(
-                transcript_action("html-check-version", "Check for updates", false, window, cx)
-                    .on_click(cx.listener(|this, _, _, cx| this.read_file(cx))),
+                document_action(
+                    "html-check-version",
+                    "Check for updates",
+                    "restart",
+                    window,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.read_file(cx))),
             );
         }
         header = header.child(
-            transcript_action(
+            document_action(
                 "html-expand",
                 if expanded {
                     "Return to conversation"
                 } else {
                     "Expand"
                 },
-                false,
+                if expanded { "arrow-left" } else { "zen" },
                 window,
                 cx,
             )

@@ -211,6 +211,8 @@ struct QuestionDraft {
 #[derive(Clone, Debug)]
 struct QuestionReceipt {
     anchor: usize,
+    echo_text: Option<String>,
+    echo_after: usize,
     title: Option<String>,
     answers: Vec<(String, String)>,
 }
@@ -329,6 +331,7 @@ struct BubbleEntrance {
     existing: HashSet<String>,
     thread: Option<String>,
     text: String,
+    optimistic: Option<serde_json::Value>,
 }
 
 struct QueueEditor {
@@ -703,12 +706,33 @@ impl CodexView {
                 (item["type"] == "userMessage"
                     && !pending.existing.contains(id)
                     && !consumed.contains(id)
-                    && codex::item_text(item) == pending.text)
-                    .then_some(id)
+                    && codex::item_text(item) == pending.text
+                    && pending.optimistic.as_ref().is_none_or(|optimistic| {
+                        let images = |message: &serde_json::Value| {
+                            message["content"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|part| {
+                                    part["url"].as_str().or_else(|| part["image_url"].as_str())
+                                })
+                                .map(str::to_owned)
+                                .collect::<Vec<_>>()
+                        };
+                        images(item) == images(optimistic)
+                    }))
+                .then_some(id)
             });
             if let Some(id) = id {
                 consumed.insert(id.to_owned());
-                if !reduced_motion {
+                if let Some(optimistic) = &pending.optimistic {
+                    if let Some(animation) = self
+                        .animating_bubbles
+                        .remove(optimistic["id"].as_str().unwrap_or_default())
+                    {
+                        self.animating_bubbles.insert(id.to_owned(), animation);
+                    }
+                } else if !reduced_motion {
                     self.animating_bubbles
                         .insert(id.to_owned(), (now, Rc::new(Cell::new(false))));
                 }
@@ -1576,6 +1600,24 @@ impl CodexView {
             session.submit_with_mode(text.clone(), self.images.clone(), mode, cx)
         });
         if let Ok(submission) = result {
+            // Keep unacknowledged sends in the local transcript projection only.
+            // Queue and steer retain their existing provider-driven presentation.
+            let optimistic = (mode == SubmissionMode::Send).then(|| {
+                let id = format!("local-submission-{submission}");
+                if !cx.reduce_motion() {
+                    self.animating_bubbles.insert(
+                        id.clone(),
+                        (cx.background_executor().now(), Rc::new(Cell::new(false))),
+                    );
+                }
+                let mut content = vec![serde_json::json!({"type":"text", "text":text})];
+                content.extend(
+                    self.images
+                        .iter()
+                        .map(|url| serde_json::json!({"type":"image", "url":url})),
+                );
+                serde_json::json!({"id":id, "type":"userMessage", "content":content})
+            });
             self.bubble_entrances.push(BubbleEntrance {
                 submission,
                 existing: self
@@ -1589,6 +1631,7 @@ impl CodexView {
                     .collect(),
                 thread: self.session.read(cx).state.saved.thread_id.clone(),
                 text: text.clone(),
+                optimistic,
             });
             self.submitted = Some(text);
             self.submitted_ack = Some(submission);
@@ -1609,7 +1652,7 @@ impl Focusable for CodexView {
 impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.restore_image_tokens(window, cx);
-        let state = self.session.read(cx).state.clone();
+        let mut state = self.session.read(cx).state.clone();
         // checkout_context contains chrome labels such as “Main checkout”, not
         // filesystem paths. Resolve document links against the saved worktree.
         let html_cwd = std::path::PathBuf::from(&state.saved.cwd);
@@ -1707,6 +1750,11 @@ impl Render for CodexView {
             self.submitted = None;
             self.submitted_ack = None;
         }
+        state.saved.items.extend(
+            self.bubble_entrances
+                .iter()
+                .filter_map(|pending| pending.optimistic.clone()),
+        );
         // Tool output/status and same-length streaming replacements also change layout.
         let content = serde_json::to_string(&state.saved.items).unwrap_or_default();
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
@@ -2164,7 +2212,6 @@ impl Render for CodexView {
                                         .debug_selector(move || {
                                             format!("codex-tool-row-label-{detail_index}")
                                         })
-                                        .flex_1()
                                         .min_w_0()
                                         .truncate()
                                         .text_size(rpx(TEXT_SMALL))
@@ -2181,15 +2228,18 @@ impl Render for CodexView {
                                         )),
                                 )
                                 .aria_expanded(tool_expanded)
-                                .child(crate::icons::icon(
-                                    if tool_expanded {
-                                        "chev-down"
-                                    } else {
-                                        "chev-right"
-                                    },
-                                    ICON_SM,
-                                    c::FG_DIM(),
-                                ))
+                                .child(
+                                    crate::icons::icon(
+                                        if tool_expanded {
+                                            "chev-down"
+                                        } else {
+                                            "chev-right"
+                                        },
+                                        ICON_SM,
+                                        c::FG_DIM(),
+                                    )
+                                    .flex_shrink_0(),
+                                )
                                 .on_key_down(cx.listener(
                                     move |this, event: &gpui::KeyDownEvent, _, cx| {
                                         if matches!(event.keystroke.key.as_str(), "enter" | "space")
@@ -5747,6 +5797,18 @@ impl CodexView {
                 }
             }
         }
+        // Async answers become ordinary user messages. Keep the acknowledgement
+        // only until that message arrives; tool answers still need their receipt.
+        self.question_receipts.retain(|receipt| {
+            !receipt.echo_text.as_ref().is_some_and(|echo| {
+                state
+                    .saved
+                    .items
+                    .iter()
+                    .skip(receipt.echo_after)
+                    .any(|item| item["type"] == "userMessage" && codex::item_text(item) == *echo)
+            })
+        });
         self.question_drafts.retain(|key, _| keys.contains(key));
         if restore_focus {
             self.input.focus_handle(cx).focus(window, cx);
@@ -5917,6 +5979,8 @@ impl CodexView {
         };
         let receipt = answers.as_ref().map(|answers| QuestionReceipt {
             anchor: self.question_drafts[key].anchor,
+            echo_text: request.answer_echo_text(answers),
+            echo_after: state.saved.items.len(),
             title: request.title.clone(),
             answers: request
                 .questions
@@ -7204,6 +7268,7 @@ mod tests {
                     existing: HashSet::from(["history".into()]),
                     thread: state.saved.thread_id.clone(),
                     text: "hello".into(),
+                    optimistic: None,
                 });
                 view.sync_bubble_entrances(&state, false, cx.background_executor().now());
                 assert!(view.animating_bubbles.is_empty());
@@ -7226,6 +7291,7 @@ mod tests {
                     existing: HashSet::new(),
                     thread: state.saved.thread_id.clone(),
                     text: "hello".into(),
+                    optimistic: None,
                 });
                 view.sync_bubble_entrances(&state, true, cx.background_executor().now());
                 assert!(view.bubble_entrances.is_empty());
@@ -7249,6 +7315,18 @@ mod tests {
         draw(cx);
         cx.update(|window, cx| view.update(cx, |view, cx| view.submit(window, cx)));
         draw(cx);
+        // The provider has not received or acknowledged the action yet.
+        let entering = cx.debug_bounds("codex-message-row-0").unwrap();
+        let animation_start = view.read_with(cx, |view, _| {
+            view.animating_bubbles.values().next().unwrap().0
+        });
+        assert!(view.read_with(cx, |view, cx| view
+            .session
+            .read(cx)
+            .state
+            .saved
+            .items
+            .is_empty()));
         assert!(actions
             .try_iter()
             .any(|action| matches!(action, Action::Submit { text, .. } if text == "hello")));
@@ -7262,8 +7340,12 @@ mod tests {
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(40));
         draw(cx);
-        let entering = cx.debug_bounds("codex-message-row-0").unwrap();
-        assert!(view.read_with(cx, |view, _| view.animating_bubbles.contains_key("fresh")));
+        assert!(cx.debug_bounds("codex-message-row-0").is_some());
+        assert!(cx.debug_bounds("codex-message-row-1").is_none());
+        assert_eq!(
+            view.read_with(cx, |view, _| view.animating_bubbles["fresh"].0),
+            animation_start
+        );
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS));
         draw(cx);
@@ -7278,6 +7360,57 @@ mod tests {
         draw(cx);
         assert_eq!(settled, cx.debug_bounds("codex-message-row-0").unwrap());
         assert!(view.read_with(cx, |view, _| view.animating_bubbles.is_empty()));
+    }
+    #[gpui::test]
+    fn image_only_send_is_visible_and_reconciles_after_identical_history(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, updates) = fixture(cx);
+        let image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jM1sAAAAASUVORK5CYII=";
+        let mut state = snapshot();
+        state.saved.items.push(json!({"id":"old-image", "type":"userMessage", "content":[{"type":"image", "url":image}]}));
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.images = vec![image.into()];
+                view.submit(window, cx);
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-row-1").is_some());
+        assert!(cx.debug_bounds("codex-message-images-1").is_some());
+        let submission = actions
+            .try_iter()
+            .find_map(|action| match action {
+                Action::Submit { id, .. } => Some(id),
+                _ => None,
+            })
+            .unwrap();
+        state.accepted_submission = Some(submission);
+        state.status = Status::Working;
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-images-1").is_some());
+        state.saved.items.push(json!({"id":"other-image", "type":"userMessage", "content":[{"type":"image", "url":"different-image"}]}));
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-images-2").is_some());
+        assert_eq!(view.read_with(cx, |view, _| view.bubble_entrances.len()), 1);
+        state.saved.items.push(json!({"id":"new-image", "type":"userMessage", "content":[{"type":"image", "url":image}]}));
+        updates.send(state).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-images-2").is_some());
+        assert!(cx.debug_bounds("codex-message-row-3").is_none());
+        assert!(view.read_with(cx, |view, _| view.bubble_entrances.is_empty()));
     }
     #[gpui::test]
     fn user_messages_are_narrower_and_right_aligned(cx: &mut gpui::TestAppContext) {
@@ -8786,6 +8919,12 @@ mod tests {
             });
         });
         let mut state = snapshot();
+        // Identical answers from a previous question are not this submission's echo.
+        state
+            .saved
+            .items
+            .push(json!({"type":"userMessage", "id":"old-answer",
+            "content":[{"type":"text", "text":"Choose scope\nOnly focus and scrolling"}]}));
         assert!(state.apply(&json!({"method":"item/completed","params":{"threadId":"thread-ui","turnId":"turn-ui","item":{
             "type":"agentMessage","id":"async-ui","text":"Choose scope: All or Composer.","delivery":"async",
             "questions":[{"title":"Choose scope","options":["All","Composer"]}]
@@ -8810,6 +8949,9 @@ mod tests {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
                     session.state.turn_id = None;
+                    // Matching user text while the form is open is not its answer echo.
+                    session.state.saved.items.push(json!({"type":"userMessage", "id":"before-submit",
+                        "content":[{"type":"text", "text":"Choose scope\nOnly focus and scrolling"}]}));
                     cx.notify();
                 });
             });
@@ -8859,6 +9001,35 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("question-receipt-0").is_some());
         view.read_with(cx, |view, cx| {
+            assert_eq!(view.input.read(cx).value().as_ref(), "Unrelated draft");
+            assert_eq!(view.images, vec!["draft-image"]);
+        });
+        // A later user-message echo replaces the receipt, preserving one record.
+        // An unrelated message must not discard the acknowledged answers.
+        for (text, receipt_visible) in [
+            ("Unrelated message", true),
+            ("Choose scope\nOnly focus and scrolling", false),
+        ] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        let index = session.state.saved.items.len();
+                        session.state.saved.items.push(json!({
+                            "type":"userMessage", "id":format!("echo-{index}"),
+                            "content":[{"type":"text", "text":text}]
+                        }));
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            assert_eq!(
+                cx.debug_bounds("question-receipt-0").is_some(),
+                receipt_visible
+            );
+        }
+        view.read_with(cx, |view, cx| {
+            assert!(view.question_receipts.is_empty());
             assert_eq!(view.input.read(cx).value().as_ref(), "Unrelated draft");
             assert_eq!(view.images, vec!["draft-image"]);
         });
@@ -9719,6 +9890,11 @@ mod tests {
             view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
             "keep my prompt"
         );
+        assert!(cx.debug_bounds("codex-message-row-0").is_none());
+        cx.update(|window, cx| view.update(cx, |view, cx| view.submit(window, cx)));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-row-0").is_some());
+        assert!(cx.debug_bounds("codex-message-row-1").is_none());
     }
     #[gpui::test]
     fn accepted_prompt_clears_composer_once_and_preserves_next_draft(
@@ -9733,6 +9909,7 @@ mod tests {
             });
         });
         draw(cx);
+        assert!(cx.debug_bounds("codex-message-row-0").is_some());
         let mut accepted = snapshot();
         accepted.status = Status::Working;
         accepted.accepted_submission = view.read_with(cx, |view, _| view.submitted_ack);
@@ -9742,6 +9919,7 @@ mod tests {
             .advance_clock(std::time::Duration::from_millis(40));
         draw(cx);
         assert!(view.read_with(cx, |view, cx| view.input.read(cx).value().is_empty()));
+        assert!(cx.debug_bounds("codex-message-row-0").is_some());
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.input
