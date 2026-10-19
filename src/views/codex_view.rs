@@ -2614,23 +2614,42 @@ impl Render for CodexView {
                     && state.questions.is_empty()
                     && state.elicitations.is_empty()
                     && state.approvals.is_empty());
-            surface =
-                surface.child(
-                    div()
-                        .id("codex-live-activity")
-                        .debug_selector(|| "codex-live-activity".into())
-                        .w_full()
-                        .flex_shrink_0()
-                        .flex()
-                        .justify_center()
-                        .px(rpx(SPACE_20))
-                        .py(rpx(SPACE_SM))
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(div().w_full().max_w(rpx(CHAT_MAX_W)).truncate().child(
-                            shimmer_label("codex-activity-shimmer".into(), activity, running, cx),
-                        )),
-                );
+            surface = surface.child(
+                div()
+                    .id("codex-live-activity")
+                    .debug_selector(|| "codex-live-activity".into())
+                    .w_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .when(!minimap_entries.is_empty(), |row| {
+                        row.pl(rpx(CHROME_CONTROL_H))
+                    })
+                    .py(rpx(SPACE_SM))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .justify_center()
+                            .px(rpx(SPACE_20))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(rpx(CHAT_MAX_W))
+                                    .truncate()
+                                    .id("codex-live-activity-text")
+                                    .debug_selector(|| "codex-live-activity-text".into())
+                                    .child(shimmer_label(
+                                        "codex-activity-shimmer".into(),
+                                        activity,
+                                        running,
+                                        cx,
+                                    )),
+                            ),
+                    ),
+            );
         }
         if let Some(error) = &state.error {
             surface = surface.child(content_rail(
@@ -4226,7 +4245,9 @@ fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, Stri
         |seconds| {
             let minutes = seconds / 60;
             if minutes == 0 {
-                format!("{verb} for <1m")
+                format!("{verb} for {seconds}s")
+            } else if minutes == 1 {
+                format!("{verb} for {minutes}m {}s", seconds % 60)
             } else {
                 format!("{verb} for {minutes}m")
             }
@@ -4336,17 +4357,41 @@ fn live_activity(state: &codex::Snapshot) -> Option<String> {
     if compacting(state) {
         return Some("Compacting context…".into());
     }
-    if !state.status.busy() || state.saved.items.last().is_some_and(is_tool_item) {
+    if !state.status.busy()
+        || (state.saved.items.last().is_some_and(is_tool_item)
+            && state.questions.is_empty()
+            && state.elicitations.is_empty()
+            && state.approvals.is_empty())
+    {
         return None;
     }
-    // A commentary update after a tool must not add a second working shimmer.
-    // Actionable waiting copy and compaction retain their dedicated footer.
+    // The active work disclosure already provides the turn's liveness signal.
+    // Keep the initial fallback when no work disclosure has mounted yet.
+    let current_start = state
+        .saved
+        .work_periods
+        .last()
+        .filter(|period| period.end_item.is_none())
+        .map_or_else(
+            || {
+                state
+                    .saved
+                    .items
+                    .iter()
+                    .rposition(|item| item["type"] == "userMessage")
+                    .unwrap_or(0)
+            },
+            |period| period.start_item,
+        );
+    let header_index = (current_start..state.saved.items.len())
+        .find(|index| state.saved.items[*index]["type"] != "userMessage")
+        .unwrap_or(state.saved.items.len());
+    let has_work_header = work_header_at(state, header_index).is_some_and(|(_, _, active)| active);
     if state.questions.is_empty()
         && state.elicitations.is_empty()
         && state.approvals.is_empty()
-        && state.saved.items.iter().enumerate().any(|(index, item)| {
-            is_tool_item(item) && work_is_active_at(state, index) && tool_visible(state, index)
-        })
+        && has_work_header
+        && !(state.saved.items.is_empty() && state.saved.thread_id.is_none())
     {
         return None;
     }
@@ -5484,14 +5529,24 @@ impl CodexView {
                 .flex()
                 .flex_col()
                 .gap(rpx(SPACE_LG))
-                .child(div().text_color(c::AMBER()).child(format!(
-                    "{} needs your permission · {}",
-                    state.saved.provider.label(),
-                    grove_core::controls::approval_title(approval)
-                )))
+                .font_family(crate::fonts::UI_FAMILY)
+                .font_weight(gpui::FontWeight::NORMAL)
+                .text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG())
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(c::AMBER())
+                        .child(format!(
+                            "{} needs your permission · {}",
+                            state.saved.provider.label(),
+                            grove_core::controls::approval_title(approval)
+                        )),
+                )
                 .child(
                     div()
                         .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
                         .child(grove_core::controls::approval_details(approval)),
                 );
             let editable = approval
@@ -5586,13 +5641,14 @@ impl CodexView {
                 let id = approval["id"].clone();
                 let denying = matches!(choice.id.as_str(), "deny" | "cancel");
                 buttons = buttons.child(
-                    form_action(
+                    transcript_action(
                         gpui::SharedString::from(format!("approval-{index}-{choice_index}")),
                         choice.label,
                         false,
                         window,
                         cx,
                     )
+                    .debug_selector(move || format!("approval-{index}-{choice_index}"))
                     .disabled(draft.submitting || (!denying && !valid_json))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.respond_approval(&click_key, id.clone(), choice.id.clone(), cx);
@@ -7288,6 +7344,59 @@ mod tests {
         );
         assert!(!is_tool_item(&state.saved.items[1]));
     }
+    #[gpui::test]
+    fn live_activity_avoids_duplicate_work_and_aligns_meaningful_status(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_view, cx, _, updates) = fixture(cx);
+        let mut state = snapshot();
+        state.status = Status::Working;
+        state.saved.items.clear();
+        state.saved.thread_id = None;
+        assert_eq!(
+            live_activity(&state).as_deref(),
+            Some("Connecting to Codex…")
+        );
+        state.saved.items = vec![
+            json!({"id":"prompt","type":"userMessage","content":[{"text":"Check this"}]}),
+            json!({"id":"reply","type":"agentMessage","phase":"commentary","text":"Checking this."}),
+        ];
+        assert!(work_header_at(&state, 1).unwrap().2);
+        assert_eq!(live_activity(&state), None);
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-live-activity").is_none());
+        state.compacting = true;
+        assert_eq!(
+            live_activity(&state).as_deref(),
+            Some("Compacting context…")
+        );
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        for width in [1000.0, 400.0] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
+            draw(cx);
+            let status = cx.debug_bounds("codex-live-activity-text").unwrap();
+            let body = cx.debug_bounds("codex-message-body-1").unwrap();
+            assert_eq!(status.left(), body.left(), "status alignment at {width}");
+        }
+        state.compacting = false;
+        state.approvals.push(json!({"id":"permission"}));
+        assert_eq!(
+            live_activity(&state).as_deref(),
+            Some("Waiting for your permission…")
+        );
+        state.approvals.clear();
+        state.elicitations.push(ElicitationRequest::parse_codex(json!("answer"), &json!({"message":"Name", "requestedSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}})).unwrap());
+        assert_eq!(
+            live_activity(&state).as_deref(),
+            Some("Waiting for your answers…")
+        );
+    }
+
     #[gpui::test]
     fn compaction_shows_the_live_activity_line_even_after_tools(cx: &mut gpui::TestAppContext) {
         let (_view, cx, _, updates) = fixture(cx);
@@ -9094,6 +9203,74 @@ mod tests {
     }
 
     #[gpui::test]
+    fn pending_approval_buttons_are_visible_and_clicks_emit_one_typed_response(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        for width in [1024.0, 600.0] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(480.0)));
+            for (request_id, selector, expected_choice) in [
+                ("approve", "approval-0-0", "allow_once"),
+                ("decline", "approval-0-2", "deny"),
+            ] {
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, cx| {
+                            session.state.status = Status::Waiting;
+                            session.state.approvals = vec![json!({
+                                "id": request_id,
+                                "method": "item/commandExecution/requestApproval",
+                                "params": {"command": "pwd", "cwd": "/tmp"}
+                            })];
+                            cx.notify();
+                        });
+                    });
+                });
+                draw(cx);
+                let controls = cx.debug_bounds("agent-controls").unwrap();
+                let button = cx
+                    .debug_bounds(selector)
+                    .expect("pending approval exposes an actionable button");
+                assert!(button.size.width > gpui::px(0.0));
+                assert!(button.size.height > gpui::px(0.0));
+                let control_height =
+                    cx.update(|window, _| rpx(CONTROL_H).to_pixels(window.rem_size()));
+                assert!(
+                    button.size.height <= control_height,
+                    "approval uses compact transcript controls: {button:?}"
+                );
+                assert!(
+                    controls.contains(&button.origin),
+                    "approval button {selector}: {button:?}; controls: {controls:?}"
+                );
+                assert!(button.right() <= controls.right());
+                assert!(button.bottom() <= controls.bottom());
+                assert!(button.bottom() <= gpui::px(480.0));
+                cx.simulate_click(button.center(), gpui::Modifiers::default());
+                draw(cx);
+                cx.simulate_click(button.center(), gpui::Modifiers::default());
+                draw(cx);
+                let responses: Vec<_> = actions
+                    .try_iter()
+                    .filter_map(|action| match action {
+                        Action::RespondApproval {
+                            id,
+                            choice,
+                            input,
+                            feedback,
+                        } => Some((id, choice, input, feedback)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    responses,
+                    vec![(json!(request_id), expected_choice.into(), None, None)]
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
     fn mixed_agent_controls_share_scroll_budget_and_emit_typed_responses(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -9373,7 +9550,7 @@ mod tests {
     }
 
     #[test]
-    fn work_headers_use_minutes_and_skip_unknown_history_duration() {
+    fn work_headers_show_seconds_until_two_minutes_and_skip_unknown_duration() {
         use serde_json::json;
         let mut state = snapshot();
         state.saved.items = vec![
@@ -9390,10 +9567,13 @@ mod tests {
             duration_ms: Some(23_900),
         });
         for (duration_ms, expected) in [
-            (0, "Worked for <1m"),
-            (23_900, "Worked for <1m"),
-            (59_999, "Worked for <1m"),
-            (60_000, "Worked for 1m"),
+            (0, "Worked for 0s"),
+            (23_900, "Worked for 23s"),
+            (45_000, "Worked for 45s"),
+            (59_999, "Worked for 59s"),
+            (60_000, "Worked for 1m 0s"),
+            (119_999, "Worked for 1m 59s"),
+            (120_000, "Worked for 2m"),
             (125_000, "Worked for 2m"),
         ] {
             state.saved.work_periods[0].duration_ms = Some(duration_ms);
@@ -9405,7 +9585,7 @@ mod tests {
         state.status = Status::Working;
         assert_eq!(work_header_at(&state, 1).unwrap().1, "Working");
         state.work_started = Some(std::time::Instant::now());
-        assert_eq!(work_header_at(&state, 1).unwrap().1, "Working for <1m");
+        assert_eq!(work_header_at(&state, 1).unwrap().1, "Working for 0s");
         state.work_started = Some(
             std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(125))

@@ -185,6 +185,11 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     } else {
         gpui_component::ThemeMode::Light
     };
+    theme.highlight_theme = if is_dark() {
+        gpui_component::highlighter::HighlightTheme::default_dark()
+    } else {
+        gpui_component::highlighter::HighlightTheme::default_light()
+    };
     theme.foreground = FG();
     theme.background = BG();
     theme.popover = SURFACE_RAISED();
@@ -437,9 +442,20 @@ mod tests {
             gpui_component::init(cx);
             // Switch back as well: changing mode alone leaves the old accent behind.
             for light in [false, true, false] {
+                assert!(theme::set_by_name(if light {
+                    DEFAULT_LIGHT_THEME
+                } else {
+                    DEFAULT_DARK_THEME
+                }));
                 set_chrome_light(light);
                 sync_component_theme(cx);
                 let component = gpui_component::Theme::global(cx);
+                let syntax = if light {
+                    gpui_component::highlighter::HighlightTheme::default_light()
+                } else {
+                    gpui_component::highlighter::HighlightTheme::default_dark()
+                };
+                assert_eq!(component.highlight_theme, syntax);
                 assert_eq!(component.accent, MENU_HOVER());
                 assert_eq!(component.accent_foreground, FG());
                 assert_eq!(component.tokens.popover, SURFACE_RAISED().into());

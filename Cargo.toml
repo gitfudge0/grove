@@ -101,7 +101,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1a246efd
 # Vendored at GPUI_COMPONENT_REV 88f102d13654fe25aa2fede076274b6b751a3704 and
 # consumed by path so the pin is durable and offline. Provenance, the crate
 # subset and every manifest edit: vendor/gpui-component/README.md.
-gpui-component = { path = "vendor/gpui-component/ui" }
+gpui-component = { path = "vendor/gpui-component/ui", features = ["tree-sitter-languages"] }
 rust-embed = "8"
 futures = "0.3"
 # Promoted from the root package's `[dependencies]` (same version + features) —

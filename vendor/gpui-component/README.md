@@ -33,13 +33,14 @@ different rev.
 ## Why only three crates
 
 Upstream's workspace has six crates. Only three are reachable from
-`gpui_component::input`, which is all Grove uses:
+`gpui_component` input and Markdown rendering:
 
 - **`ui`** — the monolith holding `Input`/`InputState`/the editor. It cannot be
   trimmed further: the input lives in the same crate as every other component
   and has no feature gate. Its `[features]` set has **no `default` key**, so
-  tree-sitter, decimal, inspector and the 30+ grammar deps stay off. We enable
-  **nothing**.
+  grammar features require explicit opt-in. Grove enables `tree-sitter-languages`
+  in its workspace dependency so fenced Markdown uses the bundled language
+  grammars in release builds as well as tests. Decimal and inspector stay off.
 - **`macros`** (`gpui-component-macros`) — a `[dependencies]` entry of `ui`.
 - **`assets`** (`gpui-component-assets`) — a `[dependencies]` entry of `ui`;
   its `assets/` folder of icon SVGs is embedded via `rust-embed` in `build.rs`,
