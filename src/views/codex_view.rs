@@ -1922,17 +1922,6 @@ impl Render for CodexView {
             {
                 continue;
             }
-            if kind == "reasoning" {
-                let key = work_key_at(&state, index);
-                let current_thinking = state.saved.items[index..]
-                    .iter()
-                    .take_while(|item| item["type"] == "reasoning")
-                    .enumerate()
-                    .any(|(offset, _)| tool_is_running(&state, index + offset));
-                if !self.expanded.contains(&key) && !current_thinking {
-                    continue;
-                }
-            }
             if kind == codex::COMPACTION_ITEM {
                 // A running compaction is shown by the live activity line instead.
                 if item["status"] != "inProgress" {
@@ -1966,9 +1955,9 @@ impl Render for CodexView {
                     .enumerate()
                     .filter(|(offset, _)| {
                         let item_index = index + offset;
-                        self.expanded.contains(&work_key_at(&state, item_index))
-                            || (tool_visible(&state, item_index)
-                                && tool_is_running(&state, item_index))
+                        tool_visible(&state, item_index)
+                            && (work_is_active_at(&state, item_index)
+                                || self.expanded.contains(&work_key_at(&state, item_index)))
                     })
                     .map(|(offset, item)| (index + offset, item))
                     .collect::<Vec<_>>();
@@ -2033,11 +2022,20 @@ impl Render for CodexView {
                 let mut group = div()
                     .id(("codex-tool-group", index))
                     .debug_selector(move || format!("codex-tool-group-{index}"))
+                    // Adjacent activity groups share the compact rhythm of their rows;
+                    // prose keeps the transcript's normal paragraph separation.
+                    .when(
+                        state.saved.items.get(end).is_some_and(is_tool_item)
+                            && tool_visible(&state, end)
+                            && (work_is_active_at(&state, end)
+                                || self.expanded.contains(&work_key_at(&state, end))),
+                        |group| group.mb(-rpx(SPACE_2XL)),
+                    )
                     .w_full()
                     .max_w(rpx(CHAT_MAX_W))
                     .flex()
                     .flex_col()
-                    .gap(rpx(SPACE_LG));
+                    .gap(rpx(SPACE_XS));
                 let keyboard_group = group_id.clone();
                 if tools.len() > 1 {
                     group = group.child(
@@ -2144,7 +2142,8 @@ impl Render for CodexView {
                                                 tool,
                                                 tool_is_running(&state, detail_index),
                                             ),
-                                            tool_is_running(&state, detail_index),
+                                            work_is_active_at(&state, detail_index)
+                                                && tool_visible(&state, detail_index),
                                             cx,
                                         )),
                                 )
@@ -4088,7 +4087,8 @@ impl CodexView {
     }
 }
 
-/// During a turn only its currently running call is visible; completion reveals history.
+/// During a turn only its latest activity is visible, including between calls.
+/// Completion restores the work disclosure's full history.
 fn tool_visible(state: &codex::Snapshot, index: usize) -> bool {
     if !state.status.busy() {
         return true;
@@ -4117,9 +4117,7 @@ fn tool_visible(state: &codex::Snapshot, index: usize) -> bool {
         .iter()
         .enumerate()
         .rev()
-        .find(|(index, item)| {
-            *index >= start && is_tool_item(item) && tool_is_running(state, *index)
-        })
+        .find(|(index, item)| *index >= start && is_tool_item(item))
         .is_some_and(|(current, _)| current == index)
 }
 
@@ -4313,6 +4311,17 @@ fn live_activity(state: &codex::Snapshot) -> Option<String> {
         return Some("Compacting context…".into());
     }
     if !state.status.busy() || state.saved.items.last().is_some_and(is_tool_item) {
+        return None;
+    }
+    // A commentary update after a tool must not add a second working shimmer.
+    // Actionable waiting copy and compaction retain their dedicated footer.
+    if state.questions.is_empty()
+        && state.elicitations.is_empty()
+        && state.approvals.is_empty()
+        && state.saved.items.iter().enumerate().any(|(index, item)| {
+            is_tool_item(item) && work_is_active_at(state, index) && tool_visible(state, index)
+        })
+    {
         return None;
     }
     Some(
@@ -7251,6 +7260,17 @@ mod tests {
         state.saved.items =
             vec![json!({"id":"a","type":"commandExecution","command":"pwd","status":"completed"})];
         assert_eq!(live_activity(&state), None);
+        state
+            .saved
+            .items
+            .push(json!({"type":"agentMessage","phase":"commentary","text":"Checking results"}));
+        assert_eq!(live_activity(&state), None);
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-toggle-tool-0").is_some());
+        assert!(cx.debug_bounds("codex-live-activity").is_none());
         state.compacting = true;
         assert_eq!(
             live_activity(&state).as_deref(),
@@ -7658,6 +7678,23 @@ mod tests {
         assert!(cx.debug_bounds("codex-toggle-tool-5").is_some());
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
+                view.expanded.insert("work-3".into());
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.items[5]["status"] = json!("completed");
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-toggle-tool-4").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-5").is_some());
+        cx.update(|_, cx| {
+            view.update(cx, |view, _| {
+                view.expanded.remove("work-3");
+            });
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
                     session.state.status = Status::Done;
                     session.state.saved.items[5]["status"] = json!("completed");
@@ -7694,6 +7731,7 @@ mod tests {
                         json!({"id":"b","type":"mcpToolCall","server":"docs","tool":"search"}),
                         json!({"id":"c","type":"agentMessage","text":"Results"}),
                         json!({"id":"d","type":"commandExecution","command":"ls"}),
+                        json!({"id":"e","type":"reasoning","text":"Reviewing"}),
                     ];
                     cx.notify();
                 });
@@ -7716,6 +7754,14 @@ mod tests {
         assert!(cx.debug_bounds("codex-toggle-tool-0").is_some());
         assert!(cx.debug_bounds("codex-toggle-tool-1").is_some());
         assert!(cx.debug_bounds("codex-toggle-tool-3").is_some());
+        let commands = cx.debug_bounds("codex-tool-group-3").unwrap();
+        let thought = cx.debug_bounds("codex-tool-group-4").unwrap();
+        let compact_gap = cx.update(|window, _| rpx(SPACE_LG).to_pixels(window.rem_size()));
+        assert_eq!(thought.top() - commands.bottom(), compact_gap);
+        let first = cx.debug_bounds("codex-toggle-tool-0").unwrap();
+        let second = cx.debug_bounds("codex-toggle-tool-1").unwrap();
+        let row_gap = cx.update(|window, _| rpx(SPACE_XS).to_pixels(window.rem_size()));
+        assert_eq!(second.top() - first.bottom(), row_gap);
         assert!(cx.debug_bounds("codex-tool-detail-0").is_none());
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
@@ -9325,7 +9371,7 @@ mod tests {
         assert!(!tool_visible(&state, 1));
         assert!(tool_visible(&state, 2));
         state.saved.items[2]["status"] = serde_json::json!("completed");
-        assert!(!tool_visible(&state, 2));
+        assert!(tool_visible(&state, 2));
         state.status = Status::Done;
         assert!(tool_visible(&state, 1));
         assert!(tool_visible(&state, 2));
