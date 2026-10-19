@@ -1,3 +1,15 @@
+# Grove 1.0.12
+
+## Native conversations
+
+- Answer inline question lists and review confirmed answer receipts in the conversation.
+- Navigate native conversations more easily, with turn timing and rendered Mermaid diagrams.
+- Inspect clearer tool details and work disclosures, with tighter activity spacing and a shimmer limited to the latest work entry.
+
+## Messages and composer
+
+- Press Enter to queue a message while an agent works, or Cmd+Enter to steer the active turn.
+
 # Grove 1.0.11
 
 ## Native agent conversations

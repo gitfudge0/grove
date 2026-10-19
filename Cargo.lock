@@ -2769,7 +2769,7 @@ checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 
 [[package]]
 name = "grove"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2798,7 +2798,7 @@ dependencies = [
 
 [[package]]
 name = "grove-core"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "base64",
  "dirs 5.0.1",
@@ -2817,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "grove-terminal"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "alacritty_terminal",
  "fs-err",
