@@ -13,30 +13,41 @@ pub fn tooltip(
     window: &gpui::Window,
 ) -> gpui_component::tooltip::Tooltip {
     let label = label.into();
-    gpui_component::tooltip::Tooltip::element(move |_, _| {
-        div()
-            .max_w(rpx(304.))
-            .whitespace_normal()
-            .child(label.clone())
-    })
-    .font_family(crate::fonts::UI_FAMILY)
-    .text_size(rpx(TEXT_SMALL))
-    .line_height(rpx(SPACE_3XL))
-    .px(rpx(SPACE_LG))
-    .py(rpx(5.))
-    .max_w(rpx(320.))
-    .rounded(rpx(RADIUS_GROUP))
-    .bg(gpui::rgb(0x1b1b1b))
-    .text_color(gpui::rgb(0xf7f7f8))
-    .border_1()
-    .border_color(gpui::rgb(0x34343a))
-    .shadow(vec![gpui::BoxShadow {
-        color: gpui::hsla(0., 0., 0., 0.36),
-        offset: gpui::point(gpui::px(0.), rpx(2.).to_pixels(window.rem_size())),
-        blur_radius: rpx(8.).to_pixels(window.rem_size()),
-        spread_radius: gpui::px(0.),
-        inset: false,
-    }])
+    tooltip_content(
+        move |_, _| {
+            div()
+                .max_w(rpx(304.))
+                .whitespace_normal()
+                .child(label.clone())
+        },
+        window,
+    )
+}
+
+/// Shared tooltip surface for structured previews as well as plain labels.
+pub fn tooltip_content<E: gpui::IntoElement>(
+    content: impl Fn(&mut gpui::Window, &mut gpui::App) -> E + 'static,
+    window: &gpui::Window,
+) -> gpui_component::tooltip::Tooltip {
+    gpui_component::tooltip::Tooltip::element(content)
+        .font_family(crate::fonts::UI_FAMILY)
+        .text_size(rpx(TEXT_SMALL))
+        .line_height(rpx(SPACE_3XL))
+        .px(rpx(SPACE_LG))
+        .py(rpx(5.))
+        .max_w(rpx(320.))
+        .rounded(rpx(RADIUS_GROUP))
+        .bg(gpui::rgb(0x1b1b1b))
+        .text_color(gpui::rgb(0xf7f7f8))
+        .border_1()
+        .border_color(gpui::rgb(0x34343a))
+        .shadow(vec![gpui::BoxShadow {
+            color: gpui::hsla(0., 0., 0., 0.36),
+            offset: gpui::point(gpui::px(0.), rpx(2.).to_pixels(window.rem_size())),
+            blur_radius: rpx(8.).to_pixels(window.rem_size()),
+            spread_radius: gpui::px(0.),
+            inset: false,
+        }])
 }
 
 pub fn header_control(id: &'static str, label: &'static str) -> Stateful<Div> {
@@ -49,6 +60,20 @@ pub fn header_control_with_hover(
     label: &'static str,
     hover: gpui::Hsla,
 ) -> Stateful<Div> {
+    header_control_frame(id, label, hover)
+        .tooltip(move |window, cx| tooltip(label, window).build(window, cx))
+}
+
+/// Compact header control with a structured preview on the shared tooltip surface.
+pub fn header_control_with_tooltip(
+    id: &'static str,
+    label: &'static str,
+    preview: impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView + 'static,
+) -> Stateful<Div> {
+    header_control_frame(id, label, c::BG_HOVER()).tooltip(preview)
+}
+
+fn header_control_frame(id: &'static str, label: &'static str, hover: gpui::Hsla) -> Stateful<Div> {
     div()
         .id(id)
         .role(gpui::Role::Button)
@@ -64,7 +89,6 @@ pub fn header_control_with_hover(
             window.prevent_default();
             cx.stop_propagation();
         })
-        .tooltip(move |window, cx| tooltip(label, window).build(window, cx))
 }
 
 /// A compound form well with an embedded label and error attached to its field.

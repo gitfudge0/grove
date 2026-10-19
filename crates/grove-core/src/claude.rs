@@ -493,6 +493,7 @@ impl Actor {
         let _ = self.updates.send(self.state.clone());
     }
     fn fail(&mut self, error: String) {
+        self.state.finish_work();
         self.state.mark_queue_uncertain();
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
@@ -632,6 +633,7 @@ impl Actor {
         self.write(json!({"type":"user","uuid":uuid,"session_id":self.state.saved.thread_id.as_deref().unwrap_or(""),"message":{"role":"user","content":content},"parent_tool_use_id":null}))?;
         self.input_uuid = Some(uuid.clone());
         self.in_flight = Some(QueuedPrompt { id, text, images });
+        self.state.begin_work();
         self.state.status = Status::Working;
         self.session_idle = false;
         self.state.turn_id = Some(uuid);
@@ -1111,6 +1113,7 @@ impl Actor {
                 match value["state"].as_str() {
                     Some("idle") if !self.configuring => {
                         if let Some(status) = self.pending_completion.take() {
+                            self.state.finish_work();
                             self.state.status = status;
                             self.state.turn_id = None;
                             self.state.approvals.clear();
@@ -1417,6 +1420,7 @@ impl Actor {
                     // session_state_changed idle is the authoritative boundary.
                     self.state.turn_id = Some("awaiting-session-idle".into());
                 } else {
+                    self.state.finish_work();
                     self.pending_completion = None;
                     self.interrupting = false;
                 }
@@ -1623,6 +1627,29 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
     }
+    #[test]
+    fn work_period_waits_for_claude_idle_and_closes_on_disconnect() {
+        let mut actor = actor();
+        actor.tracks_session_state = true;
+        actor.session_idle = false;
+        actor.state.turn_id = Some("turn".into());
+        actor.state.begin_work();
+        actor
+            .message(json!({"type":"result","subtype":"success","is_error":false}))
+            .unwrap();
+        assert!(actor.state.work_started.is_some());
+        assert!(actor.state.saved.work_periods[0].end_item.is_none());
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
+            .unwrap();
+        assert!(actor.state.work_started.is_none());
+        assert!(actor.state.saved.work_periods[0].duration_ms.is_some());
+        actor.state.begin_work();
+        actor.fail("disconnected".into());
+        assert!(actor.state.work_started.is_none());
+        assert!(actor.state.saved.work_periods[1].end_item.is_some());
+    }
+
     #[test]
     fn deferred_queue_copy_is_locked_before_reconfiguration() {
         let mut actor = actor();

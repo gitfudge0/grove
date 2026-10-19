@@ -1,8 +1,9 @@
 //! Native conversation surface for a structured Codex session.
 use super::{
     components::{
-        form_action, header_control, header_control_with_hover, project_field_well,
-        question_choice, question_disclosure, tooltip, transcript_action,
+        form_action, header_control, header_control_with_hover, header_control_with_tooltip,
+        project_field_well, question_choice, question_disclosure, tooltip, tooltip_content,
+        transcript_action,
     },
     rpx,
     tokens::*,
@@ -35,6 +36,7 @@ use std::{
 
 const CHAT_MAX_W: f32 = 760.0;
 const COMPOSER_MENU_W: f32 = 320.0;
+const MINIMAP_PREVIEW_W: f32 = 320.0;
 const COMPOSER_MENU_MAX_H: f32 = 280.0;
 const COMPOSER_MIN_H: f32 = 72.0;
 const USER_BUBBLE_MAX_W: f32 = 600.0;
@@ -50,6 +52,74 @@ const CONTEXT_WARN_PERCENT: u32 = 80;
 const CONTEXT_RING_STROKE: f32 = 1.5;
 /// Polyline segments per full turn of the context ring.
 const CONTEXT_RING_SEGMENTS: f32 = 48.0;
+
+/// A user input and the final (or latest streaming) assistant message before
+/// the next input. Source indices stay distinct from rendered child indices.
+#[derive(Debug, PartialEq)]
+struct MessageMinimapEntry {
+    item_index: usize,
+    prompt: String,
+    response: String,
+}
+
+fn message_minimap_entries(items: &[serde_json::Value]) -> Vec<MessageMinimapEntry> {
+    let inputs: Vec<_> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item["type"] == "userMessage")
+        .map(|(index, _)| index)
+        .collect();
+    inputs
+        .iter()
+        .enumerate()
+        .map(|(turn, &index)| {
+            let end = inputs.get(turn + 1).copied().unwrap_or(items.len());
+            let replies: Vec<_> = items[index + 1..end]
+                .iter()
+                .filter(|item| item["type"] == "agentMessage")
+                .filter(|item| !codex::item_text(item).trim().is_empty())
+                .collect();
+            let response = replies
+                .iter()
+                .rev()
+                .find(|item| item["phase"] == "final_answer")
+                .or_else(|| replies.last())
+                .map(|item| codex::item_text(item))
+                .unwrap_or_else(|| "No response yet".into());
+            let prompt = codex::item_text(&items[index]);
+            MessageMinimapEntry {
+                item_index: index,
+                prompt: if prompt.trim().is_empty() {
+                    "Image attachment".into()
+                } else {
+                    prompt
+                },
+                response,
+            }
+        })
+        .collect()
+}
+
+fn minimap_excerpt(text: &str) -> String {
+    // Bound tooltip layout and keep Unicode scalar boundaries intact.
+    const PREVIEW_CHARACTERS: usize = 240;
+    let mut characters = text
+        .chars()
+        .map(|character| {
+            if character.is_whitespace() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(PREVIEW_CHARACTERS + 1)
+        .collect::<Vec<_>>();
+    if characters.len() > PREVIEW_CHARACTERS {
+        characters.truncate(PREVIEW_CHARACTERS);
+        characters.push('…');
+    }
+    characters.into_iter().collect()
+}
 
 fn action_key(event: &gpui::KeyDownEvent) -> bool {
     matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held
@@ -278,7 +348,9 @@ struct QueueMotionRow {
 pub struct CodexView {
     session: Entity<CodexSession>,
     input: Entity<InputState>,
+    checkout_context: Option<(String, String)>,
     expanded: HashSet<String>,
+    work_tick_pending: Rc<Cell<bool>>,
     question_drafts: HashMap<String, QuestionGroupDraft>,
     question_receipts: Vec<QuestionReceipt>,
     question_generation: u64,
@@ -394,6 +466,7 @@ impl CodexView {
             session,
             input,
             expanded: HashSet::new(),
+            work_tick_pending: Rc::new(Cell::new(false)),
             question_drafts: HashMap::new(),
             question_receipts: Vec::new(),
             question_generation: 0,
@@ -444,9 +517,152 @@ impl CodexView {
             composer_transition_from: None,
             composer_transition_generation: 0,
             composer_motion_finished: Rc::new(Cell::new(true)),
+            checkout_context: None,
             _subscriptions: subscriptions,
         }
     }
+    pub(crate) fn set_checkout_context(
+        &mut self,
+        location: String,
+        branch: String,
+        cx: &mut Context<Self>,
+    ) {
+        let context = Some((location, branch));
+        if self.checkout_context != context {
+            self.checkout_context = context;
+            cx.notify();
+        }
+    }
+
+    fn use_starter(&mut self, prompt: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.input.read(cx).value().to_string();
+        let draft = if current.is_empty() {
+            prompt.to_owned()
+        } else {
+            format!("{current}\n\n{prompt}")
+        };
+        self.input
+            .update(cx, |input, cx| input.set_value(draft.clone(), window, cx));
+        self.session
+            .update(cx, |session, cx| session.send(Action::Draft(draft), cx));
+        self.set_composer_collapsed(false, cx);
+        self.input.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn launch_intro(&self, state: &codex::Snapshot) -> gpui::Stateful<gpui::Div> {
+        let (location, branch) = self
+            .checkout_context
+            .clone()
+            .unwrap_or_else(|| (state.saved.cwd.clone(), String::new()));
+        let identity = grove_core::session_meta::multi_project_identity(
+            &state.saved.project,
+            &state.saved.roots,
+        )
+        .unwrap_or_else(|| state.saved.project.clone());
+        div()
+            .id("codex-empty")
+            .debug_selector(|| "codex-empty".into())
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG))
+            .mb(rpx(SPACE_2XL))
+            .child(
+                div()
+                    .id("codex-launch-context")
+                    .debug_selector(|| "codex-launch-context".into())
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .gap(rpx(SPACE_2XL))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .mb(rpx(SPACE_2XL))
+                    .children(
+                        [identity, location, branch]
+                            .into_iter()
+                            .filter(|value| !value.is_empty())
+                            .enumerate()
+                            .map(|(index, value)| {
+                                let full_value = value.clone();
+                                div()
+                                    .id(("codex-launch-identity", index))
+                                    .min_w_0()
+                                    .max_w_full()
+                                    .flex_shrink_0()
+                                    .whitespace_normal()
+                                    .aria_label(value.clone())
+                                    .when(index > 0, |value| {
+                                        value
+                                            .border_l_1()
+                                            .border_color(c::BORDER_SOFT())
+                                            .pl(rpx(SPACE_2XL))
+                                    })
+                                    .tooltip(move |window, cx| {
+                                        tooltip(full_value.clone(), window).build(window, cx)
+                                    })
+                                    .child(value)
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(rpx(TEXT_DISPLAY))
+                    .child("What would you like to build?"),
+            )
+            .child(
+                div()
+                    .text_color(c::FG_DIM())
+                    .child("Ask a question, describe a change, or paste an image."),
+            )
+    }
+
+    fn launch_starters(&self, provider: &str, cx: &Context<Self>) -> gpui::Div {
+        let mut starters = div()
+            .id("codex-launch-starters")
+            .debug_selector(|| "codex-launch-starters".into())
+            .w_full()
+            .flex()
+            .flex_wrap()
+            .gap(rpx(SPACE_LG))
+            .mt(rpx(SPACE_LG));
+        for (id, title, description, prompt) in [
+            ("codex-starter-understand", "Understand this project", "Map the code and explain where to start", "Explain the main modules in this project and where I should start."),
+            ("codex-starter-change", "Make a change", "Describe what should work differently", "Help me make a change in this project. Ask me what should work differently before editing."),
+            ("codex-starter-review", "Review my changes", "Look for bugs in the current diff", "Review my uncommitted changes for bugs and regressions."),
+        ] {
+            starters = starters.child(header_control(id, title).debug_selector(move || id.into())
+                .tab_index(0).flex_1().flex_basis(rpx(CHAT_MAX_W / 3.0 - SPACE_LG)).min_w_0().h_auto()
+                .p(rpx(SPACE_2XL)).border_1().border_color(c::BORDER_SOFT())
+                .rounded(rpx(RADIUS_CONTROL)).flex().flex_col().items_start().justify_start().gap(rpx(SPACE_SM))
+                .focus_visible(|style| style.bg(c::BG_HOVER()).border_color(c::BORDER_STRONG()))
+                .aria_description(format!("{description}. Adds an editable prompt without sending."))
+                .child(div().id(gpui::SharedString::from(format!("{id}-title"))).debug_selector(move || format!("{id}-title")).text_color(c::FG()).child(title))
+                .child(div().whitespace_normal().text_color(c::FG_DIM()).child(description))
+                .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if action_key(event) { this.use_starter(prompt, window, cx); cx.stop_propagation(); }
+                }))
+                .on_click(cx.listener(move |this, _, window, cx| this.use_starter(prompt, window, cx))));
+        }
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_2XL))
+            .child(starters)
+            .child(
+                div()
+                    .text_size(rpx(TEXT_MICRO))
+                    .text_color(c::FG_DIM())
+                    .child(format!(
+                        "{provider} works in this worktree using your CLI sign-in."
+                    )),
+            )
+    }
+
     fn sync_bubble_entrances(
         &mut self,
         state: &codex::Snapshot,
@@ -1135,6 +1351,128 @@ impl CodexView {
         cx.notify();
     }
 
+    fn jump_to_message(&mut self, child: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.smooth_follow = false;
+        self.follow_after_submit = false;
+        self.composer_pin_bottom = false;
+        self.pending_composer_scroll = None;
+        self.set_composer_collapsed(true, cx);
+        // GPUI resolves this against the next layout, including any composer resize.
+        self.scroll.scroll_to_top_of_item(child);
+        let owner = cx.entity().downgrade();
+        window.on_next_frame(move |_, cx| {
+            let _ = owner.update(cx, |_, cx| cx.notify());
+        });
+        cx.notify();
+    }
+
+    fn render_message_minimap(
+        &self,
+        entries: &[MessageMinimapEntry],
+        anchors: &[(usize, usize)],
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        if entries.is_empty() {
+            return div().into_any_element();
+        }
+        let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
+            <= rpx(SPACE_20).to_pixels(window.rem_size());
+        let active = if near_bottom {
+            anchors.last()
+        } else {
+            anchors
+                .iter()
+                .rev()
+                .find(|(_, child)| *child <= self.scroll.top_item())
+                .or_else(|| anchors.first())
+        }
+        .map(|(index, _)| *index);
+        let preview_width = (self.scroll.bounds().size.width
+            - rpx(SPACE_3XL).to_pixels(window.rem_size()))
+        .max(rpx(CHROME_CONTROL_H).to_pixels(window.rem_size()))
+        .min(rpx(MINIMAP_PREVIEW_W - SPACE_3XL).to_pixels(window.rem_size()));
+        let mut rail = div()
+            .id("codex-message-minimap")
+            .debug_selector(|| "codex-message-minimap".into())
+            .role(gpui::Role::Group)
+            .aria_label("Conversation messages")
+            .w(rpx(CHROME_CONTROL_H))
+            .flex_shrink_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .py(rpx(SPACE_3XL));
+        for entry in entries {
+            let Some((_, child)) = anchors.iter().find(|(index, _)| *index == entry.item_index)
+            else {
+                continue;
+            };
+            let child = *child;
+            let index = entry.item_index;
+            let selected = active == Some(index);
+            let prompt = minimap_excerpt(&entry.prompt);
+            let response = minimap_excerpt(&entry.response);
+            rail = rail.child(
+                header_control_with_tooltip(
+                    "codex-minimap-message",
+                    "Go to message",
+                    move |window, cx| {
+                        let prompt = prompt.clone();
+                        let response = response.clone();
+                        tooltip_content(
+                            move |_, _| {
+                                div()
+                                    .w(preview_width)
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(rpx(SPACE_LG))
+                                    .whitespace_normal()
+                                    .child(div().text_color(c::FG()).child(prompt.clone()))
+                                    .child(div().text_color(c::FG_DIM()).child(response.clone()))
+                            },
+                            window,
+                        )
+                        .bg(c::SURFACE_RAISED())
+                        .border_color(c::BORDER())
+                        .build(window, cx)
+                    },
+                )
+                .id(("codex-minimap-message", index))
+                .debug_selector(move || format!("codex-minimap-message-{index}"))
+                .w_full()
+                .flex_1()
+                .flex_shrink_1()
+                .min_h(rpx(SPACE_SM))
+                .max_h(rpx(SPACE_20))
+                .tab_index(0)
+                .aria_label(format!("Go to message: {}", entry.prompt))
+                .aria_description(format!("Response: {}", entry.response))
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .child(
+                    div()
+                        .w(rpx(if selected { SPACE_3XL } else { SPACE_LG }))
+                        .h(rpx(SPACE_XS))
+                        .bg(if selected { c::FG() } else { c::FG_MUTE() }),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.jump_to_message(child, window, cx);
+                }))
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if action_key(event) {
+                            this.jump_to_message(child, window, cx);
+                            cx.stop_propagation();
+                        }
+                    },
+                )),
+            );
+        }
+        rail.into_any_element()
+    }
+
     fn transcript_scrolled(&mut self, toward_bottom: bool, cx: &mut Context<Self>) {
         // The next render observes the final offset after native wheel dispatch.
         // Keep this separate from layout/content updates, which never enter browse mode.
@@ -1433,11 +1771,49 @@ impl Render for CodexView {
             }
         }
         self.last_content = content;
+        // Only the empty bootstrap gets a connection interstitial. Existing work,
+        // actionable requests, and failures keep their transcript and recovery UI.
+        if state.status == codex::Status::Starting
+            && state.saved.items.is_empty()
+            && state.questions.is_empty()
+            && self.question_receipts.is_empty()
+            && state.approvals.is_empty()
+            && state.elicitations.is_empty()
+            && state.error.is_none()
+        {
+            return div()
+                .id("codex-conversation")
+                .size_full()
+                .min_h_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(rpx(SPACE_20))
+                .font_family(crate::fonts::UI_FAMILY)
+                .text_size(rpx(TEXT_BODY))
+                .text_color(c::FG_DIM())
+                .child(
+                    div()
+                        .id("codex-provider-connection")
+                        .debug_selector(|| "codex-provider-connection".into())
+                        .child(shimmer_label(
+                            "codex-provider-connection-shimmer".into(),
+                            format!("Connecting to {provider}…"),
+                            true,
+                            cx,
+                        )),
+                )
+                .into_any_element();
+        }
+        let minimap_entries = message_minimap_entries(&state.saved.items);
+        let mut minimap_anchors = Vec::new();
+        let mut message_child = 0;
         let mut messages = div()
             .id("codex-messages")
             .debug_selector(|| "codex-messages".into())
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .on_scroll_wheel(cx.listener(|this, event: &gpui::ScrollWheelEvent, _, cx| {
@@ -1455,21 +1831,104 @@ impl Render for CodexView {
             .px(rpx(SPACE_20))
             .py(rpx(SPACE_3XL))
             .gap(rpx(SPACE_20));
-        if state.saved.items.is_empty()
+        let focused_launch = state.saved.items.is_empty()
             && state.questions.is_empty()
             && self.question_receipts.is_empty()
+            && state.approvals.is_empty()
+            && state.elicitations.is_empty()
+            && !state.status.busy();
+        for (index, item) in state
+            .saved
+            .items
+            .iter()
+            .chain(std::iter::once(&serde_json::Value::Null))
+            .enumerate()
         {
-            messages = messages.child(div().id("codex-empty").w_full().max_w(rpx(CHAT_MAX_W))
-                .flex_1().flex().flex_col().justify_center().gap(rpx(SPACE_LG))
-                .child(div().text_size(rpx(TEXT_DISPLAY)).child("What would you like to build?"))
-                .child(div().text_color(c::FG_DIM()).child(format!("Ask a question, describe a change, or paste an image. {provider} works in this worktree using your CLI sign-in."))));
-        }
-        for (index, item) in state.saved.items.iter().enumerate() {
-            messages = messages.children(self.question_blocks_at(index, &state, window, cx));
+            if index < state.saved.items.len() {
+                let blocks = self.question_blocks_at(index, &state, window, cx);
+                message_child += blocks.len();
+                messages = messages.children(blocks);
+            }
+            if let Some((key, label, active)) = work_header_at(&state, index) {
+                message_child += 1;
+                let expanded = self.expanded.contains(&key);
+                let keyboard_key = key.clone();
+                messages = messages.child(
+                    div()
+                        .w_full()
+                        .max_w(rpx(CHAT_MAX_W))
+                        .pb(rpx(SPACE_2XL))
+                        .border_b_1()
+                        .border_color(c::BORDER_SOFT())
+                        .child(
+                            header_control("codex-work-header", "Show work activity")
+                                .id(("codex-work-header", index))
+                                .aria_expanded(expanded)
+                                .debug_selector(move || format!("codex-work-header-{index}"))
+                                .w_full()
+                                .justify_start()
+                                .gap(rpx(SPACE_LG))
+                                .tab_index(0)
+                                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .aria_label(label.clone())
+                                .child(shimmer_label(
+                                    ("codex-work-shimmer", index).into(),
+                                    label,
+                                    false,
+                                    cx,
+                                ))
+                                .child(crate::icons::icon(
+                                    if expanded { "chev-down" } else { "chev-right" },
+                                    ICON_SM,
+                                    c::FG_DIM(),
+                                ))
+                                .on_key_down(cx.listener(
+                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if action_key(event) {
+                                            this.toggle_expansion(&keyboard_key, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_expansion(&key, cx)
+                                })),
+                        ),
+                );
+                if active && state.work_started.is_some() && !self.work_tick_pending.replace(true) {
+                    let owner = cx.entity().downgrade();
+                    let pending = self.work_tick_pending.clone();
+                    cx.spawn(async move |_, cx| {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_secs(1))
+                            .await;
+                        pending.set(false);
+                        let _ = owner.update(cx, |_, cx| cx.notify());
+                    })
+                    .detach();
+                }
+            }
+            if index == state.saved.items.len() {
+                continue;
+            }
             let kind = item["type"].as_str().unwrap_or("tool");
+            if kind == "reasoning" {
+                let key = work_key_at(&state, index);
+                let current_thinking = state.saved.items[index..]
+                    .iter()
+                    .take_while(|item| item["type"] == "reasoning")
+                    .enumerate()
+                    .any(|(offset, _)| tool_is_running(&state, index + offset));
+                if !self.expanded.contains(&key) && !current_thinking {
+                    continue;
+                }
+            }
             if kind == codex::COMPACTION_ITEM {
                 // A running compaction is shown by the live activity line instead.
                 if item["status"] != "inProgress" {
+                    message_child += 1;
                     messages = messages.child(compaction_divider(index, codex::item_text(item)));
                 }
                 continue;
@@ -1478,32 +1937,61 @@ impl Render for CodexView {
             if tool {
                 if index > 0
                     && is_tool_item(&state.saved.items[index - 1])
+                    && (state.saved.items[index - 1]["type"] == "reasoning")
+                        == (kind == "reasoning")
                     && !self.has_question_anchor(index)
                 {
                     continue;
                 }
                 let end = state.saved.items[index..]
                     .iter()
-                    .position(|item| !is_tool_item(item))
+                    .position(|item| {
+                        !is_tool_item(item)
+                            || (item["type"] == "reasoning") != (kind == "reasoning")
+                    })
                     .map_or(state.saved.items.len(), |offset| index + offset);
                 let end = (index + 1..end)
                     .find(|anchor| self.has_question_anchor(*anchor))
                     .unwrap_or(end);
-                let tools = &state.saved.items[index..end];
+                let tools = state.saved.items[index..end]
+                    .iter()
+                    .enumerate()
+                    .filter(|(offset, _)| {
+                        let item_index = index + offset;
+                        tool_visible(&state, item_index)
+                            && (self.expanded.contains(&work_key_at(&state, item_index))
+                                || tool_is_running(&state, item_index))
+                    })
+                    .map(|(offset, item)| (index + offset, item))
+                    .collect::<Vec<_>>();
+                if tools.is_empty() {
+                    continue;
+                }
                 let group_id = format!("tools-{}", item["id"].as_str().unwrap_or_default());
                 let group_id = if item["id"].as_str().is_some() {
                     group_id
                 } else {
                     format!("tools-{index}")
                 };
-                let expanded = self.expanded.contains(&group_id);
-                let running = state.status.busy() && end == state.saved.items.len();
-                let label = format!(
-                    "{} tool call{}{}",
-                    tools.len(),
-                    if tools.len() == 1 { "" } else { "s" },
-                    if running { " · Running…" } else { "" }
-                );
+                let expanded = !self.expanded.contains(&group_id);
+                let running = tools
+                    .iter()
+                    .any(|(index, _)| tool_is_running(&state, *index));
+                let label = if tools
+                    .iter()
+                    .all(|(_, item)| item["type"] == "commandExecution")
+                {
+                    if running {
+                        "Running commands"
+                    } else {
+                        "Ran commands"
+                    }
+                } else if running {
+                    "Working"
+                } else {
+                    "Activity"
+                }
+                .to_owned();
                 let summary = div()
                     .id(("codex-tool-summary", index))
                     .debug_selector(move || format!("codex-tool-summary-{index}"))
@@ -1529,7 +2017,9 @@ impl Render for CodexView {
                         div()
                             .id(("codex-tool-label", index))
                             .debug_selector(move || format!("codex-tool-label-{index}"))
-                            .child(tool_activity_label(label.clone(), index, running, cx)),
+                            .min_w_0()
+                            .truncate()
+                            .child(tool_activity_label(label.clone(), index, false, cx)),
                     );
                 let mut group = div()
                     .id(("codex-tool-group", index))
@@ -1540,44 +2030,48 @@ impl Render for CodexView {
                     .flex_col()
                     .gap(rpx(SPACE_LG));
                 let keyboard_group = group_id.clone();
-                group = group.child(
-                    header_control(
-                        "codex-toggle-tools",
-                        if expanded {
-                            "Collapse tool calls"
-                        } else {
-                            "Expand tool calls"
-                        },
-                    )
-                    .w_full()
-                    .justify_start()
-                    .tab_index(0)
-                    .focus_visible(|style| style.bg(c::BG_HOVER()))
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .aria_label(label)
-                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            && !event.is_held
-                        {
-                            if !this.expanded.remove(&keyboard_group) {
-                                this.expanded.insert(keyboard_group.clone());
+                if tools.len() > 1 {
+                    group = group.child(
+                        header_control(
+                            "codex-toggle-tools",
+                            if expanded {
+                                "Collapse tool calls"
+                            } else {
+                                "Expand tool calls"
+                            },
+                        )
+                        .id(("codex-toggle-tools", index))
+                        .debug_selector(move || format!("codex-toggle-tools-{index}"))
+                        .aria_expanded(expanded)
+                        .w_full()
+                        .justify_start()
+                        .tab_index(0)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .aria_label(label)
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.is_held
+                            {
+                                if !this.expanded.remove(&keyboard_group) {
+                                    this.expanded.insert(keyboard_group.clone());
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
                             }
-                            cx.stop_propagation();
+                        }))
+                        .child(summary)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.expanded.remove(&group_id) {
+                                this.expanded.insert(group_id.clone());
+                            }
                             cx.notify();
-                        }
-                    }))
-                    .child(summary)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.expanded.remove(&group_id) {
-                            this.expanded.insert(group_id.clone());
-                        }
-                        cx.notify();
-                    })),
-                );
-                if expanded {
-                    for (offset, tool) in tools.iter().enumerate() {
-                        let detail_index = index + offset;
+                        })),
+                    );
+                }
+                if expanded || tools.len() == 1 {
+                    for (detail_index, tool) in tools {
                         let tool_key = tool_expansion_key(tool, detail_index);
                         let tool_expanded = self.expanded.contains(&tool_key);
                         let keyboard_key = tool_key.clone();
@@ -1602,18 +2096,34 @@ impl Render for CodexView {
                                 .gap(rpx(SPACE_SM))
                                 .tab_index(0)
                                 .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                .aria_label(tool_summary(tool))
-                                .child(crate::icons::icon(
-                                    if tool_expanded {
-                                        "chev-down"
-                                    } else {
-                                        "chev-right"
-                                    },
-                                    ICON_SM,
-                                    c::FG_DIM(),
+                                .aria_label(tool_activity_summary(
+                                    tool,
+                                    tool_is_running(&state, detail_index),
                                 ))
                                 .child(
                                     div()
+                                        .id(("codex-tool-icon", detail_index))
+                                        .debug_selector(move || {
+                                            format!("codex-tool-icon-{detail_index}")
+                                        })
+                                        .size(rpx(ICON_SM))
+                                        .flex_shrink_0()
+                                        .child(crate::icons::icon(
+                                            if tool["type"] == "reasoning" {
+                                                "brain"
+                                            } else {
+                                                "terminal"
+                                            },
+                                            ICON_SM,
+                                            c::FG_DIM(),
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .id(("codex-tool-row-label", detail_index))
+                                        .debug_selector(move || {
+                                            format!("codex-tool-row-label-{detail_index}")
+                                        })
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
@@ -1621,7 +2131,10 @@ impl Render for CodexView {
                                         .text_color(c::FG_DIM())
                                         .child(shimmer_label(
                                             ("codex-tool-detail-shimmer", detail_index).into(),
-                                            tool_summary(tool),
+                                            tool_activity_summary(
+                                                tool,
+                                                tool_is_running(&state, detail_index),
+                                            ),
                                             tool_is_running(&state, detail_index),
                                             cx,
                                         )),
@@ -1693,6 +2206,7 @@ impl Render for CodexView {
                         group = group.child(detail_row);
                     }
                 }
+                message_child += 1;
                 messages = messages.child(group);
                 continue;
             }
@@ -1787,59 +2301,61 @@ impl Render for CodexView {
                 text
             };
             let toggle = id.clone();
-            row = row.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_LG))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(if tool {
-                                tool_summary(item)
-                            } else {
-                                role.to_owned()
-                            }),
-                    )
-                    .when(tool, |row| {
-                        row.child(
-                            header_control(
-                                "codex-expand",
-                                if expanded {
-                                    "Collapse tool call"
+            if kind != "agentMessage" {
+                row = row.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(if tool {
+                                    tool_summary(item)
                                 } else {
-                                    "Expand tool call"
-                                },
-                            )
-                            .child(crate::icons::icon(
-                                if expanded { "chev-down" } else { "chev-right" },
-                                ICON_MD,
-                                c::FG_DIM(),
-                            ))
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    if !this.expanded.remove(&toggle) {
-                                        this.expanded.insert(toggle.clone());
-                                    }
-                                    cx.notify();
-                                },
-                            )),
+                                    role.to_owned()
+                                }),
                         )
-                    })
-                    .child(
-                        header_control("codex-copy", "Copy message")
-                            .child(crate::icons::icon("copy", ICON_MD, c::FG_DIM()))
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    copy.clone(),
-                                ));
-                            }),
-                    ),
-            );
+                        .when(tool, |row| {
+                            row.child(
+                                header_control(
+                                    "codex-expand",
+                                    if expanded {
+                                        "Collapse tool call"
+                                    } else {
+                                        "Expand tool call"
+                                    },
+                                )
+                                .child(crate::icons::icon(
+                                    if expanded { "chev-down" } else { "chev-right" },
+                                    ICON_MD,
+                                    c::FG_DIM(),
+                                ))
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if !this.expanded.remove(&toggle) {
+                                            this.expanded.insert(toggle.clone());
+                                        }
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
+                        .child(
+                            header_control("codex-copy", "Copy message")
+                                .child(crate::icons::icon("copy", ICON_MD, c::FG_DIM()))
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        copy.clone(),
+                                    ));
+                                }),
+                        ),
+                );
+            }
             if !tool {
                 row = row.child(
                     div()
@@ -1847,6 +2363,7 @@ impl Render for CodexView {
                         .debug_selector(move || format!("codex-message-body-{index}"))
                         .child(
                             TextView::markdown(("codex-text", index), text)
+                                .markdown_extensions(super::mermaid::extensions())
                                 .style(markdown_style(window))
                                 .selectable(true),
                         ),
@@ -1955,8 +2472,14 @@ impl Render for CodexView {
             } else {
                 row.into_any_element()
             };
+            if kind == "userMessage" {
+                minimap_anchors.push((index, message_child));
+            }
+            message_child += 1;
             messages = messages.child(
                 div()
+                    .id(("codex-message-anchor", index))
+                    .debug_selector(move || format!("codex-message-anchor-{index}"))
                     .w_full()
                     .max_w(rpx(CHAT_MAX_W))
                     .flex()
@@ -1966,6 +2489,15 @@ impl Render for CodexView {
         }
         messages =
             messages.children(self.question_blocks_at(state.saved.items.len(), &state, window, cx));
+        let minimap = self.render_message_minimap(&minimap_entries, &minimap_anchors, window, cx);
+        let transcript = div()
+            .id("codex-transcript")
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .flex()
+            .child(minimap)
+            .child(messages);
         let mut surface = div()
             .id("codex-conversation")
             .size_full()
@@ -1975,7 +2507,8 @@ impl Render for CodexView {
             .font_family(crate::fonts::UI_FAMILY)
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
-            .child(messages)
+            .when(!focused_launch, |surface| surface.child(transcript))
+            .when(focused_launch, |surface| surface.overflow_y_scroll())
             // Cmd+Enter resolves to the shell's global Zen action before Input's
             // secondary-enter binding. Own it only while the main draft has focus.
             .on_action(
@@ -2064,6 +2597,7 @@ impl Render for CodexView {
             surface = surface.child(content_rail(
                 div()
                     .id("codex-error")
+                    .debug_selector(|| "codex-error".into())
                     .role(gpui::Role::Alert)
                     .py(rpx(SPACE_SM))
                     .text_color(c::RED())
@@ -2361,6 +2895,7 @@ impl Render for CodexView {
                 div()
                     .flex_shrink_0()
                     .w_full()
+                    .when(focused_launch, |rail| rail.my_auto().pt(rpx(SPACE_3XL)))
                     .px(rpx(SPACE_20))
                     .pb(rpx(SPACE_3XL))
                     .flex()
@@ -2372,6 +2907,7 @@ impl Render for CodexView {
                             .flex()
                             .flex_col()
                             .gap(rpx(SPACE_MD))
+                            .when(focused_launch, |rail| rail.child(self.launch_intro(&state)))
                             .when(!self.composer_collapsed, |rail| rail.child(choices))
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
                             .child(
@@ -2414,6 +2950,7 @@ impl Render for CodexView {
                                             )
                                             .when(!busy && state.error.is_some(), |row| row.child(
                                                 form_action("codex-reconnect", "Reconnect", false, window, cx)
+                                                    .debug_selector(|| "codex-reconnect".into())
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.session.update(cx, |session, cx| session.send(Action::Reconnect, cx));
                                                     }))
@@ -2477,7 +3014,8 @@ impl Render for CodexView {
                                                 .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
                                                 .child("New line"))
                                     })
-                            ),
+                            )
+                            .when(focused_launch, |rail| rail.child(self.launch_starters(provider, cx))),
                     ),
             );
         if let (Some(menu), Some(popup)) = (self.menu, self.popup.clone()) {
@@ -3023,7 +3561,9 @@ impl CodexView {
                     .child(
                         div()
                             .min_w_0()
-                            .truncate()
+                            .max_w_full()
+                            .flex_shrink_0()
+                            .whitespace_normal()
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG())
                             .child(name),
@@ -3524,6 +4064,95 @@ impl CodexView {
     }
 }
 
+/// During a turn only its currently running call is visible; completion reveals history.
+fn tool_visible(state: &codex::Snapshot, index: usize) -> bool {
+    if !state.status.busy() {
+        return true;
+    }
+    let start = state
+        .saved
+        .work_periods
+        .iter()
+        .rev()
+        .find(|period| period.end_item.is_none())
+        .map(|period| period.start_item)
+        .unwrap_or_else(|| {
+            state
+                .saved
+                .items
+                .iter()
+                .rposition(|item| item["type"] == "userMessage")
+                .unwrap_or(0)
+        });
+    if index < start {
+        return true;
+    }
+    state
+        .saved
+        .items
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(index, item)| {
+            *index >= start && is_tool_item(item) && tool_is_running(state, *index)
+        })
+        .is_some_and(|(current, _)| current == index)
+}
+
+fn work_key_at(state: &codex::Snapshot, index: usize) -> String {
+    let start = state.saved.items[..(index + 1).min(state.saved.items.len())]
+        .iter()
+        .rposition(|item| item["type"] == "userMessage")
+        .unwrap_or(0);
+    format!("work-{start}")
+}
+
+/// Place work metadata after the user prompt, keeping the answer outside disclosure.
+fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, String, bool)> {
+    if state
+        .saved
+        .items
+        .get(index)
+        .is_some_and(|item| item["type"] == "userMessage")
+    {
+        return None;
+    }
+    let period =
+        state.saved.work_periods.iter().rev().find(|period| {
+            period.start_item <= index && period.end_item.is_none_or(|end| index < end)
+        });
+    let fallback_start = state.saved.items[..(index + 1).min(state.saved.items.len())]
+        .iter()
+        .rposition(|item| item["type"] == "userMessage")
+        .unwrap_or(0);
+    let start = period.map_or(fallback_start, |period| period.start_item);
+    let latest_start = state
+        .saved
+        .items
+        .iter()
+        .rposition(|item| item["type"] == "userMessage")
+        .unwrap_or(0);
+    let active = state.status.busy()
+        && period.map_or(start >= latest_start, |period| period.end_item.is_none());
+    let end = period
+        .and_then(|period| period.end_item)
+        .unwrap_or(state.saved.items.len());
+    let first = (start..end)
+        .find(|index| state.saved.items[*index]["type"] != "userMessage")
+        .or_else(|| active.then_some(state.saved.items.len()))?;
+    if first != index {
+        return None;
+    }
+    let duration = if active {
+        state.work_started.map(|start| start.elapsed().as_secs())
+    } else {
+        period.and_then(|period| period.duration_ms.map(|ms| ms / 1000))
+    };
+    let verb = if active { "Working" } else { "Worked" };
+    let label = duration.map_or_else(|| verb.into(), |seconds| format!("{verb} for {seconds}s"));
+    Some((work_key_at(state, index), label, active))
+}
+
 fn tool_expansion_key(item: &serde_json::Value, index: usize) -> String {
     format!(
         "tool-{}",
@@ -3768,6 +4397,22 @@ fn context_ring(fraction: f32, color: gpui::Hsla) -> impl IntoElement {
     .flex_shrink_0()
 }
 
+/// Quiet activity rows describe the invocation; output stays behind disclosure.
+fn tool_activity_summary(item: &serde_json::Value, running: bool) -> String {
+    if item["type"] == "reasoning" {
+        return if running { "Thinking…" } else { "Thought" }.into();
+    }
+    if item["type"] == "commandExecution" {
+        let command = item["command"].as_str().unwrap_or("command");
+        return format!(
+            "{} {}",
+            if running { "Running" } else { "Ran" },
+            command.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+    }
+    tool_summary(item)
+}
+
 fn tool_summary(item: &serde_json::Value) -> String {
     let summary = match item["type"].as_str().unwrap_or_default() {
         "commandExecution" => format!(
@@ -3828,7 +4473,7 @@ fn tool_detail(item: &serde_json::Value) -> String {
     }
 }
 
-fn markdown_style(window: &Window) -> TextViewStyle {
+pub(super) fn markdown_style(window: &Window) -> TextViewStyle {
     let mut style = TextViewStyle::default();
     style.is_dark = c::is_dark();
     style.heading_base_font_size = rpx(TEXT_BODY).to_pixels(window.rem_size());
@@ -5600,6 +6245,178 @@ mod tests {
     use serde_json::json;
     use std::sync::mpsc;
     #[test]
+    fn minimap_pairs_inputs_with_final_or_latest_response_without_crossing_next_input() {
+        let items = vec![
+            json!({"id":"u1", "type":"userMessage", "content":[{"text":"First input"}]}),
+            json!({"type":"agentMessage", "phase":"commentary", "text":"Working"}),
+            json!({"type":"commandExecution", "aggregatedOutput":"tool output"}),
+            json!({"type":"agentMessage", "phase":"final_answer", "text":"Final result"}),
+            json!({"type":"agentMessage", "phase":"commentary", "text":"Late commentary"}),
+            json!({"id":"u2", "type":"userMessage", "content":[{"text":"Second input"}]}),
+            json!({"type":"agentMessage", "text":"Streaming response"}),
+            json!({"id":"u3", "type":"userMessage", "content":[{"type":"image"}]}),
+            json!({"id":"u4", "type":"userMessage", "content":[{"text":"Fourth input"}]}),
+            json!({"type":"agentMessage", "text":"Fourth response"}),
+        ];
+        let entries = message_minimap_entries(&items);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.item_index)
+                .collect::<Vec<_>>(),
+            vec![0, 5, 7, 8]
+        );
+        assert_eq!(entries[0].prompt, "First input");
+        assert_eq!(entries[0].response, "Final result");
+        assert_eq!(entries[1].response, "Streaming response");
+        assert_eq!(entries[2].prompt, "Image attachment");
+        assert_eq!(entries[2].response, "No response yet");
+        assert_eq!(entries[3].response, "Fourth response");
+        assert!(minimap_excerpt(&"🦀".repeat(500)).ends_with('…'));
+    }
+
+    #[gpui::test]
+    fn minimap_click_uses_rendered_anchor_and_streaming_does_not_snap_back(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.simulate_resize(gpui::size(gpui::px(1000.0), gpui::px(800.0)));
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.saved.items = vec![
+                    json!({"id":"first", "type":"userMessage", "content":[{"text":"First input"}]}),
+                    json!({"id":"tool", "type":"commandExecution", "command":"git status", "status":"completed"}),
+                    json!({"id":"first-reply", "type":"agentMessage", "text":"First response.\n\n".repeat(40)}),
+                    json!({"id":"second", "type":"userMessage", "content":[{"text":"Second input"}]}),
+                    json!({"id":"second-reply", "type":"agentMessage", "text":"Second response.\n\n".repeat(40)}),
+                    json!({"id":"third", "type":"userMessage", "content":[{"text":"Third input"}]}),
+                    json!({"id":"third-reply", "type":"agentMessage", "text":"Streaming.\n\n".repeat(40)}),
+                ];
+                cx.notify();
+            });
+        }));
+        draw(cx);
+        let mark = cx.debug_bounds("codex-minimap-message-3").unwrap();
+        cx.simulate_click(mark.center(), gpui::Modifiers::default());
+        draw(cx);
+        let transcript = cx.debug_bounds("codex-messages").unwrap();
+        let prompt = cx.debug_bounds("codex-message-anchor-3").unwrap();
+        assert!(
+            (prompt.top() - transcript.top()).abs() < gpui::px(1.0),
+            "jump must align the selected user row after tool/header insertion"
+        );
+        let offset = view.read_with(cx, |view, _| {
+            assert!(view.composer_collapsed);
+            assert!(!view.smooth_follow);
+            view.scroll.offset().y
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    session.state.saved.items[6]["text"] = json!("Streaming more.\n\n".repeat(60));
+                    cx.notify();
+                });
+            })
+        });
+        draw(cx);
+        assert_eq!(view.read_with(cx, |view, _| view.scroll.offset().y), offset);
+        // Returning to the first turn must resolve against the same rendered list.
+        cx.update(|window, cx| {
+            window.blur();
+            window.focus_next(cx);
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            (cx.debug_bounds("codex-message-anchor-0").unwrap().top()
+                - cx.debug_bounds("codex-messages").unwrap().top())
+            .abs()
+                < gpui::px(1.0)
+        );
+    }
+
+    #[gpui::test]
+    fn minimap_keeps_many_turns_reachable_in_narrow_panes(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.simulate_resize(gpui::size(gpui::px(400.0), gpui::px(800.0)));
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.saved.items = (0..50).flat_map(|index| [
+                    json!({"id":format!("user-{index}"), "type":"userMessage", "content":[{"text":format!("Input {index}")}]}),
+                    json!({"id":format!("reply-{index}"), "type":"agentMessage", "text":format!("Response {index}")}),
+                ]).collect();
+                cx.notify();
+            });
+        }));
+        draw(cx);
+        let rail = cx.debug_bounds("codex-message-minimap").unwrap();
+        let transcript = cx.debug_bounds("codex-messages").unwrap();
+        assert!(rail.right() <= transcript.left());
+        for selector in [
+            "codex-minimap-message-0",
+            "codex-minimap-message-20",
+            "codex-minimap-message-50",
+            "codex-minimap-message-98",
+        ] {
+            let mark = cx.debug_bounds(selector).unwrap();
+            assert!(mark.size.height > gpui::Pixels::ZERO);
+            assert!(mark.top() >= rail.top());
+            assert!(mark.bottom() <= rail.bottom());
+        }
+        let mark = cx.debug_bounds("codex-minimap-message-50").unwrap();
+        cx.simulate_click(mark.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(
+            (cx.debug_bounds("codex-message-anchor-50").unwrap().top()
+                - cx.debug_bounds("codex-messages").unwrap().top())
+            .abs()
+                < gpui::px(1.0)
+        );
+    }
+
+    #[gpui::test]
+    fn minimap_overflow_keeps_first_and_last_turns_reachable(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.simulate_resize(gpui::size(gpui::px(400.0), gpui::px(800.0)));
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.saved.items = (0..200).map(|index|
+                    json!({"id":format!("user-{index}"), "type":"userMessage", "content":[{"text":format!("Input {index}")}]}),
+                ).collect();
+                cx.notify();
+            });
+        }));
+        draw(cx);
+        let rail = cx.debug_bounds("codex-message-minimap").unwrap();
+        let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
+        assert!(first.top() >= rail.top());
+        assert!(first.bottom() <= rail.bottom());
+        let scroll_rail = |delta, cx: &mut gpui::VisualTestContext| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: rail.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(delta))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+        scroll_rail(-100000.0, cx);
+        let last = cx.debug_bounds("codex-minimap-message-199").unwrap();
+        assert!(last.top() >= rail.top());
+        assert!(last.bottom() <= rail.bottom());
+        cx.simulate_click(last.center(), gpui::Modifiers::default());
+        draw(cx);
+        view.read_with(cx, |view, _| {
+            assert!(view.scroll.offset().y < gpui::Pixels::ZERO)
+        });
+        scroll_rail(100000.0, cx);
+        let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
+        assert!(first.top() >= rail.top());
+        assert!(first.bottom() <= rail.bottom());
+    }
+
+    #[test]
     fn tool_shimmer_tracks_active_calls_and_claude_thinking() {
         let mut state = snapshot();
         state.status = Status::Working;
@@ -5708,6 +6525,7 @@ mod tests {
             provider: grove_core::codex::Provider::Codex,
             composer: grove_core::codex::ComposerSettings::default(),
             context: None,
+            work_periods: Vec::new(),
             key: "native-ui-test".into(),
             project: "Demo".into(),
             cwd: "/unused".into(),
@@ -5754,6 +6572,143 @@ mod tests {
             let _ = window.draw(cx);
         });
     }
+    #[gpui::test]
+    fn provider_connection_centers_then_reveals_launch_and_failure_recovery(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.simulate_resize(gpui::size(gpui::px(1000.0), gpui::px(800.0)));
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input.update(cx, |input, cx| {
+                    input.set_value("Preserved request", window, cx);
+                });
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.thread_id = None;
+                    session.state.status = Status::Starting;
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        let connection = cx.debug_bounds("codex-provider-connection").unwrap();
+        assert!((f32::from(connection.center().x) - 500.0).abs() < 1.0);
+        assert!((f32::from(connection.center().y) - 400.0).abs() < 1.0);
+        for selector in [
+            "codex-composer",
+            "codex-empty",
+            "codex-launch-starters",
+            "codex-live-activity",
+        ] {
+            assert!(cx.debug_bounds(selector).is_none(), "{selector}");
+        }
+        view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.status = Status::Idle;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-provider-connection").is_none());
+        assert!(cx.debug_bounds("codex-composer").is_some());
+        assert!(cx.debug_bounds("codex-launch-starters").is_some());
+        view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.status = Status::Disconnected;
+                session.state.error = Some("Provider unavailable".into());
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-provider-connection").is_none());
+        assert!(cx.debug_bounds("codex-composer").is_some());
+        assert!(cx.debug_bounds("codex-error").is_some());
+        let reconnect = cx.debug_bounds("codex-reconnect").unwrap();
+        cx.simulate_click(reconnect.center(), gpui::Modifiers::default());
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Reconnect)));
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.input.read(cx).value().as_ref(), "Preserved request");
+        });
+        view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.status = Status::Starting;
+                session.state.error = None;
+                session.state.saved.items.push(json!({"type":"userMessage", "id":"existing", "content":[{"type":"text", "text":"Earlier request"}]}));
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-provider-connection").is_none());
+        assert!(cx.debug_bounds("codex-composer").is_some());
+    }
+
+    #[gpui::test]
+    fn focused_launch_starters_preserve_draft_and_never_submit(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        draw(cx);
+        assert!(cx.debug_bounds("codex-empty").is_some());
+        let starter = cx.debug_bounds("codex-starter-review").unwrap();
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input.update(cx, |input, cx| {
+                    input.set_value("My existing request", window, cx)
+                });
+            });
+        });
+        cx.simulate_click(starter.center(), gpui::Modifiers::default());
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                view.input.read(cx).value().as_ref(),
+                "My existing request\n\nReview my uncommitted changes for bugs and regressions."
+            );
+            assert!(view.submitted.is_none());
+        });
+        let sent: Vec<_> = actions.try_iter().collect();
+        assert!(!sent.is_empty());
+        assert!(sent.iter().all(|action| matches!(action, Action::Draft(_))));
+        cx.update(|window, cx| {
+            assert!(view.read(cx).input.focus_handle(cx).is_focused(window));
+            let session = view.read(cx).session.clone();
+            session.update(cx, |session, cx| {
+                session.state.saved.items.push(json!({"type":"userMessage", "id":"first", "content":[{"type":"text", "text":"Hello"}]}));
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-empty").is_none());
+        assert!(cx.debug_bounds("codex-starter-review").is_none());
+        assert!(cx.debug_bounds("codex-composer").is_some());
+    }
+
+    #[gpui::test]
+    fn focused_launch_wraps_starters_inside_narrow_panes(cx: &mut gpui::TestAppContext) {
+        let (_view, cx, _, _) = fixture(cx);
+        for width in [400.0, 1280.0] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
+            draw(cx);
+            let composer = cx.debug_bounds("codex-composer").unwrap();
+            let first = cx.debug_bounds("codex-starter-understand").unwrap();
+            let last = cx.debug_bounds("codex-starter-review").unwrap();
+            assert!(first.top() >= composer.bottom());
+            assert!(first.left() >= composer.left());
+            assert!(last.right() <= composer.right());
+            if width < 600.0 {
+                assert!(last.top() > first.top());
+            } else {
+                assert_eq!(last.top(), first.top());
+                assert_eq!(
+                    cx.debug_bounds("codex-starter-review-title").unwrap().top(),
+                    cx.debug_bounds("codex-starter-understand-title")
+                        .unwrap()
+                        .top()
+                );
+            }
+        }
+    }
+
     #[gpui::test]
     fn queue_editor_waits_for_hold_and_restores_unrelated_draft(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);
@@ -6195,7 +7150,10 @@ mod tests {
     fn compaction_divider_renders_between_tool_groups_and_waits_while_running(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (_view, cx, _, updates) = fixture(cx);
+        let (view, cx, _, updates) = fixture(cx);
+        view.update(cx, |view, _| {
+            view.expanded.insert("work-0".into());
+        });
         let mut state = snapshot();
         state.saved.items = vec![
             json!({"id":"a","type":"commandExecution","command":"pwd","status":"completed"}),
@@ -6547,6 +7505,60 @@ mod tests {
     }
 
     #[gpui::test]
+    fn completed_work_disclosure_contains_tools_and_active_call_stays_visible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.expanded.insert("work-0".into());
+                view.expanded.insert("tools-old-a".into());
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    session.state.saved.items = vec![
+                        json!({"id":"old-user","type":"userMessage"}),
+                        json!({"id":"old-a","type":"commandExecution","command":"pwd","status":"completed"}),
+                        json!({"id":"old-b","type":"commandExecution","command":"ls","status":"completed"}),
+                        json!({"id":"new-user","type":"userMessage"}),
+                        json!({"id":"new-a","type":"commandExecution","command":"git fetch","status":"completed"}),
+                        json!({"id":"new-b","type":"commandExecution","command":"git status","status":"inProgress"}),
+                    ];
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-toggle-tool-1").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-4").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-5").is_some());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Done;
+                    session.state.saved.items[5]["status"] = json!("completed");
+                    cx.notify();
+                })
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-toggle-tools-1").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tools-4").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-1").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-4").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-5").is_none());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.expanded.insert("work-3".into());
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-toggle-tools-4").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tool-4").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tool-5").is_some());
+    }
+
+    #[gpui::test]
     fn consecutive_tools_share_one_expandable_summary(cx: &mut gpui::TestAppContext) {
         let (view, cx, _, _) = fixture(cx);
         cx.update(|_, cx| {
@@ -6563,13 +7575,34 @@ mod tests {
             });
         });
         draw(cx);
+        assert!(cx.debug_bounds("codex-tool-group-0").is_none());
+        assert!(cx.debug_bounds("codex-message-body-2").is_some());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.expanded.insert("work-0".into());
+                cx.notify();
+            });
+        });
+        draw(cx);
         assert!(cx.debug_bounds("codex-tool-group-0").is_some());
         assert!(cx.debug_bounds("codex-tool-group-1").is_none());
         assert!(cx.debug_bounds("codex-tool-group-3").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tool-0").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tool-1").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tool-3").is_some());
         assert!(cx.debug_bounds("codex-tool-detail-0").is_none());
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
                 view.expanded.insert("tools-a".into());
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-toggle-tool-0").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-1").is_none());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.expanded.remove("tools-a");
                 cx.notify();
             });
         });
@@ -8130,6 +9163,62 @@ mod tests {
     }
 
     #[test]
+    fn work_headers_use_recorded_duration_and_skip_unknown_history_seconds() {
+        use serde_json::json;
+        let mut state = snapshot();
+        state.saved.items = vec![
+            json!({"type":"userMessage","id":"prompt"}),
+            json!({"type":"reasoning","id":"thought"}),
+            json!({"type":"agentMessage","id":"answer","text":"Done"}),
+        ];
+        assert!(work_header_at(&state, 0).is_none());
+        assert_eq!(work_header_at(&state, 1).unwrap().1, "Worked");
+        assert!(work_header_at(&state, 2).is_none());
+        state.saved.work_periods.push(codex::WorkPeriod {
+            start_item: 0,
+            end_item: Some(3),
+            duration_ms: Some(23_900),
+        });
+        assert_eq!(work_header_at(&state, 1).unwrap().1, "Worked for 23s");
+        assert_eq!(work_key_at(&state, 1), work_key_at(&state, 2));
+        state.saved.items.truncate(1);
+        state.saved.work_periods.clear();
+        state.status = Status::Working;
+        assert_eq!(work_header_at(&state, 1).unwrap().1, "Working");
+    }
+
+    #[test]
+    fn running_turn_shows_only_current_tool_then_reveals_history() {
+        let mut state = snapshot();
+        state.saved.items = vec![
+            serde_json::json!({"type":"userMessage"}),
+            serde_json::json!({"type":"commandExecution","status":"completed"}),
+            serde_json::json!({"type":"commandExecution","status":"inProgress"}),
+        ];
+        state.status = Status::Working;
+        assert!(!tool_visible(&state, 1));
+        assert!(tool_visible(&state, 2));
+        state.saved.items[2]["status"] = serde_json::json!("completed");
+        assert!(!tool_visible(&state, 2));
+        state.status = Status::Done;
+        assert!(tool_visible(&state, 1));
+        assert!(tool_visible(&state, 2));
+    }
+
+    #[test]
+    fn command_activity_rows_use_tense_without_output() {
+        let item = serde_json::json!({"type":"commandExecution","command":"git status\n--short","aggregatedOutput":"private output"});
+        assert_eq!(
+            tool_activity_summary(&item, true),
+            "Running git status --short"
+        );
+        assert_eq!(
+            tool_activity_summary(&item, false),
+            "Ran git status --short"
+        );
+    }
+
+    #[test]
     fn tool_summaries_describe_inputs_without_leaking_results() {
         use serde_json::json;
         for (item, expected) in [
@@ -8358,6 +9447,7 @@ mod tests {
         let (view, cx, _, _) = fixture(cx);
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
+                view.expanded.insert("work-0".into());
                 for (width, height) in [(344, 666), (1320, 500)] {
                     let mut bytes = std::io::Cursor::new(Vec::new());
                     image::DynamicImage::new_rgba8(width, height)
@@ -8405,17 +9495,17 @@ mod tests {
                 assert!(image.left() >= attachments.left() && image.right() <= attachments.right());
             }
             assert_eq!(attachments.size.height, edge);
-            let chevron = cx.debug_bounds("codex-tool-chevron-0").unwrap();
-            let label = cx.debug_bounds("codex-tool-label-0").unwrap();
+            let icon = cx.debug_bounds("codex-tool-icon-0").unwrap();
+            let label = cx.debug_bounds("codex-tool-row-label-0").unwrap();
             let body = cx.debug_bounds("codex-message-body-1").unwrap();
             assert_eq!(
-                chevron.left(),
+                icon.left(),
                 body.left(),
-                "tool disclosure icon must begin at the transcript rail"
+                "tool icon must begin at the transcript rail"
             );
             assert!(
-                label.left() > chevron.right(),
-                "tool label follows its chevron with a gap"
+                label.left() > icon.right(),
+                "tool label follows its icon with a gap"
             );
         }
     }

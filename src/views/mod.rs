@@ -21,6 +21,7 @@ mod worktree_launcher;
 
 mod codex_view;
 pub mod components;
+mod mermaid;
 
 mod workspace_manager;
 

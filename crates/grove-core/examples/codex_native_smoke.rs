@@ -59,6 +59,7 @@ fn main() -> Result<(), String> {
             .collect(),
         thread_id: None,
         items: Vec::new(),
+        work_periods: Vec::new(),
         draft: String::new(),
         draft_images: Vec::new(),
         config_args: if extra_root.is_some() {

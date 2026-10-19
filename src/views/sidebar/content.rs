@@ -614,6 +614,10 @@ impl Sidebar {
             .unwrap_or_default();
         let location =
             worktree.map_or_else(|| meta.wt_path.clone(), |worktree| worktree.name.clone());
+        let launch_location = worktree.map_or_else(
+            || location.clone(),
+            |worktree| sidebar_worktree_name(&worktree.name, worktree.is_main).to_owned(),
+        );
         let context = if home {
             format!("{workspace} / Standalone terminal / ~")
         } else {
@@ -1019,6 +1023,11 @@ impl Sidebar {
                 );
             }
             pane = pane.child(banner);
+        }
+        if let Some(view) = native_view.as_ref() {
+            view.update(cx, |view, cx| {
+                view.set_checkout_context(launch_location, branch.clone(), cx)
+            });
         }
         let body = native_view
             .map(gpui::IntoElement::into_any_element)
@@ -2360,6 +2369,7 @@ mod tests {
                 roots: Vec::new(),
                 thread_id: Some("fixture-thread".into()),
                 items: Vec::new(),
+                work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),

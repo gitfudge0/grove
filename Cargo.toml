@@ -184,6 +184,9 @@ serde_json.workspace = true
 # normalized to provider-compatible PNG using the image version GPUI already uses.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 gpui-component.workspace = true
+# Offline Mermaid SVG generation; rasterize using the SVG stack already used by GPUI.
+mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
+resvg = { version = "0.46", default-features = false, features = ["text"] }
 
 [lints]
 workspace = true

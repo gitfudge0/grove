@@ -50,6 +50,13 @@ impl Provider {
         }
     }
 }
+/// A locally observed provider turn; item bounds are half-open transcript indices.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkPeriod {
+    pub start_item: usize,
+    pub end_item: Option<usize>,
+    pub duration_ms: Option<u64>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
     #[serde(default)]
@@ -63,6 +70,8 @@ pub struct SavedSession {
     pub roots: Vec<crate::session_meta::ContextRoot>,
     pub thread_id: Option<String>,
     pub items: Vec<Value>,
+    #[serde(default)]
+    pub work_periods: Vec<WorkPeriod>,
     #[serde(default)]
     pub draft: String,
     #[serde(default)]
@@ -83,6 +92,7 @@ impl SavedSession {
         saved.thread_id = None;
         saved.title = None;
         saved.items.clear();
+        saved.work_periods.clear();
         saved.draft.clear();
         saved.draft_images.clear();
         saved.context = None;
@@ -450,6 +460,7 @@ pub struct Snapshot {
     pub saved: SavedSession,
     pub status: Status,
     pub turn_id: Option<String>,
+    pub work_started: Option<Instant>,
     pub approvals: Vec<Value>,
     pub questions: Vec<QuestionRequest>,
     pub question_answer_acks: Vec<QuestionAnswerAck>,
@@ -588,12 +599,19 @@ impl Snapshot {
         if saved.title.is_none() {
             saved.title = first_prompt_title(&saved.items);
         }
+        // Monotonic clocks cannot survive recovery. Preserve bounds without inventing time.
+        for period in &mut saved.work_periods {
+            if period.end_item.is_none() {
+                period.end_item = Some(saved.items.len());
+            }
+        }
         let composer = saved.composer.clone();
         let context_tokens = saved.context.map(|usage| usage.used);
         Self {
             saved,
             status: Status::Starting,
             turn_id: None,
+            work_started: None,
             approvals: Vec::new(),
             questions: Vec::new(),
             question_answer_acks: Vec::new(),
@@ -621,6 +639,31 @@ impl Snapshot {
             compact_requested: false,
             context_tokens,
             settled_turns: Vec::new(),
+        }
+    }
+    pub(crate) fn begin_work(&mut self) {
+        if self.work_started.is_some() {
+            return;
+        }
+        self.work_started = Some(Instant::now());
+        self.saved.work_periods.push(WorkPeriod {
+            start_item: self.saved.items.len(),
+            end_item: None,
+            duration_ms: None,
+        });
+    }
+    pub(crate) fn finish_work(&mut self) {
+        let Some(started) = self.work_started.take() else {
+            return;
+        };
+        if let Some(period) = self
+            .saved
+            .work_periods
+            .last_mut()
+            .filter(|p| p.end_item.is_none())
+        {
+            period.end_item = Some(self.saved.items.len());
+            period.duration_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
         }
     }
     fn resolve_async_question(&mut self, id: &Value) {
@@ -713,6 +756,7 @@ impl Snapshot {
                 {
                     return false;
                 }
+                self.begin_work();
                 self.turn_id = p["turn"]["id"].as_str().map(str::to_owned);
                 self.status = if self.approvals.is_empty()
                     && self.questions.is_empty()
@@ -725,6 +769,7 @@ impl Snapshot {
                 self.error = None;
             }
             "turn/completed" => {
+                self.finish_work();
                 if let Some(turn) = p["turn"]["id"].as_str() {
                     self.settled_turns.push(turn.to_owned());
                     if self.settled_turns.len() > 32 {
@@ -981,6 +1026,7 @@ impl Snapshot {
             .or_else(|| first_prompt_title(&self.saved.items));
     }
     fn fail(&mut self, error: String) {
+        self.finish_work();
         self.error = Some(error);
         self.status = Status::Disconnected;
         self.turn_id = None;
@@ -2734,6 +2780,21 @@ impl Actor {
                                 known
                             })
                             .collect();
+                        // Transcript offsets remain valid only when restored items keep
+                        // the saved prefix. A provider rewrite must not misattribute timing.
+                        let items: Vec<Value> = items;
+                        if self.state.saved.items.len() > items.len()
+                            || self
+                                .state
+                                .saved
+                                .items
+                                .iter()
+                                .zip(&items)
+                                .any(|(old, new)| old["id"] != new["id"])
+                        {
+                            self.state.saved.work_periods.clear();
+                            self.state.work_started = None;
+                        }
                         self.state.saved.items = items;
                     }
                 }
@@ -3005,6 +3066,7 @@ mod tests {
             roots: Vec::new(),
             thread_id: Some("thread-1".into()),
             items: Vec::new(),
+            work_periods: Vec::new(),
             draft: String::new(),
             draft_images: Vec::new(),
             config_args: Vec::new(),
@@ -3013,6 +3075,39 @@ mod tests {
             context: None,
         }
     }
+    #[test]
+    fn work_periods_follow_turn_boundaries_and_recover_without_inventing_time() {
+        let mut state = state();
+        let start = json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}});
+        state.apply(&start);
+        state.apply(&start);
+        assert_eq!(state.saved.work_periods.len(), 1);
+        state.work_started = Some(Instant::now() - Duration::from_secs(3));
+        state
+            .saved
+            .items
+            .push(json!({"id":"answer", "type":"agentMessage", "text":"Done"}));
+        state.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"other","status":"completed"}}}));
+        assert!(state.work_started.is_some());
+        state.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"interrupted"}}}));
+        let period = &state.saved.work_periods[0];
+        assert_eq!(period.start_item, 0);
+        assert_eq!(period.end_item, Some(1));
+        assert!(period.duration_ms.unwrap() >= 3000);
+        assert!(state.work_started.is_none());
+        let mut saved = state.saved;
+        saved.work_periods.push(WorkPeriod {
+            start_item: 1,
+            end_item: None,
+            duration_ms: None,
+        });
+        let recovered = Snapshot::new(saved);
+        assert_eq!(recovered.saved.work_periods[1].end_item, Some(1));
+        assert_eq!(recovered.saved.work_periods[1].duration_ms, None);
+        assert!(recovered.work_started.is_none());
+        assert!(recovered.saved.fresh_conversation().work_periods.is_empty());
+    }
+
     #[test]
     fn old_recovery_defaults_to_codex_and_claude_round_trips() {
         let mut record = serde_json::to_value(saved()).unwrap();
@@ -4333,13 +4428,21 @@ mod tests {
     #[test]
     fn old_recovery_without_new_optional_fields_is_compatible() {
         let mut value = serde_json::to_value(saved()).unwrap();
-        for key in ["draft", "task_id", "config_args", "title", "context"] {
+        for key in [
+            "draft",
+            "task_id",
+            "config_args",
+            "title",
+            "context",
+            "work_periods",
+        ] {
             value.as_object_mut().unwrap().remove(key);
         }
         let restored: SavedSession = serde_json::from_value(value).unwrap();
         assert!(restored.draft.is_empty());
         assert!(restored.config_args.is_empty());
         assert!(restored.context.is_none());
+        assert!(restored.work_periods.is_empty());
     }
     #[test]
     fn stop_before_spawn_prevents_process_creation() {
