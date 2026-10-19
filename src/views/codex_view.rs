@@ -46,6 +46,7 @@ const TOOL_SHIMMER_PERIOD: std::time::Duration = std::time::Duration::from_milli
 const TOOL_SHIMMER_WIDTH: f32 = 0.2;
 const QUEUED_PROMPTS_MAX_H: f32 = 144.0;
 const QUESTION_PANEL_MAX_H: f32 = 360.0;
+const TOOL_DETAIL_MAX_H: f32 = 280.0;
 /// Context share, in whole percent, at which the meter switches to the warning colour.
 const CONTEXT_WARN_PERCENT: u32 = 80;
 /// The context ring's stroke, the icon catalog's optical stroke.
@@ -1857,7 +1858,7 @@ impl Render for CodexView {
                     div()
                         .w_full()
                         .max_w(rpx(CHAT_MAX_W))
-                        .pb(rpx(SPACE_2XL))
+                        .pb(rpx(SPACE_XS))
                         .border_b_1()
                         .border_color(c::BORDER_SOFT())
                         .child(
@@ -1867,7 +1868,7 @@ impl Render for CodexView {
                                 .debug_selector(move || format!("codex-work-header-{index}"))
                                 .w_full()
                                 .justify_start()
-                                .gap(rpx(SPACE_LG))
+                                .gap(rpx(SPACE_SM))
                                 .tab_index(0)
                                 .focus_visible(|style| style.bg(c::BG_HOVER()))
                                 .text_size(rpx(TEXT_SMALL))
@@ -1914,6 +1915,13 @@ impl Render for CodexView {
                 continue;
             }
             let kind = item["type"].as_str().unwrap_or("tool");
+            // Keep completed commentary with the work it describes; the answer stays inline.
+            if work_commentary(&state, index)
+                && !self.expanded.contains(&work_key_at(&state, index))
+                && !work_is_active_at(&state, index)
+            {
+                continue;
+            }
             if kind == "reasoning" {
                 let key = work_key_at(&state, index);
                 let current_thinking = state.saved.items[index..]
@@ -1958,9 +1966,9 @@ impl Render for CodexView {
                     .enumerate()
                     .filter(|(offset, _)| {
                         let item_index = index + offset;
-                        tool_visible(&state, item_index)
-                            && (self.expanded.contains(&work_key_at(&state, item_index))
-                                || tool_is_running(&state, item_index))
+                        self.expanded.contains(&work_key_at(&state, item_index))
+                            || (tool_visible(&state, item_index)
+                                && tool_is_running(&state, item_index))
                     })
                     .map(|(offset, item)| (index + offset, item))
                     .collect::<Vec<_>>();
@@ -1999,6 +2007,15 @@ impl Render for CodexView {
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_SM))
+                    .child(crate::icons::icon("terminal", ICON_SM, c::FG_DIM()))
+                    .child(
+                        div()
+                            .id(("codex-tool-label", index))
+                            .debug_selector(move || format!("codex-tool-label-{index}"))
+                            .min_w_0()
+                            .truncate()
+                            .child(tool_activity_label(label.clone(), index, false, cx)),
+                    )
                     .child(
                         div()
                             .id(("codex-tool-chevron", index))
@@ -2012,14 +2029,6 @@ impl Render for CodexView {
                                 ICON_SM,
                                 c::FG_DIM(),
                             )),
-                    )
-                    .child(
-                        div()
-                            .id(("codex-tool-label", index))
-                            .debug_selector(move || format!("codex-tool-label-{index}"))
-                            .min_w_0()
-                            .truncate()
-                            .child(tool_activity_label(label.clone(), index, false, cx)),
                     );
                 let mut group = div()
                     .id(("codex-tool-group", index))
@@ -2139,6 +2148,16 @@ impl Render for CodexView {
                                             cx,
                                         )),
                                 )
+                                .aria_expanded(tool_expanded)
+                                .child(crate::icons::icon(
+                                    if tool_expanded {
+                                        "chev-down"
+                                    } else {
+                                        "chev-right"
+                                    },
+                                    ICON_SM,
+                                    c::FG_DIM(),
+                                ))
                                 .on_key_down(cx.listener(
                                     move |this, event: &gpui::KeyDownEvent, _, cx| {
                                         if matches!(event.keystroke.key.as_str(), "enter" | "space")
@@ -2162,6 +2181,11 @@ impl Render for CodexView {
                                     .debug_selector(move || {
                                         format!("codex-tool-detail-{detail_index}")
                                     })
+                                    .max_h(rpx(TOOL_DETAIL_MAX_H))
+                                    .overflow_y_scroll()
+                                    .p(rpx(SPACE_LG))
+                                    .rounded(rpx(RADIUS_CONTROL))
+                                    .bg(c::BG_RAIL())
                                     .flex()
                                     .flex_col()
                                     .gap(rpx(SPACE_SM))
@@ -4097,6 +4121,40 @@ fn tool_visible(state: &codex::Snapshot, index: usize) -> bool {
             *index >= start && is_tool_item(item) && tool_is_running(state, *index)
         })
         .is_some_and(|(current, _)| current == index)
+}
+
+/// Explicit message phases win; older providers keep their last response outside work.
+fn work_commentary(state: &codex::Snapshot, index: usize) -> bool {
+    let item = &state.saved.items[index];
+    if item["type"] != "agentMessage" {
+        return false;
+    }
+    match item["phase"].as_str() {
+        Some("commentary") => true,
+        Some("final_answer") => false,
+        _ => state.saved.items[index + 1..]
+            .iter()
+            .take_while(|item| item["type"] != "userMessage")
+            .any(|item| item["type"] == "agentMessage" || is_tool_item(item)),
+    }
+}
+
+fn work_is_active_at(state: &codex::Snapshot, index: usize) -> bool {
+    state.status.busy()
+        && state
+            .saved
+            .work_periods
+            .iter()
+            .rev()
+            .find(|period| period.start_item <= index)
+            .map_or_else(
+                || {
+                    !state.saved.items[index + 1..]
+                        .iter()
+                        .any(|item| item["type"] == "userMessage")
+                },
+                |period| period.end_item.is_none(),
+            )
 }
 
 fn work_key_at(state: &codex::Snapshot, index: usize) -> String {
@@ -7505,6 +7563,73 @@ mod tests {
     }
 
     #[gpui::test]
+    fn completed_work_hides_commentary_and_keeps_answer_outside(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.status = Status::Done;
+                session.state.saved.items = vec![
+                    json!({"id":"prompt", "type":"userMessage", "content":[{"text":"Check status"}]}),
+                    json!({"id":"comment", "type":"agentMessage", "phase":"commentary", "text":"Checking the repository."}),
+                    json!({"id":"command", "type":"commandExecution", "command":"git status", "status":"completed", "aggregatedOutput":"output\n".repeat(100)}),
+                    json!({"id":"answer", "type":"agentMessage", "phase":"final_answer", "text":"The working tree is clean."}),
+                ];
+                cx.notify();
+            });
+        }));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-body-1").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-2").is_none());
+        assert!(cx.debug_bounds("codex-message-body-3").is_some());
+        let header = cx.debug_bounds("codex-work-header-1").unwrap();
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-body-1").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tool-2").is_some());
+        assert!(cx.debug_bounds("codex-message-body-3").is_some());
+        let tool = cx.debug_bounds("codex-toggle-tool-2").unwrap();
+        cx.simulate_click(tool.center(), gpui::Modifiers::default());
+        draw(cx);
+        let detail = cx.debug_bounds("codex-tool-detail-2").unwrap();
+        assert!(
+            detail.size.height
+                <= cx.update(|window, _| rpx(TOOL_DETAIL_MAX_H).to_pixels(window.rem_size()))
+        );
+        assert!(cx.debug_bounds("codex-message-body-3").is_some());
+        cx.simulate_resize(gpui::size(gpui::px(400.0), gpui::px(800.0)));
+        draw(cx);
+        let detail = cx.debug_bounds("codex-tool-detail-2").unwrap();
+        assert!(
+            detail.size.height
+                <= cx.update(|window, _| rpx(TOOL_DETAIL_MAX_H).to_pixels(window.rem_size()))
+        );
+        let header = cx.debug_bounds("codex-work-header-1").unwrap();
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-body-1").is_none());
+        assert!(cx.debug_bounds("codex-tool-detail-2").is_none());
+        assert!(cx.debug_bounds("codex-message-body-3").is_some());
+    }
+
+    #[test]
+    fn work_commentary_preserves_explicit_answers_and_legacy_last_response() {
+        let mut state = snapshot();
+        state.saved.items = vec![
+            json!({"type":"userMessage"}),
+            json!({"type":"agentMessage", "text":"I will inspect"}),
+            json!({"type":"commandExecution"}),
+            json!({"type":"agentMessage", "phase":"final_answer", "text":"Done"}),
+            json!({"type":"agentMessage", "phase":"commentary", "text":"Late progress"}),
+            json!({"type":"userMessage"}),
+            json!({"type":"agentMessage", "text":"Legacy final"}),
+        ];
+        assert!(work_commentary(&state, 1));
+        assert!(!work_commentary(&state, 3));
+        assert!(work_commentary(&state, 4));
+        assert!(!work_commentary(&state, 6));
+    }
+
+    #[gpui::test]
     fn completed_work_disclosure_contains_tools_and_active_call_stays_visible(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -7576,7 +7701,7 @@ mod tests {
         });
         draw(cx);
         assert!(cx.debug_bounds("codex-tool-group-0").is_none());
-        assert!(cx.debug_bounds("codex-message-body-2").is_some());
+        assert!(cx.debug_bounds("codex-message-body-2").is_none());
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
                 view.expanded.insert("work-0".into());
@@ -7585,6 +7710,7 @@ mod tests {
         });
         draw(cx);
         assert!(cx.debug_bounds("codex-tool-group-0").is_some());
+        assert!(cx.debug_bounds("codex-message-body-2").is_some());
         assert!(cx.debug_bounds("codex-tool-group-1").is_none());
         assert!(cx.debug_bounds("codex-tool-group-3").is_some());
         assert!(cx.debug_bounds("codex-toggle-tool-0").is_some());
