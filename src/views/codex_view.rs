@@ -4221,7 +4221,17 @@ fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, Stri
         period.and_then(|period| period.duration_ms.map(|ms| ms / 1000))
     };
     let verb = if active { "Working" } else { "Worked" };
-    let label = duration.map_or_else(|| verb.into(), |seconds| format!("{verb} for {seconds}s"));
+    let label = duration.map_or_else(
+        || verb.into(),
+        |seconds| {
+            let minutes = seconds / 60;
+            if minutes == 0 {
+                format!("{verb} for <1m")
+            } else {
+                format!("{verb} for {minutes}m")
+            }
+        },
+    );
     Some((work_key_at(state, index), label, active))
 }
 
@@ -9362,7 +9372,7 @@ mod tests {
     }
 
     #[test]
-    fn work_headers_use_recorded_duration_and_skip_unknown_history_seconds() {
+    fn work_headers_use_minutes_and_skip_unknown_history_duration() {
         use serde_json::json;
         let mut state = snapshot();
         state.saved.items = vec![
@@ -9378,12 +9388,29 @@ mod tests {
             end_item: Some(3),
             duration_ms: Some(23_900),
         });
-        assert_eq!(work_header_at(&state, 1).unwrap().1, "Worked for 23s");
+        for (duration_ms, expected) in [
+            (0, "Worked for <1m"),
+            (23_900, "Worked for <1m"),
+            (59_999, "Worked for <1m"),
+            (60_000, "Worked for 1m"),
+            (125_000, "Worked for 2m"),
+        ] {
+            state.saved.work_periods[0].duration_ms = Some(duration_ms);
+            assert_eq!(work_header_at(&state, 1).unwrap().1, expected);
+        }
         assert_eq!(work_key_at(&state, 1), work_key_at(&state, 2));
         state.saved.items.truncate(1);
         state.saved.work_periods.clear();
         state.status = Status::Working;
         assert_eq!(work_header_at(&state, 1).unwrap().1, "Working");
+        state.work_started = Some(std::time::Instant::now());
+        assert_eq!(work_header_at(&state, 1).unwrap().1, "Working for <1m");
+        state.work_started = Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(125))
+                .unwrap(),
+        );
+        assert_eq!(work_header_at(&state, 1).unwrap().1, "Working for 2m");
     }
 
     #[test]

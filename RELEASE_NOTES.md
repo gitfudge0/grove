@@ -2,6 +2,7 @@
 
 ## Native conversations
 
+- Show work durations in minutes, including a clear subminute label.
 - Keep conversation minimap markers compact, vertically centered, and aligned for easier navigation.
 - Answer inline question lists and review confirmed answer receipts in the conversation.
 - Navigate native conversations more easily, with turn timing and rendered Mermaid diagrams.
