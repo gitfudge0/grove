@@ -435,7 +435,7 @@ impl CodexView {
                     shift: false,
                 } => {
                     if this.session.read(cx).state.status.busy() {
-                        this.submit_mode(SubmissionMode::Queue, window, cx);
+                        this.submit_mode(SubmissionMode::Steer, window, cx);
                     } else {
                         this.submit(window, cx);
                     }
@@ -1502,7 +1502,7 @@ impl CodexView {
             return;
         }
         let mode = if self.session.read(cx).state.status.busy() {
-            SubmissionMode::Steer
+            SubmissionMode::Queue
         } else {
             SubmissionMode::Send
         };
@@ -2538,7 +2538,7 @@ impl Render for CodexView {
                 cx.listener(|this, _: &crate::keymap::ToggleZen, window, cx| {
                     if this.input.focus_handle(cx).is_focused(window) {
                         if this.session.read(cx).state.status.busy() {
-                            this.submit_mode(SubmissionMode::Queue, window, cx);
+                            this.submit_mode(SubmissionMode::Steer, window, cx);
                         } else {
                             this.submit(window, cx);
                         }
@@ -2745,14 +2745,12 @@ impl Render for CodexView {
                 .is_some_and(|editor| editor.saving)
                 || (self.input.read(cx).value().trim().is_empty() && self.images.is_empty())
         } else {
-            draft_disabled || (busy && !steer_available)
+            draft_disabled
         };
         let primary_label = if editing {
             "Save queued message · Enter"
-        } else if busy && !steer_available {
-            "Steer unavailable · ⌘Enter to queue after the current turn"
         } else if busy {
-            "Steer now · Enter · Send into the current turn"
+            "Queue · Enter · Send after the current turn finishes"
         } else {
             "Send · Enter · Start a new turn"
         };
@@ -2987,14 +2985,14 @@ impl Render for CodexView {
                                                         .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
                                                 )
                                             ).child(
-                                                composer_icon("codex-queue", "Queue · ⌘Enter · Send after the current turn finishes", "queue", draft_disabled, false)
+                                                composer_icon("codex-steer", if steer_available { "Steer now · ⌘Enter · Send into the current turn" } else { "Steer unavailable" }, "arrow-up", draft_disabled || !steer_available, false)
                                                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                                        if action_key(event) { this.submit_mode(SubmissionMode::Queue, window, cx); cx.stop_propagation(); }
+                                                        if action_key(event) { this.submit_mode(SubmissionMode::Steer, window, cx); cx.stop_propagation(); }
                                                     }))
-                                                    .on_click(cx.listener(|this, _, window, cx| this.submit_mode(SubmissionMode::Queue, window, cx)))
+                                                    .on_click(cx.listener(|this, _, window, cx| this.submit_mode(SubmissionMode::Steer, window, cx)))
                                             ))
                                             .child(
-                                                composer_icon("codex-send", primary_label, "arrow-up", primary_disabled, true)
+                                                composer_icon("codex-send", primary_label, if busy && !editing { "queue" } else { "arrow-up" }, primary_disabled, true)
                                                     .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                                                         if action_key(event) {
                                                             if !primary_disabled { this.submit(window, cx); }
@@ -3027,11 +3025,11 @@ impl Render for CodexView {
                                         div().flex().items_center().flex_wrap().gap(rpx(SPACE_LG))
                                             .child(div().flex().items_center().gap(rpx(SPACE_SM))
                                                 .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
-                                                .child(if busy && !steer_available { "Steer unavailable" } else if busy { "Steer now" } else { "Send" }))
+                                                .child(if editing { "Save" } else if busy { "Queue" } else { "Send" }))
                                             .when(busy, |row| row.child(div().flex().items_center().gap(rpx(SPACE_SM))
                                                 .child(crate::icons::icon("command", ICON_SM, c::FG_DIM()))
                                                 .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
-                                                .child("Queue")))
+                                                .child(if steer_available { "Steer now" } else { "Steer unavailable" })))
                                             .child(div().flex().items_center().gap(rpx(SPACE_SM))
                                                 .child(crate::icons::icon("shift", ICON_SM, c::FG_DIM()))
                                                 .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
@@ -7810,7 +7808,7 @@ mod tests {
             });
         });
         draw(cx);
-        cx.simulate_keystrokes("secondary-enter");
+        cx.simulate_keystrokes("enter");
         draw(cx);
         let queue_id = view.read_with(cx, |view, _| view.submitted_ack.unwrap());
         let queued_actions = actions.try_iter().collect::<Vec<_>>();
@@ -7859,7 +7857,7 @@ mod tests {
             });
         });
         draw(cx);
-        cx.simulate_keystrokes("enter");
+        cx.simulate_keystrokes("secondary-enter");
         draw(cx);
         let steer_id = view.read_with(cx, |view, _| view.submitted_ack.unwrap());
         assert!(actions.try_iter().any(|action| matches!(action,
@@ -7880,7 +7878,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn unsupported_steer_keeps_draft_and_cmd_enter_queues(cx: &mut gpui::TestAppContext) {
+    fn unsupported_steer_keeps_draft_and_enter_queues(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
@@ -7896,7 +7894,7 @@ mod tests {
             });
         });
         draw(cx);
-        cx.simulate_keystrokes("enter");
+        cx.simulate_keystrokes("secondary-enter");
         draw(cx);
         assert!(!actions.try_iter().any(|action| matches!(
             action,
@@ -7906,7 +7904,7 @@ mod tests {
             view.read_with(cx, |view, cx| view.input.read(cx).value().trim().to_owned()),
             "follow up"
         );
-        cx.simulate_keystrokes("secondary-enter");
+        cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(actions.try_iter().any(|action| matches!(
             action,
@@ -7915,7 +7913,7 @@ mod tests {
                 ..
             }
         )));
-        cx.simulate_keystrokes("secondary-enter");
+        cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(!actions.try_iter().any(|action| matches!(
             action,
@@ -7924,7 +7922,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn shell_cmd_enter_queues_only_from_main_input_and_preserves_zen_elsewhere(
+    fn shell_cmd_enter_steers_only_from_main_input_and_preserves_zen_elsewhere(
         cx: &mut gpui::TestAppContext,
     ) {
         struct ShellProbe {
@@ -7977,7 +7975,7 @@ mod tests {
                     session.state.turn_id = Some("active-turn".into());
                 });
                 view.input
-                    .update(cx, |input, cx| input.set_value("queue this", window, cx));
+                    .update(cx, |input, cx| input.set_value("steer this", window, cx));
                 view.input.focus_handle(cx).focus(window, cx);
             });
         });
@@ -7987,7 +7985,7 @@ mod tests {
         assert!(actions.try_iter().any(|action| matches!(
             action,
             Action::SubmitWithMode {
-                mode: SubmissionMode::Queue,
+                mode: SubmissionMode::Steer,
                 ..
             }
         )));
