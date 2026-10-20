@@ -330,7 +330,9 @@ fn commit_snapshot(
         }
         return Err(error);
     }
-    temporary.persist(&index).map_err(|_| "Commit created, but Git index could not be updated. Refresh and inspect repository status")?;
+    temporary.persist(&index).map_err(|_| {
+        "Commit created, but Git index could not be updated. Refresh and inspect repository status"
+    })?;
     Ok(())
 }
 
@@ -534,16 +536,14 @@ mod tests {
         assert!(staged.working_identity.is_some());
         assert_eq!(staged.staged_files, vec!["file"]);
         for message in ["", "   ", "bad\0message"] {
-            assert!(
-                execute(
-                    dir.path(),
-                    &staged,
-                    GitAction::Commit {
-                        message: message.into()
-                    }
-                )
-                .is_err()
-            );
+            assert!(execute(
+                dir.path(),
+                &staged,
+                GitAction::Commit {
+                    message: message.into()
+                }
+            )
+            .is_err());
         }
         fs_err::write(dir.path().join("file"), "unstaged\n").unwrap();
         execute(
@@ -560,31 +560,27 @@ mod tests {
             "unstaged\n"
         );
         let empty = prepare_commit(dir.path()).unwrap();
-        assert!(
-            execute(
-                dir.path(),
-                &empty,
-                GitAction::Commit {
-                    message: "No stage".into()
-                }
-            )
-            .is_err()
-        );
+        assert!(execute(
+            dir.path(),
+            &empty,
+            GitAction::Commit {
+                message: "No stage".into()
+            }
+        )
+        .is_err());
         run(dir.path(), &["add", "file"]);
         let stale = prepare_commit(dir.path()).unwrap();
         fs_err::write(dir.path().join("file"), "changed stage\n").unwrap();
         run(dir.path(), &["add", "file"]);
-        assert!(
-            execute(
-                dir.path(),
-                &stale,
-                GitAction::Commit {
-                    message: "Stale scope".into()
-                }
-            )
-            .unwrap_err()
-            .contains("Staged")
-        );
+        assert!(execute(
+            dir.path(),
+            &stale,
+            GitAction::Commit {
+                message: "Stale scope".into()
+            }
+        )
+        .unwrap_err()
+        .contains("Staged"));
     }
 
     #[test]
@@ -600,16 +596,14 @@ mod tests {
         let expected = prepare_commit(dir.path()).unwrap();
         assert!(!expected.changed_files.contains(&"ignored".into()));
         fs_err::write(dir.path().join("untracked"), "changed").unwrap();
-        assert!(
-            execute(
-                dir.path(),
-                &expected,
-                GitAction::CommitAll {
-                    message: "Stale".into()
-                }
-            )
-            .is_err()
-        );
+        assert!(execute(
+            dir.path(),
+            &expected,
+            GitAction::CommitAll {
+                message: "Stale".into()
+            }
+        )
+        .is_err());
         let hook = dir.path().join(".git/hooks/pre-commit");
         fs_err::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
         #[cfg(unix)]
@@ -619,16 +613,14 @@ mod tests {
         }
         let before = git(dir.path(), &["ls-files", "--stage"]).unwrap();
         let expected = prepare_commit(dir.path()).unwrap();
-        assert!(
-            execute(
-                dir.path(),
-                &expected,
-                GitAction::CommitAll {
-                    message: "Rejected by hook".into()
-                }
-            )
-            .is_err()
-        );
+        assert!(execute(
+            dir.path(),
+            &expected,
+            GitAction::CommitAll {
+                message: "Rejected by hook".into()
+            }
+        )
+        .is_err());
         assert_eq!(git(dir.path(), &["ls-files", "--stage"]).unwrap(), before);
         assert_eq!(
             fs_err::read_to_string(dir.path().join("tracked")).unwrap(),
@@ -663,11 +655,9 @@ mod tests {
         assert!(unborn.head.is_none());
         assert!(!unborn.dirty);
         commit(dir.path());
-        assert!(
-            execute(dir.path(), &unborn, GitAction::Push)
-                .unwrap_err()
-                .contains("changed")
-        );
+        assert!(execute(dir.path(), &unborn, GitAction::Push)
+            .unwrap_err()
+            .contains("changed"));
         fs_err::write(dir.path().join("file"), "content").unwrap();
         assert!(inspect(dir.path()).unwrap().dirty);
         run(dir.path(), &["checkout", "--detach"]);
@@ -680,11 +670,9 @@ mod tests {
         let dir = fixture();
         commit(dir.path());
         let state = inspect(dir.path()).unwrap();
-        assert!(
-            execute(dir.path(), &state, GitAction::Fetch)
-                .unwrap_err()
-                .contains("remote")
-        );
+        assert!(execute(dir.path(), &state, GitAction::Fetch)
+            .unwrap_err()
+            .contains("remote"));
         let remote = tempfile::tempdir().unwrap();
         run(remote.path(), &["init", "--bare"]);
         run(
@@ -693,17 +681,15 @@ mod tests {
         );
         let state = inspect(dir.path()).unwrap();
         run(dir.path(), &["remote", "set-url", "origin", "/missing"]);
-        assert!(
-            execute(
-                dir.path(),
-                &state,
-                GitAction::Publish {
-                    remote: "origin".into()
-                }
-            )
-            .unwrap_err()
-            .contains("changed")
-        );
+        assert!(execute(
+            dir.path(),
+            &state,
+            GitAction::Publish {
+                remote: "origin".into()
+            }
+        )
+        .unwrap_err()
+        .contains("changed"));
     }
     #[test]
     fn local_publish_fetch_pull_and_push() {
@@ -753,11 +739,9 @@ mod tests {
         let behind = inspect(dir.path()).unwrap();
         assert_eq!(behind.behind, Some(1));
         fs_err::write(dir.path().join("dirty"), "x").unwrap();
-        assert!(
-            execute(dir.path(), &behind, GitAction::Pull)
-                .unwrap_err()
-                .contains("stash")
-        );
+        assert!(execute(dir.path(), &behind, GitAction::Pull)
+            .unwrap_err()
+            .contains("stash"));
         assert_eq!(
             fs_err::read_to_string(dir.path().join("dirty")).unwrap(),
             "x"
