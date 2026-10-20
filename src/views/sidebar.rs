@@ -339,6 +339,7 @@ enum Action {
     ConfirmClose(SessionId),
     Retry(SessionId),
     OpenDiff(SessionId),
+    OpenWorktreeDiff(String),
     CloseDiff,
     SelectDiffFile(String),
     RefreshDiff,
@@ -1743,8 +1744,8 @@ impl Sidebar {
             &action,
             Action::Select(Selection::Session(id)) if self.selection == Some(Selection::Session(*id))
         );
-        let project_diff_button =
-            self.mode == ViewMode::Project && matches!(&action, Action::OpenDiff(_));
+        let project_diff_button = self.mode == ViewMode::Project
+            && matches!(&action, Action::OpenDiff(_) | Action::OpenWorktreeDiff(_));
         let quiet_launch_control = matches!(&action, Action::Launch(..) | Action::RunScript(..));
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
@@ -2976,6 +2977,9 @@ impl Sidebar {
                 else {
                     return;
                 };
+                self.act(Action::OpenWorktreeDiff(path), window, cx);
+            }
+            Action::OpenWorktreeDiff(path) => {
                 let path = crate::paths::normalize_wt_path(&path).to_string();
                 let mode = cx.global::<SettingsState>().store.diff_mode;
                 let viewer = cx.new(|cx| DiffViewerState::new(path, mode, cx));
@@ -3621,66 +3625,10 @@ impl Sidebar {
             } else {
                 SESSION_TREE_ROW_H
             };
-            let git = self.runtime.read(cx).tree.read(cx).git_states();
-            let diff = git
-                .get(crate::paths::normalize_wt_path(&meta.wt_path))
-                .map(|state| (state.added, state.removed, state.dirty));
-            let diff_label = match diff {
-                Some((added, removed, _)) if added > 0 || removed > 0 => {
-                    format!("Worktree changes: +{added} −{removed}")
-                }
-                Some((_, _, true)) => "Worktree changes".into(),
-                Some(_) => "Worktree clean".into(),
-                None => "Git status unavailable".into(),
-            };
-            let diff_element = match diff {
-                Some((added, removed, dirty)) if dirty || added > 0 || removed > 0 => self
-                    .control(
-                        ("diff-chip-open", id.raw()),
-                        format!("{diff_label}; open changes in {}", meta.wt_path),
-                        Action::OpenDiff(id),
-                        cx,
-                    )
-                    .debug_selector(move || format!("diff-chip-open-{}", id.raw()))
-                    .when_some(
-                        self.session_diff_focus.get(&id),
-                        gpui::InteractiveElement::track_focus,
-                    )
-                    .w_auto()
-                    .h_auto()
-                    .justify_start()
-                    .gap(rpx(SPACE_MD))
-                    .font_family(crate::fonts::UI_FAMILY)
-                    .text_size(rpx(HIERARCHY_META_TEXT))
-                    .when(added > 0 || removed > 0, |diff| {
-                        diff.when(added > 0, |diff| {
-                            diff.child(div().text_color(c::GREEN()).child(format!("+{added}")))
-                        })
-                        .when(removed > 0, |diff| {
-                            diff.child(div().text_color(c::RED()).child(format!("−{removed}")))
-                        })
-                    })
-                    .when(added == 0 && removed == 0, |diff| {
-                        diff.text_color(c::GREEN()).child("Changes")
-                    })
-                    .into_any_element(),
-                Some(_) => div()
-                    .font_family(crate::fonts::UI_FAMILY)
-                    .text_size(rpx(HIERARCHY_META_TEXT))
-                    .text_color(c::FG_DIM())
-                    .child("clean")
-                    .into_any_element(),
-                None => div()
-                    .font_family(crate::fonts::UI_FAMILY)
-                    .text_size(rpx(HIERARCHY_META_TEXT))
-                    .text_color(c::FG_DIM())
-                    .child("—")
-                    .into_any_element(),
-            };
             self.row(
                 format!("session-{}", id.raw()),
                 format!(
-                    "{label} · {} session · {diff_label} · {status}{tasks_suffix}{}",
+                    "{label} · {} session · {status}{tasks_suffix}{}",
                     meta.agent.label(),
                     number
                         .filter(|n| *n <= 9)
@@ -3758,16 +3706,6 @@ impl Sidebar {
             .when_some(tasks.as_ref(), |row, tasks| {
                 row.child(task_glance::row_progress(id, tasks))
             })
-            .child(
-                div()
-                    .id(("session-tree-metadata", id.raw()))
-                    .debug_selector(move || format!("session-tree-metadata-{}", id.raw()))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .line_height(rpx(SESSION_META_LINE_H))
-                    .child(diff_element),
-            )
             .child(div().w(rpx(CONTROL_H)).flex_shrink_0())
             .child(
                 self.control(
@@ -4312,10 +4250,64 @@ impl Sidebar {
                         .child(icon("trash", ICON_SM, c::FG_DIM())),
                     );
                 }
+                let git = self.runtime.read(cx).tree.read(cx).git_states();
+                let diff = git.get(crate::paths::normalize_wt_path(&path));
+                let diff_label = match diff {
+                    Some(state) if state.dirty || state.added > 0 || state.removed > 0 => {
+                        format!("Worktree changes: +{} −{}", state.added, state.removed)
+                    }
+                    Some(_) => "Worktree clean".into(),
+                    None => "Git status unavailable".into(),
+                };
+                let diff_element = match diff {
+                    Some(state) if state.dirty || state.added > 0 || state.removed > 0 => self
+                        .control(
+                            SharedString::from(format!("worktree-diff-{path}")),
+                            format!("{diff_label}; open changes in {path}"),
+                            Action::OpenWorktreeDiff(path.clone()),
+                            cx,
+                        )
+                        .debug_selector({
+                            let path = path.clone();
+                            move || format!("worktree-diff-{path}")
+                        })
+                        .w_auto()
+                        .h_auto()
+                        .flex_shrink_0()
+                        .gap(rpx(SPACE_MD))
+                        .text_size(rpx(HIERARCHY_META_TEXT))
+                        .when(state.added > 0, |chip| {
+                            chip.child(
+                                div()
+                                    .text_color(c::GREEN())
+                                    .child(format!("+{}", state.added)),
+                            )
+                        })
+                        .when(state.removed > 0, |chip| {
+                            chip.child(
+                                div()
+                                    .text_color(c::RED())
+                                    .child(format!("−{}", state.removed)),
+                            )
+                        })
+                        .when(state.added == 0 && state.removed == 0, |chip| {
+                            chip.child(div().text_color(c::GREEN()).child("Changes"))
+                        })
+                        .into_any_element(),
+                    _ => div()
+                        .flex_shrink_0()
+                        .text_size(rpx(HIERARCHY_META_TEXT))
+                        .text_color(c::FG_DIM())
+                        .child(if diff.is_some() { "clean" } else { "—" })
+                        .into_any_element(),
+                };
                 group = group.child(
                     self.row(
                         format!("worktree-{path}"),
-                        format!("{} worktree, branch {}", worktree_name, worktree.branch),
+                        format!(
+                            "{} worktree, branch {} · {diff_label}",
+                            worktree_name, worktree.branch
+                        ),
                         false,
                         Action::Select(selection),
                         cx,
@@ -4378,19 +4370,17 @@ impl Sidebar {
                                     .flex()
                                     .items_center()
                                     .gap(rpx(SPACE_SM))
-                                    .group_hover("worktree-row", move |s| {
-                                        s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
-                                    })
-                                    .when(focused, move |s| {
-                                        s.pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
-                                    })
+                                    // Keep the diff target stationary as launcher controls
+                                    // appear; their hover region must never cover changes.
+                                    .pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
                                             .truncate()
                                             .child(worktree_name.to_owned()),
-                                    ),
+                                    )
+                                    .child(diff_element),
                             ),
                     )
                     .child(
@@ -5512,18 +5502,17 @@ mod tests {
             let worktrees = cx.debug_bounds("session-tree-worktrees-1").unwrap();
             let status = cx.debug_bounds("session-tree-status-1").unwrap();
             let agent = cx.debug_bounds("session-agent-1").unwrap();
-            let metadata = cx.debug_bounds("session-tree-metadata-1").unwrap();
+            assert!(cx.debug_bounds("session-tree-metadata-1").is_none());
             assert_eq!(f32::from(row.size.height), SESSION_ROW_H);
             assert!(title.top() >= row.top());
             assert!(worktrees.top() >= title.bottom());
             assert!(worktrees.bottom() <= row.bottom());
             assert_eq!(worktrees.left(), title.left());
-            assert!(worktrees.right() <= metadata.left());
+            assert!(worktrees.right() <= row.right());
             assert!(cx.debug_bounds("session-tree-worktrees-2").is_none());
             assert!(status.right() <= agent.left());
             assert!(agent.right() <= title.left());
-            assert!(title.right() <= metadata.left());
-            assert!(metadata.right() <= row.right());
+            assert!(title.right() <= row.right());
         }
         let long_project = "A project name that is much longer than the entire available sidebar";
         cx.update(|_, cx| {
@@ -7782,7 +7771,9 @@ mod tests {
             sidebar.update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
         });
         draw(cx);
-        let diff = cx.debug_bounds("diff-chip-open-1").unwrap();
+        let selector: &'static str = Box::leak(format!("worktree-diff-{path}").into_boxed_str());
+        assert!(cx.debug_bounds("diff-chip-open-1").is_none());
+        let diff = cx.debug_bounds(selector).unwrap();
         let title = cx.debug_bounds("session-tree-title-1").unwrap();
         let outside = title.center();
         assert!(outside.x < diff.left());
@@ -8682,8 +8673,15 @@ for line in sys.stdin:
             draw(cx);
             let launcher = cx.debug_bounds("session-agent-1").unwrap();
             let title = cx.debug_bounds("session-tree-title-1").unwrap();
-            let metadata = cx.debug_bounds("session-tree-metadata-1").unwrap();
-            assert!(cx.debug_bounds("diff-chip-open-1").is_some());
+            assert!(cx.debug_bounds("session-tree-metadata-1").is_none());
+            assert!(cx.debug_bounds("diff-chip-open-1").is_none());
+            let diff = cx
+                .debug_bounds("worktree-diff-/grove-spacing-main")
+                .unwrap();
+            let worktree = cx
+                .debug_bounds("worktree-title-/grove-spacing-main")
+                .unwrap();
+            assert!(diff.left() >= worktree.left() && diff.right() <= worktree.right());
             let status = cx.debug_bounds("session-tree-status-1").unwrap();
             let close = cx.debug_bounds("session-tree-close-1").unwrap();
             let project_title = cx.debug_bounds("project-title-0").unwrap();
@@ -8695,8 +8693,7 @@ for line in sys.stdin:
             assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
             assert!(status.right() <= launcher.left());
             assert!(launcher.right() <= title.left());
-            assert!(title.right() <= metadata.left());
-            assert!(metadata.right() <= close.left());
+            assert!(title.right() <= close.left());
             assert!(status.top() >= row.top() && status.bottom() <= row.bottom());
             assert!(title.top() >= row.top() && title.bottom() <= row.bottom());
             assert!(close.bottom() <= row.bottom());

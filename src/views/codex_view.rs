@@ -1654,12 +1654,12 @@ impl CodexView {
         list: &TaskList,
         status: codex::Status,
         jumps: Vec<usize>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let expanded = self.tasks_expanded;
         let dimmed = list.stale;
         let phase = task_phase(status, dimmed);
-        let waiting = phase == TaskPhase::Waiting && !list.all_done();
         let (done, total) = (list.done(), list.total());
         let summary = task_summary(list, phase);
         let header_status = task_header_status(list);
@@ -1737,21 +1737,13 @@ impl CodexView {
             .items_center()
             .gap(rpx(SPACE_LG))
             .when(dimmed, |cluster| cluster.opacity(OPACITY_DISABLED))
-            .when(!expanded, |cluster| {
-                cluster.child(animated_task_mark(
-                    "codex-task-strip-mark",
-                    header_status,
-                    task_mark_phase(header_status, phase, dimmed),
-                    cx,
-                ))
-            })
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(c::FG())
-                    .child("Tasks"),
-            )
+            .child(animated_task_mark(
+                "codex-task-strip-mark",
+                header_status,
+                task_mark_phase(header_status, phase, dimmed),
+                cx,
+            ))
+            .child(div().flex_shrink_0().text_color(c::FG_DIM()).child("Tasks"))
             .child(
                 div()
                     .flex_shrink_0()
@@ -1774,21 +1766,17 @@ impl CodexView {
             .flex()
             .items_center()
             .gap(rpx(SPACE_LG))
-            .px(rpx(SPACE_2XL))
             .text_size(rpx(TEXT_SMALL))
             .text_color(c::FG_DIM())
             .whitespace_nowrap()
             .hover(|style| style.bg(c::MENU_HOVER()))
             .focus_visible(|style| style.bg(c::MENU_HOVER()))
-            .when(expanded, |header| {
-                header.border_b_1().border_color(c::BORDER_SOFT())
-            })
+            .child(cluster)
             .child(crate::icons::icon(
                 if expanded { "chev-down" } else { "chev-right" },
-                ICON_SM,
-                c::FG_DIM(),
+                ICON_MD,
+                c::FG_MUTE(),
             ))
-            .child(cluster)
             .when(dimmed, |header| {
                 header.child(
                     div()
@@ -1821,7 +1809,6 @@ impl CodexView {
                 .min_h_0()
                 .max_h(rpx(COMPOSER_MENU_MAX_H))
                 .overflow_y_scroll()
-                .p(rpx(SPACE_SM))
                 .flex()
                 .flex_col()
                 .when(dimmed, |rows| rows.opacity(OPACITY_DISABLED))
@@ -1854,8 +1841,8 @@ impl CodexView {
                         .items_center()
                         .gap(rpx(SPACE_LG))
                         .px(rpx(SPACE_LG))
-                        .rounded(rpx(RADIUS_GROUP))
-                        .text_size(rpx(TEXT_BODY))
+                        .rounded(rpx(RADIUS_CONTROL))
+                        .text_size(rpx(TEXT_SMALL))
                         .hover(|style| style.bg(c::MENU_HOVER()))
                         .focus_visible(|style| style.bg(c::MENU_HOVER()))
                         .child(animated_task_mark(
@@ -1915,21 +1902,16 @@ impl CodexView {
             }
             rows
         });
-        div()
+        composer_tray(window)
             .id("codex-task-strip-panel")
             .debug_selector(|| "codex-task-strip-panel".into())
             .role(gpui::Role::Group)
             .aria_label(format!("Agent tasks, {progress}"))
-            .w_full()
             // Shrinks by default: in a short pane the strip yields height to
             // the composer, its list scrolls, and the header row stays visible.
             .min_h(rpx(TASK_STRIP_HEAD_H))
             .flex()
             .flex_col()
-            .rounded(rpx(RADIUS_PANEL))
-            .border_1()
-            .border_color(c::BORDER_SOFT())
-            .bg(c::BG_RAIL())
             .overflow_hidden()
             .child(
                 div()
@@ -1937,7 +1919,6 @@ impl CodexView {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .when(waiting, |strip| strip.bg(c::AMBER_ROW_TINT()))
                     .child(header)
                     .children(body),
             )
@@ -3560,7 +3541,7 @@ impl Render for CodexView {
                         .min(rendered.saturating_sub(1))
                 })
                 .collect();
-            self.task_strip(list, state.status, jumps, cx)
+            self.task_strip(list, state.status, jumps, window, cx)
         });
         let mut attachments = div()
             .id("codex-attachments")
@@ -5938,6 +5919,20 @@ fn tool_activity_summary(item: &serde_json::Value, running: bool) -> String {
             if running { "Running" } else { "Ran" },
             command.split_whitespace().collect::<Vec<_>>().join(" ")
         ) + if running { "…" } else { "" };
+    }
+    // Waiting tools keep one label after completion; their raw identity stays
+    // in the disclosure, like every other tool's arguments and output.
+    if item["tool"].as_str().is_some_and(|tool| {
+        matches!(
+            tool.rsplit("__")
+                .next()
+                .unwrap_or(tool)
+                .to_ascii_lowercase()
+                .as_str(),
+            "wait" | "wait_agent"
+        )
+    }) {
+        return "Waiting…".into();
     }
     if !running {
         return tool_summary(item);
@@ -10079,9 +10074,15 @@ mod tests {
         draw(cx);
         let strip = cx.debug_bounds("codex-task-strip-panel").unwrap();
         let composer = cx.debug_bounds("codex-composer").unwrap();
-        assert!(strip.bottom() <= composer.top());
-        assert!((strip.left() - composer.left()).abs() < gpui::px(1.0));
-        assert!((strip.right() - composer.right()).abs() < gpui::px(1.0));
+        assert!(strip.top() < composer.top());
+        assert!(
+            strip.left() > composer.left(),
+            "tasks share the queue tray inset"
+        );
+        assert!(
+            strip.right() < composer.right(),
+            "tasks stay inside the composer rail"
+        );
         assert!(cx.debug_bounds("codex-task-row-0").is_none());
         assert!(cx.debug_bounds("codex-task-strip-stale").is_none());
         // Click and keyboard both toggle the in-memory expansion.
@@ -11940,7 +11941,14 @@ mod tests {
             assert_eq!(tool_activity_summary(&item, true), expected);
             let raw = format!("Tool · fixture / {tool}");
             assert_eq!(tool_summary(&item), raw);
-            assert_eq!(tool_activity_summary(&item, false), raw);
+            assert_eq!(
+                tool_activity_summary(&item, false),
+                if expected == "Waiting…" {
+                    expected
+                } else {
+                    raw.as_str()
+                }
+            );
             assert!(tool_detail(&item).contains("input"));
         }
         let reasoning = json!({"type":"reasoning"});
