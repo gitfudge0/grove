@@ -3,7 +3,16 @@ use serde_json::{json, Value};
 
 #[derive(Default)]
 pub(crate) struct ClaudeTranscriptState {
-    tasks: Vec<(String, String, String)>,
+    tasks: Vec<TaskEntry>,
+}
+
+/// One folded task: Claude's id, subject, normalised status and optional
+/// present-continuous `activeForm` label.
+struct TaskEntry {
+    id: String,
+    step: String,
+    status: &'static str,
+    active_form: Option<String>,
 }
 
 impl ClaudeTranscriptState {
@@ -40,7 +49,7 @@ impl ClaudeTranscriptState {
                     .to_owned();
                 item["action"] = json!({"type":if item["tool"] == "WebFetch" {"openPage"} else {"search"},"query":query,"url":item["arguments"]["url"]});
             }
-            "TaskCreate" | "TaskUpdate" | "TodoWrite"
+            "TaskCreate" | "TaskUpdate" | "TodoWrite" | "TaskList"
                 if item["status"] == "completed" && item["plan"].is_array() =>
             {
                 item["type"] = json!("plan");
@@ -141,11 +150,12 @@ impl ClaudeTranscriptState {
                     .iter()
                     .enumerate()
                     .filter_map(|(i, t)| {
-                        Some((
-                            format!("todo-{i}"),
-                            t["content"].as_str()?.into(),
-                            status(t["status"].as_str()).into(),
-                        ))
+                        Some(TaskEntry {
+                            id: format!("todo-{i}"),
+                            step: t["content"].as_str()?.into(),
+                            status: status(t["status"].as_str()),
+                            active_form: active_form(&t["activeForm"]),
+                        })
                     })
                     .collect();
             }
@@ -159,9 +169,14 @@ impl ClaudeTranscriptState {
                 else {
                     return;
                 };
-                if !self.tasks.iter().any(|(key, _, _)| key == id) {
-                    self.tasks
-                        .push((id.into(), subject.into(), "pending".into()));
+                if !self.tasks.iter().any(|task| task.id == id) {
+                    self.tasks.push(TaskEntry {
+                        id: id.into(),
+                        step: subject.into(),
+                        status: "pending",
+                        active_form: active_form(&result["task"]["activeForm"])
+                            .or_else(|| active_form(&args["activeForm"])),
+                    });
                 }
             }
             "TaskUpdate" => {
@@ -180,34 +195,72 @@ impl ClaudeTranscriptState {
                     .as_str()
                     .or(result["statusChange"]["to"].as_str());
                 if next == Some("deleted") {
-                    self.tasks.retain(|(key, _, _)| key != id);
-                } else if let Some((_, subject, state)) =
-                    self.tasks.iter_mut().find(|(key, _, _)| key == id)
-                {
+                    self.tasks.retain(|task| task.id != id);
+                } else if let Some(task) = self.tasks.iter_mut().find(|task| task.id == id) {
                     if let Some(text) = args["subject"].as_str() {
-                        *subject = text.into();
+                        task.step = text.into();
+                    }
+                    if let Some(form) = active_form(&args["activeForm"]) {
+                        task.active_form = Some(form);
                     }
                     if next.is_some() {
-                        *state = status(next).into();
+                        task.status = status(next);
                     }
                 } else {
                     return;
                 }
+            }
+            "TaskList" => {
+                // Authoritative snapshot of the task store. Shape accepted
+                // defensively: `{tasks:[{id, subject, status, activeForm?}]}`;
+                // anything else (or an empty list) leaves state untouched.
+                let Some(tasks) = result["tasks"].as_array().filter(|t| !t.is_empty()) else {
+                    return;
+                };
+                let next: Vec<TaskEntry> = tasks
+                    .iter()
+                    .filter_map(|t| {
+                        let id = match &t["id"] {
+                            Value::String(id) => id.clone(),
+                            Value::Number(id) => id.to_string(),
+                            _ => return None,
+                        };
+                        let step = t["subject"].as_str().or(t["content"].as_str())?;
+                        let previous = self.tasks.iter().find(|task| task.id == id);
+                        Some(TaskEntry {
+                            active_form: active_form(&t["activeForm"])
+                                .or_else(|| previous.and_then(|task| task.active_form.clone())),
+                            id,
+                            step: step.into(),
+                            status: status(t["status"].as_str()),
+                        })
+                    })
+                    .collect();
+                if next.is_empty() {
+                    return;
+                }
+                self.tasks = next;
             }
             _ => return,
         }
         let plan: Vec<Value> = self
             .tasks
             .iter()
-            .map(|(id, step, status)| json!({"id":id,"step":step,"status":status}))
+            .map(|task| {
+                let mut entry = json!({"id":task.id,"step":task.step,"status":task.status});
+                if let Some(form) = &task.active_form {
+                    entry["activeForm"] = json!(form);
+                }
+                entry
+            })
             .collect();
         item["text"] = json!(self
             .tasks
             .iter()
-            .map(|(_, text, state)| format!(
+            .map(|task| format!(
                 "- [{}] {}",
-                if state == "completed" { "x" } else { " " },
-                text
+                if task.status == "completed" { "x" } else { " " },
+                task.step
             ))
             .collect::<Vec<_>>()
             .join("\n"));
@@ -217,11 +270,15 @@ impl ClaudeTranscriptState {
 }
 
 fn status(value: Option<&str>) -> &'static str {
-    match value {
-        Some("completed") => "completed",
-        Some("in_progress") => "inProgress",
-        _ => "pending",
-    }
+    crate::tasks::normalize_status(value)
+}
+
+fn active_form(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|form| !form.is_empty())
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -348,6 +405,72 @@ mod tests {
         state.apply_tool_result(&mut todos, &json!("updated"), None, false);
         assert_eq!(todos["plan"].as_array().unwrap().len(), 1);
         assert_eq!(todos["plan"][0]["step"], "fresh");
+    }
+
+    #[test]
+    fn todo_write_keeps_active_form() {
+        let mut state = ClaudeTranscriptState::default();
+        let mut todos = tool(
+            "TodoWrite",
+            json!({"todos":[
+                {"content":"Run tests","activeForm":"Running tests","status":"in_progress"},
+                {"content":"Ship","status":"pending"}
+            ]}),
+        );
+        state.apply_tool_result(&mut todos, &json!("ok"), None, false);
+        assert_eq!(todos["plan"][0]["activeForm"], "Running tests");
+        assert_eq!(todos["plan"][0]["status"], "inProgress");
+        assert!(todos["plan"][1].get("activeForm").is_none());
+        let list = crate::tasks::current(std::slice::from_ref(&todos)).unwrap();
+        assert_eq!(list.now_label(), Some("Running tests"));
+    }
+
+    #[test]
+    fn task_list_replaces_the_store_from_its_structured_result() {
+        let mut state = ClaudeTranscriptState::default();
+        let mut create = tool(
+            "TaskCreate",
+            json!({"subject":"stale","activeForm":"Doing stale"}),
+        );
+        state.apply_tool_result(
+            &mut create,
+            &json!("created"),
+            Some(&json!({"task":{"id":"1","subject":"stale"}})),
+            false,
+        );
+        assert_eq!(create["plan"][0]["activeForm"], "Doing stale");
+        let mut list = tool("TaskList", json!({}));
+        state.apply_tool_result(
+            &mut list,
+            &json!("listed"),
+            Some(&json!({"tasks":[
+                {"id":"1","subject":"stale","status":"completed"},
+                {"id":2,"subject":"fresh","status":"in_progress"}
+            ]})),
+            false,
+        );
+        assert_eq!(list["type"], "plan");
+        assert_eq!(list["plan"].as_array().unwrap().len(), 2);
+        assert_eq!(list["plan"][0]["status"], "completed");
+        assert_eq!(list["plan"][0]["activeForm"], "Doing stale");
+        assert_eq!(list["plan"][1]["id"], "2");
+        assert_eq!(list["plan"][1]["status"], "inProgress");
+        let mut empty = tool("TaskList", json!({}));
+        state.apply_tool_result(
+            &mut empty,
+            &json!("none"),
+            Some(&json!({"tasks":[]})),
+            false,
+        );
+        assert_eq!(empty["type"], "mcpToolCall");
+        let mut unknown = tool("TaskList", json!({}));
+        state.apply_tool_result(&mut unknown, &json!("text only"), None, false);
+        assert_eq!(unknown["type"], "mcpToolCall");
+        let mut items = vec![create, list];
+        let mut restored = ClaudeTranscriptState::default();
+        restored.restore(&mut items);
+        assert_eq!(items[1]["type"], "plan");
+        assert_eq!(items[1]["plan"][1]["step"], "fresh");
     }
 
     #[test]

@@ -781,13 +781,24 @@ impl Sidebar {
             format!("canvas-session-status-{}-{}", id.raw(), state.label()),
             cx,
         );
+        let task_progress = native.as_ref().filter(|_| grid).and_then(|native| {
+            let glance = self.task_glance(id)?;
+            Some(super::task_glance::tile_progress(
+                id,
+                glance,
+                native.read(cx).state.status,
+                cx,
+            ))
+        });
         if grid {
             header = header
                 .child(agent_icon)
                 .h(rpx(SESSION_HEADER_H))
                 .child(
                     div()
-                        .min_w_0()
+                        // The title outranks the task cluster, whose step
+                        // text yields first when the tile is narrow.
+                        .min_w(rpx(FORM_PRIMARY_MIN_W))
                         .flex_1()
                         .flex()
                         .items_center()
@@ -813,6 +824,7 @@ impl Sidebar {
                                 .child(format!("· {context}")),
                         ),
                 )
+                .when_some(task_progress, gpui::ParentElement::child)
                 .child(status)
                 .child(close);
         } else {
@@ -2441,6 +2453,141 @@ mod tests {
         assert!(actions
             .try_iter()
             .any(|action| matches!(action, grove_core::codex::Action::Reconnect)));
+    }
+
+    #[gpui::test]
+    fn grid_tile_header_shows_task_progress_only_with_a_list(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "demo".into(),
+                    path: "/grove-task-glance-fixture".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let plan = |statuses: [&str; 2]| {
+            serde_json::json!({"type": "plan", "plan": [
+                {"id": "1", "step": "Map statuses", "status": statuses[0]},
+                {"id": "2", "step": "Render task strip", "status": statuses[1]},
+            ]})
+        };
+        let (handle, _actions) = grove_core::codex::Handle::channel();
+        let (_updates, receive) = std::sync::mpsc::channel();
+        let first = plan(["completed", "in_progress"]);
+        let (sidebar, cx) = cx.add_window_view(move |window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let registry = runtime.read(cx).registry.clone();
+            let id = registry.update(cx, |registry, _| {
+                registry.insert_meta(
+                    "demo".into(),
+                    "/grove-task-glance-fixture".into(),
+                    Agent::Codex,
+                )
+            });
+            let saved = grove_core::codex::SavedSession {
+                claude_resume: None,
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
+                provider: grove_core::codex::Provider::Codex,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+                key: "task-glance".into(),
+                project: "demo".into(),
+                cwd: "/grove-task-glance-fixture".into(),
+                label: "Codex".into(),
+                title: None,
+                roots: Vec::new(),
+                thread_id: Some("fixture-thread".into()),
+                items: vec![first],
+                work_periods: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                config_args: Vec::new(),
+            };
+            let mut state = grove_core::codex::Snapshot::new(saved);
+            state.status = grove_core::codex::Status::Working;
+            let connection = grove_core::codex::Connection {
+                handle: handle.clone(),
+                updates: receive.into(),
+            };
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(state, connection, cx)
+            });
+            registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.selection = Some(Selection::Session(id));
+            sidebar
+        });
+        let id = crate::entities::session_registry::SessionId::from_raw(1);
+        draw(cx);
+        // The single-session header leaves progress to the composer strip.
+        assert!(cx.debug_bounds("terminal-header-1").is_some());
+        assert!(cx.debug_bounds("grid-header-tasks-1").is_none());
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.task_glance(id).cloned()),
+            Some(super::super::task_glance::TaskGlance {
+                done: 1,
+                total: 2,
+                stale: false,
+                current: Some(grove_core::tasks::TaskStatus::InProgress),
+                now: Some("Render task strip".into()),
+            })
+        );
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.mode = ViewMode::Grid;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("grid-header-tasks-1").is_some());
+        assert!(cx.debug_bounds("grid-header-task-now-1").is_some());
+        // A transcript update reaches the header through the session observer.
+        cx.update(|_, cx| {
+            let session = sidebar
+                .read(cx)
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .codex(id)
+                .cloned()
+                .unwrap();
+            session.update(cx, |session, cx| {
+                session.state.saved.items = vec![plan(["completed", "completed"])];
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
+            .task_glance(id)
+            .is_some_and(super::super::task_glance::TaskGlance::all_done)));
+        assert!(cx.debug_bounds("grid-header-task-now-1").is_some());
+        // No list, no cluster.
+        cx.update(|_, cx| {
+            let session = sidebar
+                .read(cx)
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .codex(id)
+                .cloned()
+                .unwrap();
+            session.update(cx, |session, cx| {
+                session.state.saved.items.clear();
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.task_glance(id).is_none()));
+        assert!(cx.debug_bounds("grid-header-tasks-1").is_none());
     }
 
     #[gpui::test]

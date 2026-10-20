@@ -21,6 +21,7 @@ pub mod release_highlights;
 pub mod render_rows;
 pub mod session_meta;
 pub mod storage;
+pub mod tasks;
 pub mod theme;
 pub mod theme_file;
 pub mod tmux;

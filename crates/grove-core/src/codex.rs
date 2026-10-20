@@ -1286,7 +1286,29 @@ impl Snapshot {
                     p["turnId"].as_str().unwrap_or_default()
                 ));
                 let at = self.item_index(&id, "plan");
-                let mut text = p["explanation"].as_str().unwrap_or_default().to_owned();
+                let explanation = p["explanation"].as_str().unwrap_or_default();
+                let mut text = explanation.to_owned();
+                // The structured checklist read by `crate::tasks`; `text` stays
+                // for transcripts and sessions saved before this field existed.
+                let plan: Vec<Value> = p["plan"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(i, step)| {
+                        json!({
+                            "id": format!("step-{i}"),
+                            "step": step["step"].as_str().unwrap_or_default(),
+                            "status": crate::tasks::normalize_status(step["status"].as_str()),
+                        })
+                    })
+                    .collect();
+                self.saved.items[at]["plan"] = json!(plan);
+                self.saved.items[at]["explanation"] = if explanation.trim().is_empty() {
+                    Value::Null
+                } else {
+                    json!(explanation)
+                };
                 if let Some(steps) = p["plan"].as_array() {
                     for step in steps {
                         let _ = write!(
@@ -4804,6 +4826,40 @@ mod tests {
         assert!(state.apply(&json!({"method":"turn/plan/updated","params":{"threadId":"thread-1","turnId":"turn-1","plan":[{"step":"Inspect repository","status":"completed"},{"step":"Implement","status":"inProgress"}]}})));
         assert!(state.transcript().contains("[x] Inspect repository"));
         assert!(state.transcript().contains("[ ] Implement"));
+    }
+    #[test]
+    fn plan_updates_store_a_structured_checklist() {
+        let mut state = state();
+        assert!(state.apply(&json!({"method":"turn/plan/updated","params":{"threadId":"thread-1","turnId":"turn-1","explanation":"Fix the bug","plan":[{"step":"Inspect","status":"completed"},{"step":"Implement","status":"in_progress"},{"step":"Test","status":"pending"}]}})));
+        let item = state
+            .saved
+            .items
+            .iter()
+            .find(|item| item["id"] == "grove-plan-turn-1")
+            .unwrap();
+        assert_eq!(item["type"], "plan");
+        assert_eq!(item["explanation"], "Fix the bug");
+        assert_eq!(
+            item["plan"],
+            json!([
+                {"id":"step-0","step":"Inspect","status":"completed"},
+                {"id":"step-1","step":"Implement","status":"inProgress"},
+                {"id":"step-2","step":"Test","status":"pending"}
+            ])
+        );
+        assert!(item["text"].as_str().unwrap().contains("- [x] Inspect"));
+        assert!(state.apply(&json!({"method":"turn/plan/updated","params":{"threadId":"thread-1","turnId":"turn-1","plan":[{"step":"Inspect","status":"completed"},{"step":"Implement","status":"inProgress"}]}})));
+        let item = state
+            .saved
+            .items
+            .iter()
+            .find(|item| item["id"] == "grove-plan-turn-1")
+            .unwrap();
+        assert!(item["explanation"].is_null());
+        assert_eq!(item["plan"][1]["status"], "inProgress");
+        let list = crate::tasks::current(&state.saved.items).unwrap();
+        assert_eq!(list.done(), 1);
+        assert_eq!(list.now_label(), Some("Implement"));
     }
     #[test]
     fn settled_background_commands_keep_streaming_during_next_turn() {

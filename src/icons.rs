@@ -162,6 +162,14 @@ fn svg_for(name: &str) -> String {
         "hexagon" => r#"<path d="m8 1.5 5.5 3.2v6.6L8 14.5l-5.5-3.2V4.7z"/>"#,
         "dot" => r#"<circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/>"#,
         "ring" => r#"<circle cx="8" cy="8" r="3.5"/>"#,
+        // Task-list marks (see `crate::views::components::task_mark`): a
+        // full-size empty ring for pending, and the same ring half filled for
+        // an in-progress step waiting on the user. Done/halted/running reuse
+        // `check`, `stop` and the spinner.
+        "task-pending" => r#"<circle cx="8" cy="8" r="5.5"/>"#,
+        "task-waiting" => {
+            r#"<circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" fill="currentColor" stroke="none"/>"#
+        }
         "terminal" | "term" => {
             r#"<rect x="1.5" y="3" width="13" height="10" rx="1.5"/><path d="M4.5 7l2 1.5-2 1.5M8 10h3.5"/>"#
         }
@@ -284,6 +292,9 @@ mod tests {
             "status-dot",
             "hexagon",
             "ring",
+            "task-pending",
+            "task-waiting",
+            "stop",
             "question",
             "restart",
         ] {

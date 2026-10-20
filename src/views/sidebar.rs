@@ -8,6 +8,7 @@ mod project_flyout;
 mod project_setup;
 mod projects;
 mod session_diff;
+mod task_glance;
 use super::{motion, rpx, terminal_view::TerminalView, tokens::*};
 use crate::{
     activity::ActivityState,
@@ -501,6 +502,14 @@ pub struct Sidebar {
         ),
     >,
     observed_titles: HashMap<SessionId, Option<String>>,
+    task_glance_observers: HashMap<
+        SessionId,
+        (
+            Entity<crate::entities::codex_session::CodexSession>,
+            gpui::Subscription,
+        ),
+    >,
+    task_glances: HashMap<SessionId, task_glance::TaskGlanceCache>,
     age_timer: Option<gpui::Task<()>>,
     #[cfg(test)]
     age_ticks: u64,
@@ -674,6 +683,8 @@ impl Sidebar {
             canvas_signatures: HashMap::new(),
             title_observers: HashMap::new(),
             observed_titles: HashMap::new(),
+            task_glance_observers: HashMap::new(),
+            task_glances: HashMap::new(),
             age_timer: None,
             #[cfg(test)]
             age_ticks: 0,
@@ -1056,6 +1067,7 @@ impl Sidebar {
             self.queue_worktree_readiness(path, cx);
         }
         self.sync_title_observers(cx);
+        self.sync_task_glances(cx);
     }
 
     fn sync_title_observers(&mut self, cx: &mut Context<Self>) {
@@ -3281,6 +3293,10 @@ impl Sidebar {
     ) -> AnyElement {
         let (status, color) = self.status(meta, cx);
         let id = meta.id;
+        let tasks = self.task_glance(id).cloned();
+        let tasks_suffix = tasks.as_ref().map_or_else(String::new, |tasks| {
+            format!(" · {}", tasks.tooltip_suffix())
+        });
         let title = session_display_title(
             meta,
             self.runtime
@@ -3352,7 +3368,7 @@ impl Sidebar {
             self.row(
                 format!("session-{}", id.raw()),
                 format!(
-                    "{title} · {full_context} · {status} · {} · {age} · {} session{}",
+                    "{title} · {full_context} · {status}{tasks_suffix} · {} · {age} · {} session{}",
                     diff.0,
                     meta.agent.label(),
                     number
@@ -3499,6 +3515,9 @@ impl Sidebar {
                             .line_height(rpx(SESSION_META_LINE_H))
                             .font_weight(gpui::FontWeight::NORMAL)
                             .text_color(c::FG_DIM())
+                            .when_some(tasks.as_ref(), |line, tasks| {
+                                line.child(task_glance::row_progress(id, tasks))
+                            })
                             .when_some(Some(diff), |line, (label, actionable)| {
                                 line.child(div().flex_1().min_w_0().child(if actionable {
                                     self.control(
@@ -3656,7 +3675,7 @@ impl Sidebar {
             self.row(
                 format!("session-{}", id.raw()),
                 format!(
-                    "{label} · {} session · {diff_label} · {status}{}",
+                    "{label} · {} session · {diff_label} · {status}{tasks_suffix}{}",
                     meta.agent.label(),
                     number
                         .filter(|n| *n <= 9)
@@ -3731,6 +3750,9 @@ impl Sidebar {
                         )
                     }),
             )
+            .when_some(tasks.as_ref(), |row, tasks| {
+                row.child(task_glance::row_progress(id, tasks))
+            })
             .child(
                 div()
                     .id(("session-tree-metadata", id.raw()))

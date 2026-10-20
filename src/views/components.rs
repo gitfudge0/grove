@@ -482,3 +482,69 @@ pub fn settings_control(
         })
         .when(!enabled, |el| el.opacity(OPACITY_DISABLED))
 }
+
+/// How an in-progress task's mark reads, from the owning session's state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskPhase {
+    /// The agent is working: the mark spins.
+    Running,
+    /// The agent is blocked on the user (approval or question).
+    Waiting,
+    /// The turn was interrupted or failed with the step unfinished.
+    Halted,
+    /// A newer turn began without publishing a list; everything reads muted.
+    Stale,
+}
+
+// Remove once the task-list strip and sidebar consume these shared primitives.
+/// The leading mark for one task row, at [`ICON_SM`]. `tick` drives the
+/// Running spinner (pass `0` under reduced motion for a static arc).
+pub fn task_mark(
+    status: grove_core::tasks::TaskStatus,
+    phase: TaskPhase,
+    tick: u64,
+) -> impl IntoElement {
+    use grove_core::tasks::TaskStatus;
+    let icon = crate::icons::icon;
+    match (status, phase) {
+        (TaskStatus::Completed, TaskPhase::Stale) => icon("check", ICON_SM, c::FG_MUTE()),
+        (TaskStatus::Completed, _) => icon("check", ICON_SM, c::GREEN()),
+        (TaskStatus::Pending, _) => icon("task-pending", ICON_SM, c::FG_MUTE()),
+        (TaskStatus::InProgress, TaskPhase::Running) => {
+            crate::icons::spinner(ICON_SM, c::BLUE(), tick)
+        }
+        (TaskStatus::InProgress, TaskPhase::Waiting) => icon("task-waiting", ICON_SM, c::AMBER()),
+        (TaskStatus::InProgress, TaskPhase::Halted) => icon("stop", ICON_SM, c::FG_DIM()),
+        (TaskStatus::InProgress, TaskPhase::Stale) => {
+            crate::icons::spinner(ICON_SM, c::FG_MUTE(), 0)
+        }
+    }
+}
+
+// Remove once the task-list strip and sidebar consume these shared primitives.
+/// A thin done/total progress track `width` design pixels wide; the fill turns
+/// green once every task is done.
+pub fn task_meter(done: usize, total: usize, width: f32) -> impl IntoElement {
+    let fraction = if total == 0 {
+        0.
+    } else {
+        done.min(total) as f32 / total as f32
+    };
+    let all_done = total > 0 && done >= total;
+    div()
+        .w(rpx(width))
+        .h(rpx(SPACE_SM))
+        .flex_shrink_0()
+        .rounded(rpx(RADIUS_FULL))
+        // BORDER equals the BG_HOVER row fill; the track must survive
+        // selected and hovered sidebar rows.
+        .bg(c::BORDER_STRONG())
+        .overflow_hidden()
+        .child(
+            div()
+                .h_full()
+                .w(gpui::relative(fraction))
+                .rounded(rpx(RADIUS_FULL))
+                .bg(if all_done { c::GREEN() } else { c::FG_DIM() }),
+        )
+}

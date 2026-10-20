@@ -2,8 +2,8 @@
 use super::{
     components::{
         form_action, header_control, header_control_with_hover, header_control_with_tooltip,
-        project_field_well, question_choice, question_disclosure, tooltip, tooltip_content,
-        transcript_action,
+        project_field_well, question_choice, question_disclosure, task_mark, task_meter, tooltip,
+        tooltip_content, transcript_action, TaskPhase,
     },
     rpx,
     tokens::*,
@@ -26,6 +26,7 @@ use gpui_component::{
 };
 use grove_core::codex::{self, Action, SubmissionMode};
 use grove_core::elicitation::{ElicitationKind, ElicitationMode, ElicitationRequest};
+use grove_core::tasks::{self, Change, TaskList, TaskStatus};
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
@@ -97,6 +98,18 @@ const CONTEXT_WARN_PERCENT: u32 = 80;
 const CONTEXT_RING_STROKE: f32 = 1.5;
 /// Polyline segments per full turn of the context ring.
 const CONTEXT_RING_SEGMENTS: f32 = 48.0;
+/// The task strip's header row: a dense control plus breathing room, matching
+/// the 32px session rows it mirrors in the sidebar.
+const TASK_STRIP_HEAD_H: f32 = CONTROL_H + SPACE_LG;
+/// One task row in the expanded strip (DESIGN.md row-h).
+const TASK_ROW_H: f32 = CONTROL_H + SPACE_SM;
+/// The "From previous turn" pill: a dense control less its vertical inset.
+const TASK_PILL_H: f32 = CONTROL_H - SPACE_SM * 2.0;
+/// One full turn of the running task mark.
+const TASK_SPINNER_PERIOD: std::time::Duration =
+    std::time::Duration::from_millis(MOTION_SLOW_MS * 4);
+/// Clock ticks per spinner frame, the inverse of `animation_clock::spinner_frame`.
+const SPINNER_TICKS_PER_FRAME: u64 = 3;
 
 /// A user input and the final (or latest streaming) assistant message before
 /// the next input. Source indices stay distinct from rendered child indices.
@@ -470,6 +483,8 @@ pub struct CodexView {
     composer_transition_from: Option<gpui::Pixels>,
     composer_transition_generation: usize,
     composer_motion_finished: Rc<Cell<bool>>,
+    tasks_expanded: bool,
+    task_cache: Option<Rc<TaskCache>>,
     _subscriptions: Vec<Subscription>,
 }
 impl CodexView {
@@ -606,6 +621,8 @@ impl CodexView {
             composer_transition_from: None,
             composer_transition_generation: 0,
             composer_motion_finished: Rc::new(Cell::new(true)),
+            tasks_expanded: false,
+            task_cache: None,
             checkout_context: None,
             _subscriptions: subscriptions,
         }
@@ -1623,6 +1640,308 @@ impl CodexView {
         cx.notify();
     }
 
+    fn toggle_tasks(&mut self, cx: &mut Context<Self>) {
+        self.tasks_expanded = !self.tasks_expanded;
+        cx.notify();
+    }
+
+    /// The docked, read-only checklist above the composer. `jumps[i]` is the
+    /// transcript child where task `i` started.
+    fn task_strip(
+        &self,
+        list: &TaskList,
+        status: codex::Status,
+        jumps: Vec<usize>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let expanded = self.tasks_expanded;
+        let dimmed = list.stale;
+        let phase = task_phase(status, dimmed);
+        let waiting = phase == TaskPhase::Waiting && !list.all_done();
+        let (done, total) = (list.done(), list.total());
+        let summary = task_summary(list, phase);
+        let header_status = task_header_status(list);
+        let separator = || div().flex_shrink_0().text_color(c::FG_MUTE()).child("·");
+        let note = match (&summary, expanded) {
+            // Expanded, the rows carry the step; the header keeps only the state.
+            (TaskSummary::Waiting(_), true) => Some(
+                div()
+                    .flex_shrink_0()
+                    .text_color(c::AMBER())
+                    .child("Waiting for you")
+                    .into_any_element(),
+            ),
+            (TaskSummary::Stopped(_), true) => Some(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(summary.text())
+                    .into_any_element(),
+            ),
+            (_, true) | (TaskSummary::None, false) => None,
+            // Trailing notes grow into the slack: GPUI truncates by summed glyph
+            // advances, which exceed a content-sized box's kerned width. The
+            // step therefore trails the fixed "Waiting for you".
+            (TaskSummary::Waiting(step), false) => Some(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(c::AMBER())
+                            .child("Waiting for you"),
+                    )
+                    .child(separator())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(c::FG())
+                            .child(step.clone()),
+                    )
+                    .into_any_element(),
+            ),
+            (TaskSummary::Now(label), false) => Some(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(c::FG())
+                    .child(label.clone())
+                    .into_any_element(),
+            ),
+            (TaskSummary::AllDone(_) | TaskSummary::Stopped(_), false) => Some(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(summary.text())
+                    .into_any_element(),
+            ),
+        };
+        let progress = format!("{done} of {total} done");
+        let cluster = div()
+            .id("codex-task-strip-summary")
+            .debug_selector(|| "codex-task-strip-summary".into())
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_LG))
+            .when(dimmed, |cluster| cluster.opacity(OPACITY_DISABLED))
+            .when(!expanded, |cluster| {
+                cluster.child(animated_task_mark(
+                    "codex-task-strip-mark",
+                    header_status,
+                    task_mark_phase(header_status, phase, dimmed),
+                    cx,
+                ))
+            })
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(c::FG())
+                    .child("Tasks"),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(format!("{done}/{total}")),
+            )
+            .child(task_meter(done, total, ICON_BTN_W))
+            .when_some(note, |cluster, note| cluster.child(separator()).child(note));
+        let header = div()
+            .id("codex-task-strip")
+            .debug_selector(|| "codex-task-strip".into())
+            .role(gpui::Role::Button)
+            .aria_label(format!("Tasks, {progress}"))
+            .aria_description(summary.text())
+            .aria_expanded(expanded)
+            .tab_index(0)
+            .w_full()
+            .h(rpx(TASK_STRIP_HEAD_H))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_LG))
+            .px(rpx(SPACE_2XL))
+            .text_size(rpx(TEXT_SMALL))
+            .text_color(c::FG_DIM())
+            .whitespace_nowrap()
+            .hover(|style| style.bg(c::MENU_HOVER()))
+            .focus_visible(|style| style.bg(c::MENU_HOVER()))
+            .when(expanded, |header| {
+                header.border_b_1().border_color(c::BORDER_SOFT())
+            })
+            .child(crate::icons::icon(
+                if expanded { "chev-down" } else { "chev-right" },
+                ICON_SM,
+                c::FG_DIM(),
+            ))
+            .child(cluster)
+            .when(dimmed, |header| {
+                header.child(
+                    div()
+                        .id("codex-task-strip-stale")
+                        .debug_selector(|| "codex-task-strip-stale".into())
+                        .flex_shrink_0()
+                        .h(rpx(TASK_PILL_H))
+                        .flex()
+                        .items_center()
+                        .px(rpx(SPACE_MD))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(c::BORDER())
+                        .text_size(rpx(TEXT_MICRO))
+                        .child("From previous turn"),
+                )
+            })
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if action_key(event) {
+                    this.toggle_tasks(cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_tasks(cx)));
+        let body = expanded.then(|| {
+            let mut rows = div()
+                .id("codex-task-list")
+                .debug_selector(|| "codex-task-list".into())
+                .flex_1()
+                .min_h_0()
+                .max_h(rpx(COMPOSER_MENU_MAX_H))
+                .overflow_y_scroll()
+                .p(rpx(SPACE_SM))
+                .flex()
+                .flex_col()
+                .when(dimmed, |rows| rows.opacity(OPACITY_DISABLED))
+                .when_some(list.explanation.clone(), |rows, explanation| {
+                    rows.child(
+                        div()
+                            .id("codex-task-explanation")
+                            .debug_selector(|| "codex-task-explanation".into())
+                            .px(rpx(SPACE_LG))
+                            .py(rpx(SPACE_SM))
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .whitespace_normal()
+                            .child(explanation),
+                    )
+                });
+            for (task_index, (task, child)) in list.tasks.iter().zip(jumps).enumerate() {
+                let current = task.status == TaskStatus::InProgress;
+                rows = rows.child(
+                    div()
+                        .id(("codex-task-row", task_index))
+                        .debug_selector(move || format!("codex-task-row-{task_index}"))
+                        .group("codex-task-row")
+                        .relative()
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("Jump to start: {}", task.step))
+                        .tab_index(0)
+                        .min_h(rpx(TASK_ROW_H))
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .px(rpx(SPACE_LG))
+                        .rounded(rpx(RADIUS_GROUP))
+                        .text_size(rpx(TEXT_BODY))
+                        .hover(|style| style.bg(c::MENU_HOVER()))
+                        .focus_visible(|style| style.bg(c::MENU_HOVER()))
+                        .child(animated_task_mark(
+                            ("codex-task-row-mark", task_index),
+                            task.status,
+                            task_mark_phase(task.status, phase, dimmed),
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(if task.status == TaskStatus::Completed {
+                                    c::FG_DIM()
+                                } else {
+                                    c::FG()
+                                })
+                                .when(current, |text| text.font_weight(gpui::FontWeight::MEDIUM))
+                                .child(task.step.clone()),
+                        )
+                        .child(
+                            div()
+                                .id(("codex-task-jump", task_index))
+                                .debug_selector(move || format!("codex-task-jump-{task_index}"))
+                                // Overlays the row's trailing edge on hover so the
+                                // resting title keeps the full width.
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right_0()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .px(rpx(SPACE_LG))
+                                .rounded_r(rpx(RADIUS_GROUP))
+                                .bg(c::MENU_HOVER())
+                                .opacity(0.0)
+                                .group_hover("codex-task-row", |style| style.opacity(1.0))
+                                .text_size(rpx(TEXT_MICRO))
+                                .text_color(c::FG_DIM())
+                                .child(crate::icons::icon("arrow-up", ICON_SM, c::FG_DIM()))
+                                .child("Jump to start"),
+                        )
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if action_key(event) {
+                                    this.jump_to_message(child, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.jump_to_message(child, window, cx);
+                        })),
+                );
+            }
+            rows
+        });
+        div()
+            .id("codex-task-strip-panel")
+            .debug_selector(|| "codex-task-strip-panel".into())
+            .role(gpui::Role::Group)
+            .aria_label(format!("Agent tasks, {progress}"))
+            .w_full()
+            // Shrinks by default: in a short pane the strip yields height to
+            // the composer, its list scrolls, and the header row stays visible.
+            .min_h(rpx(TASK_STRIP_HEAD_H))
+            .flex()
+            .flex_col()
+            .rounded(rpx(RADIUS_PANEL))
+            .border_1()
+            .border_color(c::BORDER_SOFT())
+            .bg(c::BG_RAIL())
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .when(waiting, |strip| strip.bg(c::AMBER_ROW_TINT()))
+                    .child(header)
+                    .children(body),
+            )
+            .into_any_element()
+    }
+
     fn render_message_minimap(
         &self,
         entries: &[MessageMinimapEntry],
@@ -2116,6 +2435,15 @@ impl Render for CodexView {
             }
         }
         self.last_content = content;
+        let task_key = task_cache_key(&state.saved.items);
+        let task_cache = match &self.task_cache {
+            Some(cache) if cache.key == task_key => cache.clone(),
+            _ => {
+                let cache = Rc::new(task_cache(&state.saved.items, task_key));
+                self.task_cache = Some(cache.clone());
+                cache
+            }
+        };
         // Only the empty bootstrap gets a connection interstitial. Existing work,
         // actionable requests, and failures keep their transcript and recovery UI.
         if state.status == codex::Status::Starting
@@ -2152,6 +2480,8 @@ impl Render for CodexView {
         }
         let minimap_entries = message_minimap_entries(&state.saved.items);
         let mut minimap_anchors = Vec::new();
+        // The first rendered child at or after each item, for jump-to-start.
+        let mut item_children = Vec::with_capacity(state.saved.items.len());
         let mut message_child = 0;
         let mut messages = div()
             .id("codex-messages")
@@ -2190,6 +2520,7 @@ impl Render for CodexView {
             .enumerate()
         {
             if index < state.saved.items.len() {
+                item_children.push(message_child);
                 let blocks = self.question_blocks_at(index, &state, window, cx);
                 message_child += blocks.len();
                 messages = messages.children(blocks);
@@ -2311,6 +2642,27 @@ impl Render for CodexView {
                     message_child += 1;
                     messages = messages.child(compaction_divider(index, codex::item_text(item)));
                 }
+                continue;
+            }
+            if tasks::is_checklist(item) {
+                // Snapshots live in the strip; the transcript keeps only what changed.
+                let Some(changes) = task_cache
+                    .changes
+                    .get(&index)
+                    .filter(|changes| !changes.is_empty())
+                else {
+                    continue;
+                };
+                message_child += 1;
+                messages = messages.child(
+                    div()
+                        .id(("codex-message-anchor", index))
+                        .debug_selector(move || format!("codex-message-anchor-{index}"))
+                        .w_full()
+                        .max_w(rpx(CHAT_MAX_W))
+                        .flex()
+                        .child(task_diff_row(index, changes)),
+                );
                 continue;
             }
             let tool = is_tool_item(item);
@@ -3178,6 +3530,21 @@ impl Render for CodexView {
                 })
         });
         let queued = self.queue_tray(&state, window, cx);
+        let task_strip = task_cache.list.as_ref().map(|list| {
+            let rendered = message_child;
+            let jumps = list
+                .tasks
+                .iter()
+                .map(|task| {
+                    item_children
+                        .get(task.started_at)
+                        .copied()
+                        .unwrap_or(rendered)
+                        .min(rendered.saturating_sub(1))
+                })
+                .collect();
+            self.task_strip(list, state.status, jumps, cx)
+        });
         let mut attachments = div()
             .id("codex-attachments")
             .debug_selector(|| "codex-attachments".into())
@@ -3429,7 +3796,9 @@ impl Render for CodexView {
         let surface =
             surface.child(
                 div()
-                    .flex_shrink_0()
+                    // May shrink below its content so a short pane squeezes
+                    // the task strip instead of clipping the composer.
+                    .min_h_0()
                     .w_full()
                     .when(focused_launch, |rail| rail.my_auto().pt(rpx(SPACE_3XL)))
                     .px(rpx(SPACE_20))
@@ -3444,12 +3813,14 @@ impl Render for CodexView {
                             .flex_col()
                             .gap(rpx(SPACE_MD))
                             .when(focused_launch, |rail| rail.child(self.launch_intro(&state)))
+                            .when_some(task_strip, gpui::ParentElement::child)
                             .when(!self.composer_collapsed, |rail| rail.child(choices))
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
                             .child(
                         div()
                             .id("codex-composer")
                             .debug_selector(|| "codex-composer".into())
+                            .flex_shrink_0()
                             .w_full()
                             .max_w(rpx(CHAT_MAX_W))
                             .flex()
@@ -5122,6 +5493,227 @@ fn is_tool_item(item: &serde_json::Value) -> bool {
         item["type"].as_str(),
         Some("userMessage" | "agentMessage" | "plan" | codex::COMPACTION_ITEM)
     )
+}
+
+/// The agent's checklist and every snapshot's diff, derived once per checklist
+/// change rather than per frame.
+struct TaskCache {
+    key: u64,
+    list: Option<TaskList>,
+    changes: HashMap<usize, Vec<Change>>,
+}
+
+/// Changes only when a checklist snapshot changes or the transcript grows (a
+/// later user message makes the list stale), so streaming text reuses the cache.
+fn task_cache_key(items: &[serde_json::Value]) -> u64 {
+    let mut hasher = rustc_hash::FxHasher::default();
+    items.len().hash(&mut hasher);
+    for (index, item) in items.iter().enumerate() {
+        if tasks::is_checklist(item) {
+            index.hash(&mut hasher);
+            hash_transcript_value(item, &mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+fn task_cache(items: &[serde_json::Value], key: u64) -> TaskCache {
+    TaskCache {
+        key,
+        list: tasks::current(items),
+        changes: items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| tasks::is_checklist(item))
+            .map(|(index, _)| (index, tasks::changes_at(items, index)))
+            .collect(),
+    }
+}
+
+/// How in-progress marks read for the session's state. A list left behind by a
+/// newer turn is Stale (and the strip dims); a finished or idle turn with
+/// unfinished items keeps the same static mark without dimming.
+fn task_phase(status: codex::Status, stale: bool) -> TaskPhase {
+    if stale {
+        return TaskPhase::Stale;
+    }
+    match status {
+        codex::Status::Starting | codex::Status::Working => TaskPhase::Running,
+        codex::Status::Waiting => TaskPhase::Waiting,
+        codex::Status::Interrupted | codex::Status::Failed | codex::Status::Disconnected => {
+            TaskPhase::Halted
+        }
+        codex::Status::Idle | codex::Status::Done => TaskPhase::Stale,
+    }
+}
+
+/// Completed marks stay green unless the whole strip is dimmed as stale.
+fn task_mark_phase(status: TaskStatus, phase: TaskPhase, dimmed: bool) -> TaskPhase {
+    if status == TaskStatus::Completed && !dimmed {
+        TaskPhase::Running
+    } else {
+        phase
+    }
+}
+
+/// The status whose mark leads the strip header.
+fn task_header_status(list: &TaskList) -> TaskStatus {
+    if list.all_done() {
+        TaskStatus::Completed
+    } else if list.current().is_some() {
+        TaskStatus::InProgress
+    } else {
+        TaskStatus::Pending
+    }
+}
+
+/// What the strip header says after its count and meter.
+#[derive(Debug, PartialEq)]
+enum TaskSummary {
+    /// "All N tasks done", secondary.
+    AllDone(usize),
+    /// The step text, then "Waiting for you" in amber.
+    Waiting(String),
+    /// "Stopped at {step}", secondary.
+    Stopped(String),
+    /// The current task's activeForm, else its step.
+    Now(String),
+    None,
+}
+
+impl TaskSummary {
+    fn text(&self) -> String {
+        match self {
+            Self::AllDone(total) => format!("All {total} tasks done"),
+            Self::Waiting(step) => format!("{step} · Waiting for you"),
+            Self::Stopped(step) => format!("Stopped at {step}"),
+            Self::Now(label) => label.clone(),
+            Self::None => String::new(),
+        }
+    }
+}
+
+fn task_summary(list: &TaskList, phase: TaskPhase) -> TaskSummary {
+    if list.all_done() {
+        return TaskSummary::AllDone(list.total());
+    }
+    let Some(current) = list.current() else {
+        return TaskSummary::None;
+    };
+    match phase {
+        TaskPhase::Waiting => TaskSummary::Waiting(current.step.clone()),
+        TaskPhase::Halted => TaskSummary::Stopped(current.step.clone()),
+        TaskPhase::Running | TaskPhase::Stale => {
+            list.now_label().map_or(TaskSummary::None, |label| {
+                TaskSummary::Now(label.to_owned())
+            })
+        }
+    }
+}
+
+/// The transcript diff row's text after "Tasks": `(verb, task)` pairs.
+fn task_change_parts(changes: &[Change]) -> Vec<(&'static str, &str)> {
+    changes
+        .iter()
+        .map(|change| match change {
+            Change::Completed(step) => ("completed", step.as_str()),
+            Change::Started(step) => ("started", step.as_str()),
+            Change::Added(step) => ("added", step.as_str()),
+            Change::Removed(step) => ("removed", step.as_str()),
+        })
+        .collect()
+}
+
+/// `· verb task` runs with the separators and verbs muted and tasks secondary.
+fn task_change_text(
+    changes: &[Change],
+) -> (String, Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>) {
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    let mute = gpui::HighlightStyle {
+        color: Some(c::FG_MUTE()),
+        ..Default::default()
+    };
+    let dim = gpui::HighlightStyle {
+        color: Some(c::FG_DIM()),
+        ..Default::default()
+    };
+    for (verb, step) in task_change_parts(changes) {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        let start = text.len();
+        let _ = write!(text, "· {verb} ");
+        highlights.push((start..text.len(), mute));
+        let start = text.len();
+        text.push_str(step);
+        highlights.push((start..text.len(), dim));
+    }
+    (text, highlights)
+}
+
+/// One task mark; the running spinner steps through its frames unless motion is reduced.
+fn animated_task_mark(
+    id: impl Into<gpui::ElementId>,
+    status: TaskStatus,
+    phase: TaskPhase,
+    cx: &App,
+) -> gpui::AnyElement {
+    let slot = div()
+        .size(rpx(ICON_SM))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center();
+    if status == TaskStatus::InProgress && phase == TaskPhase::Running && !cx.reduce_motion() {
+        slot.with_animation(
+            id.into(),
+            gpui::Animation::new(TASK_SPINNER_PERIOD).repeat(),
+            move |slot, progress| {
+                let frame =
+                    (progress * crate::entities::animation_clock::SPINNER_FRAMES as f32) as u64;
+                slot.child(task_mark(status, phase, frame * SPINNER_TICKS_PER_FRAME))
+            },
+        )
+        .into_any_element()
+    } else {
+        slot.child(task_mark(status, phase, 0)).into_any_element()
+    }
+}
+
+/// Compact transcript record of one checklist snapshot: list icon, "Tasks",
+/// then what changed, on one truncated line.
+fn task_diff_row(index: usize, changes: &[Change]) -> gpui::Stateful<gpui::Div> {
+    let (text, highlights) = task_change_text(changes);
+    div()
+        .id(("codex-task-diff", index))
+        .debug_selector(move || format!("codex-task-diff-{index}"))
+        .w_full()
+        .min_w_0()
+        .h(rpx(CONTROL_H))
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_MD))
+        .text_size(rpx(TEXT_SMALL))
+        .text_color(c::FG_DIM())
+        .whitespace_nowrap()
+        .aria_label(format!("Tasks {text}"))
+        .child(crate::icons::icon("list", ICON_SM, c::FG_MUTE()))
+        .child(
+            div()
+                .flex_shrink_0()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child("Tasks"),
+        )
+        .child(
+            div()
+                .id(("codex-task-diff-text", index))
+                .debug_selector(move || format!("codex-task-diff-text-{index}"))
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(gpui::StyledText::new(text).with_highlights(highlights)),
+        )
 }
 
 /// Compaction is running: the provider said so, or its item has not completed yet.
@@ -9220,7 +9812,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn claude_plan_keeps_checklist_visible_and_opens_original_tool_details(
+    fn claude_checklist_is_one_diff_row_and_legacy_plan_keeps_tool_details(
         cx: &mut gpui::TestAppContext,
     ) {
         let (view, cx, _, _) = fixture(cx);
@@ -9228,12 +9820,20 @@ mod tests {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
                     session.state.saved.provider = codex::Provider::Claude;
-                    session.state.saved.items = vec![serde_json::json!({
-                        "id":"claude-plan", "type":"plan", "tool":"TaskUpdate",
-                        "text":"- [x] Verify parity", "status":"completed",
-                        "arguments":{"taskId":"7","status":"completed"},
-                        "result":{"content":[{"type":"text","text":"Updated task #7 status"}]}
-                    })];
+                    session.state.saved.items = vec![
+                        // A tool result with no structured list keeps today's rendering.
+                        serde_json::json!({
+                            "id":"claude-plan", "type":"plan", "tool":"TaskUpdate",
+                            "text":"- [x] Verify parity", "status":"completed",
+                            "arguments":{"taskId":"7","status":"completed"},
+                            "result":{"content":[{"type":"text","text":"Updated task #7 status"}]}
+                        }),
+                        serde_json::json!({
+                            "id":"claude-todos", "type":"plan", "tool":"TodoWrite",
+                            "text":"- [x] Verify parity", "status":"completed",
+                            "plan":[{"id":"todo-0","step":"Verify parity","status":"completed"}]
+                        }),
+                    ];
                     cx.notify();
                 });
             });
@@ -9250,6 +9850,10 @@ mod tests {
         cx.simulate_click(toggle.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("codex-plan-detail-0").is_none());
+        // The checklist snapshot is a compact diff row with no body or disclosure.
+        assert!(cx.debug_bounds("codex-task-diff-1").is_some());
+        assert!(cx.debug_bounds("codex-message-body-1").is_none());
+        assert!(cx.debug_bounds("codex-toggle-details-1").is_none());
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
@@ -9261,6 +9865,243 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("codex-message-body-0").is_some());
         assert!(cx.debug_bounds("codex-toggle-details-0").is_none());
+    }
+
+    fn task_list(statuses: &[TaskStatus], stale: bool) -> TaskList {
+        TaskList {
+            tasks: statuses
+                .iter()
+                .enumerate()
+                .map(|(index, status)| grove_core::tasks::Task {
+                    id: index.to_string(),
+                    step: format!("Step {index}"),
+                    active_form: (index == 1).then(|| "Doing step 1".to_owned()),
+                    status: *status,
+                    started_at: index,
+                })
+                .collect(),
+            explanation: None,
+            item: 0,
+            stale,
+        }
+    }
+
+    #[test]
+    fn task_phase_maps_session_status_and_stale_lists() {
+        for (status, phase) in [
+            (Status::Starting, TaskPhase::Running),
+            (Status::Working, TaskPhase::Running),
+            (Status::Waiting, TaskPhase::Waiting),
+            (Status::Interrupted, TaskPhase::Halted),
+            (Status::Failed, TaskPhase::Halted),
+            (Status::Disconnected, TaskPhase::Halted),
+            (Status::Idle, TaskPhase::Stale),
+            (Status::Done, TaskPhase::Stale),
+        ] {
+            assert_eq!(task_phase(status, false), phase, "{status:?}");
+            assert_eq!(task_phase(status, true), TaskPhase::Stale, "{status:?}");
+        }
+        // Completed marks stay green unless the whole strip is dimmed.
+        assert_eq!(
+            task_mark_phase(TaskStatus::Completed, TaskPhase::Stale, false),
+            TaskPhase::Running
+        );
+        assert_eq!(
+            task_mark_phase(TaskStatus::Completed, TaskPhase::Stale, true),
+            TaskPhase::Stale
+        );
+        assert_eq!(
+            task_mark_phase(TaskStatus::InProgress, TaskPhase::Halted, false),
+            TaskPhase::Halted
+        );
+    }
+
+    #[test]
+    fn task_summary_reads_per_state() {
+        use TaskStatus::{Completed, InProgress, Pending};
+        let list = task_list(&[Completed, InProgress, Pending], false);
+        assert_eq!(task_header_status(&list), InProgress);
+        assert_eq!(
+            task_summary(&list, TaskPhase::Running).text(),
+            "Doing step 1"
+        );
+        assert_eq!(
+            task_summary(&list, TaskPhase::Waiting),
+            TaskSummary::Waiting("Step 1".into())
+        );
+        assert_eq!(
+            task_summary(&list, TaskPhase::Waiting).text(),
+            "Step 1 · Waiting for you"
+        );
+        assert_eq!(
+            task_summary(&list, TaskPhase::Halted).text(),
+            "Stopped at Step 1"
+        );
+        assert_eq!(task_summary(&list, TaskPhase::Stale).text(), "Doing step 1");
+        let done = task_list(&[Completed; 7], false);
+        assert_eq!(task_header_status(&done), Completed);
+        for phase in [TaskPhase::Running, TaskPhase::Halted, TaskPhase::Waiting] {
+            assert_eq!(task_summary(&done, phase).text(), "All 7 tasks done");
+        }
+        let pending = task_list(&[Completed, Pending], false);
+        assert_eq!(task_header_status(&pending), Pending);
+        assert_eq!(
+            task_summary(&pending, TaskPhase::Running),
+            TaskSummary::None
+        );
+    }
+
+    #[test]
+    fn task_diff_text_mutes_verbs_and_keeps_change_order() {
+        let changes = [
+            Change::Completed("Add schema".into()),
+            Change::Started("Render strip".into()),
+            Change::Added("Run tests".into()),
+            Change::Removed("Old step".into()),
+        ];
+        let (text, highlights) = task_change_text(&changes);
+        assert_eq!(
+            text,
+            "· completed Add schema · started Render strip · added Run tests · removed Old step"
+        );
+        assert_eq!(highlights.len(), 8);
+        assert_eq!(&text[highlights[0].0.clone()], "· completed ");
+        assert_eq!(highlights[0].1.color, Some(c::FG_MUTE()));
+        assert_eq!(&text[highlights[1].0.clone()], "Add schema");
+        assert_eq!(highlights[1].1.color, Some(c::FG_DIM()));
+        assert!(task_change_text(&[]).0.is_empty());
+    }
+
+    #[test]
+    fn spinner_ticks_per_frame_inverts_the_animation_clock() {
+        for frame in 0..crate::entities::animation_clock::SPINNER_FRAMES {
+            assert_eq!(
+                crate::entities::animation_clock::spinner_frame(frame * SPINNER_TICKS_PER_FRAME),
+                frame
+            );
+        }
+    }
+
+    #[test]
+    fn task_cache_ignores_streaming_text_but_tracks_checklists_and_new_items() {
+        let mut items = vec![
+            json!({"id":"u1", "type":"userMessage", "content":[{"text":"Go"}]}),
+            json!({"id":"p1", "type":"plan", "text":"", "plan":[{"step":"A","status":"inProgress"}]}),
+            json!({"id":"a1", "type":"agentMessage", "text":"Working"}),
+        ];
+        let key = task_cache_key(&items);
+        items[2]["text"] = json!("Working on it");
+        assert_eq!(task_cache_key(&items), key);
+        items[1]["plan"][0]["status"] = json!("completed");
+        let changed = task_cache_key(&items);
+        assert_ne!(changed, key);
+        items.push(json!({"id":"u2", "type":"userMessage", "content":[{"text":"Next"}]}));
+        assert_ne!(task_cache_key(&items), changed);
+        let cache = task_cache(&items, task_cache_key(&items));
+        assert!(cache.list.as_ref().is_some_and(|list| list.stale));
+        assert_eq!(cache.changes.len(), 1);
+    }
+
+    #[gpui::test]
+    fn checklist_snapshots_render_diff_rows_and_proposed_plans_stay(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.items = vec![
+                        json!({"id":"u1", "type":"userMessage", "content":[{"text":"Go"}]}),
+                        json!({"id":"grove-plan-t1", "type":"plan", "text":"- [ ] A", "plan":[
+                            {"step":"A","status":"inProgress"},{"step":"B","status":"pending"}]}),
+                        json!({"id":"proposed", "type":"plan", "text":"Proposed plan body"}),
+                        // Identical snapshot: nothing changed, so nothing renders.
+                        json!({"id":"grove-plan-t2", "type":"plan", "text":"- [ ] A", "plan":[
+                            {"step":"A","status":"inProgress"},{"step":"B","status":"pending"}]}),
+                    ];
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-task-diff-1").is_some());
+        assert!(cx.debug_bounds("codex-message-body-1").is_none());
+        assert!(cx.debug_bounds("codex-message-body-2").is_some());
+        assert!(cx.debug_bounds("codex-task-diff-3").is_none());
+        assert!(cx.debug_bounds("codex-message-anchor-3").is_none());
+        let changes = view.read_with(cx, |view, _| {
+            view.task_cache.as_ref().unwrap().changes[&1].clone()
+        });
+        assert_eq!(task_change_text(&changes).0, "· started A · added B");
+    }
+
+    #[gpui::test]
+    fn task_strip_docks_above_composer_toggles_and_jumps_to_task_start(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.simulate_resize(gpui::size(gpui::px(1000.0), gpui::px(800.0)));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-task-strip").is_none());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    session.state.saved.items = vec![
+                        json!({"id":"u1", "type":"userMessage", "content":[{"text":"Go"}]}),
+                        json!({"id":"a0", "type":"agentMessage", "text":"Long reply.\n\n".repeat(60)}),
+                        json!({"id":"grove-plan-t1", "type":"plan", "text":"", "plan":[
+                            {"step":"Inspect","status":"completed"},
+                            {"step":"Implement","status":"inProgress"},
+                            {"step":"Test","status":"pending"}]}),
+                        json!({"id":"a1", "type":"agentMessage", "text":"More work.\n\n".repeat(60)}),
+                    ];
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        let strip = cx.debug_bounds("codex-task-strip-panel").unwrap();
+        let composer = cx.debug_bounds("codex-composer").unwrap();
+        assert!(strip.bottom() <= composer.top());
+        assert!((strip.left() - composer.left()).abs() < gpui::px(1.0));
+        assert!((strip.right() - composer.right()).abs() < gpui::px(1.0));
+        assert!(cx.debug_bounds("codex-task-row-0").is_none());
+        assert!(cx.debug_bounds("codex-task-strip-stale").is_none());
+        // Click and keyboard both toggle the in-memory expansion.
+        let header = cx.debug_bounds("codex-task-strip").unwrap();
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(view.read_with(cx, |view, _| view.tasks_expanded));
+        assert!(cx.debug_bounds("codex-task-row-2").is_some());
+        let expanded = cx.debug_bounds("codex-task-strip-panel").unwrap();
+        assert!(expanded.top() < strip.top(), "the strip grows upward");
+        let row = cx.debug_bounds("codex-task-row-1").unwrap();
+        let jump = cx.debug_bounds("codex-task-jump-1").unwrap();
+        assert!((jump.right() - row.right()).abs() < gpui::px(1.0));
+        cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_click(row.center(), gpui::Modifiers::default());
+        draw(cx);
+        let transcript = cx.debug_bounds("codex-messages").unwrap();
+        let anchor = cx.debug_bounds("codex-message-anchor-2").unwrap();
+        assert!(
+            (anchor.top() - transcript.top()).abs() < gpui::px(1.0),
+            "jump aligns the snapshot where the task started"
+        );
+        assert!(view.read_with(cx, |view, _| view.composer_collapsed));
+        // A new turn without a new list dims the strip and labels it.
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.tasks_expanded = false;
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.items.push(
+                        json!({"id":"u2", "type":"userMessage", "content":[{"text":"Next"}]}),
+                    );
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-task-strip-stale").is_some());
     }
 
     #[test]
