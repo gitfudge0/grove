@@ -1072,5 +1072,18 @@ mod tests {
         assert_eq!(header.top(), gpui::px(0.));
         assert!(panel.top() >= header.bottom());
         assert!(cx.debug_bounds("checkout-card").is_none());
+        let summary = cx.debug_bounds("checkout-summary").unwrap();
+        cx.simulate_click(summary.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("checkout-card").is_some());
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("checkout-card").is_none());
     }
 }
