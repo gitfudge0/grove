@@ -762,8 +762,9 @@ impl Sidebar {
             panel = panel.child(
                 transcript_action("checkout-summary", "Checkout", false, window, cx)
                     .with_focus_handle(self.checkout_panel.trigger_focus["summary"].clone())
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, window, cx| {
                         this.checkout_panel.expanded = !this.checkout_panel.expanded;
+                        this.checkout_panel.trigger_focus["summary"].focus(window, cx);
                         cx.notify();
                     })),
             );
