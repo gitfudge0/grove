@@ -1,3 +1,40 @@
+# Grove 1.1.0
+
+Grove 1.1.0 brings native agent conversations, richer previews, editable messages, task tracking, and checkout tools together. This release summary covers all major changes introduced from 1.0.11 through 1.1.0, including 1.0.11 and 1.0.12.
+
+## Native Codex and Claude Code conversations
+
+- Work with Codex and Claude Code in native chat, with conversation history, model controls, attachments, tool activity, approvals, and session status inside Grove.
+- Answer structured questions directly in the conversation, including choices, free text, numbers, secrets, and forms. Review confirmed answer receipts without losing your composer draft.
+- Follow clearer file changes, searches, tool details, subagent activity, and work summaries. Expand work disclosures, see turn durations, and navigate long conversations with the minimap.
+- Read syntax-highlighted code and rendered Mermaid diagrams, open Markdown artifact links, and interact with inline HTML previews on macOS, Linux, and Windows.
+
+## Messages and control
+
+- Queue messages while an agent works, then edit or remove them before they are sent. Enter queues a message; Cmd+Enter on macOS or Ctrl+Enter elsewhere steers the active turn.
+- Steer both Codex and Claude Code natively, see steering messages immediately, and use the unified Send/Stop composer controls.
+- Edit sent messages inline and resend with checkpoint-backed workspace recovery. Preserve unrelated composer text and images, with recovery state retained for reconnects.
+- Keep your place while replies stream, select transcript text reliably, and use smoother composer scrolling, focus, image references, and document controls.
+
+## Native task tracking and session navigation
+
+- Follow Codex and Claude Code task lists above the composer, with progress, the current step, and expandable checklists. Jump from a task to the point where it began.
+- Keep checklists across turns, with stable disclosure preferences during browsing, compaction, and composer collapse. Task updates appear as compact transcript entries.
+- See task progress and clearer working or needs-you states in sidebar sessions and grid headers, with refined project and session navigation.
+
+## Checkout tools
+
+- Access the active session's checkout card at the upper right of the main content on wide layouts, or through the header disclosure on narrow layouts. Inspect changes, see outgoing commit status, open the checkout in Finder, and add or run project scripts.
+- Generate commit messages and commit changes with lightweight background agents, with explicit progress, cancellation, and retry feedback.
+- Push changes or publish a branch from the checkout card. Commit, push, and publish actions have distinct icons, with shimmer loading states and tighter card spacing.
+
+## Settings, performance, and maintenance
+
+- Find settings in compact tabs and use simpler composer hints.
+- Reduce conversation rendering work and bound runtime caches to keep long sessions responsive.
+- Ship smaller release binaries and update rustls dependencies to address security advisories.
+- Remove the Grove CLI and agent delegation controls as native session workflows take their place.
+
 # Grove 1.0.12
 
 ## Native conversations

@@ -2,6 +2,33 @@
   "schema_version": 1,
   "releases": [
     {
+      "version": "1.1.0",
+      "enabled": true,
+      "title": "What's new in Grove",
+      "slides": [
+        {
+          "id": "native-conversations",
+          "title": "Work with agents in native chat",
+          "description": "Use Codex and Claude Code inside Grove, with approvals, structured questions, attachments, clear tool activity, and conversation navigation. Read Mermaid diagrams and interact with inline HTML previews."
+        },
+        {
+          "id": "message-control",
+          "title": "Refine and redirect your work",
+          "description": "Queue and edit upcoming messages, steer active turns, or edit sent messages inline with checkpoint-backed workspace recovery. Your unrelated composer drafts stay intact."
+        },
+        {
+          "id": "task-tracking",
+          "title": "Follow tasks across turns",
+          "description": "Track native agent checklists above the composer and see progress in the sidebar and grid. Expand the task list or jump to where a task started, with checklist state preserved across turns."
+        },
+        {
+          "id": "checkout-tools",
+          "title": "Keep checkout actions close",
+          "description": "Use the checkout card at the upper right on wide layouts or its header disclosure on narrow layouts. Inspect changes, see outgoing commit status, open Finder, add or run project scripts, and commit, push, or publish with clear progress."
+        }
+      ]
+    },
+    {
       "version": "1.0.11",
       "enabled": true,
       "title": "What's new in Grove",
