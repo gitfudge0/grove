@@ -26,7 +26,7 @@ use gpui_component::{
 };
 use grove_core::codex::{self, Action, SubmissionMode};
 use grove_core::elicitation::{ElicitationKind, ElicitationMode, ElicitationRequest};
-use grove_core::tasks::{self, Change, TaskList, TaskStatus};
+use grove_core::tasks::{self, TaskList, TaskStatus};
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
@@ -98,9 +98,8 @@ const CONTEXT_WARN_PERCENT: u32 = 80;
 const CONTEXT_RING_STROKE: f32 = 1.5;
 /// Polyline segments per full turn of the context ring.
 const CONTEXT_RING_SEGMENTS: f32 = 48.0;
-/// The task strip's header row: a dense control plus breathing room, matching
-/// the 32px session rows it mirrors in the sidebar.
-const TASK_STRIP_HEAD_H: f32 = CONTROL_H + SPACE_LG;
+/// The task strip header uses the compact control height.
+const TASK_STRIP_HEAD_H: f32 = CONTROL_H;
 /// One task row in the expanded strip (DESIGN.md row-h).
 const TASK_ROW_H: f32 = CONTROL_H + SPACE_SM;
 /// The "From previous turn" pill: a dense control less its vertical inset.
@@ -621,7 +620,7 @@ impl CodexView {
             composer_transition_from: None,
             composer_transition_generation: 0,
             composer_motion_finished: Rc::new(Cell::new(true)),
-            tasks_expanded: false,
+            tasks_expanded: true,
             task_cache: None,
             checkout_context: None,
             _subscriptions: subscriptions,
@@ -1762,7 +1761,6 @@ impl CodexView {
             .text_size(rpx(TEXT_SMALL))
             .text_color(c::FG_DIM())
             .whitespace_nowrap()
-            .hover(|style| style.bg(c::MENU_HOVER()))
             .focus_visible(|style| style.bg(c::MENU_HOVER()))
             .child(cluster)
             .child(crate::icons::icon(
@@ -1898,6 +1896,7 @@ impl CodexView {
         composer_tray(window)
             .id("codex-task-strip-panel")
             .debug_selector(|| "codex-task-strip-panel".into())
+            .when(!expanded, |panel| panel.bg(c::BG()))
             .role(gpui::Role::Group)
             .aria_label(format!("Agent tasks, {progress}"))
             // Shrinks by default: in a short pane the strip yields height to
@@ -2621,24 +2620,7 @@ impl Render for CodexView {
                 continue;
             }
             if tasks::is_checklist(item) {
-                // Snapshots live in the strip; the transcript keeps only what changed.
-                let Some(changes) = task_cache
-                    .changes
-                    .get(&index)
-                    .filter(|changes| !changes.is_empty())
-                else {
-                    continue;
-                };
-                message_child += 1;
-                messages = messages.child(
-                    div()
-                        .id(("codex-message-anchor", index))
-                        .debug_selector(move || format!("codex-message-anchor-{index}"))
-                        .w_full()
-                        .max_w(rpx(CHAT_MAX_W))
-                        .flex()
-                        .child(task_diff_row(index, changes)),
-                );
+                // Checklist updates belong in the docked panel, not the transcript.
                 continue;
             }
             let tool = is_tool_item(item);
@@ -3336,10 +3318,13 @@ impl Render for CodexView {
             .min_h_0()
             .min_w_0()
             .flex()
-            .child(minimap)
+            .when(!minimap_entries.is_empty(), |transcript| {
+                transcript.pl(rpx(CHROME_CONTROL_H))
+            })
             .child(messages);
         let mut surface = div()
             .id("codex-conversation")
+            .relative()
             .size_full()
             .min_h_0()
             .flex()
@@ -3347,7 +3332,22 @@ impl Render for CodexView {
             .font_family(crate::fonts::UI_FAMILY)
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
-            .when(!focused_launch, |surface| surface.child(transcript))
+            .when(!focused_launch, |surface| {
+                surface
+                    // Anchor navigation to the pane, independent of the transcript's
+                    // changing height above tasks, attachments, and the composer.
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left_0()
+                            .w(rpx(CHROME_CONTROL_H))
+                            .flex()
+                            .child(minimap),
+                    )
+                    .child(transcript)
+            })
             .when(
                 focused_launch,
                 gpui::StatefulInteractiveElement::overflow_y_scroll,
@@ -3612,7 +3612,9 @@ impl Render for CodexView {
         } else {
             "Send · Enter · Start a new turn · Shift+Enter for a new line"
         };
-        let choices = self.composer_choices(&state, window, cx);
+        // An absent menu must not leave an empty flex child and an extra rail gap.
+        let choices = (!self.composer_collapsed && self.suggestion_choices(&state, cx).is_some())
+            .then(|| self.composer_choices(&state, window, cx));
         let collapsed = self.composer_collapsed;
         let target = self.composer_body_target.clone();
         let expanded_height = self.composer_expanded_height.clone();
@@ -3793,7 +3795,7 @@ impl Render for CodexView {
                             .gap(rpx(SPACE_MD))
                             .when(focused_launch, |rail| rail.child(self.launch_intro(&state)))
                             .when_some(task_strip, gpui::ParentElement::child)
-                            .when(!self.composer_collapsed, |rail| rail.child(choices))
+                            .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
                             .child(
                         div()
@@ -5470,12 +5472,10 @@ fn is_tool_item(item: &serde_json::Value) -> bool {
     )
 }
 
-/// The agent's checklist and every snapshot's diff, derived once per checklist
-/// change rather than per frame.
+/// The agent's checklist, derived once per checklist change rather than per frame.
 struct TaskCache {
     key: u64,
     list: Option<TaskList>,
-    changes: HashMap<usize, Vec<Change>>,
 }
 
 /// Changes only when a checklist snapshot changes or the transcript grows (a
@@ -5496,12 +5496,6 @@ fn task_cache(items: &[serde_json::Value], key: u64) -> TaskCache {
     TaskCache {
         key,
         list: tasks::current(items),
-        changes: items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| tasks::is_checklist(item))
-            .map(|(index, _)| (index, tasks::changes_at(items, index)))
-            .collect(),
     }
 }
 
@@ -5586,47 +5580,6 @@ fn task_summary(list: &TaskList, phase: TaskPhase) -> TaskSummary {
     }
 }
 
-/// The transcript diff row's text after "Tasks": `(verb, task)` pairs.
-fn task_change_parts(changes: &[Change]) -> Vec<(&'static str, &str)> {
-    changes
-        .iter()
-        .map(|change| match change {
-            Change::Completed(step) => ("completed", step.as_str()),
-            Change::Started(step) => ("started", step.as_str()),
-            Change::Added(step) => ("added", step.as_str()),
-            Change::Removed(step) => ("removed", step.as_str()),
-        })
-        .collect()
-}
-
-/// `· verb task` runs with the separators and verbs muted and tasks secondary.
-fn task_change_text(
-    changes: &[Change],
-) -> (String, Vec<(std::ops::Range<usize>, gpui::HighlightStyle)>) {
-    let mut text = String::new();
-    let mut highlights = Vec::new();
-    let mute = gpui::HighlightStyle {
-        color: Some(c::FG_MUTE()),
-        ..Default::default()
-    };
-    let dim = gpui::HighlightStyle {
-        color: Some(c::FG_DIM()),
-        ..Default::default()
-    };
-    for (verb, step) in task_change_parts(changes) {
-        if !text.is_empty() {
-            text.push(' ');
-        }
-        let start = text.len();
-        let _ = write!(text, "· {verb} ");
-        highlights.push((start..text.len(), mute));
-        let start = text.len();
-        text.push_str(step);
-        highlights.push((start..text.len(), dim));
-    }
-    (text, highlights)
-}
-
 /// One task mark; the running spinner steps through its frames unless motion is reduced.
 fn animated_task_mark(
     id: impl Into<gpui::ElementId>,
@@ -5654,41 +5607,6 @@ fn animated_task_mark(
     } else {
         slot.child(task_mark(status, phase, 0)).into_any_element()
     }
-}
-
-/// Compact transcript record of one checklist snapshot: list icon, "Tasks",
-/// then what changed, on one truncated line.
-fn task_diff_row(index: usize, changes: &[Change]) -> gpui::Stateful<gpui::Div> {
-    let (text, highlights) = task_change_text(changes);
-    div()
-        .id(("codex-task-diff", index))
-        .debug_selector(move || format!("codex-task-diff-{index}"))
-        .w_full()
-        .min_w_0()
-        .h(rpx(CONTROL_H))
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_MD))
-        .text_size(rpx(TEXT_SMALL))
-        .text_color(c::FG_DIM())
-        .whitespace_nowrap()
-        .aria_label(format!("Tasks {text}"))
-        .child(crate::icons::icon("list", ICON_SM, c::FG_MUTE()))
-        .child(
-            div()
-                .flex_shrink_0()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .child("Tasks"),
-        )
-        .child(
-            div()
-                .id(("codex-task-diff-text", index))
-                .debug_selector(move || format!("codex-task-diff-text-{index}"))
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(gpui::StyledText::new(text).with_highlights(highlights)),
-        )
 }
 
 /// Compaction is running: the provider said so, or its item has not completed yet.
@@ -7946,6 +7864,65 @@ mod tests {
     }
 
     #[gpui::test]
+    fn minimap_stays_anchored_when_tasks_and_composer_expand(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.items = vec![
+                        json!({"id":"u1", "type":"userMessage", "content":[{"text":"First input"}]}),
+                        json!({"id":"a1", "type":"agentMessage", "text":"First response"}),
+                        json!({"id":"u2", "type":"userMessage", "content":[{"text":"Second input"}]}),
+                        json!({"id":"tasks", "type":"plan", "plan":[
+                            {"step":"Inspect", "status":"completed"},
+                            {"step":"Implement", "status":"pending"},
+                            {"step":"Verify", "status":"pending"}]}),
+                    ];
+                    cx.notify();
+                });
+            });
+        });
+        for width in [1000.0, 400.0] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.tasks_expanded = false;
+                    view.composer_collapsed = true;
+                    view.input
+                        .update(cx, |input, cx| input.set_value("", window, cx));
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            let rail = cx.debug_bounds("codex-message-minimap").unwrap();
+            let marker = cx.debug_bounds("codex-minimap-message-0").unwrap();
+            let transcript = cx.debug_bounds("codex-messages").unwrap();
+            let composer = cx.debug_bounds("codex-composer").unwrap();
+            cx.update(|_, cx| view.update(cx, |view, cx| view.toggle_tasks(cx)));
+            draw(cx);
+            assert!(
+                cx.debug_bounds("codex-messages").unwrap().size.height < transcript.size.height
+            );
+            assert_eq!(cx.debug_bounds("codex-message-minimap").unwrap(), rail);
+            assert_eq!(cx.debug_bounds("codex-minimap-message-0").unwrap(), marker);
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.composer_collapsed = false;
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("A longer draft\n".repeat(20), window, cx);
+                    });
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("codex-composer").unwrap().size.height > composer.size.height);
+            assert_eq!(cx.debug_bounds("codex-message-minimap").unwrap(), rail);
+            assert_eq!(cx.debug_bounds("codex-minimap-message-0").unwrap(), marker);
+        }
+    }
+
+    #[gpui::test]
     fn minimap_keeps_many_turns_reachable_in_narrow_panes(cx: &mut gpui::TestAppContext) {
         let (view, cx, _, _) = fixture(cx);
         cx.simulate_resize(gpui::size(gpui::px(400.0), gpui::px(800.0)));
@@ -9788,7 +9765,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn claude_checklist_is_one_diff_row_and_legacy_plan_keeps_tool_details(
+    fn claude_checklists_are_hidden_and_legacy_plan_keeps_tool_details(
         cx: &mut gpui::TestAppContext,
     ) {
         let (view, cx, _, _) = fixture(cx);
@@ -9826,8 +9803,10 @@ mod tests {
         cx.simulate_click(toggle.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("codex-plan-detail-0").is_none());
-        // The checklist snapshot is a compact diff row with no body or disclosure.
-        assert!(cx.debug_bounds("codex-task-diff-1").is_some());
+        // Structured checklist updates only appear in the docked task panel.
+        assert!(cx.debug_bounds("codex-task-diff-1").is_none());
+        assert!(cx.debug_bounds("codex-message-anchor-1").is_none());
+        assert!(cx.debug_bounds("codex-task-strip").is_some());
         assert!(cx.debug_bounds("codex-message-body-1").is_none());
         assert!(cx.debug_bounds("codex-toggle-details-1").is_none());
         cx.update(|_, cx| {
@@ -9928,27 +9907,6 @@ mod tests {
     }
 
     #[test]
-    fn task_diff_text_mutes_verbs_and_keeps_change_order() {
-        let changes = [
-            Change::Completed("Add schema".into()),
-            Change::Started("Render strip".into()),
-            Change::Added("Run tests".into()),
-            Change::Removed("Old step".into()),
-        ];
-        let (text, highlights) = task_change_text(&changes);
-        assert_eq!(
-            text,
-            "· completed Add schema · started Render strip · added Run tests · removed Old step"
-        );
-        assert_eq!(highlights.len(), 8);
-        assert_eq!(&text[highlights[0].0.clone()], "· completed ");
-        assert_eq!(highlights[0].1.color, Some(c::FG_MUTE()));
-        assert_eq!(&text[highlights[1].0.clone()], "Add schema");
-        assert_eq!(highlights[1].1.color, Some(c::FG_DIM()));
-        assert!(task_change_text(&[]).0.is_empty());
-    }
-
-    #[test]
     fn spinner_ticks_per_frame_inverts_the_animation_clock() {
         for frame in 0..crate::entities::animation_clock::SPINNER_FRAMES {
             assert_eq!(
@@ -9975,11 +9933,10 @@ mod tests {
         assert_ne!(task_cache_key(&items), changed);
         let cache = task_cache(&items, task_cache_key(&items));
         assert!(cache.list.as_ref().is_some_and(|list| list.stale));
-        assert_eq!(cache.changes.len(), 1);
     }
 
     #[gpui::test]
-    fn checklist_snapshots_render_diff_rows_and_proposed_plans_stay(cx: &mut gpui::TestAppContext) {
+    fn checklist_snapshots_are_hidden_and_proposed_plans_stay(cx: &mut gpui::TestAppContext) {
         let (view, cx, _, _) = fixture(cx);
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
@@ -9998,15 +9955,18 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(cx.debug_bounds("codex-task-diff-1").is_some());
+        assert!(cx.debug_bounds("codex-task-diff-1").is_none());
+        assert!(cx.debug_bounds("codex-message-anchor-1").is_none());
         assert!(cx.debug_bounds("codex-message-body-1").is_none());
         assert!(cx.debug_bounds("codex-message-body-2").is_some());
         assert!(cx.debug_bounds("codex-task-diff-3").is_none());
         assert!(cx.debug_bounds("codex-message-anchor-3").is_none());
-        let changes = view.read_with(cx, |view, _| {
-            view.task_cache.as_ref().unwrap().changes[&1].clone()
+        let list = view.read_with(cx, |view, _| {
+            view.task_cache.as_ref().unwrap().list.clone().unwrap()
         });
-        assert_eq!(task_change_text(&changes).0, "· started A · added B");
+        assert_eq!(list.total(), 2);
+        assert_eq!(list.tasks[0].status, TaskStatus::InProgress);
+        assert!(cx.debug_bounds("codex-task-strip").is_some());
     }
 
     #[gpui::test]
@@ -10035,8 +9995,22 @@ mod tests {
             });
         });
         draw(cx);
+        assert!(view.read_with(cx, |view, _| view.tasks_expanded));
+        assert!(cx.debug_bounds("codex-task-row-2").is_some());
+        let initial_header = cx.debug_bounds("codex-task-strip").unwrap();
+        cx.simulate_click(initial_header.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(!view.read_with(cx, |view, _| view.tasks_expanded));
         let strip = cx.debug_bounds("codex-task-strip-panel").unwrap();
         let composer = cx.debug_bounds("codex-composer").unwrap();
+        let header = cx.debug_bounds("codex-task-strip").unwrap();
+        let rem_size = cx.update(|window, _| window.rem_size());
+        assert_eq!(header.size.height, rpx(CONTROL_H).to_pixels(rem_size));
+        assert_eq!(
+            header.top() - strip.top(),
+            rpx(SPACE_LG).to_pixels(rem_size) + gpui::px(1.0),
+            "the header keeps the tray's top padding inside its border"
+        );
         assert!(strip.top() < composer.top());
         assert!(
             strip.left() > composer.left(),
@@ -10056,6 +10030,17 @@ mod tests {
         assert!(cx.debug_bounds("codex-task-row-2").is_some());
         let expanded = cx.debug_bounds("codex-task-strip-panel").unwrap();
         assert!(expanded.top() < strip.top(), "the strip grows upward");
+        let expanded_header = cx.debug_bounds("codex-task-strip").unwrap();
+        assert_eq!(
+            header.top() - strip.top(),
+            expanded_header.top() - expanded.top(),
+            "collapsed and expanded headers keep the same top corner inset"
+        );
+        assert_eq!(
+            header.left() - strip.left(),
+            expanded_header.left() - expanded.left(),
+            "collapsed and expanded headers keep the same horizontal corner inset"
+        );
         let row = cx.debug_bounds("codex-task-row-1").unwrap();
         let jump = cx.debug_bounds("codex-task-jump-1").unwrap();
         assert!((jump.right() - row.right()).abs() < gpui::px(1.0));
@@ -10064,10 +10049,10 @@ mod tests {
         cx.simulate_click(row.center(), gpui::Modifiers::default());
         draw(cx);
         let transcript = cx.debug_bounds("codex-messages").unwrap();
-        let anchor = cx.debug_bounds("codex-message-anchor-2").unwrap();
+        let anchor = cx.debug_bounds("codex-message-anchor-3").unwrap();
         assert!(
             (anchor.top() - transcript.top()).abs() < gpui::px(1.0),
-            "jump aligns the snapshot where the task started"
+            "jump aligns the first transcript content after the hidden task update"
         );
         assert!(view.read_with(cx, |view, _| view.composer_collapsed));
         // A new turn without a new list dims the strip and labels it.

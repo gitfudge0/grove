@@ -3452,7 +3452,7 @@ impl Sidebar {
                                     .debug_selector(move || {
                                         format!("session-list-title-{}", id.raw())
                                     })
-                                    .child(title),
+                                    .child(single_line_session_title(&title)),
                             )
                             .child(motion::fast(
                                 div()
@@ -3646,6 +3646,55 @@ impl Sidebar {
             .gap(rpx(SPACE_SM))
             .items_center()
             .rounded(rpx(SESSION_ROW_RADIUS))
+            .child(
+                div()
+                    .id(("session-tree-leading", id.raw()))
+                    .debug_selector(move || format!("session-tree-leading-{}", id.raw()))
+                    .relative()
+                    .min_w(rpx(CONTROL_H))
+                    .h(rpx(CONTROL_H))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when_some(tasks.as_ref(), |slot, tasks| {
+                        slot.child(
+                            div()
+                                .group_hover("session-row", |progress| progress.opacity(0.0))
+                                .child(task_glance::row_progress(id, tasks)),
+                        )
+                    })
+                    .child(
+                        self.control(
+                            ("close-session", id.raw()),
+                            format!("Close {} in {}", meta.label, meta.project),
+                            Action::Close(id),
+                            cx,
+                        )
+                        .absolute()
+                        .inset_0()
+                        .w_full()
+                        .h_full()
+                        .debug_selector(move || format!("session-tree-close-{}", id.raw()))
+                        .opacity(0.0)
+                        .group_hover("session-row", |button| button.opacity(1.0))
+                        .focus_visible(|button| button.opacity(1.0))
+                        .when_some(
+                            self.session_close_bounds.get(&id).cloned(),
+                            |button, bounds| {
+                                button.child(
+                                    gpui::canvas(
+                                        move |rect, _, _| bounds.set(rect),
+                                        |_, (), _, _| {},
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                            },
+                        )
+                        .child(icon("close", ICON_XS, c::FG_DIM())),
+                    ),
+            )
             .child(motion::fast(
                 div()
                     .id(("session-tree-status", id.raw()))
@@ -3685,7 +3734,7 @@ impl Sidebar {
                             .line_height(rpx(SESSION_TITLE_LINE_H))
                             .font_weight(gpui::FontWeight::NORMAL)
                             .text_size(rpx(TEXT_SMALL))
-                            .child(title),
+                            .child(single_line_session_title(&title)),
                     )
                     .when_some(worktree_names, |column, names| {
                         column.child(
@@ -3702,36 +3751,6 @@ impl Sidebar {
                                 .child(names),
                         )
                     }),
-            )
-            .when_some(tasks.as_ref(), |row, tasks| {
-                row.child(task_glance::row_progress(id, tasks))
-            })
-            .child(div().w(rpx(CONTROL_H)).flex_shrink_0())
-            .child(
-                self.control(
-                    ("close-session", id.raw()),
-                    format!("Close {} in {}", meta.label, meta.project),
-                    Action::Close(id),
-                    cx,
-                )
-                .absolute()
-                .right_0()
-                .top(rpx((row_height - CONTROL_H) / 2.0))
-                .debug_selector(move || format!("session-tree-close-{}", id.raw()))
-                .opacity(0.0)
-                .group_hover("session-row", |button| button.opacity(1.0))
-                .focus_visible(|button| button.opacity(1.0))
-                .when_some(
-                    self.session_close_bounds.get(&id).cloned(),
-                    |button, bounds| {
-                        button.child(
-                            gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
-                                .absolute()
-                                .inset_0(),
-                        )
-                    },
-                )
-                .child(icon("close", ICON_XS, c::FG_DIM())),
             )
         };
         let row = if list {
@@ -4271,6 +4290,9 @@ impl Sidebar {
                             let path = path.clone();
                             move || format!("worktree-diff-{path}")
                         })
+                        // Focus inside the row swaps this chip for the launchers,
+                        // so it must never take keyboard focus itself.
+                        .tab_index(-1)
                         .w_auto()
                         .h_auto()
                         .flex_shrink_0()
@@ -4370,30 +4392,41 @@ impl Sidebar {
                                     .flex()
                                     .items_center()
                                     .gap(rpx(SPACE_SM))
-                                    // Keep the diff target stationary as launcher controls
-                                    // appear; their hover region must never cover changes.
-                                    .pr(rpx((launch_width - HIERARCHY_TRAILING_W).max(0.0)))
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
                                             .truncate()
                                             .child(worktree_name.to_owned()),
-                                    )
-                                    .child(diff_element),
+                                    ),
                             ),
                     )
                     .child(
+                        // Trailing metadata slot: diff stats rest right-aligned on the
+                        // trailing column and swap out for the launchers on hover or
+                        // keyboard focus. `invisible` (not opacity) skips paint, so the
+                        // hidden chip registers no click, hover, or tab stop beneath
+                        // the launchers.
                         div()
                             .id(SharedString::from(format!("worktree-actions-{path}")))
                             .debug_selector({
                                 let path = path.clone();
                                 move || format!("worktree-actions-{path}")
                             })
-                            .w(rpx(HIERARCHY_TRAILING_W))
+                            .min_w(rpx(HIERARCHY_TRAILING_W))
                             .h(rpx(CHROME_CONTROL_H))
                             .flex_shrink_0()
-                            .flex(),
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .when(focused, Styled::invisible)
+                                    .group_hover("worktree-row", Styled::invisible)
+                                    .child(diff_element),
+                            ),
                     )
                     .child(launches),
                 );
@@ -4607,7 +4640,7 @@ impl Sidebar {
                                     .id(("home-title", id.raw()))
                                     .debug_selector(move || format!("home-title-{}", id.raw()))
                                     .truncate()
-                                    .child(title),
+                                    .child(single_line_session_title(&title)),
                             )
                             .when_some(directory, |column, (kind, cwd)| {
                                 column.child(
@@ -5059,6 +5092,16 @@ fn session_display_title(meta: &SessionMeta, live_title: Option<String>) -> Stri
         live
     } else {
         display_task_title(meta.restored_title.clone(), &meta.label)
+    }
+}
+
+/// Keep hard line breaks from escaping single-line sidebar title slots.
+/// The original title remains available to accessibility labels and tooltips.
+fn single_line_session_title(title: &str) -> String {
+    if title.contains(['\n', '\r', '\u{0085}', '\u{2028}', '\u{2029}']) {
+        title.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        title.to_owned()
     }
 }
 
@@ -7718,7 +7761,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sessions_list_polls_real_git_changes_and_opens_diff_chip(cx: &mut gpui::TestAppContext) {
+    fn sessions_list_polls_real_git_changes_and_swaps_worktree_diff_for_launchers(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let repo = ChangedGitRepo::new();
         let path = repo.path();
         cx.update(|cx| {
@@ -7786,11 +7831,41 @@ mod tests {
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
             Some(Selection::Session(SessionId::from_raw(1)))
         );
+        // At rest the stats sit right-aligned on the trailing metadata column.
+        let actions_selector: &'static str =
+            Box::leak(format!("worktree-actions-{path}").into_boxed_str());
+        assert_eq!(
+            diff.right(),
+            cx.debug_bounds(actions_selector).unwrap().right()
+        );
+        // Unavailable launchers still take the click (and report the missing CLI),
+        // so the click outcome proves which element owns that point.
+        sidebar.update(cx, |sidebar, _| sidebar.available = [false; 4]);
         cx.simulate_mouse_move(diff.center(), None, gpui::Modifiers::default());
         draw(cx);
+        // Hovering swaps the stats out: the hidden chip is not painted at all.
+        assert!(cx.debug_bounds(selector).is_none());
+        assert!((0..WORKTREE_LAUNCH_AGENTS.len()).any(|n| {
+            let launcher: &'static str = Box::leak(format!("launch-{path}-{n}").into_boxed_str());
+            cx.debug_bounds(launcher)
+                .is_some_and(|bounds| bounds.contains(&diff.center()))
+        }));
         cx.simulate_click(diff.center(), gpui::Modifiers::default());
         draw(cx);
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.diff_viewer.is_some()));
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.diff_viewer.is_none()));
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
+            .content_error
+            .as_deref()
+            .is_some_and(|error| error.contains("CLI not found"))));
+        cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        // The clicked launcher keeps focus inside the row, which keeps the swap.
+        assert!(cx.debug_bounds(selector).is_none());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.focus.focus(window, cx));
+        });
+        draw(cx);
+        assert!(cx.debug_bounds(selector).is_some());
     }
     #[gpui::test]
     fn session_status_spinner_advances_only_for_busy_states_and_respects_reduced_motion(
@@ -8574,7 +8649,7 @@ for line in sys.stdin:
             registry.update(cx, |registry, _| {
                 registry.insert_reattached(0, &grove_core::tmux::DiscoveredSession {
                     name: "grove-spacing-fixture".into(),
-                    pane_title: Some("Repair webhook retries and duplicate delivery handling with a long session title".into()),
+                    pane_title: Some("Let's show Image 1 the diff stats too\nImage 1\nWhen running something via Claude".into()),
                     wt_path: "/grove-spacing-main".into(),
                     project: "demo".into(),
                     label: "codex 1".into(),
@@ -8616,6 +8691,45 @@ for line in sys.stdin:
                         ..Default::default()
                     },
                 )]), &[]);
+            });
+            let (handle, _actions) = grove_core::codex::Handle::channel();
+            let (_updates, receive) = std::sync::mpsc::channel();
+            let saved = grove_core::codex::SavedSession {
+                claude_resume: None,
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
+                provider: grove_core::codex::Provider::Codex,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+                key: "sidebar-progress-fixture".into(),
+                project: "demo".into(),
+                cwd: "/grove-spacing-main".into(),
+                label: "Codex".into(),
+                title: Some("Let's show Image 1 the diff stats too\nImage 1\nWhen running something via Claude".into()),
+                roots: Vec::new(),
+                thread_id: Some("fixture-thread".into()),
+                items: vec![serde_json::json!({
+                    "type": "plan",
+                    "plan": [
+                        {"step": "Implement", "status": "completed"},
+                        {"step": "Verify", "status": "in_progress"}
+                    ]
+                })],
+                work_periods: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                config_args: Vec::new(),
+            };
+            let state = grove_core::codex::Snapshot::new(saved);
+            let connection = grove_core::codex::Connection {
+                handle: handle.clone(),
+                updates: receive.into(),
+            };
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(state, connection, cx)
+            });
+            registry.update(cx, |registry, _| {
+                registry.attach_codex(SessionId::from_raw(1), session, handle)
             });
             Sidebar::new(runtime, window, cx)
         });
@@ -8681,7 +8795,12 @@ for line in sys.stdin:
             let worktree = cx
                 .debug_bounds("worktree-title-/grove-spacing-main")
                 .unwrap();
-            assert!(diff.left() >= worktree.left() && diff.right() <= worktree.right());
+            let trailing = cx
+                .debug_bounds("worktree-actions-/grove-spacing-main")
+                .unwrap();
+            assert!(worktree.right() <= diff.left());
+            assert!(diff.left() >= trailing.left());
+            assert_eq!(diff.right(), trailing.right());
             let status = cx.debug_bounds("session-tree-status-1").unwrap();
             let close = cx.debug_bounds("session-tree-close-1").unwrap();
             let project_title = cx.debug_bounds("project-title-0").unwrap();
@@ -8693,7 +8812,21 @@ for line in sys.stdin:
             assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
             assert!(status.right() <= launcher.left());
             assert!(launcher.right() <= title.left());
-            assert!(title.right() <= close.left());
+            assert!(close.right() <= status.left());
+            let progress = cx.debug_bounds("session-tasks-1").unwrap();
+            let leading = cx.debug_bounds("session-tree-leading-1").unwrap();
+            assert!(progress.left() >= leading.left());
+            assert!(progress.right() <= leading.right());
+            assert_eq!(close, leading);
+            assert_eq!(f32::from(leading.left() - row.left()), HIERARCHY_INSET);
+            // The shared slot reserves its full width while hover replaces progress.
+            cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+            draw(cx);
+            assert_eq!(cx.debug_bounds("session-tree-title-1").unwrap(), title);
+            assert_eq!(cx.debug_bounds("session-tree-close-1").unwrap(), close);
+            let empty_slot = cx.debug_bounds("session-tree-leading-2").unwrap();
+            assert_eq!(cx.debug_bounds("session-tree-close-2").unwrap(), empty_slot);
+            assert_eq!(f32::from(empty_slot.size.width), CONTROL_H);
             assert!(status.top() >= row.top() && status.bottom() <= row.bottom());
             assert!(title.top() >= row.top() && title.bottom() <= row.bottom());
             assert!(close.bottom() <= row.bottom());
@@ -9078,6 +9211,26 @@ for line in sys.stdin:
             });
         });
     }
+    #[test]
+    fn sidebar_session_titles_flatten_hard_breaks_without_losing_content() {
+        for title in [
+            "Image 1 \n\nWhen running something via Claude",
+            "Image 1\r\nWhen running something via Claude",
+            "Image 1\u{0085}When running something via Claude",
+            "Image 1\u{2028}When running something via Claude",
+            "Image 1\u{2029}When running something via Claude",
+        ] {
+            assert_eq!(
+                single_line_session_title(title),
+                "Image 1 When running something via Claude"
+            );
+        }
+        assert_eq!(
+            single_line_session_title("Keep  deliberate spacing"),
+            "Keep  deliberate spacing"
+        );
+    }
+
     #[test]
     fn display_titles_remove_only_transient_braille_prefixes() {
         for title in [

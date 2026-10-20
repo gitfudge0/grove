@@ -626,7 +626,7 @@ impl Sidebar {
                                         })
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .line_height(rpx(SESSION_TITLE_LINE_H))
-                                        .child(title),
+                                        .child(single_line_session_title(&title)),
                                 )
                                 .child(
                                     div()
