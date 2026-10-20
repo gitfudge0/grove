@@ -790,117 +790,63 @@ impl Sidebar {
                 cx,
             ))
         });
-        if grid {
-            header = header
-                .child(agent_icon)
-                .h(rpx(SESSION_HEADER_H))
-                .child(
-                    div()
-                        // The title outranks the task cluster, whose step
-                        // text yields first when the tile is narrow.
-                        .min_w(rpx(FORM_PRIMARY_MIN_W))
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_MD))
-                        .child(
-                            div()
-                                .debug_selector(move || format!("grid-header-task-{}", id.raw()))
-                                .flex_auto()
-                                .min_w_0()
-                                .truncate()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_size(rpx(TEXT_BODY))
-                                .child(task),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(move || format!("grid-header-context-{}", id.raw()))
-                                .flex_auto()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .child(format!("· {context}")),
-                        ),
-                )
-                .when_some(task_progress, gpui::ParentElement::child)
-                .child(status)
-                .child(close);
-        } else {
-            header = header
-                .h(rpx(APPBAR_H))
-                .child(
-                    div()
-                        .id(gpui::SharedString::from(format!(
-                            "terminal-header-left-{}",
-                            id.raw()
-                        )))
-                        .debug_selector(move || format!("terminal-header-left-{}", id.raw()))
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_MD))
-                        .child(agent_icon)
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_size(rpx(TEXT_BODY))
-                                .child(task),
-                        ),
-                )
-                .child(
-                    div()
-                        .id(gpui::SharedString::from(format!(
-                            "terminal-header-center-{}",
-                            id.raw()
-                        )))
-                        .debug_selector(move || format!("terminal-header-center-{}", id.raw()))
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .child(context.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .id(gpui::SharedString::from(format!(
-                            "terminal-header-right-{}",
-                            id.raw()
-                        )))
-                        .debug_selector(move || format!("terminal-header-right-{}", id.raw()))
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap(rpx(SPACE_MD))
-                        .when(!branch.is_empty(), |zone| {
-                            zone.child(
-                                div()
-                                    .min_w_0()
-                                    .max_w(rpx(MODAL_W_SM / 3.))
-                                    .truncate()
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
-                                    .child(branch.clone()),
-                            )
-                        })
-                        .child(status)
-                        .child(close),
-                );
-        }
+        header = header
+            .h(rpx(if grid { SESSION_HEADER_H } else { APPBAR_H }))
+            .child(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "terminal-header-left-{}",
+                        id.raw()
+                    )))
+                    .debug_selector(move || format!("terminal-header-left-{}", id.raw()))
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .child(agent_icon)
+                    .child(
+                        div()
+                            .debug_selector(move || format!("session-header-worktree-{}", id.raw()))
+                            .flex_auto()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rpx(TEXT_BODY))
+                            .text_color(c::FG_DIM())
+                            .child(if home { "~".to_owned() } else { location.clone() }),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(c::FG_MUTE())
+                            .child("/"),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(move || format!("session-header-title-{}", id.raw()))
+                            .flex_auto()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(rpx(TEXT_BODY))
+                            .child(task),
+                    ),
+            )
+            .child(
+                div()
+                    .id(gpui::SharedString::from(format!(
+                        "terminal-header-right-{}",
+                        id.raw()
+                    )))
+                    .debug_selector(move || format!("terminal-header-right-{}", id.raw()))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_MD))
+                    .child(status)
+                    .child(close),
+            )
+            .when_some(task_progress, gpui::ParentElement::child);
         let header = if grid {
             let selected = matches!(
                 self.selection,
@@ -2407,7 +2353,6 @@ mod tests {
         for selector in [
             "terminal-header-1",
             "terminal-header-left-1",
-            "terminal-header-center-1",
             "terminal-header-right-1",
             "canvas-close-1",
         ] {
@@ -2627,11 +2572,12 @@ mod tests {
             "{header:?} {close:?}"
         );
         assert_eq!(f32::from(header.size.height), APPBAR_H);
-        let center = cx.debug_bounds("terminal-header-center-1").unwrap();
-        assert!(f32::from(center.center().x - header.center().x).abs() < 1.);
+        let worktree = cx.debug_bounds("session-header-worktree-1").unwrap();
+        let title = cx.debug_bounds("session-header-title-1").unwrap();
+        assert!(worktree.right() < title.left());
+        assert!(title.right() <= close.left());
         for zone in [
             "terminal-header-left-1",
-            "terminal-header-center-1",
             "terminal-header-right-1",
         ] {
             let bounds = cx.debug_bounds(zone).unwrap();
@@ -2664,26 +2610,23 @@ mod tests {
 
         cx.simulate_resize(gpui::size(gpui::px(1600.), gpui::px(800.)));
         draw(cx);
-        let task = cx.debug_bounds("grid-header-task-1").unwrap();
-        let context = cx.debug_bounds("grid-header-context-1").unwrap();
+        let title = cx.debug_bounds("session-header-title-1").unwrap();
+        let worktree = cx.debug_bounds("session-header-worktree-1").unwrap();
         let close = cx.debug_bounds("canvas-close-1").unwrap();
-        let context_width = cx.update(|window, cx| {
-            let workspaces = &cx.global::<SettingsState>().store.workspaces;
-            let workspace = workspaces.name(workspaces.active);
-            let text: gpui::SharedString =
-                format!("· {workspace} / demo / /grove-canvas-fixture").into();
+        let worktree_width = cx.update(|window, _| {
+            let text: gpui::SharedString = "/grove-canvas-fixture".into();
             let run = window.text_style().to_run(text.len());
             window
                 .text_system()
-                .shape_line(text, gpui::px(TEXT_SMALL), &[run], None)
+                .shape_line(text, gpui::px(TEXT_BODY), &[run], None)
                 .width()
         });
         assert!(
-            context.size.width >= context_width,
-            "Context must fit without truncation in a wide header: {context:?}, text width {context_width:?}"
+            worktree.size.width >= worktree_width,
+            "Worktree must fit without truncation in a wide header: {worktree:?}, text width {worktree_width:?}"
         );
-        assert!(task.right() <= context.left());
-        assert!(context.right() < close.left());
+        assert!(worktree.right() < title.left());
+        assert!(title.right() < close.left());
     }
     #[gpui::test]
     fn empty_workspace_card_is_centered_and_bounded(cx: &mut gpui::TestAppContext) {

@@ -7742,9 +7742,17 @@ mod tests {
         assert!(status.right() <= first.left());
         assert!(first.right() <= cx.debug_bounds("session-tree-title-1").unwrap().left());
         assert_eq!(first.left(), second.left());
-        assert!(cx.debug_bounds("diff-chip-open-1").is_some());
-        assert!(cx.debug_bounds("diff-chip-open-2").is_some());
+        // Tree rows leave the diff to the worktree header.
+        assert!(cx.debug_bounds("diff-chip-open-1").is_none());
+        assert!(cx.debug_bounds("diff-chip-open-2").is_none());
+        let worktree_diff: &'static str =
+            Box::leak(format!("worktree-diff-{path}").into_boxed_str());
+        assert!(cx.debug_bounds(worktree_diff).is_some());
         assert!(cx.debug_bounds("session-number-1").is_none());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
+        });
+        draw(cx);
         let diff_focus = sidebar.read_with(cx, |sidebar, _| {
             sidebar.session_diff_focus[&SessionId::from_raw(1)].clone()
         });
