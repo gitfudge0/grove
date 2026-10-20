@@ -56,6 +56,88 @@ pub struct WorkPeriod {
     pub start_item: usize,
     pub end_item: Option<usize>,
     pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub subagents: Vec<Subagent>,
+}
+/// Observed child work only; absence of provider data is never completion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStatus {
+    Working,
+    Completed,
+    Failed,
+    Unknown,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Subagent {
+    pub id: String,
+    pub name: String,
+    pub activity: String,
+    pub status: SubagentStatus,
+}
+fn collab_status(status: Option<&str>) -> SubagentStatus {
+    match status {
+        Some("pendingInit" | "running" | "inProgress") => SubagentStatus::Working,
+        Some("completed") => SubagentStatus::Completed,
+        Some("errored" | "failed") => SubagentStatus::Failed,
+        _ => SubagentStatus::Unknown,
+    }
+}
+fn subagent_activity(item: &Value) -> Option<String> {
+    let text = match item["type"].as_str()? {
+        "commandExecution" => item["command"].as_str(),
+        "mcpToolCall" => item["progress"].as_str().or_else(|| item["tool"].as_str()),
+        "agentMessage" => item["text"].as_str(),
+        "fileChange" => return Some("Editing files".into()),
+        "webSearch" => item["query"].as_str(),
+        "reasoning" => return Some("Thinking".into()),
+        _ => None,
+    }?;
+    (!text.trim().is_empty()).then(|| text.into())
+}
+fn record_subagent(
+    period: &mut WorkPeriod,
+    id: &str,
+    name: Option<&str>,
+    activity: Option<&str>,
+    status: SubagentStatus,
+) {
+    if id.is_empty() {
+        return;
+    }
+    let agent = if let Some(index) = period.subagents.iter().position(|a| a.id == id) {
+        &mut period.subagents[index]
+    } else {
+        period.subagents.push(Subagent {
+            id: id.into(),
+            name: format!("Agent {}", period.subagents.len() + 1),
+            activity: "Activity unavailable".into(),
+            status,
+        });
+        let index = period.subagents.len() - 1;
+        &mut period.subagents[index]
+    };
+    if let Some(name) = name.filter(|s| !s.trim().is_empty()) {
+        agent.name = name.trim().into();
+    }
+    if let Some(activity) = activity.filter(|s| !s.trim().is_empty()) {
+        agent.activity = activity
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(240)
+            .collect();
+    }
+    if status != SubagentStatus::Unknown
+        && !(status == SubagentStatus::Working
+            && matches!(
+                agent.status,
+                SubagentStatus::Completed | SubagentStatus::Failed
+            ))
+    {
+        agent.status = status;
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
@@ -540,6 +622,7 @@ pub struct Snapshot {
     /// Latest context occupancy even when the window is still unknown.
     pub(crate) context_tokens: Option<u64>,
     settled_turns: Vec<String>,
+    subagent_restart_calls: Vec<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -733,6 +816,7 @@ impl Snapshot {
             compact_requested: false,
             context_tokens,
             settled_turns: Vec::new(),
+            subagent_restart_calls: Vec::new(),
         }
     }
     pub(crate) fn begin_work(&mut self) {
@@ -744,7 +828,185 @@ impl Snapshot {
             start_item: self.saved.items.len(),
             end_item: None,
             duration_ms: None,
+            subagents: Vec::new(),
         });
+    }
+    pub(crate) fn upsert_subagent(
+        &mut self,
+        id: &str,
+        name: Option<&str>,
+        activity: Option<&str>,
+        status: SubagentStatus,
+    ) {
+        let existing = self.subagent_period(id);
+        let target = existing.or_else(|| {
+            self.saved
+                .work_periods
+                .iter()
+                .rposition(|p| p.end_item.is_none())
+        });
+        if let Some(period) = target.and_then(|index| self.saved.work_periods.get_mut(index)) {
+            record_subagent(period, id, name, activity, status);
+        }
+    }
+    fn subagent_period(&self, id: &str) -> Option<usize> {
+        self.saved
+            .work_periods
+            .iter()
+            .rposition(|p| p.subagents.iter().any(|a| a.id == id))
+    }
+    /// Collab call status describes the call, not the child. Only agentsStates is authoritative.
+    fn record_collab(&mut self, item: &Value, period_index: usize) {
+        let restart = matches!(
+            item["tool"].as_str(),
+            Some("resumeAgent" | "followupTask" | "sendInput")
+        ) && item["id"]
+            .as_str()
+            .is_some_and(|id| !self.subagent_restart_calls.iter().any(|old| old == id))
+            && item["receiverThreadIds"]
+                .as_array()
+                .is_some_and(|receivers| {
+                    receivers.iter().filter_map(Value::as_str).any(|receiver| {
+                        collab_status(item["agentsStates"][receiver]["status"].as_str())
+                            == SubagentStatus::Working
+                    })
+                });
+        if restart {
+            if let Some(id) = item["id"].as_str() {
+                self.subagent_restart_calls.push(id.into());
+            }
+        }
+        let Some(period) = self.saved.work_periods.get_mut(period_index) else {
+            return;
+        };
+        let Some(receivers) = item["receiverThreadIds"].as_array() else {
+            return;
+        };
+        for receiver in receivers.iter().filter_map(Value::as_str) {
+            if self.saved.thread_id.as_deref() == Some(receiver) {
+                continue;
+            }
+            let state = &item["agentsStates"][receiver];
+            let status = collab_status(state["status"].as_str());
+            let activity = state["message"].as_str().or_else(|| {
+                (!period.subagents.iter().any(|a| a.id == receiver))
+                    .then(|| item["prompt"].as_str())
+                    .flatten()
+            });
+            record_subagent(period, receiver, None, activity, status);
+            if restart && status == SubagentStatus::Working {
+                if let Some(agent) = period.subagents.iter_mut().find(|a| a.id == receiver) {
+                    agent.status = status;
+                }
+            }
+            if state["status"].as_str().is_some() && status == SubagentStatus::Unknown {
+                if let Some(agent) = period.subagents.iter_mut().find(|a| a.id == receiver) {
+                    agent.status = status;
+                }
+            }
+        }
+    }
+    fn apply_subagent_notification(&mut self, message: &Value, period: usize) -> bool {
+        let p = &message["params"];
+        let Some(id) = p["threadId"].as_str() else {
+            return false;
+        };
+        let method = message["method"].as_str().unwrap_or_default();
+        if matches!(method, "item/started" | "item/completed")
+            && p["item"]["type"] == "collabAgentToolCall"
+        {
+            self.record_collab(&p["item"], period);
+        }
+        let activity = match method {
+            "item/started" | "item/completed" => subagent_activity(&p["item"]),
+            "item/mcpToolCall/progress" => p["message"].as_str().map(str::to_owned),
+            // Text deltas do not constitute a complete activity label.
+            _ => None,
+        };
+        let status = match method {
+            "turn/started" => SubagentStatus::Working,
+            "turn/completed" => collab_status(p["turn"]["status"].as_str()),
+            _ => SubagentStatus::Unknown,
+        };
+        if activity.is_none() && status == SubagentStatus::Unknown && method != "turn/completed" {
+            return false;
+        }
+        let work = &mut self.saved.work_periods[period];
+        record_subagent(work, id, None, activity.as_deref(), status);
+        if matches!(method, "turn/started" | "turn/completed") {
+            if let Some(agent) = work.subagents.iter_mut().find(|a| a.id == id) {
+                agent.status = status;
+            }
+        }
+        true
+    }
+    /// Read-only polling observes child activity without resuming or taking control of its thread.
+    fn apply_subagent_read(&mut self, id: &str, period_start: usize, thread: &Value) {
+        let Some(period) =
+            self.saved.work_periods.iter().rposition(|p| {
+                p.start_item == period_start && p.subagents.iter().any(|a| a.id == id)
+            })
+        else {
+            return;
+        };
+        if thread["id"].as_str() != Some(id) || self.subagent_period(id) != Some(period) {
+            return;
+        }
+        let name = thread["agentNickname"]
+            .as_str()
+            .or_else(|| thread["agentRole"].as_str());
+        record_subagent(
+            &mut self.saved.work_periods[period],
+            id,
+            name,
+            None,
+            SubagentStatus::Unknown,
+        );
+        let Some(turn) = thread["turns"].as_array().and_then(|turns| turns.last()) else {
+            return;
+        };
+        // Forked child history can initially end at the parent's turn. Never report
+        // those inherited tools or the parent's completion as this child's work.
+        if turn["id"].as_str().is_some_and(|turn| {
+            self.turn_id.as_deref() == Some(turn)
+                || self.settled_turns.iter().any(|old| old == turn)
+                || self
+                    .saved
+                    .edit_checkpoints
+                    .iter()
+                    .any(|checkpoint| checkpoint.turn_id.as_deref() == Some(turn))
+        }) {
+            return;
+        }
+        if let Some(items) = turn["items"].as_array() {
+            for item in items {
+                // Fork history may include parent items. Sender identity keeps those out of the roster.
+                if item["type"] == "collabAgentToolCall"
+                    && item["senderThreadId"].as_str() == Some(id)
+                {
+                    self.record_collab(item, period);
+                }
+            }
+            if let Some(activity) = items.iter().rev().find_map(subagent_activity) {
+                record_subagent(
+                    &mut self.saved.work_periods[period],
+                    id,
+                    None,
+                    Some(&activity),
+                    SubagentStatus::Unknown,
+                );
+            }
+        }
+        let status = collab_status(turn["status"].as_str());
+        if turn["status"].as_str().is_some() {
+            if let Some(agent) = self.saved.work_periods[period]
+                .subagents
+                .iter_mut()
+                .find(|a| a.id == id)
+            {
+                agent.status = status;
+            }
+        }
     }
     pub(crate) fn finish_work(&mut self) {
         let Some(started) = self.work_started.take() else {
@@ -798,6 +1060,12 @@ impl Snapshot {
     }
     pub fn apply(&mut self, message: &Value) -> bool {
         let p = &message["params"];
+        if let Some(period) = p["threadId"]
+            .as_str()
+            .and_then(|id| self.subagent_period(id))
+        {
+            return self.apply_subagent_notification(message, period);
+        }
         if p["threadId"].as_str() != self.saved.thread_id.as_deref()
             || self.saved.thread_id.is_none()
         {
@@ -936,6 +1204,16 @@ impl Snapshot {
             }
             "item/started" | "item/completed" => {
                 let mut item = p["item"].clone();
+                if item["type"] == "collabAgentToolCall" {
+                    if let Some(period) = self
+                        .saved
+                        .work_periods
+                        .iter()
+                        .rposition(|p| p.end_item.is_none())
+                    {
+                        self.record_collab(&item, period);
+                    }
+                }
                 if let Some(old) = self.saved.items.iter().find(|old| old["id"] == item["id"]) {
                     for marker in ["groveQuestionResolved", "groveQuestionPending"] {
                         if old[marker] == true {
@@ -1687,6 +1965,10 @@ fn spawn(args: &[String], cwd: &str, task_id: Option<&str>) -> Result<Process, S
 enum Pending {
     Initialize,
     Models,
+    ChildRead {
+        thread: String,
+        period_start: usize,
+    },
     Skills,
     Config,
     Thread,
@@ -1739,6 +2021,8 @@ struct Actor {
     pid: Arc<AtomicU32>,
     stopping: Arc<AtomicBool>,
     last_save: Instant,
+    last_child_poll: Instant,
+    child_read_failures: HashMap<String, u8>,
     needs_save: bool,
 }
 impl Actor {
@@ -1769,6 +2053,8 @@ impl Actor {
             pid: Arc::new(AtomicU32::new(0)),
             stopping: Arc::new(AtomicBool::new(false)),
             last_save: Instant::now(),
+            last_child_poll: Instant::now(),
+            child_read_failures: HashMap::new(),
             needs_save: false,
         }
     }
@@ -2833,8 +3119,16 @@ impl Actor {
             return Ok(());
         };
         if let Some(error) = m.get("error") {
+            if let Pending::ChildRead { thread, .. } = &request.kind {
+                let failures = self.child_read_failures.entry(thread.clone()).or_default();
+                *failures = failures.saturating_add(1);
+                return Ok(());
+            }
             // Optional catalogs must never fail or pause an otherwise healthy session.
-            if matches!(request.kind, Pending::Models | Pending::Skills) {
+            if matches!(
+                request.kind,
+                Pending::Models | Pending::Skills | Pending::ChildRead { .. }
+            ) {
                 return Ok(());
             }
 
@@ -3323,10 +3617,82 @@ impl Actor {
                         .map(str::to_owned);
                 }
             }
+            Pending::ChildRead {
+                thread,
+                period_start,
+            } => {
+                self.child_read_failures.remove(&thread);
+                self.state
+                    .apply_subagent_read(&thread, period_start, &result["thread"]);
+            }
             Pending::Interrupt { .. } | Pending::Compact => {}
         }
         self.dispatch_queue()?;
         Ok(())
+    }
+    fn expire_subagent_reads(&mut self) {
+        let expired: Vec<_> = self
+            .pending
+            .iter()
+            .filter_map(|(id, request)| match &request.kind {
+                Pending::ChildRead { thread, .. } if request.deadline < Instant::now() => {
+                    Some((*id, thread.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (id, thread) in expired {
+            self.pending.remove(&id);
+            let failures = self.child_read_failures.entry(thread).or_default();
+            *failures = failures.saturating_add(1);
+        }
+    }
+    fn poll_subagents(&mut self) {
+        if self.process.is_none() || self.last_child_poll.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.last_child_poll = Instant::now();
+        // Optional reads must never hold up the parent or accumulate timed-out requests.
+
+        let children: Vec<_> = self
+            .state
+            .saved
+            .work_periods
+            .iter()
+            .flat_map(|period| {
+                period
+                    .subagents
+                    .iter()
+                    .filter(|agent| {
+                        matches!(
+                            agent.status,
+                            SubagentStatus::Working | SubagentStatus::Unknown
+                        )
+                    })
+                    .map(|agent| (agent.id.clone(), period.start_item))
+            })
+            .collect();
+        for (thread, period_start) in children {
+            if self.child_read_failures.get(&thread).copied().unwrap_or(0) >= 3 {
+                continue;
+            }
+            if self
+                .state
+                .subagent_period(&thread)
+                .is_none_or(|index| self.state.saved.work_periods[index].start_item != period_start)
+            {
+                continue;
+            }
+            if self.pending.values().any(|request| matches!(&request.kind, Pending::ChildRead { thread: pending, .. } if pending == &thread)) { continue; }
+            let _ = self.request(
+                "thread/read",
+                json!({"threadId":thread,"includeTurns":true}),
+                Pending::ChildRead {
+                    thread,
+                    period_start,
+                },
+            );
+        }
     }
     fn reject_pending_submission(&mut self) {
         self.state.mark_queue_uncertain();
@@ -3385,6 +3751,8 @@ impl Actor {
                 }
                 self.dirty = true;
             }
+            self.expire_subagent_reads();
+            self.poll_subagents();
             if let Some((when, attempt, turn)) = self.interrupt_retry.clone() {
                 if Instant::now() >= when {
                     self.interrupt_retry = None;
@@ -3510,6 +3878,7 @@ mod tests {
             start_item: 1,
             end_item: None,
             duration_ms: None,
+            subagents: Vec::new(),
         });
         let recovered = Snapshot::new(saved);
         assert_eq!(recovered.saved.work_periods[1].end_item, Some(1));
@@ -3518,6 +3887,181 @@ mod tests {
         assert!(recovered.saved.fresh_conversation().work_periods.is_empty());
     }
 
+    #[test]
+    fn subagent_collab_counts_children_not_calls_and_isolates_parent_state() {
+        let mut state = state();
+        state.begin_work();
+        let item = json!({"id":"spawn","type":"collabAgentToolCall","tool":"spawnAgent","status":"completed","senderThreadId":"thread-1","receiverThreadIds":["child-1"],"prompt":"Inspect the parser","agentsStates":{"child-1":{"status":"running","message":null}}});
+        let event = json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":item}});
+        assert!(state.apply(&event));
+        assert!(state.apply(&event));
+        assert_eq!(state.saved.work_periods[0].subagents.len(), 1);
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Working
+        );
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].activity,
+            "Inspect the parser"
+        );
+        let parent_items = state.saved.items.clone();
+        assert!(!state.apply(&json!({"method":"thread/tokenUsage/updated","params":{"threadId":"child-1","tokenUsage":{"last":{"totalTokens":999},"modelContextWindow":1000}}})));
+        assert_eq!(state.context_tokens, None);
+        assert_eq!(state.status, Status::Working);
+        assert_eq!(state.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(state.saved.items, parent_items);
+        assert!(state.apply(&json!({"method":"item/started","params":{"threadId":"child-1","turnId":"child-turn","item":{"id":"cmd","type":"commandExecution","command":"cargo test parser"}}})));
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].activity,
+            "cargo test parser"
+        );
+        assert!(state.apply(&json!({"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn","status":"failed"}}})));
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Failed
+        );
+        state.apply(&event); // A duplicate spawn does not resurrect the failed worker.
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Failed
+        );
+        assert_eq!(state.status, Status::Working);
+        let resume = json!({"id":"resume-child", "tool":"resumeAgent", "receiverThreadIds":["child-1"],"agentsStates":{"child-1":{"status":"running"}}});
+        let mut empty_started = resume.clone();
+        empty_started["agentsStates"] = json!({});
+        state.record_collab(&empty_started, 0);
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Failed
+        );
+        state.record_collab(&resume, 0);
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Working
+        );
+        state.apply(&json!({"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn-2","status":"completed"}}}));
+        state.record_collab(&resume, 0);
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Completed
+        );
+    }
+    #[test]
+    fn subagent_reads_find_nested_children_and_preserve_turn_history() {
+        let mut state = state();
+        state.begin_work();
+        state.upsert_subagent("child", None, Some("Inspect"), SubagentStatus::Working);
+        let read = json!({"id":"child","agentNickname":"Ada","turns":[{"id":"child-turn","status":"inProgress","items":[{"id":"nested","type":"collabAgentToolCall","tool":"spawnAgent","status":"completed","senderThreadId":"child","receiverThreadIds":["nested"],"agentsStates":{"nested":{"status":"running"}}},{"id":"cmd","type":"commandExecution","command":"rg parser"}]}]});
+        state.apply_subagent_read("child", 0, &read);
+        state.apply_subagent_read("child", 0, &read);
+        assert_eq!(state.saved.work_periods[0].subagents.len(), 2);
+        assert_eq!(state.saved.work_periods[0].subagents[0].name, "Ada");
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].activity,
+            "rg parser"
+        );
+        state
+            .saved
+            .items
+            .push(json!({"id":"answer","type":"agentMessage","text":"Done"}));
+        state.finish_work();
+        // Parent completion is not child completion.
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Working
+        );
+        state.begin_work();
+        state.apply_subagent_read(
+            "child",
+            0,
+            &json!({"id":"child","turns":[{"id":"child-turn","status":"completed","items":[]}]}),
+        );
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Completed
+        );
+        assert!(state.saved.work_periods[1].subagents.is_empty());
+        let round_trip: SavedSession =
+            serde_json::from_value(serde_json::to_value(&state.saved).unwrap()).unwrap();
+        assert_eq!(round_trip.work_periods[0].subagents.len(), 2);
+        let old: WorkPeriod =
+            serde_json::from_value(json!({"start_item":0,"end_item":1,"duration_ms":2})).unwrap();
+        assert!(old.subagents.is_empty());
+    }
+    #[test]
+    fn reused_subagent_belongs_to_new_work_and_old_read_cannot_rewrite_history() {
+        let mut state = state();
+        state.begin_work();
+        state.upsert_subagent(
+            "child",
+            Some("Ada"),
+            Some("First task"),
+            SubagentStatus::Completed,
+        );
+        state
+            .saved
+            .items
+            .push(json!({"id":"answer","type":"agentMessage","text":"Done"}));
+        state.finish_work();
+        state.begin_work();
+        state.record_collab(&json!({"receiverThreadIds":["child"],"tool":"followupTask","agentsStates":{"child":{"status":"running","message":"Second task"}}}), 1);
+        assert_eq!(
+            state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Completed
+        );
+        assert_eq!(
+            state.saved.work_periods[1].subagents[0].status,
+            SubagentStatus::Working
+        );
+        state.apply_subagent_read("child", 0, &json!({"id":"child","agentNickname":"Wrong","turns":[{"id":"new-child-turn","status":"inProgress","items":[]}]}));
+        assert_eq!(state.saved.work_periods[0].subagents[0].name, "Ada");
+        // An inherited parent turn is not this child's completion or activity.
+        state.apply_subagent_read("child", 1, &json!({"id":"child","turns":[{"id":"turn-1","status":"completed","items":[{"type":"commandExecution","command":"parent command"}]}]}));
+        assert_eq!(
+            state.saved.work_periods[1].subagents[0].activity,
+            "Second task"
+        );
+        assert_eq!(
+            state.saved.work_periods[1].subagents[0].status,
+            SubagentStatus::Working
+        );
+    }
+    #[test]
+    fn optional_subagent_read_errors_do_not_fail_parent_or_pause_queue() {
+        let mut actor = actor();
+        actor.queue_ready = true;
+        actor.pending.insert(
+            1,
+            Request {
+                kind: Pending::ChildRead {
+                    thread: "child".into(),
+                    period_start: 0,
+                },
+                deadline: Instant::now(),
+            },
+        );
+        actor
+            .message(json!({"id":1,"error":{"message":"Thread not found"}}))
+            .unwrap();
+        assert_eq!(actor.state.status, Status::Working);
+        assert!(actor.state.error.is_none());
+        assert!(actor.queue_ready);
+        assert!(!actor.queue_paused);
+        actor.pending.insert(
+            2,
+            Request {
+                kind: Pending::ChildRead {
+                    thread: "child".into(),
+                    period_start: 0,
+                },
+                deadline: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+            },
+        );
+        actor.expire_subagent_reads();
+        assert!(actor.pending.is_empty());
+        assert_eq!(actor.state.status, Status::Working);
+        assert_eq!(actor.child_read_failures.get("child"), Some(&2));
+    }
     #[test]
     fn old_recovery_defaults_to_codex_and_claude_round_trips() {
         let mut record = serde_json::to_value(saved()).unwrap();

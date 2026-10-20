@@ -2,7 +2,7 @@
 //! The subprocess owns credentials, tools, permissions, and conversation persistence.
 use crate::codex::{
     self, Action, Connection, EditCheckpoint, Handle, PendingEdit, QuestionRequest, QueuedPrompt,
-    SavedSession, Snapshot, Status, SubmissionMode,
+    SavedSession, Snapshot, Status, SubagentStatus, SubmissionMode,
 };
 use serde_json::{json, Value};
 use std::{
@@ -349,6 +349,7 @@ struct Actor {
     control_id: u64,
     pending: HashMap<String, String>,
     blocks: HashMap<u64, String>,
+    subagent_tasks: HashMap<String, String>,
     message_id: String,
     last_persist: Instant,
     dirty: bool,
@@ -413,6 +414,7 @@ impl Actor {
             control_id: 0,
             pending: HashMap::new(),
             blocks: HashMap::new(),
+            subagent_tasks: HashMap::new(),
             message_id: String::new(),
             last_persist: Instant::now(),
             dirty: false,
@@ -1385,8 +1387,184 @@ impl Actor {
             self.state.saved.items.push(item);
         }
     }
+    fn register_subagent(&mut self, block: &Value) {
+        if !matches!(block["name"].as_str(), Some("Agent" | "Task")) {
+            return;
+        }
+        let Some(id) = block["id"].as_str() else {
+            return;
+        };
+        let input = &block["input"];
+        let name = input["name"]
+            .as_str()
+            .or_else(|| input["subagent_type"].as_str());
+        self.state.upsert_subagent(
+            id,
+            name,
+            input["description"].as_str(),
+            SubagentStatus::Working,
+        );
+    }
+    fn subagent_message(&mut self, parent: &str, value: &Value) {
+        // Child frames must never reach the primary transcript, usage, or turn lifecycle.
+        self.state
+            .upsert_subagent(parent, None, None, SubagentStatus::Unknown);
+        self.subagent_system_message(value);
+        match value["type"].as_str() {
+            Some("assistant") => {
+                if let Some(blocks) = value["message"]["content"].as_array() {
+                    for block in blocks {
+                        self.subagent_block(parent, block);
+                    }
+                }
+            }
+            Some("stream_event") => {
+                let event = &value["event"];
+                if event["type"] == "content_block_start" {
+                    self.subagent_block(parent, &event["content_block"]);
+                }
+            }
+            Some("user") => {
+                if let Some(blocks) = value["message"]["content"].as_array() {
+                    for block in blocks {
+                        self.subagent_tool_result(block, value.get("tool_use_result"));
+                    }
+                }
+            }
+            Some("result") => self.state.upsert_subagent(
+                parent,
+                None,
+                None,
+                if value["is_error"] == true {
+                    SubagentStatus::Failed
+                } else {
+                    SubagentStatus::Completed
+                },
+            ),
+            _ => {}
+        }
+    }
+    fn subagent_block(&mut self, parent: &str, block: &Value) {
+        match block["type"].as_str() {
+            Some("tool_use") => {
+                self.register_subagent(block);
+                if let Some(tool) = block["name"].as_str() {
+                    self.state.upsert_subagent(
+                        parent,
+                        None,
+                        Some(&format!("Using {tool}")),
+                        SubagentStatus::Unknown,
+                    );
+                }
+            }
+            Some("text") => {
+                if let Some(text) = block["text"]
+                    .as_str()
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    self.state
+                        .upsert_subagent(parent, None, Some(text), SubagentStatus::Unknown);
+                }
+            }
+            Some("thinking") => {
+                self.state
+                    .upsert_subagent(parent, None, Some("Thinking"), SubagentStatus::Unknown);
+            }
+            _ => {}
+        }
+    }
+    fn subagent_tool_result(&mut self, block: &Value, structured: Option<&Value>) {
+        if structured
+            .is_some_and(|result| result["isAsync"] == true || result["status"] == "async_launched")
+        {
+            return;
+        }
+        let Some(id) = block["tool_use_id"].as_str() else {
+            return;
+        };
+        if !self
+            .state
+            .saved
+            .work_periods
+            .iter()
+            .any(|period| period.subagents.iter().any(|agent| agent.id == id))
+        {
+            return;
+        }
+        self.state.upsert_subagent(
+            id,
+            None,
+            None,
+            if block["is_error"] == true {
+                SubagentStatus::Failed
+            } else {
+                SubagentStatus::Completed
+            },
+        );
+    }
+    fn subagent_system_message(&mut self, value: &Value) {
+        if value["type"] != "system" {
+            return;
+        }
+        let task = value["task_id"].as_str();
+        if let (Some(task), Some(tool)) = (task, value["tool_use_id"].as_str()) {
+            self.subagent_tasks.insert(task.to_owned(), tool.to_owned());
+        }
+        let Some(id) = value["tool_use_id"]
+            .as_str()
+            .or_else(|| task.and_then(|task| self.subagent_tasks.get(task).map(String::as_str)))
+            .or(task)
+            .map(str::to_owned)
+        else {
+            return;
+        };
+        let known = self
+            .state
+            .saved
+            .work_periods
+            .iter()
+            .any(|period| period.subagents.iter().any(|agent| agent.id == id));
+        if !known
+            && value["task_type"] != "local_agent"
+            && value["subagent_type"].as_str().is_none()
+        {
+            return;
+        }
+        let status = match value["subtype"].as_str() {
+            Some("task_started") => SubagentStatus::Working,
+            Some("task_progress") => SubagentStatus::Unknown,
+            Some("task_notification") => match value["status"].as_str() {
+                Some("completed") => SubagentStatus::Completed,
+                Some("failed") => SubagentStatus::Failed,
+                _ => SubagentStatus::Unknown,
+            },
+            _ => return,
+        };
+        let activity = value["summary"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| value["description"].as_str());
+        self.state
+            .upsert_subagent(&id, value["subagent_type"].as_str(), activity, status);
+        if value["subtype"] == "task_notification" && status == SubagentStatus::Unknown {
+            // A stopped child is no longer working; activity-only updates use
+            // Unknown as a sentinel, so explicit lifecycle updates set it here.
+            if let Some(agent) = self
+                .state
+                .saved
+                .work_periods
+                .iter_mut()
+                .rev()
+                .flat_map(|period| period.subagents.iter_mut())
+                .find(|agent| agent.id == id)
+            {
+                agent.status = SubagentStatus::Unknown;
+            }
+        }
+    }
     fn message(&mut self, value: Value) -> Result<(), String> {
-        if !value["parent_tool_use_id"].is_null() {
+        if let Some(parent) = value["parent_tool_use_id"].as_str() {
+            self.subagent_message(parent, &value);
             return Ok(());
         }
         if let Some(session) = value["session_id"].as_str().filter(|id| !id.is_empty()) {
@@ -1401,6 +1579,7 @@ impl Actor {
                 self.state.saved.thread_id = Some(session.into());
             }
         }
+        self.subagent_system_message(&value);
         match value["type"].as_str().unwrap_or_default() {
             "control_response" => {
                 let response = &value["response"];
@@ -1872,6 +2051,7 @@ impl Actor {
                 json!({"id":id,"type":"reasoning","summary":[],"content":[block["thinking"]]}),
             ),
             "tool_use" => {
+                self.register_subagent(block);
                 let tool_id = block["id"].as_str().unwrap_or(id);
                 let old = self
                     .state
@@ -1961,6 +2141,7 @@ impl Actor {
         self.tool_result_with_structured(block, None);
     }
     fn tool_result_with_structured(&mut self, block: &Value, structured: Option<&Value>) {
+        self.subagent_tool_result(block, structured);
         let Some(item) = self
             .state
             .saved
@@ -2007,6 +2188,74 @@ mod tests {
             Arc::new(AtomicU32::new(0)),
             Arc::new(AtomicBool::new(false)),
         )
+    }
+    #[test]
+    fn subagents_track_live_nested_work_without_primary_state_pollution() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.state.status = Status::Working;
+        actor.state.saved.thread_id = Some("primary".into());
+        let spawn = json!({"type":"tool_use","id":"child","name":"Agent","input":{"name":"Explorer","description":"Find auth paths"}});
+        actor.block("child", &spawn);
+        actor.block("child", &spawn);
+        assert_eq!(actor.state.saved.work_periods[0].subagents.len(), 1);
+        let item_count = actor.state.saved.items.len();
+        actor.message(json!({"type":"assistant","session_id":"other","parent_tool_use_id":"child","message":{"model":"child-model","usage":{"input_tokens":900},"content":[{"type":"tool_use","id":"read","name":"Read","input":{}},{"type":"tool_use","id":"nested","name":"Task","input":{"subagent_type":"Researcher","description":"Inspect tests"}}]}})).unwrap();
+        assert_eq!(actor.state.saved.items.len(), item_count);
+        assert_eq!(actor.state.saved.thread_id.as_deref(), Some("primary"));
+        assert!(actor.context_model.is_none());
+        assert_eq!(actor.state.status, Status::Working);
+        let children = &actor.state.saved.work_periods[0].subagents;
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].name, "Explorer");
+        assert_eq!(children[0].activity, "Using Task");
+        actor.message(json!({"type":"user","parent_tool_use_id":"child","message":{"content":[{"type":"tool_result","tool_use_id":"nested","is_error":true,"content":"failed"}]}})).unwrap();
+        actor
+            .message(json!({"type":"result","parent_tool_use_id":"child","is_error":false}))
+            .unwrap();
+        assert_eq!(actor.state.status, Status::Working);
+        let children = &actor.state.saved.work_periods[0].subagents;
+        assert_eq!(children[0].status, SubagentStatus::Completed);
+        assert_eq!(children[1].status, SubagentStatus::Failed);
+        actor.message(json!({"type":"assistant","parent_tool_use_id":"child","message":{"content":[{"type":"text","text":"Late activity"}]}})).unwrap();
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Completed
+        );
+    }
+    #[test]
+    fn claude_task_notifications_deduplicate_tool_lifecycle_and_ignore_shell_tasks() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.block("agent", &json!({"type":"tool_use","id":"agent","name":"Task","input":{"description":"Review changes"}}));
+        actor.message(json!({"type":"system","subtype":"task_started","task_id":"sdk-task","tool_use_id":"agent","task_type":"local_agent","subagent_type":"Reviewer","description":"Review changes"})).unwrap();
+        actor.message(json!({"type":"system","subtype":"task_progress","task_id":"sdk-task","tool_use_id":"agent","summary":"Checking error handling"})).unwrap();
+        actor.message(json!({"type":"system","subtype":"task_started","task_id":"shell","task_type":"local_bash","description":"Run server"})).unwrap();
+        assert_eq!(actor.state.saved.work_periods[0].subagents.len(), 1);
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[0].activity,
+            "Checking error handling"
+        );
+        actor.message(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent","content":"Launched agent","is_error":false}]},"tool_use_result":{"isAsync":true,"status":"async_launched"}})).unwrap();
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Working
+        );
+        actor.message(json!({"type":"system","subtype":"task_notification","task_id":"sdk-task","status":"failed","summary":"Review failed"})).unwrap();
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Failed
+        );
+        actor.block("agent", &json!({"type":"tool_use","id":"agent","name":"Task","input":{"description":"Late replay"}}));
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Failed
+        );
+        actor.message(json!({"type":"system","subtype":"task_notification","task_id":"sdk-task","status":"stopped"})).unwrap();
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Unknown
+        );
     }
     #[test]
     fn deferred_inline_preserves_identical_composer_after_configuration() {

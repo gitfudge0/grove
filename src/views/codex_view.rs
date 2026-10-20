@@ -78,6 +78,7 @@ fn hash_transcript_value(value: &serde_json::Value, hasher: &mut impl Hasher) {
 
 const STOP_HOVER_OPACITY: f32 = 0.8;
 const CHAT_MAX_W: f32 = 760.0;
+const SUBAGENT_NAME_W: f32 = 120.0;
 const COMPOSER_MENU_W: f32 = 320.0;
 const MINIMAP_PREVIEW_W: f32 = 320.0;
 const COMPOSER_MENU_MAX_H: f32 = 280.0;
@@ -2197,6 +2198,19 @@ impl Render for CodexView {
                 message_child += 1;
                 let expanded = self.expanded.contains(&key);
                 let keyboard_key = key.clone();
+                let subagents = work_subagents_at(&state, index);
+                let summary = subagent_summary(subagents);
+                let accessible_label = summary.as_ref().map_or_else(
+                    || label.clone(),
+                    |(counts, failed)| {
+                        format!(
+                            "{label}, {counts}{}",
+                            failed
+                                .as_ref()
+                                .map_or(String::new(), |failed| format!(", {failed}"))
+                        )
+                    },
+                );
                 messages = messages.child(
                     div()
                         .w_full()
@@ -2210,13 +2224,16 @@ impl Render for CodexView {
                                 .aria_expanded(expanded)
                                 .debug_selector(move || format!("codex-work-header-{index}"))
                                 .w_full()
+                                .h_auto()
+                                .min_h(rpx(CHROME_CONTROL_H))
+                                .flex_wrap()
                                 .justify_start()
                                 .gap(rpx(SPACE_SM))
                                 .tab_index(0)
                                 .focus_visible(|style| style.bg(c::BG_HOVER()))
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
-                                .aria_label(label.clone())
+                                .aria_label(accessible_label)
                                 .child(shimmer_label(
                                     ("codex-work-shimmer", index).into(),
                                     label,
@@ -2228,6 +2245,19 @@ impl Render for CodexView {
                                     ICON_SM,
                                     c::FG_DIM(),
                                 ))
+                                .when_some(summary, |header, (counts, failed)| {
+                                    header.child(div().flex_shrink_0().child(counts)).when_some(
+                                        failed,
+                                        |header, failed| {
+                                            header.child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .text_color(c::RED())
+                                                    .child(format!("· {failed}")),
+                                            )
+                                        },
+                                    )
+                                })
                                 .on_key_down(cx.listener(
                                     move |this, event: &gpui::KeyDownEvent, _, cx| {
                                         if action_key(event) {
@@ -2239,7 +2269,17 @@ impl Render for CodexView {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.toggle_expansion(&key, cx);
                                 })),
-                        ),
+                        )
+                        .when(expanded && !subagents.is_empty(), |section| {
+                            section.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(rpx(SPACE_SM))
+                                    .py(rpx(SPACE_LG))
+                                    .children(subagents.iter().map(subagent_row)),
+                            )
+                        }),
                 );
                 if active && state.work_started.is_some() && !self.work_tick_pending.replace(true) {
                     let owner = cx.entity().downgrade();
@@ -4861,6 +4901,87 @@ fn work_key_at(state: &codex::Snapshot, index: usize) -> String {
     format!("work-{start}")
 }
 
+fn work_period_at(state: &codex::Snapshot, index: usize) -> Option<&codex::WorkPeriod> {
+    state
+        .saved
+        .work_periods
+        .iter()
+        .rev()
+        .find(|period| period.start_item <= index && period.end_item.is_none_or(|end| index < end))
+}
+
+fn work_subagents_at(state: &codex::Snapshot, index: usize) -> &[codex::Subagent] {
+    work_period_at(state, index).map_or(&[], |period| period.subagents.as_slice())
+}
+
+fn subagent_summary(subagents: &[codex::Subagent]) -> Option<(String, Option<String>)> {
+    if subagents.is_empty() {
+        return None;
+    }
+    let working = subagents
+        .iter()
+        .filter(|agent| agent.status == codex::SubagentStatus::Working)
+        .count();
+    let failed = subagents
+        .iter()
+        .filter(|agent| agent.status == codex::SubagentStatus::Failed)
+        .count();
+    let noun = if subagents.len() == 1 {
+        "subagent"
+    } else {
+        "subagents"
+    };
+    Some((
+        format!("{} {noun} · {working} working", subagents.len()),
+        (failed > 0).then(|| format!("{failed} failed")),
+    ))
+}
+
+fn subagent_status_label(status: codex::SubagentStatus) -> &'static str {
+    match status {
+        codex::SubagentStatus::Working => "Working",
+        codex::SubagentStatus::Completed => "Completed",
+        codex::SubagentStatus::Failed => "Failed",
+        codex::SubagentStatus::Unknown => "Unknown",
+    }
+}
+
+fn subagent_row(agent: &codex::Subagent) -> gpui::Div {
+    let status = subagent_status_label(agent.status);
+    div()
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_LG))
+        .min_w_0()
+        .text_size(rpx(TEXT_SMALL))
+        .text_color(c::FG_DIM())
+        .child(
+            div()
+                .w(rpx(SUBAGENT_NAME_W))
+                .flex_shrink_0()
+                .truncate()
+                .text_color(c::FG())
+                .child(agent.name.clone()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(agent.activity.clone()),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_color(match agent.status {
+                    codex::SubagentStatus::Working | codex::SubagentStatus::Completed => c::GREEN(),
+                    codex::SubagentStatus::Failed => c::RED(),
+                    codex::SubagentStatus::Unknown => c::FG_MUTE(),
+                })
+                .child(status),
+        )
+}
+
 /// Place work metadata after the user prompt, keeping the answer outside disclosure.
 fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, String, bool)> {
     if state
@@ -4871,10 +4992,7 @@ fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, Stri
     {
         return None;
     }
-    let period =
-        state.saved.work_periods.iter().rev().find(|period| {
-            period.start_item <= index && period.end_item.is_none_or(|end| index < end)
-        });
+    let period = work_period_at(state, index);
     let fallback_start = state.saved.items[..(index + 1).min(state.saved.items.len())]
         .iter()
         .rposition(|item| item["type"] == "userMessage")
@@ -10797,6 +10915,7 @@ mod tests {
             start_item: 0,
             end_item: Some(3),
             duration_ms: Some(23_900),
+            subagents: Vec::new(),
         });
         for (duration_ms, expected) in [
             (0, "Worked for 0s"),
@@ -10824,6 +10943,84 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(work_header_at(&state, 1).unwrap().1, "Working for 2m");
+    }
+
+    #[test]
+    fn subagent_summary_counts_only_matching_states_and_hides_empty_failure_count() {
+        let agent = |status| codex::Subagent {
+            id: "child".into(),
+            name: "Explorer".into(),
+            activity: "Reading files".into(),
+            status,
+        };
+        assert_eq!(subagent_summary(&[]), None);
+        assert_eq!(
+            subagent_summary(&[agent(codex::SubagentStatus::Working)]),
+            Some(("1 subagent · 1 working".into(), None))
+        );
+        let agents = vec![
+            agent(codex::SubagentStatus::Working),
+            agent(codex::SubagentStatus::Failed),
+            agent(codex::SubagentStatus::Completed),
+            agent(codex::SubagentStatus::Unknown),
+        ];
+        assert_eq!(
+            subagent_summary(&agents),
+            Some(("4 subagents · 1 working".into(), Some("1 failed".into())))
+        );
+        assert_eq!(
+            subagent_status_label(codex::SubagentStatus::Unknown),
+            "Unknown"
+        );
+        assert_eq!(
+            subagent_status_label(codex::SubagentStatus::Completed),
+            "Completed"
+        );
+    }
+
+    #[test]
+    fn subagent_rows_and_summary_stay_with_their_work_header_period() {
+        let mut state = snapshot();
+        state.saved.items = vec![
+            serde_json::json!({"type":"userMessage"}),
+            serde_json::json!({"type":"reasoning"}),
+            serde_json::json!({"type":"userMessage"}),
+            serde_json::json!({"type":"reasoning"}),
+        ];
+        let period = |start_item, end_item, name: &str, status| codex::WorkPeriod {
+            start_item,
+            end_item,
+            duration_ms: None,
+            subagents: vec![codex::Subagent {
+                id: name.into(),
+                name: name.into(),
+                activity: format!("Activity for {name}"),
+                status,
+            }],
+        };
+        state.saved.work_periods = vec![
+            period(0, Some(2), "Past", codex::SubagentStatus::Failed),
+            period(2, None, "Current", codex::SubagentStatus::Working),
+        ];
+        state.status = Status::Working;
+        assert!(!work_header_at(&state, 1).unwrap().2);
+        assert!(work_header_at(&state, 3).unwrap().2);
+        assert_eq!(work_subagents_at(&state, 1)[0].name, "Past");
+        assert_eq!(
+            work_subagents_at(&state, 3)[0].activity,
+            "Activity for Current"
+        );
+        assert_eq!(
+            subagent_summary(work_subagents_at(&state, 1))
+                .unwrap()
+                .1
+                .as_deref(),
+            Some("1 failed")
+        );
+        assert_eq!(
+            subagent_summary(work_subagents_at(&state, 3)).unwrap().0,
+            "1 subagent · 1 working"
+        );
     }
 
     #[test]
