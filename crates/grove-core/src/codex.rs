@@ -60,6 +60,10 @@ pub struct WorkPeriod {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
     #[serde(default)]
+    pub edit_checkpoints: Vec<EditCheckpoint>,
+    #[serde(default)]
+    pub pending_edit: Option<PendingEdit>,
+    #[serde(default)]
     pub provider: Provider,
     pub key: String,
     pub project: String,
@@ -86,10 +90,28 @@ pub struct SavedSession {
     #[serde(default)]
     pub context: Option<ContextUsage>,
 }
+/// Workspace state immediately before a provider turn began.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EditCheckpoint {
+    pub start_item: usize,
+    pub turn_id: Option<String>,
+    pub files: crate::checkpoint::Checkpoint,
+}
+/// Durable recovery journal: no provider request is replayed automatically.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingEdit {
+    pub target: usize,
+    pub turn_id: String,
+    pub text: String,
+    pub images: Vec<String>,
+    pub recovery: crate::checkpoint::Checkpoint,
+}
 impl SavedSession {
     pub(crate) fn fresh_conversation(&self) -> Self {
         let mut saved = self.clone();
         saved.thread_id = None;
+        saved.edit_checkpoints.clear();
+        saved.pending_edit = None;
         saved.title = None;
         saved.items.clear();
         saved.work_periods.clear();
@@ -485,6 +507,8 @@ pub struct Snapshot {
     /// Monotonic local acknowledgement; only a successful turn/start response advances it.
     pub accepted_prompts: u64,
     pub cleared_conversations: u64,
+    pub edited_messages: u64,
+    pub edit_supported: bool,
     pub accepted_submission: Option<u64>,
     pub rejected_submission: Option<u64>,
     pub queued_prompts: Vec<QueuedPrompt>,
@@ -559,6 +583,42 @@ impl Snapshot {
         Ok(())
     }
 
+    pub fn editable_message(&self, index: usize) -> Result<&EditCheckpoint, String> {
+        if self.saved.provider != Provider::Codex {
+            return Err(
+                "Editing sent messages is not supported by this Claude Code connection.".into(),
+            );
+        }
+        if !self.edit_supported {
+            return Err("Editing requires a new Codex conversation with rewind support. Older legacy conversations cannot be edited.".into());
+        }
+        if self.saved.pending_edit.is_some() {
+            return Err("An interrupted edit needs recovery. Reconnect to reconcile the conversation before continuing.".into());
+        }
+        if self.status.busy()
+            || self.turn_id.is_some()
+            || self.compacting
+            || !self.queued_prompts.is_empty()
+        {
+            return Err("Finish the active turn and remove queued messages before editing.".into());
+        }
+        if self.status == Status::Disconnected {
+            return Err("Reconnect before editing a message.".into());
+        }
+        if self
+            .saved
+            .items
+            .get(index)
+            .is_none_or(|item| item["type"] != "userMessage")
+        {
+            return Err("This message is no longer available.".into());
+        }
+        self.saved.edit_checkpoints.iter().find(|checkpoint| {
+            checkpoint.turn_id.is_some() && self.saved.items.iter().enumerate()
+                .skip(checkpoint.start_item).find(|(_, item)| item["type"] == "userMessage")
+                .is_some_and(|(first, _)| first == index)
+        }).ok_or_else(|| "No workspace checkpoint is available for this message. Only new turns with a saved checkpoint can be edited.".into())
+    }
     pub fn queue_editable(&self, id: u64) -> bool {
         self.queued_prompts.iter().any(|p| p.id == id)
             && !self.queue_sending.contains(&id)
@@ -635,6 +695,8 @@ impl Snapshot {
             resolved_access: None,
             accepted_prompts: 0,
             cleared_conversations: 0,
+            edited_messages: 0,
+            edit_supported: false,
             accepted_submission: None,
             rejected_submission: None,
             queued_prompts: Vec::new(),
@@ -1198,6 +1260,10 @@ fn prompt_input(text: &str, images: Vec<String>) -> Vec<Value> {
 pub enum Action {
     /// Start a fresh provider conversation while retaining the Grove session.
     ClearConversation,
+    EditMessage {
+        index: usize,
+        message_id: String,
+    },
     ResetConfiguration,
     Configure {
         model: Option<String>,
@@ -1408,7 +1474,12 @@ fn persist_in_dir(saved: &SavedSession, dir: &std::path::Path) -> Result<(), Str
             .map_err(|e| e.to_string())?;
     }
     serde_json::to_writer(&mut file, saved).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    std::fs::File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1604,6 +1675,8 @@ enum Pending {
         ack: QuestionAnswerAck,
     },
     Compact,
+    EditMessage,
+    RecoverEdit,
     Interrupt {
         attempt: u8,
         turn: String,
@@ -1740,7 +1813,7 @@ impl Actor {
             self.process = None;
             return Err("Codex session is closing".into());
         }
-        self.request("initialize",json!({"clientInfo":{"name":"grove","title":"Grove","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}}),Pending::Initialize)
+        self.request("initialize",json!({"clientInfo":{"name":"grove","title":"Grove","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),Pending::Initialize)
     }
     fn start_thread(&mut self, writable_roots: Option<Vec<Value>>) -> Result<(), String> {
         let mut params = json!({"cwd": self.state.saved.cwd});
@@ -1751,6 +1824,7 @@ impl Actor {
             params["threadId"] = json!(thread);
             "thread/resume"
         } else {
+            params["historyMode"] = json!("paginated");
             "thread/start"
         };
         self.request(method, params, Pending::Thread)
@@ -1805,6 +1879,148 @@ impl Actor {
         }
         params
     }
+    fn capture_edit_checkpoint(&mut self) {
+        if !self.state.edit_supported {
+            return;
+        }
+        let mut roots = vec![PathBuf::from(&self.state.saved.cwd)];
+        roots.extend(
+            self.state
+                .saved
+                .roots
+                .iter()
+                .map(|root| PathBuf::from(&root.wt_path)),
+        );
+        roots.sort();
+        roots.dedup();
+        // Checkpoint errors never prevent ordinary chat; Edit explains unavailable turns.
+        if let Ok(files) = crate::checkpoint::repository_roots(&roots)
+            .and_then(|roots| crate::checkpoint::capture(&roots))
+        {
+            self.state
+                .saved
+                .edit_checkpoints
+                .retain(|record| record.turn_id.is_some());
+            self.state.saved.edit_checkpoints.push(EditCheckpoint {
+                start_item: self.state.saved.items.len(),
+                turn_id: None,
+                files,
+            });
+        }
+    }
+    fn bind_edit_checkpoint(&mut self, result: &Value) {
+        if let Some(turn) = result["turn"]["id"].as_str() {
+            if let Some(record) = self
+                .state
+                .saved
+                .edit_checkpoints
+                .last_mut()
+                .filter(|record| record.turn_id.is_none())
+            {
+                record.turn_id = Some(turn.to_owned());
+            }
+        }
+    }
+    fn edit_message(&mut self, index: usize, message_id: String) -> Result<(), String> {
+        let record = self.state.editable_message(index)?.clone();
+        if self.process.is_none() || !self.pending.is_empty() {
+            return Err("Wait for the provider to finish reconnecting before editing.".into());
+        }
+        let item = &self.state.saved.items[index];
+        if item["id"].as_str().unwrap_or("") != message_id {
+            return Err("This message changed; select Edit again.".into());
+        }
+        let text = item_text(item);
+        let images = item["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|part| {
+                part["url"]
+                    .as_str()
+                    .filter(|_| part["type"] == "image")
+                    .map(str::to_owned)
+            })
+            .collect();
+        let mut roots = vec![PathBuf::from(&self.state.saved.cwd)];
+        roots.extend(
+            self.state
+                .saved
+                .roots
+                .iter()
+                .map(|root| PathBuf::from(&root.wt_path)),
+        );
+        roots.sort();
+        roots.dedup();
+        let roots = crate::checkpoint::repository_roots(&roots)?;
+        let recovery = crate::checkpoint::capture(&roots)?;
+        let turn_id = record.turn_id.ok_or("Missing turn identity")?;
+        self.state.saved.pending_edit = Some(PendingEdit {
+            target: record.start_item,
+            turn_id: turn_id.clone(),
+            text,
+            images,
+            recovery,
+        });
+        // Persist recovery before the first filesystem mutation or provider request.
+        persist(&self.state.saved)?;
+        if let Err(error) = record.files.restore() {
+            self.recover_failed_edit()?;
+            return Err(error);
+        }
+        if let Err(error) = self.request(
+            "thread/revert",
+            json!({"threadId":self.state.saved.thread_id,"beforeTurnId":turn_id}),
+            Pending::EditMessage,
+        ) {
+            // A write or flush error does not prove the provider rejected the request.
+            // Keep the durable journal and reconcile history after reconnecting.
+            self.pid.store(0, Ordering::SeqCst);
+            self.process = None;
+            self.state.status = Status::Disconnected;
+            return Err(format!("Edit delivery is uncertain. Reconnect to recover the workspace and conversation: {error}"));
+        }
+        self.state.status = Status::Working;
+        self.state.error = None;
+        Ok(())
+    }
+    fn recover_failed_edit(&mut self) -> Result<(), String> {
+        if let Some(edit) = &self.state.saved.pending_edit {
+            edit.recovery.restore().map_err(|error| {
+                format!("Edit failed and workspace recovery needs attention: {error}")
+            })?;
+        }
+        let mut saved = self.state.saved.clone();
+        saved.pending_edit = None;
+        persist(&saved)?;
+        self.state.saved = saved;
+        self.state.status = Status::Idle;
+        Ok(())
+    }
+    fn finish_edit(&mut self) -> Result<(), String> {
+        let mut saved = self.state.saved.clone();
+        let edit = saved
+            .pending_edit
+            .take()
+            .ok_or("Missing edit recovery journal")?;
+        saved.items.truncate(edit.target);
+        saved.edit_checkpoints.retain(|record| {
+            record.start_item < edit.target && record.turn_id.as_deref() != Some(&edit.turn_id)
+        });
+        saved
+            .work_periods
+            .retain(|period| period.start_item < edit.target);
+        saved.draft = edit.text;
+        saved.draft_images = edit.images;
+        saved.context = None;
+        persist(&saved)?;
+        self.state.saved = saved;
+        self.state.context_tokens = None;
+        self.state.turn_id = None;
+        self.state.status = Status::Idle;
+        self.state.edited_messages += 1;
+        Ok(())
+    }
     fn prompt(&mut self, text: String) -> Result<(), String> {
         self.prompt_with_images(text, Vec::new(), None)
     }
@@ -1843,6 +2059,7 @@ impl Actor {
         self.state.saved.draft.clone_from(&text);
         self.state.saved.draft_images.clone_from(&images);
         let _ = thread;
+        self.capture_edit_checkpoint();
         self.request(
             "turn/start",
             self.turn_params(self.input(&text, images)),
@@ -1968,6 +2185,7 @@ impl Actor {
             return Ok(());
         }
         self.state.queue_sending.push(prompt.id);
+        self.capture_edit_checkpoint();
         self.request(
             "turn/start",
             self.turn_params(self.input(&prompt.text, prompt.images)),
@@ -2024,7 +2242,16 @@ impl Actor {
         Ok(())
     }
     fn action(&mut self, action: Action) -> Result<bool, String> {
+        if self.state.saved.pending_edit.is_some()
+            && !matches!(action, Action::Reconnect | Action::Stop { .. })
+        {
+            if let Action::Submit { id, .. } | Action::SubmitWithMode { id, .. } = &action {
+                self.state.rejected_submission = Some(*id);
+            }
+            return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
+        }
         match action {
+            Action::EditMessage { index, message_id } => self.edit_message(index, message_id)?,
             Action::ClearConversation => {
                 self.clear_conversation(persist)?;
                 if let Err(error) = self.start() {
@@ -2520,6 +2747,16 @@ impl Actor {
                 return Ok(());
             }
 
+            if matches!(request.kind, Pending::EditMessage) {
+                self.recover_failed_edit()?;
+                self.state.error = Some(
+                    error["message"]
+                        .as_str()
+                        .unwrap_or("Codex could not restore the conversation")
+                        .into(),
+                );
+                return Ok(());
+            }
             if let Pending::Turn {
                 submission: Some(id),
             } = &request.kind
@@ -2742,9 +2979,15 @@ impl Actor {
                         }
                     }
                 }
+                self.state.edit_supported = result["thread"]["historyMode"] == "paginated";
                 self.state.saved.thread_id = result["thread"]["id"].as_str().map(str::to_owned);
                 if self.state.saved.thread_id.is_none() {
                     return Err("Codex returned no thread identity".into());
+                }
+                if self.state.saved.pending_edit.is_some() {
+                    self.request("thread/turns/list", json!({"threadId":self.state.saved.thread_id,"itemsView":"notLoaded","limit":100,"sortDirection":"desc"}), Pending::RecoverEdit)?;
+                    self.state.status = Status::Starting;
+                    return Ok(());
                 }
                 if let Some(turns) = result["thread"]["turns"].as_array() {
                     let items = turns
@@ -2800,6 +3043,7 @@ impl Actor {
                                 .any(|(old, new)| old["id"] != new["id"])
                         {
                             self.state.saved.work_periods.clear();
+                            self.state.saved.edit_checkpoints.clear();
                             self.state.work_started = None;
                         }
                         self.state.saved.items = items;
@@ -2866,7 +3110,48 @@ impl Actor {
                     Status::Done
                 };
             }
+            Pending::RecoverEdit => {
+                let edit = self
+                    .state
+                    .saved
+                    .pending_edit
+                    .clone()
+                    .ok_or("Missing edit recovery journal")?;
+                let turns = result["data"].as_array().ok_or(
+                    "Codex returned no history page for edit recovery; reconnect to retry.",
+                )?;
+                if turns
+                    .iter()
+                    .any(|turn| turn["id"].as_str() == Some(&edit.turn_id))
+                {
+                    self.recover_failed_edit()?;
+                    self.state.error = Some("The interrupted edit was cancelled; the previous workspace and conversation were recovered.".into());
+                } else if let Some(cursor) = result["nextCursor"].as_str() {
+                    self.request("thread/turns/list", json!({"threadId":self.state.saved.thread_id,"itemsView":"notLoaded","limit":100,"sortDirection":"desc","cursor":cursor}), Pending::RecoverEdit)?;
+                } else {
+                    let record = self
+                        .state
+                        .saved
+                        .edit_checkpoints
+                        .iter()
+                        .find(|record| record.turn_id.as_deref() == Some(&edit.turn_id))
+                        .ok_or("The edit checkpoint is missing; recovery remains blocked.")?;
+                    record.files.restore()?;
+                    self.finish_edit()?;
+                    self.state.error = Some(
+                        "The interrupted edit completed; the restored message is ready to edit."
+                            .into(),
+                    );
+                }
+            }
+            Pending::EditMessage => {
+                if result["thread"]["id"].as_str() != self.state.saved.thread_id.as_deref() {
+                    return Err("Codex returned an unexpected edit acknowledgement. Reconnect to reconcile the conversation; the workspace recovery was preserved.".into());
+                }
+                self.finish_edit()?;
+            }
             Pending::Turn { submission } => {
+                self.bind_edit_checkpoint(result);
                 if let Some(submission) = submission {
                     self.state.accepted_submission = Some(submission);
                 }
@@ -2906,6 +3191,7 @@ impl Actor {
                 }
             }
             Pending::QueuedTurn { id } => {
+                self.bind_edit_checkpoint(result);
                 let Some(turn) = result["turn"]["id"].as_str().filter(|id| !id.is_empty()) else {
                     self.queue_paused = true;
                     self.queue_ready = false;
@@ -3080,6 +3366,8 @@ mod tests {
     use super::*;
     fn saved() -> SavedSession {
         SavedSession {
+            edit_checkpoints: Vec::new(),
+            pending_edit: None,
             provider: Provider::Codex,
             key: "test-native-1".into(),
             project: "Project".into(),
@@ -4979,5 +5267,280 @@ mod tests {
             actor.action(Action::Compact).unwrap_err(),
             COMPACT_DISCONNECTED
         );
+    }
+    #[cfg(unix)]
+    struct EditFixture {
+        actor: Actor,
+        repo: tempfile::TempDir,
+        journal: PathBuf,
+    }
+    #[cfg(unix)]
+    impl Drop for EditFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.journal);
+        }
+    }
+    #[cfg(unix)]
+    fn edit_fixture() -> EditFixture {
+        let repo = tempfile::tempdir().unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(repo.path())
+            .status()
+            .unwrap()
+            .success());
+        let root = repo.path().canonicalize().unwrap();
+        let file = root.join("work");
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        actor.state.edit_supported = true;
+        actor.state.saved.cwd = root.to_string_lossy().into_owned();
+        actor.state.saved.key = format!(
+            "test-edit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let journal = recovery_dir()
+            .unwrap()
+            .join(format!("{}.json", actor.state.saved.key));
+        for (start, turn, text) in [
+            (0, "earlier-turn", "initial"),
+            (2, "target-turn", "before target"),
+            (4, "later-turn", "after target"),
+        ] {
+            std::fs::write(&file, text).unwrap();
+            actor.state.saved.edit_checkpoints.push(EditCheckpoint {
+                start_item: start,
+                turn_id: Some(turn.into()),
+                files: crate::checkpoint::capture(&[root.clone()]).unwrap(),
+            });
+        }
+        std::fs::write(&file, "latest workspace").unwrap();
+        actor.state.saved.items = vec![
+            json!({"id":"earlier","type":"userMessage","content":[{"type":"text","text":"earlier prompt"}]}),
+            json!({"id":"earlier-answer","type":"agentMessage","text":"earlier answer"}),
+            json!({"id":"target","type":"userMessage","content":[{"type":"text","text":"target prompt"},{"type":"image","url":"data:image/png;base64,aGVsbG8="}]}),
+            json!({"id":"target-answer","type":"agentMessage","text":"target answer"}),
+            json!({"id":"later","type":"userMessage","content":[{"type":"text","text":"later prompt"}]}),
+        ];
+        EditFixture {
+            actor,
+            repo,
+            journal,
+        }
+    }
+    #[cfg(unix)]
+    fn edit_pending(actor: &Actor) -> u64 {
+        *actor.pending.keys().next().unwrap()
+    }
+    #[cfg(unix)]
+    fn edit_disk(fixture: &EditFixture) -> SavedSession {
+        serde_json::from_slice(&std::fs::read(&fixture.journal).unwrap()).unwrap()
+    }
+    #[test]
+    #[cfg(unix)]
+    fn edit_older_message_restores_pre_turn_then_retains_earlier_history_and_populates_draft() {
+        let mut fixture = edit_fixture();
+        let earlier = fixture.actor.state.saved.items[..2].to_vec();
+        fixture.actor.edit_message(2, "target".into()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            "before target"
+        );
+        assert_eq!(fixture.actor.state.saved.items.len(), 5);
+        assert!(edit_disk(&fixture).pending_edit.is_some());
+        let id = edit_pending(&fixture.actor);
+        fixture
+            .actor
+            .message(json!({"id":id,"result":{"thread":{"id":"thread-1"}}}))
+            .unwrap();
+        assert_eq!(fixture.actor.state.saved.items, earlier);
+        assert_eq!(fixture.actor.state.saved.draft, "target prompt");
+        assert_eq!(
+            fixture.actor.state.saved.draft_images,
+            vec!["data:image/png;base64,aGVsbG8="]
+        );
+        assert_eq!(fixture.actor.state.saved.edit_checkpoints.len(), 1);
+        assert_eq!(
+            fixture.actor.state.saved.edit_checkpoints[0]
+                .turn_id
+                .as_deref(),
+            Some("earlier-turn")
+        );
+        assert!(edit_disk(&fixture).pending_edit.is_none());
+        assert_eq!(edit_disk(&fixture).items, earlier);
+        assert_eq!(fixture.actor.state.status, Status::Idle);
+    }
+    #[test]
+    #[cfg(unix)]
+    fn edit_provider_failure_recovers_current_workspace_and_complete_conversation() {
+        let mut fixture = edit_fixture();
+        let items = fixture.actor.state.saved.items.clone();
+        fixture.actor.edit_message(2, "target".into()).unwrap();
+        let id = edit_pending(&fixture.actor);
+        fixture
+            .actor
+            .message(json!({"id":id,"error":{"message":"revert refused"}}))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            "latest workspace"
+        );
+        assert_eq!(fixture.actor.state.saved.items, items);
+        assert_eq!(fixture.actor.state.saved.edit_checkpoints.len(), 3);
+        assert!(fixture.actor.state.saved.pending_edit.is_none());
+        assert!(edit_disk(&fixture).pending_edit.is_none());
+        assert_eq!(fixture.actor.state.error.as_deref(), Some("revert refused"));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn edit_busy_queued_and_stale_message_guards_leave_workspace_and_history_untouched() {
+        let mut fixture = edit_fixture();
+        let items = fixture.actor.state.saved.items.clone();
+        fixture.actor.state.status = Status::Working;
+        assert!(fixture.actor.edit_message(2, "target".into()).is_err());
+        fixture.actor.state.status = Status::Idle;
+        fixture.actor.state.queued_prompts.push(QueuedPrompt {
+            id: 77,
+            text: "queued".into(),
+            images: Vec::new(),
+        });
+        assert!(fixture.actor.edit_message(2, "target".into()).is_err());
+        fixture.actor.state.queued_prompts.clear();
+        assert!(fixture.actor.edit_message(2, "stale-id".into()).is_err());
+        assert_eq!(fixture.actor.state.saved.items, items);
+        assert!(fixture.actor.state.saved.pending_edit.is_none());
+        assert!(fixture.actor.pending.is_empty());
+        assert!(!fixture.journal.exists());
+        assert_eq!(
+            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            "latest workspace"
+        );
+    }
+    #[test]
+    #[cfg(unix)]
+    fn edit_reconnect_recovers_durable_journal_only_after_paginated_provider_history() {
+        for target_present in [true, false] {
+            let mut fixture = edit_fixture();
+            let original = fixture.actor.state.saved.items.clone();
+            fixture.actor.edit_message(2, "target".into()).unwrap();
+            let saved = edit_disk(&fixture);
+            fixture.actor.state = Snapshot::new(saved);
+            fixture.actor.pending.clear();
+            fixture.actor.pending.insert(
+                900,
+                Request {
+                    kind: Pending::Thread,
+                    deadline: Instant::now(),
+                },
+            );
+            fixture
+                .actor
+                .message(json!({"id":900,"result":{"thread":{"id":"thread-1","turns":[]}}}))
+                .unwrap();
+            assert!(fixture.actor.state.saved.pending_edit.is_some());
+            let first_page = edit_pending(&fixture.actor);
+            fixture.actor.message(json!({"id":first_page,"result":{"data":[{"id":"newer-turn"}],"nextCursor":"older-page"}})).unwrap();
+            assert!(fixture.actor.state.saved.pending_edit.is_some());
+            assert_eq!(fixture.actor.state.saved.items, original);
+            let second_page = edit_pending(&fixture.actor);
+            let turns = if target_present {
+                json!([{"id":"target-turn"}])
+            } else {
+                json!([{"id":"earlier-turn"}])
+            };
+            fixture
+                .actor
+                .message(json!({"id":second_page,"result":{"data":turns,"nextCursor":null}}))
+                .unwrap();
+            assert!(fixture.actor.state.saved.pending_edit.is_none());
+            assert!(edit_disk(&fixture).pending_edit.is_none());
+            if target_present {
+                assert_eq!(fixture.actor.state.saved.items, original);
+                assert_eq!(
+                    std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+                    "latest workspace"
+                );
+            } else {
+                assert_eq!(fixture.actor.state.saved.items, original[..2]);
+                assert_eq!(fixture.actor.state.saved.draft, "target prompt");
+                assert_eq!(
+                    std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+                    "before target"
+                );
+            }
+        }
+    }
+    #[test]
+    #[cfg(unix)]
+    fn edit_transport_failure_keeps_durable_journal_and_history_for_reconnect() {
+        let mut fixture = edit_fixture();
+        let items = fixture.actor.state.saved.items.clone();
+        let process = fixture.actor.process.as_mut().unwrap();
+        // Reap the entire fixture process group so the pipe has no remaining reader.
+        unsafe {
+            libc::kill(-(process.child.id() as i32), libc::SIGKILL);
+        }
+        process.child.wait().unwrap();
+        let error = fixture.actor.edit_message(2, "target".into()).unwrap_err();
+        assert!(error.contains("uncertain"), "{error}");
+        assert_eq!(fixture.actor.state.status, Status::Disconnected);
+        assert!(fixture.actor.process.is_none());
+        assert_eq!(fixture.actor.state.saved.items, items);
+        assert!(fixture.actor.state.saved.pending_edit.is_some());
+        let durable = edit_disk(&fixture);
+        assert!(durable.pending_edit.is_some());
+        assert_eq!(durable.items, items);
+        assert_eq!(
+            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            "before target"
+        );
+        assert_eq!(fixture.actor.state.edited_messages, 0);
+        durable.pending_edit.unwrap().recovery.restore().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            "latest workspace"
+        );
+    }
+
+    #[test]
+    fn edit_capability_tracks_paginated_and_legacy_thread_responses() {
+        let mut actor = actor();
+        actor.state.turn_id = None;
+        actor.state.saved.items = vec![
+            json!({"id":"sent","type":"userMessage","content":[{"type":"text","text":"sent prompt"}]}),
+        ];
+        for (id, history_mode, supported) in [
+            (901, None, false),
+            (902, Some("paginated"), true),
+            (903, Some("legacy"), false),
+        ] {
+            actor.pending.insert(
+                id,
+                Request {
+                    kind: Pending::Thread,
+                    deadline: Instant::now(),
+                },
+            );
+            let mut thread = json!({"id":"thread-1","turns":[]});
+            if let Some(mode) = history_mode {
+                thread["historyMode"] = json!(mode);
+            }
+            actor
+                .message(json!({"id":id,"result":{"thread":thread}}))
+                .unwrap();
+            assert_eq!(actor.state.edit_supported, supported);
+            let error = actor.state.editable_message(0).unwrap_err();
+            if supported {
+                assert!(error.contains("checkpoint"), "{error}");
+            } else {
+                assert!(error.contains("rewind support"), "{error}");
+            }
+        }
     }
 }

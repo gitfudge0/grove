@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod attention;
+pub mod checkpoint;
 pub mod claude;
 pub mod claude_agents;
 pub mod codex;

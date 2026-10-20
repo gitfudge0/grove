@@ -424,6 +424,11 @@ pub struct CodexView {
     submitted: Option<String>,
     submitted_ack: Option<u64>,
     pending_clear: Option<(u64, String, Vec<String>)>,
+    edit_confirmation: Option<(usize, String)>,
+    edit_request_pending: bool,
+    edited_messages: u64,
+    edit_cancel_focus: FocusHandle,
+    edit_confirm_focus: FocusHandle,
     queue_selected: Option<u64>,
     queue_collapsed: bool,
     queue_editor: Option<QueueEditor>,
@@ -551,6 +556,11 @@ impl CodexView {
             submitted: None,
             submitted_ack: None,
             pending_clear: None,
+            edit_confirmation: None,
+            edit_request_pending: false,
+            edited_messages: 0,
+            edit_cancel_focus: cx.focus_handle(),
+            edit_confirm_focus: cx.focus_handle(),
             queue_selected: None,
             queue_collapsed: false,
             queue_editor: None,
@@ -1677,6 +1687,13 @@ impl CodexView {
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_confirmation.is_some()
+            || self.edit_request_pending
+            || self.session.read(cx).state.saved.pending_edit.is_some()
+        {
+            return;
+        }
+
         if self.queue_editor.is_some() {
             self.save_queue_edit(cx);
             return;
@@ -1720,6 +1737,12 @@ impl CodexView {
         cx.notify();
     }
     fn submit_mode(&mut self, mode: SubmissionMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_confirmation.is_some()
+            || self.edit_request_pending
+            || self.session.read(cx).state.saved.pending_edit.is_some()
+        {
+            return;
+        }
         if self.queue_editor.is_some() {
             self.save_queue_edit(cx);
             return;
@@ -1788,6 +1811,25 @@ impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.restore_image_tokens(window, cx);
         let mut state = self.session.read(cx).state.clone();
+        if state.edited_messages != self.edited_messages {
+            self.edited_messages = state.edited_messages;
+            self.edit_request_pending = false;
+            self.input.update(cx, |input, cx| {
+                input.set_value(state.saved.draft.clone(), window, cx)
+            });
+            self.images = state.saved.draft_images.clone();
+            self.picked_tokens.clear();
+            self.file_suggestions.clear();
+            self.bubble_entrances.clear();
+            self.animating_bubbles.clear();
+            self.stream_text.clear();
+            self.set_composer_collapsed(false, cx);
+            window.focus(&self.input.focus_handle(cx), cx);
+        }
+
+        if state.error.is_some() {
+            self.edit_request_pending = false;
+        }
         // checkout_context contains chrome labels such as “Main checkout”, not
         // filesystem paths. Resolve document links against the saved worktree.
         let html_cwd = std::path::PathBuf::from(&state.saved.cwd);
@@ -2608,6 +2650,41 @@ impl Render for CodexView {
                                 )),
                             )
                         })
+                        .when(kind == "userMessage", |row| {
+                            let message_id = item["id"].as_str().unwrap_or("").to_owned();
+                            let unavailable = state.editable_message(index).err();
+                            row.child(
+                                header_control("codex-edit-message", "Edit sent message")
+                                    .aria_description(unavailable.clone().unwrap_or_else(|| {
+                                        "Edit message and restore workspace".into()
+                                    }))
+                                    .debug_selector(move || format!("codex-edit-message-{index}"))
+                                    .aria_label("Edit sent message")
+                                    .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                            if action_key(event) {
+                                                this.request_edit(index, window, cx);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    ))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(error) = &unavailable {
+                                            this.session.update(cx, |session, cx| {
+                                                session.state.error = Some(error.clone());
+                                                cx.notify();
+                                            });
+                                        } else {
+                                            this.edit_confirmation =
+                                                Some((index, message_id.clone()));
+                                            this.close_menu(cx);
+                                            window.focus(&this.edit_cancel_focus, cx);
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                        })
                         .child(
                             header_control("codex-copy", "Copy message")
                                 .child(crate::icons::icon("copy", ICON_MD, c::FG_DIM()))
@@ -2998,10 +3075,14 @@ impl Render for CodexView {
         }
         let busy = state.status.busy();
         let stopping = busy && self.interrupt_requested_for_turn.is_some();
-        let draft_disabled = matches!(
-            state.status,
-            codex::Status::Starting | codex::Status::Disconnected
-        ) || self.submitted.is_some()
+        let draft_disabled = self.edit_confirmation.is_some()
+            || self.edit_request_pending
+            || state.saved.pending_edit.is_some()
+            || matches!(
+                state.status,
+                codex::Status::Starting | codex::Status::Disconnected
+            )
+            || self.submitted.is_some()
             || self.pending_image_pastes > 0
             || stopping
             || (self.input.read(cx).value().trim().is_empty() && self.images.is_empty());
@@ -3042,7 +3123,57 @@ impl Render for CodexView {
         let owner = cx.entity().downgrade();
         let body_height = self.composer_body_height.clone();
         let height_owner = cx.entity().downgrade();
+        let edit_confirmation = self.edit_confirmation.clone();
         let body = div()
+            .when_some(edit_confirmation, |body, (index, message_id)| {
+                body.child(
+                    div()
+                        .id("codex-edit-confirmation")
+                        .debug_selector(|| "codex-edit-confirmation".into())
+                        .role(gpui::Role::Dialog)
+                        .aria_label("edit and restore changes?")
+                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                            if event.keystroke.key == "escape" {
+                                this.edit_confirmation = None;
+                                window.focus(&this.input.focus_handle(cx), cx);
+                                cx.stop_propagation(); cx.notify();
+                            } else if event.keystroke.key == "tab" {
+                                let next = if this.edit_cancel_focus.is_focused(window) { &this.edit_confirm_focus } else { &this.edit_cancel_focus };
+                                window.focus(next, cx); cx.stop_propagation();
+                            }
+                        }))
+                        .flex().flex_col().gap(rpx(SPACE_LG))
+                        .p(rpx(SPACE_2XL)).m(rpx(SPACE_LG))
+                        .rounded(rpx(RADIUS_GROUP))
+                        .border_1().border_color(c::BORDER()).bg(c::SURFACE_RAISED())
+                        .child(div().text_size(rpx(TEXT_TITLE)).child("edit and restore changes?"))
+                        .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(
+                            "Restore tracked and untracked files in this session’s repositories to before this message. This message and all later replies will be removed. Ignored files, commits, and staged changes stay as they are."
+                        ))
+                        .child(div().flex().justify_end().gap(rpx(SPACE_LG))
+                            .child(form_action("codex-cancel-edit", "Cancel", false, window, cx)
+                                .with_focus_handle(self.edit_cancel_focus.clone())
+                                .debug_selector(|| "codex-cancel-edit".into())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.edit_confirmation = None;
+                                    window.focus(&this.input.focus_handle(cx), cx); cx.notify();
+                                })))
+                            .child(form_action("codex-confirm-edit", "Edit and restore", true, window, cx)
+                                .with_focus_handle(self.edit_confirm_focus.clone())
+                                .debug_selector(|| "codex-confirm-edit".into())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if this.edit_confirmation.take().is_some() {
+                                        this.edit_request_pending = true;
+                                        this.session.update(cx, |session, cx| {
+                                            session.state.error = None;
+                                            session.send(Action::EditMessage {index, message_id:message_id.clone()}, cx);
+                                        });
+                                    }
+                                    cx.notify();
+                                })))
+                        )
+                )
+            })
             .relative()
             .w_full()
             .min_h_0()
@@ -3330,6 +3461,25 @@ impl Render for CodexView {
     }
 }
 impl CodexView {
+    fn request_edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let state = &self.session.read(cx).state;
+        match state.editable_message(index) {
+            Ok(_) => {
+                let id = state.saved.items[index]["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
+                self.edit_confirmation = Some((index, id));
+                self.close_menu(cx);
+                window.focus(&self.edit_cancel_focus, cx);
+                cx.notify();
+            }
+            Err(error) => self.session.update(cx, |session, cx| {
+                session.state.error = Some(error);
+                cx.notify();
+            }),
+        }
+    }
     fn close_menu(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
         self.popup = None;
@@ -6923,6 +7073,8 @@ mod tests {
     }
     fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
+            edit_checkpoints: Vec::new(),
+            pending_edit: None,
             provider: grove_core::codex::Provider::Codex,
             composer: grove_core::codex::ComposerSettings::default(),
             context: None,

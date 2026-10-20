@@ -736,6 +736,11 @@ impl Actor {
     }
     fn action(&mut self, action: Action) -> Result<(), String> {
         match action {
+            Action::EditMessage { .. } => {
+                return Err(
+                    "Editing sent messages is not supported by this Claude Code connection.".into(),
+                )
+            }
             Action::ClearConversation => {
                 self.clear_conversation(codex::persist)?;
                 if let Err(error) = self.start() {

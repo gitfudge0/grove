@@ -2358,6 +2358,8 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
                 provider: grove_core::codex::Provider::Codex,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
