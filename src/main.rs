@@ -52,8 +52,6 @@ mod views;
 mod project_service;
 #[allow(dead_code)]
 mod runtime;
-#[allow(dead_code)]
-mod scripts;
 // Persisted zoom and PTY sizing policy remain available for future surfaces.
 #[allow(dead_code)]
 mod zoom;

@@ -334,16 +334,6 @@ impl ProjectService {
         }
     }
 
-    pub fn create_worktree(
-        &mut self,
-        project: &storage::Project,
-        name: &str,
-        base: Option<&str>,
-        cx: &mut Context<Self>,
-    ) -> Result<String, String> {
-        self.create_worktree_with_focus(project, name, base, true, cx)
-    }
-
     pub(crate) fn create_background_worktree(
         &mut self,
         project: &storage::Project,
@@ -503,28 +493,6 @@ impl ProjectService {
         Ok(())
     }
 
-    pub fn archive_project(&mut self, idx: usize, cx: &mut Context<Self>) -> bool {
-        let path = cx
-            .global::<SettingsState>()
-            .store
-            .projects
-            .get(idx)
-            .map(|p| p.path.clone());
-        path.is_some_and(|path| self.archive_project_by_path(&path, cx).is_ok())
-    }
-
-    pub fn restore_archived(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if let Some(path) = cx
-            .global::<SettingsState>()
-            .store
-            .projects
-            .get(idx)
-            .map(|p| p.path.clone())
-        {
-            let _ = self.restore_archived_by_path(&path, cx);
-        }
-    }
-
     pub fn delete_archived_by_path(
         &mut self,
         path: &str,
@@ -541,18 +509,6 @@ impl ProjectService {
             return Err("Close all registered sessions before deleting this project.".into());
         }
         self.unregister_project(path, cx)
-    }
-
-    pub fn delete_archived(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if let Some(path) = cx
-            .global::<SettingsState>()
-            .store
-            .projects
-            .get(idx)
-            .map(|p| p.path.clone())
-        {
-            let _ = self.delete_archived_by_path(&path, cx);
-        }
     }
 
     fn unregister_project(&mut self, path: &str, cx: &mut Context<Self>) -> Result<(), String> {

@@ -248,18 +248,6 @@ impl Runtime {
         cx.notify();
     }
 
-    pub fn spawn_session(&mut self, proj: usize, wt: usize, agent: Agent, cx: &mut Context<Self>) {
-        let snap = self.snapshot(cx);
-        let Some(project) = snap.projects.iter().find(|p| p.idx == proj) else {
-            return;
-        };
-        let Some(worktree) = project.worktrees.get(wt) else {
-            return;
-        };
-        let (name, cwd) = (project.name.clone(), worktree.path.clone());
-        self.spawn_session_in(name, cwd, agent, cx);
-    }
-
     /// Spawn by concrete project name + worktree path; the palette's target may live in a project with no cached snapshot position.
     pub fn spawn_session_in(
         &mut self,
@@ -854,27 +842,6 @@ impl Runtime {
         .detach();
     }
 
-    pub fn native_sessions_running(&self, cx: &mut App) -> usize {
-        let ids: Vec<SessionId> = self.registry.read(cx).all().iter().map(|m| m.id).collect();
-        ids.into_iter()
-            .filter(|&id| {
-                if let Some(session) = self.registry.read(cx).codex(id) {
-                    return session.read(cx).state.status
-                        != grove_core::codex::Status::Disconnected;
-                }
-                let Some(term) = self.registry.read(cx).session(id).cloned() else {
-                    return false;
-                };
-                term.update(cx, |t, _| {
-                    matches!(
-                        t.backend(),
-                        crate::entities::terminal_session::Backend::Native
-                    ) && t.alive()
-                })
-            })
-            .count()
-    }
-
     pub fn discover_tmux_sessions(&mut self, cx: &mut Context<Self>) {
         if !tmux_discovery_enabled() {
             return;
@@ -921,27 +888,6 @@ impl Runtime {
             });
         }
         cx.notify();
-    }
-
-    /// Backstop only — `TerminalElement::prepaint` is the path that gets the dims right (`TMUX_ATTACH_FALLBACK_FRAMES`).
-    pub fn attach_pending_tmux_sessions(&mut self, cx: &mut Context<Self>) {
-        let dims = self.last_pty_dims;
-        let pending: Vec<_> = {
-            let registry = self.registry.read(cx);
-            registry
-                .all()
-                .iter()
-                .filter_map(|meta| registry.session(meta.id))
-                .filter(|session| session.read(cx).is_pending_attach())
-                .cloned()
-                .collect()
-        };
-        for session in pending {
-            session.update(cx, |session, cx| {
-                session.resize(dims.0, dims.1);
-                session.attach_now(cx);
-            });
-        }
     }
 
     pub fn spawn_wt_shell(&mut self, wt_path: &str, cx: &mut Context<Self>) {

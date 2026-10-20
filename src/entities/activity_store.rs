@@ -196,20 +196,10 @@ impl ActivityStore {
         self.trackers.get(&id).map(|t| t.state_since)
     }
 
-    #[cfg(test)]
-    pub fn set_state_since_for_test(&mut self, id: SessionId, since: Instant) {
-        self.trackers.entry(id).or_default().state_since = since;
-    }
-
     /// Advances only on ticks where the session classifies as `Working`, regardless of state transitions.
     #[must_use]
     pub fn active_of(&self, id: SessionId) -> Option<Instant> {
         self.trackers.get(&id).map(|t| t.last_active)
-    }
-
-    #[cfg(test)]
-    pub fn set_last_active_for_test(&mut self, id: SessionId, at: Instant) {
-        self.trackers.entry(id).or_default().last_active = at;
     }
 
     #[must_use]

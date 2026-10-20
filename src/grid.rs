@@ -271,22 +271,6 @@ pub fn grid_neighbor(i: usize, n: usize, dx: i32, dy: i32) -> Option<usize> {
     }
 }
 
-/// Equal-cell approximation used only to size the slide animation's draw offset (it settles exactly at `t = 1`). Port of `src/gui/metrics.rs:367-375`.
-#[must_use]
-#[allow(dead_code)]
-// Kept as the stable equal-grid approximation for callers that do not have a `GridSizing` snapshot.
-#[allow(clippy::cast_precision_loss)]
-pub fn grid_tile_size(win_w: f32, win_h: f32, zoom: f32, chrome_h: f32, n: usize) -> (f32, f32) {
-    let (cols, rows) = grid_layout(n);
-    let zoom = zoom.max(0.1);
-    let workspace_w = win_w / zoom;
-    let workspace_h = win_h / zoom - chrome_h;
-    (
-        (workspace_w - (cols as f32 - 1.0)) / cols as f32,
-        (workspace_h - (rows as f32 - 1.0)) / rows as f32,
-    )
-}
-
 /// Port of `src/gui/launcher.rs:43-49`.
 pub fn swap_tiles<T>(order: &mut [T], src: usize, dst: usize) {
     if src == dst || src >= order.len() || dst >= order.len() {

@@ -242,37 +242,6 @@ pub fn DIFF_DEL_BG() -> Hsla {
     alpha(RED(), 0.12)
 }
 
-/// [`DIFF_ADD_BG`] at 26%, for word-level intraline emphasis.
-pub fn DIFF_ADD_BG_STRONG() -> Hsla {
-    alpha(GREEN(), 0.26)
-}
-pub fn DIFF_DEL_BG_STRONG() -> Hsla {
-    alpha(RED(), 0.26)
-}
-
-// Seven semantic scopes syntect spans are projected onto — never syntect's own theme colours.
-pub fn CODE_KEYWORD() -> Hsla {
-    MAGENTA()
-}
-pub fn CODE_STRING() -> Hsla {
-    GREEN()
-}
-pub fn CODE_NUMBER() -> Hsla {
-    YELLOW()
-}
-pub fn CODE_COMMENT() -> Hsla {
-    FG_MUTE()
-}
-pub fn CODE_TYPE() -> Hsla {
-    CYAN()
-}
-pub fn CODE_FUNC() -> Hsla {
-    BLUE()
-}
-pub fn CODE_PUNCT() -> Hsla {
-    FG_DIM()
-}
-
 fn cyan_rgba() -> Rgba {
     theme::with_current(|t| ic(t.cyan))
 }
@@ -280,9 +249,6 @@ fn cyan_rgba() -> Rgba {
 /// Neutral, visible highlight for selectable native conversation and input text.
 pub fn TEXT_SELECTION() -> Hsla {
     alpha_rgba(FG().into(), 0.22).into()
-}
-pub fn SEL_TINT_STRONG() -> Hsla {
-    alpha_rgba(cyan_rgba(), 0.22).into()
 }
 pub fn SEL_TINT_SOFT() -> Hsla {
     alpha_rgba(cyan_rgba(), 0.10).into()
@@ -345,13 +311,6 @@ pub fn bg_hl_of(t: &theme::Theme) -> Rgba {
 }
 pub fn bg_hover_of(t: &theme::Theme) -> Rgba {
     mix(bg_of(t), bg_hl_of(t), 0.55)
-}
-pub fn border_of(t: &theme::Theme) -> Rgba {
-    mix(bg_of(t), fg_of(t), 0.16)
-}
-/// Reserved for a future PTY selection outline; chrome selection uses `SEL_RING()`.
-pub fn sel_ring_of(t: &theme::Theme) -> Rgba {
-    alpha_rgba(cyan_of(t), 0.5)
 }
 
 /// Resolution policy only — the colors themselves live in `grove_core::theme::ACTIVE`.
