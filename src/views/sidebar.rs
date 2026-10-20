@@ -1631,7 +1631,12 @@ impl Sidebar {
         let mut run = window.text_style().to_run(label.len());
         run.font.weight = gpui::FontWeight::MEDIUM;
         let font_size = rpx(TEXT_SMALL).to_pixels(window.rem_size());
-        let label_width = navigation_label_width(label, font_size, &run, window.text_system());
+        let label_width = crate::views::components::truncation_safe_label_width(
+            label,
+            font_size,
+            &run,
+            window.text_system(),
+        );
         div()
             .id("sidebar-navigation-header")
             .debug_selector(|| "sidebar-navigation-header".into())
@@ -4681,30 +4686,6 @@ impl Focusable for Sidebar {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
-}
-fn navigation_label_width(
-    label: &str,
-    font_size: gpui::Pixels,
-    run: &gpui::TextRun,
-    text_system: &gpui::WindowTextSystem,
-) -> gpui::Pixels {
-    let shaped_width = text_system
-        .shape_line(
-            label.to_owned().into(),
-            font_size,
-            std::slice::from_ref(run),
-            None,
-        )
-        .width()
-        .ceil();
-    // GPUI truncates using separate glyph advances, which can exceed a kerned
-    // word's intrinsic width. Reserve that budget before flex layout shrinks it.
-    let font_id = text_system.resolve_font(&run.font);
-    let glyph_width: gpui::Pixels = label
-        .chars()
-        .map(|ch| text_system.layout_width(font_id, font_size, ch))
-        .sum();
-    shaped_width.max(glyph_width.floor())
 }
 
 impl Render for Sidebar {
@@ -8268,7 +8249,12 @@ for line in sys.stdin:
             for label in ["Projects", "Sessions", ""] {
                 let size = gpui::px(TEXT_SMALL * zoom);
                 let run = style.to_run(label.len());
-                let width = navigation_label_width(label, size, &run, &window_text_system);
+                let width = crate::views::components::truncation_safe_label_width(
+                    label,
+                    size,
+                    &run,
+                    &window_text_system,
+                );
                 let mut wrapper = text_system.line_wrapper(run.font, size);
                 assert_eq!(
                     wrapper.should_truncate_line(label, width, "…", gpui::TruncateFrom::End),

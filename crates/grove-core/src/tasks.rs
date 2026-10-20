@@ -8,6 +8,9 @@
 //! ordinary transcript content.
 use serde_json::Value;
 
+pub(crate) const CLAUDE_GUIDANCE: &str = "Grove displays your structured task list. For multi-step work, use TodoWrite or TaskCreate/TaskUpdate to record the actionable steps before implementation. Keep task statuses current as work starts and finishes, including delegated work. A prose checklist alone does not update Grove's task list. Skip task tracking for simple single-step requests.";
+pub(crate) const CODEX_GUIDANCE: &str = "Grove displays your structured task list. For multi-step work, use update_plan to record the actionable steps before implementation. Keep step statuses current as work starts and finishes, including delegated work. A prose checklist alone does not update Grove's task list. Skip task tracking for simple single-step requests.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskStatus {
     Pending,

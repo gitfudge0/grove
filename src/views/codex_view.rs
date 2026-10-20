@@ -3,7 +3,7 @@ use super::{
     components::{
         form_action, header_control, header_control_with_hover, header_control_with_tooltip,
         project_field_well, question_choice, question_disclosure, task_mark, task_meter, tooltip,
-        tooltip_content, transcript_action, TaskPhase,
+        tooltip_content, transcript_action, truncation_safe_label_width, TaskPhase,
     },
     rpx,
     tokens::*,
@@ -483,6 +483,7 @@ pub struct CodexView {
     composer_transition_from: Option<gpui::Pixels>,
     composer_transition_generation: usize,
     composer_motion_finished: Rc<Cell<bool>>,
+    subagent_panel: Entity<super::subagent_panel::SubagentPanel>,
     tasks_expanded: bool,
     task_cache: Option<Rc<TaskCache>>,
     _subscriptions: Vec<Subscription>,
@@ -621,6 +622,7 @@ impl CodexView {
             composer_transition_from: None,
             composer_transition_generation: 0,
             composer_motion_finished: Rc::new(Cell::new(true)),
+            subagent_panel: cx.new(super::subagent_panel::SubagentPanel::new),
             tasks_expanded: false,
             task_cache: None,
             checkout_context: None,
@@ -2817,6 +2819,16 @@ impl Render for CodexView {
                         let tool_key = tool_expansion_key(tool, detail_index);
                         let tool_expanded = self.expanded.contains(&tool_key);
                         let keyboard_key = tool_key.clone();
+                        let activity =
+                            tool_activity_summary(tool, tool_is_running(&state, detail_index));
+                        let mut label_run = window.text_style().to_run(activity.len());
+                        label_run.font.family = crate::fonts::UI_FAMILY.into();
+                        let label_width = truncation_safe_label_width(
+                            &activity,
+                            rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                            &label_run,
+                            window.text_system(),
+                        );
                         let mut detail_row = div()
                             .id(("codex-tool-detail-row", detail_index))
                             .flex()
@@ -2866,16 +2878,14 @@ impl Render for CodexView {
                                         .debug_selector(move || {
                                             format!("codex-tool-row-label-{detail_index}")
                                         })
+                                        .w(label_width)
                                         .min_w_0()
                                         .truncate()
                                         .text_size(rpx(TEXT_SMALL))
                                         .text_color(c::FG_DIM())
                                         .child(shimmer_label(
                                             ("codex-tool-detail-shimmer", detail_index).into(),
-                                            tool_activity_summary(
-                                                tool,
-                                                tool_is_running(&state, detail_index),
-                                            ),
+                                            activity,
                                             work_is_active_at(&state, detail_index)
                                                 && tool_visible(&state, detail_index),
                                             cx,
@@ -3530,6 +3540,13 @@ impl Render for CodexView {
                 })
         });
         let queued = self.queue_tray(&state, window, cx);
+        self.subagent_panel.update(cx, |panel, cx| {
+            panel.set_agents(
+                state.saved.thread_id.clone().unwrap_or_default(),
+                codex::active_subagents(&state.saved.work_periods),
+                cx,
+            )
+        });
         let task_strip = task_cache.list.as_ref().map(|list| {
             let rendered = message_child;
             let jumps = list
@@ -3814,6 +3831,7 @@ impl Render for CodexView {
                             .gap(rpx(SPACE_MD))
                             .when(focused_launch, |rail| rail.child(self.launch_intro(&state)))
                             .when_some(task_strip, gpui::ParentElement::child)
+                            .child(self.subagent_panel.clone())
                             .when(!self.composer_collapsed, |rail| rail.child(choices))
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
                             .child(
@@ -11789,6 +11807,8 @@ mod tests {
     fn subagent_summary_counts_only_matching_states_and_hides_empty_failure_count() {
         let agent = |status| codex::Subagent {
             id: "child".into(),
+            role: None,
+            task: None,
             name: "Explorer".into(),
             activity: "Reading files".into(),
             status,
@@ -11834,6 +11854,8 @@ mod tests {
             subagents: vec![codex::Subagent {
                 id: name.into(),
                 name: name.into(),
+                role: None,
+                task: None,
                 activity: format!("Activity for {name}"),
                 status,
             }],

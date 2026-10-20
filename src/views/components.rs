@@ -7,6 +7,32 @@ const FORM_FIELD_H: f32 = 60.;
 const FORM_FIELD_INSET: f32 = 14.;
 const FORM_FIELD_VALUE: f32 = 16.;
 
+/// Preferred width for a truncating label whose trailing control stays adjacent.
+pub fn truncation_safe_label_width(
+    label: &str,
+    font_size: gpui::Pixels,
+    run: &gpui::TextRun,
+    text_system: &gpui::WindowTextSystem,
+) -> gpui::Pixels {
+    let shaped_width = text_system
+        .shape_line(
+            label.to_owned().into(),
+            font_size,
+            std::slice::from_ref(run),
+            None,
+        )
+        .width()
+        .ceil();
+    // GPUI truncates using separate glyph advances, which can exceed a kerned
+    // word's intrinsic width. Reserve that budget before flex layout shrinks it.
+    let font_id = text_system.resolve_font(&run.font);
+    let glyph_width: gpui::Pixels = label
+        .chars()
+        .map(|ch| text_system.layout_width(font_id, font_size, ch))
+        .sum();
+    shaped_width.max(glyph_width.floor())
+}
+
 /// Grove's compact, rem-scaled tooltip surface; overlay behavior remains component-owned.
 pub fn tooltip(
     label: impl Into<gpui::SharedString>,
@@ -547,4 +573,60 @@ pub fn task_meter(done: usize, total: usize, width: f32) -> impl IntoElement {
                 .rounded(rpx(RADIUS_FULL))
                 .bg(if all_done { c::GREEN() } else { c::FG_DIM() }),
         )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use gpui::AssetSource as _;
+
+    #[test]
+    fn activity_labels_fit_without_premature_truncation() {
+        let platform = gpui_platform::current_platform(true);
+        let text_system = std::sync::Arc::new(gpui::TextSystem::new(platform.text_system()));
+        let font = crate::assets::Assets
+            .load("fonts/Geist-Regular.ttf")
+            .unwrap()
+            .unwrap();
+        text_system.add_fonts(vec![font]).unwrap();
+        let window_text_system = gpui::WindowTextSystem::new(text_system.clone());
+        let style = gpui::TextStyle {
+            font_family: crate::fonts::UI_FAMILY.into(),
+            ..Default::default()
+        };
+        let mut original_waiting_failures = 0;
+        for zoom in [0.9, 1.0, 1.1, 1.2, 1.5, 2.0] {
+            for label in ["Waiting…", "Using js…", "Reading a long source file…"] {
+                let size = gpui::px(TEXT_SMALL * zoom);
+                let run = style.to_run(label.len());
+                let width = truncation_safe_label_width(label, size, &run, &window_text_system);
+                let original_width = window_text_system
+                    .shape_line(label.to_owned().into(), size, &[run.clone()], None)
+                    .width();
+                let mut wrapper = text_system.line_wrapper(run.font, size);
+                if label == "Waiting…"
+                    && wrapper
+                        .should_truncate_line(label, original_width, "…", gpui::TruncateFrom::End)
+                        .is_some()
+                {
+                    original_waiting_failures += 1;
+                }
+                assert_eq!(
+                    wrapper.should_truncate_line(label, width, "…", gpui::TruncateFrom::End),
+                    None,
+                    "{label} truncates despite available space at {zoom}x ({width:?})"
+                );
+                assert!(
+                    wrapper
+                        .should_truncate_line(label, width / 2., "…", gpui::TruncateFrom::End)
+                        .is_some(),
+                    "labels still truncate when their available width is constrained"
+                );
+            }
+        }
+        assert!(
+            original_waiting_failures > 0,
+            "the original content-sized Waiting… label must reproduce premature truncation"
+        );
+    }
 }

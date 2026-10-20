@@ -120,6 +120,25 @@ impl Drop for Process {
     }
 }
 fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, String> {
+    // Combine rather than repeat this flag: the CLI keeps only its last value.
+    let mut args = args.to_vec();
+    let mut guidance = String::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--append-system-prompt" && index + 1 < args.len() {
+            args.remove(index);
+            guidance.push_str(&args.remove(index));
+            guidance.push_str("\n\n");
+        } else if let Some(value) = args[index].strip_prefix("--append-system-prompt=") {
+            guidance.push_str(value);
+            guidance.push_str("\n\n");
+            args.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+    guidance.push_str(crate::tasks::CLAUDE_GUIDANCE);
+    args.extend(["--append-system-prompt".into(), guidance]);
     let argv = vec![
         "--print".into(),
         "--verbose".into(),
@@ -1392,6 +1411,14 @@ impl Actor {
             input["description"].as_str(),
             SubagentStatus::Working,
         );
+        self.state.set_subagent_metadata(
+            id,
+            input["subagent_type"].as_str(),
+            input["description"]
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+                .or_else(|| input["prompt"].as_str()),
+        );
     }
     fn subagent_message(&mut self, parent: &str, value: &Value) {
         // Child frames must never reach the primary transcript, usage, or turn lifecycle.
@@ -1534,6 +1561,11 @@ impl Actor {
             .or_else(|| value["description"].as_str());
         self.state
             .upsert_subagent(&id, value["subagent_type"].as_str(), activity, status);
+        self.state.set_subagent_metadata(
+            &id,
+            value["subagent_type"].as_str(),
+            value["description"].as_str(),
+        );
         if value["subtype"] == "task_notification" && status == SubagentStatus::Unknown {
             // A stopped child is no longer working; activity-only updates use
             // Unknown as a sentinel, so explicit lifecycle updates set it here.
@@ -2163,6 +2195,41 @@ impl Actor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_task_guidance_preserves_custom_prompts_on_start_and_resume() {
+        for resume in [false, true] {
+            for custom in [
+                vec!["--append-system-prompt".into(), "Custom guidance".into()],
+                vec!["--append-system-prompt=Custom guidance".into()],
+                Vec::new(),
+            ] {
+                let mut actor = actor();
+                actor.state.saved.thread_id = resume.then(|| "existing-session".into());
+                let mut args = custom.clone();
+                args.extend(["--system-prompt".into(), "User system prompt".into()]);
+                let command = launch_command(&args, &actor.state.saved).unwrap();
+                let argv = command
+                    .get_args()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                let appended = argv
+                    .windows(2)
+                    .filter(|pair| pair[0] == "--append-system-prompt")
+                    .collect::<Vec<_>>();
+                assert_eq!(appended.len(), 1);
+                assert!(appended[0][1].contains("TodoWrite or TaskCreate/TaskUpdate"));
+                assert!(appended[0][1].contains("Keep task statuses current"));
+                if !custom.is_empty() {
+                    assert!(appended[0][1].starts_with("Custom guidance\n\n"));
+                }
+                assert!(argv
+                    .windows(2)
+                    .any(|pair| pair == ["--system-prompt", "User system prompt"]));
+                assert_eq!(argv.iter().any(|arg| arg == "--resume"), resume);
+            }
+        }
+    }
     fn actor() -> Actor {
         let saved:SavedSession=serde_json::from_value(json!({"key":"claude-test","provider":"claude","project":"test","cwd":"/tmp","label":"Claude","roots":[],"thread_id":null,"items":[]})).unwrap();
         let (_, input) = mpsc::channel();
@@ -2177,12 +2244,24 @@ mod tests {
         )
     }
     #[test]
+    fn subagent_prompt_is_task_fallback_and_activity_does_not_replace_it() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.register_subagent(&json!({"id":"child", "name":"Agent", "input":{"subagent_type":"Researcher", "prompt":"Inspect the parser"}}));
+        actor.subagent_block("child", &json!({"type":"text", "text":"Reading source"}));
+        let child = &actor.state.saved.work_periods[0].subagents[0];
+        assert_eq!(child.role.as_deref(), Some("Researcher"));
+        assert_eq!(child.task.as_deref(), Some("Inspect the parser"));
+        assert_eq!(child.activity, "Reading source");
+    }
+
+    #[test]
     fn subagents_track_live_nested_work_without_primary_state_pollution() {
         let mut actor = actor();
         actor.state.begin_work();
         actor.state.status = Status::Working;
         actor.state.saved.thread_id = Some("primary".into());
-        let spawn = json!({"type":"tool_use","id":"child","name":"Agent","input":{"name":"Explorer","description":"Find auth paths"}});
+        let spawn = json!({"type":"tool_use","id":"child","name":"Agent","input":{"name":"Explorer","subagent_type":"Explore","description":"Find auth paths","prompt":"Search all auth entry points"}});
         actor.block("child", &spawn);
         actor.block("child", &spawn);
         assert_eq!(actor.state.saved.work_periods[0].subagents.len(), 1);
@@ -2195,6 +2274,8 @@ mod tests {
         let children = &actor.state.saved.work_periods[0].subagents;
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].name, "Explorer");
+        assert_eq!(children[0].role.as_deref(), Some("Explore"));
+        assert_eq!(children[0].task.as_deref(), Some("Find auth paths"));
         assert_eq!(children[0].activity, "Using Task");
         actor.message(json!({"type":"user","parent_tool_use_id":"child","message":{"content":[{"type":"tool_result","tool_use_id":"nested","is_error":true,"content":"failed"}]}})).unwrap();
         actor
