@@ -70,6 +70,18 @@ static NSHashTable<GroveHTMLDocument *> *grove_html_documents(void) {
 }
 #include "inline_html_keyboard.inc"
 #include "inline_html_accessibility.inc"
+void grove_html_focus_host(void *parentPointer) {
+    NSView *parent = (__bridge NSView *)parentPointer;
+    NSResponder *responder = parent.window.firstResponder;
+    if (![responder isKindOfClass:NSView.class]) return;
+    for (GroveHTMLDocument *document in grove_html_documents()) {
+        if (document.disposed || document.clip.superview != parent ||
+            document.clip.hiddenOrHasHiddenAncestor ||
+            ![(NSView *)responder isDescendantOf:document.clip]) continue;
+        [parent.window makeFirstResponder:parent];
+        return;
+    }
+}
 void grove_html_hide(void *handle);
 void grove_html_hide_all(void) {
     for (GroveHTMLDocument *document in grove_html_documents()) grove_html_hide((__bridge void *)document);

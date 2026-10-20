@@ -211,7 +211,11 @@ The enabled `1.0.8` entry covers changes since `v1.0.2` in four text-only slides
 - rust toolchain (`cargo`) for installation from source
 - `git`
 - linux, macOS, or windows (alpha) with a graphical desktop session
+- Grove on Linux uses X11, including XWayland on Wayland desktops, to embed WebKitGTK 4.1 and GTK 3 inline HTML previews. Source builds need `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, and `libx11-dev`; packaged installs declare the runtime libraries and XWayland.
+- Windows inline HTML previews require the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/). Grove uses the installed runtime rather than bundling a browser. If it is missing, the preview shows an installation error and the HTML source remains available.
 - `tmux` (optional, recommended for persistent sessions — macOS/linux only; windows always runs native sessions)
+
+On a Wayland desktop, install and enable XWayland, then launch Grove normally from your desktop session. Grove selects X11 automatically and reports an actionable error if `DISPLAY` is unavailable.
 
 ## telemetry
 

@@ -1,4 +1,4 @@
-//! Main-thread-only WebKit ownership. Non-macOS and GPUI test windows keep source.
+//! Main-thread-only native document ownership and host integration.
 #![cfg_attr(target_os = "macos", allow(unsafe_code))]
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8,7 +8,17 @@ pub enum LoadStatus {
     Failed,
 }
 
+#[cfg(all(target_os = "windows", not(test)))]
+#[path = "inline_html_windows.rs"]
+mod backend;
+
+#[cfg(all(target_os = "linux", not(test)))]
+#[path = "inline_html_linux.rs"]
+mod backend;
+
 pub struct NativeDocument {
+    #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+    backend: backend::Document,
     #[cfg(test)]
     visibility_probe: std::rc::Rc<std::cell::Cell<bool>>,
     #[cfg(all(target_os = "macos", not(test)))]
@@ -16,6 +26,47 @@ pub struct NativeDocument {
 }
 
 impl NativeDocument {
+    /// Drive GTK's native event queue on the same thread as GPUI.
+    #[cfg(all(target_os = "linux", not(test)))]
+    pub fn pump() {
+        backend::pump();
+    }
+
+    /// Attach the system webview to its live host before polling load status.
+    /// Construction can happen before a GPUI window is available (file reads).
+    pub fn prepare(&self, window: &gpui::Window) -> Result<(), String> {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        {
+            self.backend.prepare(window)
+        }
+        #[cfg(any(not(any(target_os = "windows", target_os = "linux")), test))]
+        {
+            let _ = window;
+            Ok(())
+        }
+    }
+
+    /// Return native keyboard ownership when the host composer is activated.
+    pub fn focus_host(window: &gpui::Window) {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        backend::focus_host(window);
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let Ok(handle) = HasWindowHandle::window_handle(window) else {
+                return;
+            };
+            let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+                return;
+            };
+            // SAFETY: the borrowed native view belongs to this live Window;
+            // composer activation executes on GPUI's AppKit thread.
+            unsafe { grove_html_focus_host(handle.ns_view.as_ptr()) };
+        }
+        #[cfg(any(not(target_os = "macos"), test))]
+        let _ = window;
+    }
+
     /// Visibility-only seam for exercising the real GPUI element/frame lifetime.
     /// WebKit policy and document behavior are tested by the standalone harness.
     #[cfg(test)]
@@ -26,6 +77,8 @@ impl NativeDocument {
     }
 
     pub fn hide_all() {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        backend::hide_all();
         #[cfg(all(target_os = "macos", not(test)))]
         // SAFETY: called on GPUI's AppKit thread at visibility transitions.
         unsafe {
@@ -34,6 +87,10 @@ impl NativeDocument {
     }
 
     pub fn new(source: &str) -> Option<Self> {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        {
+            backend::Document::new(source).map(|backend| Self { backend })
+        }
         #[cfg(all(target_os = "macos", not(test)))]
         {
             // SAFETY: called only on GPUI's AppKit thread. The native owner copies
@@ -41,7 +98,10 @@ impl NativeDocument {
             let handle = unsafe { grove_html_create(source.as_ptr(), source.len()) };
             std::ptr::NonNull::new(handle).map(|handle| Self { handle })
         }
-        #[cfg(any(not(target_os = "macos"), test))]
+        #[cfg(any(
+            not(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+            test
+        ))]
         {
             let _ = source;
             None
@@ -49,6 +109,10 @@ impl NativeDocument {
     }
 
     pub fn status(&self) -> LoadStatus {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        {
+            self.backend.status()
+        }
         #[cfg(all(target_os = "macos", not(test)))]
         {
             // SAFETY: this object retains the handle for its entire lifetime.
@@ -58,7 +122,10 @@ impl NativeDocument {
                 _ => LoadStatus::Failed,
             }
         }
-        #[cfg(all(not(target_os = "macos"), not(test)))]
+        #[cfg(all(
+            not(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+            not(test)
+        ))]
         {
             LoadStatus::Failed
         }
@@ -68,7 +135,20 @@ impl NativeDocument {
         }
     }
 
+    pub fn failure_reason(&self) -> Option<String> {
+        #[cfg(all(target_os = "windows", not(test)))]
+        {
+            self.backend.failure_reason()
+        }
+        #[cfg(any(not(target_os = "windows"), test))]
+        {
+            None
+        }
+    }
+
     pub fn retire_frame(&self) {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        self.backend.retire_frame();
         #[cfg(test)]
         self.visibility_probe.set(false);
         #[cfg(all(target_os = "macos", not(test)))]
@@ -80,6 +160,8 @@ impl NativeDocument {
     }
 
     pub fn hide(&self) {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        self.backend.hide();
         #[cfg(test)]
         self.visibility_probe.set(false);
         #[cfg(all(target_os = "macos", not(test)))]
@@ -95,6 +177,8 @@ impl NativeDocument {
         clip: gpui::Bounds<gpui::Pixels>,
         window: &gpui::Window,
     ) {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        self.backend.show(bounds, clip, window);
         #[cfg(all(target_os = "macos", not(test)))]
         {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -158,10 +242,60 @@ extern "C" {
         clip_height: f64,
     );
     fn grove_html_destroy(handle: *mut std::ffi::c_void);
+    fn grove_html_focus_host(parent: *mut std::ffi::c_void);
 }
 
 /// This is invoked by app chrome, never by document JavaScript.
 pub fn open_in_browser(url: String) -> impl std::future::Future<Output = Result<(), String>> {
+    let validation = validate_browser_url(&url);
+    async move {
+        validation?;
+        open_in_browser_unchecked(url).await
+    }
+}
+
+fn validate_browser_url(url: &str) -> Result<(), String> {
+    let url = gpui::http_client::Url::parse(url)
+        .map_err(|_| "The browser target must be a local HTML file".to_owned())?;
+    if url
+        .host_str()
+        .is_some_and(|host| !host.is_empty() && host != "localhost")
+    {
+        return Err("The browser target must be a local HTML file".into());
+    }
+    let path = url
+        .to_file_path()
+        .map_err(|()| "The browser target must be a local HTML file".to_owned())?;
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_none_or(|extension| {
+            !extension.eq_ignore_ascii_case("html") && !extension.eq_ignore_ascii_case("htm")
+        })
+    {
+        return Err("The browser target must be a local HTML file".into());
+    }
+    Ok(())
+}
+
+fn open_in_browser_unchecked(url: String) -> impl std::future::Future<Output = Result<(), String>> {
+    #[cfg(all(target_os = "windows", not(test)))]
+    {
+        backend::open_in_browser(url)
+    }
+    #[cfg(all(target_os = "linux", not(test)))]
+    {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(launch_linux_browser(&url));
+        });
+        async move {
+            receiver
+                .await
+                .map_err(|_| "Browser launch did not report a result".to_owned())?
+        }
+    }
+
     #[cfg(all(target_os = "macos", not(test)))]
     {
         use futures::channel::oneshot;
@@ -203,11 +337,79 @@ pub fn open_in_browser(url: String) -> impl std::future::Future<Output = Result<
                 .map_err(|_| "Browser launch did not report a result".to_owned())?
         }
     }
-    #[cfg(any(not(target_os = "macos"), test))]
+    #[cfg(any(
+        not(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+        test
+    ))]
     {
         let _ = url;
         std::future::ready(Err(
             "Explicit browser launch is unavailable on this platform".into(),
         ))
+    }
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn launch_linux_browser(url: &str) -> Result<(), String> {
+    let handler = std::process::Command::new("xdg-mime")
+        .args(["query", "default", "x-scheme-handler/https"])
+        .output()
+        .map_err(|error| format!("Couldn’t find the default web browser: {error}"))?;
+    if !handler.status.success() {
+        return Err("Couldn’t find the default web browser".into());
+    }
+    let handler = String::from_utf8(handler.stdout)
+        .map_err(|_| "Invalid browser desktop entry".to_owned())?;
+    let handler = handler.trim();
+    if handler.is_empty() || handler.contains(['/', '\\']) || !handler.ends_with(".desktop") {
+        return Err("No default web browser is configured".into());
+    }
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/share")));
+    let data_dirs =
+        std::env::var_os("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    let desktop = data_home
+        .into_iter()
+        .chain(std::env::split_paths(&data_dirs))
+        .map(|directory| directory.join("applications").join(handler))
+        .find(|path| path.is_file())
+        .ok_or_else(|| "Couldn’t locate the default browser’s desktop entry".to_owned())?;
+    let output = std::process::Command::new("gio")
+        .arg("launch")
+        .arg(desktop)
+        .arg(url)
+        .output()
+        .map_err(|error| format!("Couldn’t launch the default web browser: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Couldn’t launch the default web browser: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(test)]
+mod browser_tests {
+    use super::validate_browser_url;
+    #[test]
+    fn browser_action_accepts_only_local_html_files() {
+        for target in [
+            "https://example.com/a.html",
+            "file://remote/a.html",
+            "javascript:alert(1)",
+            "file:///tmp/a.txt",
+        ] {
+            assert!(validate_browser_url(target).is_err(), "{target}");
+        }
+        for name in ["a.html", "a.HTM"] {
+            let mut target =
+                gpui::http_client::Url::from_file_path(std::env::temp_dir().join(name)).unwrap();
+            target.set_query(Some("theme=dark"));
+            target.set_fragment(Some("view"));
+            assert!(validate_browser_url(target.as_str()).is_ok(), "{target}");
+        }
     }
 }

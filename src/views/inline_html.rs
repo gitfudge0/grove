@@ -733,32 +733,30 @@ impl HtmlArtifact {
         self.error = None;
         self.poll = None;
         self.last_status = None;
+        self.started = None;
         if self.version.active.len() > MAX_HTML_BYTES {
             self.error = Some("HTML document exceeds the preview limit".into());
             return;
         }
         let Some(native) = NativeDocument::new(&sandboxed(&self.version.active)) else {
-            self.error = Some(
-                if cfg!(target_os = "macos") {
-                    "Native HTML preview is unavailable"
-                } else {
-                    "HTML preview is available on macOS; source is shown here"
-                }
-                .into(),
-            );
+            self.error = Some("Native HTML preview is unavailable".into());
             return;
         };
         self.surface = Some(Rc::new(Surface {
             native,
             generation: Cell::new(0),
         }));
-        self.started = Some(std::time::Instant::now());
         self.poll = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(POLL_INTERVAL).await;
             let Ok(alive) = this.update(cx, |this, cx| {
                 let status = this.surface.as_ref().map(|surface| surface.native.status());
                 if status == Some(LoadStatus::Failed) {
-                    this.error = Some("Couldn’t load this preview".into());
+                    this.error = Some(
+                        this.surface
+                            .as_ref()
+                            .and_then(|surface| surface.native.failure_reason())
+                            .unwrap_or_else(|| "Couldn’t load this preview".into()),
+                    );
                     this.surface = None;
                 }
                 if status == Some(LoadStatus::Loading)
@@ -835,6 +833,19 @@ fn document_action(
 
 impl Render for HtmlArtifact {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.error.is_none() {
+            if let Some(surface) = &self.surface {
+                if let Err(error) = surface.native.prepare(window) {
+                    self.error = Some(error);
+                    self.surface = None;
+                    self.poll = None;
+                } else {
+                    // Queued documents may remain offscreen indefinitely. Start
+                    // the loading timeout only once a live window initializes it.
+                    self.started.get_or_insert_with(std::time::Instant::now);
+                }
+            }
+        }
         let expanded = expanded(&cx.entity(), cx);
         if self.reveal && !expanded {
             self.reveal = false;

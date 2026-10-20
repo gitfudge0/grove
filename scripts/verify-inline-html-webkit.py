@@ -90,6 +90,8 @@ def main():
                     'outside_clip_host_hit', 'native_focus', 'native_hit', 'hidden_excluded', 'disposed_excluded']:
             require(accessibility.get(key) is True, 'native AX boundary: ' + key)
         require(raw.get('editing_dispatch') is True, 'native editing shortcuts dispatch to owned responder')
+        require(raw.get('composer_reclaims_native_space') is True, 'composer reclaims native focus and receives Space after HTML interaction')
+        require(raw.get('composer_preserves_other_native_focus') is True, 'composer handoff leaves unrelated native responders untouched')
         require(raw.get('editing_host_and_hidden_untouched') is True, 'editing routing leaves host hidden and unsupported keys untouched')
         require(raw.get('editing_webkit_select_all') is True, 'Command-A selects entire real WebKit input')
         require(raw.get('editing_webkit_copy_cut_paste') is True, 'Command-C/X/V copy cut and paste real WebKit input')

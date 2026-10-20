@@ -79,6 +79,18 @@ fn main() {
     if !args.is_empty() {
         std::process::exit(cli::run(args));
     }
+    // Choose one native window system before logging, IPC or GPUI can start
+    // background threads. WebKitGTK child views require X11; Wayland desktops
+    // provide the same host window through XWayland.
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(error) = require_x11_display(std::env::var_os("DISPLAY").as_deref()) {
+            eprintln!("grove: {error}");
+            std::process::exit(1);
+        }
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
     logging::init();
     let mut endpoint = match control_server::endpoint() {
         Ok(endpoint) => endpoint,
@@ -191,4 +203,27 @@ fn main() {
             });
             cx.activate(true);
         });
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn require_x11_display(display: Option<&std::ffi::OsStr>) -> Result<(), &'static str> {
+    if display.is_none_or(std::ffi::OsStr::is_empty) {
+        Err("Grove requires an X11 display. On a Wayland desktop, install and enable XWayland, then launch Grove from the desktop session with DISPLAY set.")
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod linux_display_tests {
+    use super::require_x11_display;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn x11_bootstrap_requires_a_nonempty_display() {
+        assert!(require_x11_display(None).is_err());
+        assert!(require_x11_display(Some(OsStr::new(""))).is_err());
+        assert!(require_x11_display(Some(OsStr::new(":0"))).is_ok());
+        assert!(require_x11_display(Some(OsStr::new("localhost:10.0"))).is_ok());
+    }
 }

@@ -61,7 +61,12 @@ jobs:
             libfontconfig1-dev libfreetype-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
             libwayland-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libx11-dev xvfb xauth libxtst6 \
             librsvg2-dev libssl-dev pkg-config dpkg
+
+      - name: Exercise the native WebKitGTK surface
+        if: runner.os == 'Linux'
+        run: python3 scripts/verify-inline-html-linux.py
 
       # NOT `--all`: cargo-fmt's `--all` walks every package whose manifest
       # lives under the workspace root, including the `exclude`d vendored
@@ -99,6 +104,30 @@ jobs:
       # nextest cannot run doctests, so they need a separate `cargo test` pass.
       - name: Run doctests
         run: cargo test --doc --workspace --locked
+
+  windows-inline-html:
+    name: Windows inline HTML compile
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-inline-html-windows-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-inline-html-windows-
+      # A production check is required: cfg(test) substitutes the native surface
+      # with a visibility probe and would omit the WebView2 implementation.
+      - name: Compile the native WebView2 backend
+        run: cargo check -p grove --locked
+      - name: Exercise the native WebView2 surface
+        shell: pwsh
+        run: ./scripts/verify-inline-html-windows.ps1
 
   hygiene:
     name: Hygiene (typos, unused deps)

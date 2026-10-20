@@ -158,6 +158,9 @@ category = "Developer Tool"
 short_description = "A worktree launchpad for AI coding agents"
 copyright = "Copyright (c) 2026 Grove"
 
+[package.metadata.bundle.deb]
+depends = ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libx11-6", "xwayland"]
+
 [dependencies]
 grove-core = { path = "crates/grove-core" }
 grove-terminal = { path = "crates/grove-terminal" }
@@ -204,6 +207,21 @@ workspace = true
 objc = "0.2"
 raw-window-handle = "0.6"
 
+# Windows uses the OS-provided WebView2 runtime; no browser engine is bundled.
+[target.'cfg(target_os = "windows")'.dependencies]
+wry = { version = "=0.57.0", default-features = false, features = ["os-webview"] }
+webview2-com = "0.39"
+tempfile.workspace = true
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+raw-window-handle = "0.6"
+
 [dev-dependencies]
 tempfile.workspace = true
 # Tests construct a `grove_core::upgrade::Release`, whose `version` field is a
@@ -226,6 +244,10 @@ gpui-component = { path = "vendor/gpui-component/ui", features = [
 
 [build-dependencies]
 cc = "1"
+pkg-config = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

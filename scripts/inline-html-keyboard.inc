@@ -2,9 +2,11 @@
 // grove_html_keyboard_probes(doc, window, results) once the page is loaded.
 @interface GroveHTMLEditProbe : NSView
 @property(nonatomic, copy) NSString *lastAction;
+@property(nonatomic, copy) NSString *lastKey;
 @end
 @implementation GroveHTMLEditProbe
 - (BOOL)acceptsFirstResponder { return YES; }
+- (void)keyDown:(NSEvent *)event { self.lastKey = event.characters; }
 - (void)selectAll:(id)sender { self.lastAction = @"selectAll:"; }
 - (void)copy:(id)sender { self.lastAction = @"copy:"; }
 - (void)paste:(id)sender { self.lastAction = @"paste:"; }
@@ -18,6 +20,24 @@ static NSEvent *grove_html_edit_test_event(NSWindow *window, NSString *key, NSEv
         context:nil characters:key charactersIgnoringModifiers:key isARepeat:NO keyCode:0];
 }
 static void grove_html_keyboard_probes(GroveHTMLDocument *doc, NSWindow *window, NSMutableDictionary *results) {
+    NSView *originalParent = doc.clip.superview;
+    GroveHTMLEditProbe *host = [[GroveHTMLEditProbe alloc] initWithFrame:originalParent.bounds];
+    [originalParent addSubview:host];
+    grove_html_show((__bridge void *)doc, (__bridge void *)host, 0, 0, 640, 480, 0, 0, 640, 480);
+    [window makeFirstResponder:doc.web];
+    BOOL nativeOwnedFocus = [(NSView *)window.firstResponder isDescendantOf:doc.clip];
+    grove_html_focus_host((__bridge void *)host);
+    [window sendEvent:grove_html_edit_test_event(window, @" ", 0)];
+    results[@"composer_reclaims_native_space"] = @((BOOL)(nativeOwnedFocus &&
+        window.firstResponder == host && [host.lastKey isEqualToString:@" "]));
+    GroveHTMLEditProbe *other = [GroveHTMLEditProbe new];
+    [originalParent addSubview:other];
+    [window makeFirstResponder:other];
+    grove_html_focus_host((__bridge void *)host);
+    results[@"composer_preserves_other_native_focus"] = @((BOOL)(window.firstResponder == other));
+    [other removeFromSuperview];
+    grove_html_show((__bridge void *)doc, (__bridge void *)originalParent, 0, 0, 640, 480, 0, 0, 640, 480);
+    [host removeFromSuperview];
     GroveHTMLEditProbe *probe = [GroveHTMLEditProbe new];
     [doc.clip addSubview:probe];
     [window makeFirstResponder:probe];

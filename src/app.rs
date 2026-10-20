@@ -17,6 +17,17 @@ pub fn resolve_zoom(store: &Store) -> f32 {
 }
 
 pub fn boot(cx: &mut gpui::App) {
+    // GTK owns WebKit's asynchronous loading, input and IPC, including while a
+    // retained document is hidden. Dispatch it on GPUI's foreground thread.
+    #[cfg(all(target_os = "linux", not(test)))]
+    cx.spawn(async move |cx| loop {
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(16))
+            .await;
+        cx.update(|_| crate::platform::inline_html::NativeDocument::pump());
+    })
+    .detach();
+
     // 1. Finder/Launchpad/.desktop launches inherit a minimal PATH; recover exported shell variables once before anything spawns.
     grove_core::env_path::ensure_login_path();
 
