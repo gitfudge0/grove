@@ -1386,11 +1386,7 @@ impl CodexView {
                             .text_size(rpx(TEXT_MICRO))
                             .text_color(c::FG_MUTE())
                             .child(if state.queue_steering.contains(&id) {
-                                if state.saved.provider == codex::Provider::Claude {
-                                    "Redirecting…"
-                                } else {
-                                    "Steering…"
-                                }
+                                "Steering…"
                             } else {
                                 "Sending…"
                             }),
@@ -1422,40 +1418,39 @@ impl CodexView {
                             })),
                     )
                     .child(
-                        header_control(
-                            "codex-steer-queued",
-                            redirect_description(state.saved.provider),
-                        )
-                        .w_auto()
-                        .px(rpx(SPACE_SM))
-                        .tab_index(0)
-                        .tab_stop(steer)
-                        .focus_visible(|style| style.bg(c::BG_HOVER()))
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_SM))
-                        .child(crate::icons::icon(
-                            "steer",
-                            ICON_MD,
-                            if steer { c::FG_DIM() } else { c::FG_MUTE() },
-                        ))
-                        .child(
-                            div()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(if steer { c::FG_DIM() } else { c::FG_MUTE() })
-                                .child(redirect_label(state.saved.provider)),
-                        )
-                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                            if action_key(event) && steer {
-                                this.queue_action(Action::SteerQueued(id), cx);
-                                cx.stop_propagation();
-                            }
-                        }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if steer {
-                                this.queue_action(Action::SteerQueued(id), cx);
-                            }
-                        })),
+                        header_control("codex-steer-queued", STEER_DESCRIPTION)
+                            .w_auto()
+                            .px(rpx(SPACE_SM))
+                            .tab_index(0)
+                            .tab_stop(steer)
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(crate::icons::icon(
+                                "steer",
+                                ICON_MD,
+                                if steer { c::FG_DIM() } else { c::FG_MUTE() },
+                            ))
+                            .child(
+                                div()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(if steer { c::FG_DIM() } else { c::FG_MUTE() })
+                                    .child(STEER_LABEL),
+                            )
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if action_key(event) && steer {
+                                        this.queue_action(Action::SteerQueued(id), cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if steer {
+                                    this.queue_action(Action::SteerQueued(id), cx);
+                                }
+                            })),
                     )
                     .child(
                         header_control("codex-remove-queued", "Remove queued message")
@@ -3075,12 +3070,7 @@ impl Render for CodexView {
                                             })
                                         })
                                     {
-                                        if state.saved.provider == codex::Provider::Claude {
-                                            "You · Redirecting…"
-                                        } else {
-                                            "You · Steering…"
-                                        }
-                                        .to_owned()
+                                        "You · Steering…".to_owned()
                                     } else if tool {
                                         tool_summary(item)
                                     } else {
@@ -3877,7 +3867,7 @@ impl Render for CodexView {
                                 div()
                                     .id("codex-composer-hints")
                                     .debug_selector(|| "codex-composer-hints".into())
-                                    .aria_description(redirect_description(state.saved.provider))
+                                    .aria_description(STEER_DESCRIPTION)
                                     .w_full()
                                     .px(rpx(SPACE_2XL))
                                     .flex()
@@ -3895,11 +3885,7 @@ impl Render for CodexView {
                                     } else if editing {
                                         "Enter to save"
                                     } else if busy && steer_available {
-                                        if state.saved.provider == codex::Provider::Claude {
-                                            "Enter to queue · ⌘Enter to redirect"
-                                        } else {
-                                            "Enter to queue · ⌘Enter to steer"
-                                        }
+                                        "Enter to queue · ⌘Enter to steer"
                                     } else if busy {
                                         "Enter to queue"
                                     } else {
@@ -6006,19 +5992,8 @@ fn active_turn_redirect_available(state: &codex::Snapshot) -> bool {
         && (state.saved.provider == codex::Provider::Codex || state.can_redirect)
 }
 
-fn redirect_label(provider: codex::Provider) -> &'static str {
-    match provider {
-        codex::Provider::Codex => "Steer",
-        codex::Provider::Claude => "Redirect",
-    }
-}
-
-fn redirect_description(provider: codex::Provider) -> &'static str {
-    match provider {
-        codex::Provider::Codex => "Steer into the current turn",
-        codex::Provider::Claude => "Redirect the current work; running tools may be interrupted",
-    }
-}
+const STEER_LABEL: &str = "Steer";
+const STEER_DESCRIPTION: &str = "Steer into the current turn";
 
 fn tool_detail(item: &serde_json::Value) -> String {
     let mut text = if item["type"] == "plan" && item["tool"].is_string() {
@@ -9786,8 +9761,6 @@ mod tests {
             state.status = Status::Starting;
             assert!(!active_turn_redirect_available(&state));
         }
-        assert_eq!(redirect_label(codex::Provider::Claude), "Redirect");
-        assert!(redirect_description(codex::Provider::Claude).contains("interrupted"));
     }
 
     #[gpui::test]

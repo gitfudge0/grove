@@ -959,9 +959,23 @@ impl SettingsPanel {
         }
         let _ = cx;
         body.child(Self::section("GROVE’S CONVERSATION VIEW"))
-            .child(Self::setting_row("Enter", "Send when idle; queue input while an agent turn is running.", div()))
-            .child(Self::setting_row("Shift+Enter", "Insert a new line.", div()))
-            .child(Self::setting_row("Steer current turn", "Codex only, while an agent turn is running. Claude Code supports queueing and interruption; steering is unavailable.", div().text_size(rpx(TEXT_SMALL)).child(format!("{}+Enter", keymap::platform_mod_label()))))
+            .child(Self::setting_row(
+                "Enter",
+                "Send when idle; queue input while an agent turn is running.",
+                div(),
+            ))
+            .child(Self::setting_row(
+                "Shift+Enter",
+                "Insert a new line.",
+                div(),
+            ))
+            .child(Self::setting_row(
+                "Steer current turn",
+                "Codex and Claude Code, while an agent turn is running.",
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .child(format!("{}+Enter", keymap::platform_mod_label())),
+            ))
     }
 
     fn changelog_body(&self, cx: &mut Context<Self>) -> gpui::Div {

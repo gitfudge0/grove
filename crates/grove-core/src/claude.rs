@@ -721,7 +721,7 @@ impl Actor {
             || self.interrupting
             || self.redirect_pending
         {
-            return Err("Wait for an active Claude Code turn before redirecting.".into());
+            return Err("Wait for an active Claude Code turn before steering.".into());
         }
         let uuid = nonce();
         let queued = self.state.queued_prompts.iter().any(|p| p.id == id);
@@ -729,9 +729,11 @@ impl Actor {
             self.state.queue_sending.push(id);
             self.state.queue_steering.push(id);
         }
-        // Priority now interrupts tools, then starts another provider turn. It is
-        // deliberately not represented as Codex's same-turn steer operation.
-        if let Err(error) = self.write(json!({"type":"user","uuid":uuid,"session_id":self.state.saved.thread_id,"priority":"now","origin":{"kind":"human"},"message":{"role":"user","content":user_content(&text,&images)},"parent_tool_use_id":null})) {
+        // Priority next is Claude Code's native steer, like Codex's same-turn steer:
+        // the message joins the running turn at its next tool boundary, or runs
+        // straight after the turn when no tool boundary remains. Never "now",
+        // which aborts the running tools or stream.
+        if let Err(error) = self.write(json!({"type":"user","uuid":uuid,"session_id":self.state.saved.thread_id,"priority":"next","origin":{"kind":"human"},"message":{"role":"user","content":user_content(&text,&images)},"parent_tool_use_id":null})) {
             self.state.mark_queue_uncertain();
             self.queue_ready = false;
             return Err(error);
@@ -945,6 +947,8 @@ impl Actor {
         let inline = self.inline_uuid.as_deref() == self.input_uuid.as_deref();
         self.input_uuid = None;
         self.inline_uuid = None;
+        // An acknowledged steer has joined the turn; another one may follow.
+        self.redirect_pending = false;
         self.state.saved.claude_resume = None;
         let Some(prompt) = self.in_flight.take() else {
             return;
@@ -1124,7 +1128,7 @@ impl Actor {
             }
             Action::SteerQueued(id) => {
                 if !self.state.queue_editable(id) || self.state.queue_edit == Some(id) {
-                    return Err("This queued input cannot be redirected right now".into());
+                    return Err("This queued input cannot be steered right now".into());
                 }
                 let prompt = self
                     .state
@@ -1885,18 +1889,6 @@ impl Actor {
                 }
             }
             "result" => {
-                if (self.redirect_pending || value["terminal_reason"] == "aborted_tools")
-                    && value["queued_turn_count"].as_u64().unwrap_or(0) > 0
-                {
-                    self.redirect_pending = false;
-                    for item in &mut self.state.saved.items {
-                        if item["status"] == "inProgress" {
-                            item["status"] = json!("interrupted");
-                        }
-                    }
-                    return Ok(());
-                }
-                self.redirect_pending = false;
                 if let Some(models) = value["modelUsage"].as_object() {
                     let window = self
                         .context_model
@@ -1911,6 +1903,30 @@ impl Actor {
                         });
                     self.state.record_context(None, window);
                 }
+                let aborted = value["terminal_reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.starts_with("aborted"));
+                // Claude Code reports queued_turn_count 0 even while a steer
+                // waits, so an unechoed steer is the reliable signal that this
+                // result closes an intermediate turn and the steer's turn follows.
+                let steer_unacknowledged =
+                    self.redirect_pending && self.in_flight.is_some() && !self.interrupting;
+                let queued = value["queued_turn_count"].as_u64().unwrap_or(0) > 0
+                    && (self.redirect_pending || value["terminal_reason"] == "aborted_tools");
+                if self.state.turn_id.is_some() && (steer_unacknowledged || queued) {
+                    for item in &mut self.state.saved.items {
+                        if item["status"] == "inProgress" {
+                            item["status"] =
+                                json!(if aborted { "interrupted" } else { "completed" });
+                        }
+                    }
+                    self.state.approvals.clear();
+                    self.state.questions.clear();
+                    self.state.elicitations.clear();
+                    self.state.status = Status::Working;
+                    return Ok(());
+                }
+                self.redirect_pending = false;
                 if self.state.turn_id.is_none() {
                     return Ok(());
                 }
@@ -2375,7 +2391,7 @@ mod tests {
         actor
             .redirect(92, "second correction".into(), vec![])
             .unwrap();
-        assert_eq!(read(&mut reconnected)["priority"], "now");
+        assert_eq!(read(&mut reconnected)["priority"], "next");
         // A startup that exits before spawn must also clear transient redirect state.
         actor.stopping.store(true, Ordering::SeqCst);
         assert!(actor.start().is_err());
@@ -2523,16 +2539,23 @@ mod tests {
         actor.redirect(81, "correction".into(), vec![]).unwrap();
         let sent = read(&mut reader);
         actor
-            .message(json!({"type":"result","terminal_reason":"completed","queued_turn_count":1}))
+            .message(json!({"type":"result","terminal_reason":"completed","queued_turn_count":0}))
             .unwrap();
         actor
             .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
             .unwrap();
         assert!(actor.state.status.busy());
         assert_eq!(actor.in_flight.as_ref().unwrap().id, 81);
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"running"}))
+            .unwrap();
         actor.acknowledge_input(&sent["uuid"]);
         actor
             .message(json!({"type":"result","terminal_reason":"completed","queued_turn_count":0}))
+            .unwrap();
+        assert!(actor.state.status.busy());
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
             .unwrap();
         assert_eq!(actor.state.status, Status::Done);
     }
@@ -2603,9 +2626,9 @@ mod tests {
             })
             .unwrap();
         let sent = read(&mut reader);
-        assert_eq!(sent["priority"], "now");
+        assert_eq!(sent["priority"], "next");
         assert_eq!(sent["origin"]["kind"], "human");
-        actor.message(json!({"type":"result","terminal_reason":"aborted_tools","queued_turn_count":1,"is_error":false})).unwrap();
+        actor.message(json!({"type":"result","terminal_reason":"aborted_tools","queued_turn_count":0,"is_error":false})).unwrap();
         assert_eq!(actor.in_flight.as_ref().unwrap().id, 91);
         assert!(actor.state.status.busy());
         actor.acknowledge_input(&sent["uuid"]);
@@ -2619,6 +2642,134 @@ mod tests {
             .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
             .unwrap();
         assert_eq!(actor.state.status, Status::Done);
+    }
+
+    /// Starts a Claude turn that has a running Bash tool, then steers it.
+    fn steered_turn(reader: &mut BufReader<std::process::ChildStdout>, actor: &mut Actor) -> Value {
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.submit(1, "build it".into(), vec![]).unwrap();
+        let prompt = read(reader);
+        actor
+            .message(json!({"type":"user","uuid":prompt["uuid"],"message":{"role":"user","content":"build it"}}))
+            .unwrap();
+        actor.message(json!({"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"bash","name":"Bash","input":{"command":"sleep 5"}}]}})).unwrap();
+        actor
+            .action(Action::SubmitWithMode {
+                id: 2,
+                text: "use the other branch".into(),
+                images: vec![],
+                mode: SubmissionMode::Steer,
+            })
+            .unwrap();
+        let steer = read(reader);
+        assert_eq!(steer["priority"], "next");
+        assert!(actor.state.status.busy());
+        steer
+    }
+
+    fn steer_acknowledged(actor: &Actor) -> bool {
+        actor.in_flight.is_none()
+            && actor.state.accepted_submission == Some(2)
+            && actor.state.saved.items.iter().any(|item| {
+                item["type"] == "userMessage" && codex::item_text(item) == "use the other branch"
+            })
+    }
+
+    fn assert_steer_turn_finishes(actor: &mut Actor) {
+        actor.message(json!({"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"Switched."}]}})).unwrap();
+        assert!(actor.state.status.busy());
+        actor.message(json!({"type":"result","subtype":"success","terminal_reason":"completed","is_error":false,"queued_turn_count":0})).unwrap();
+        assert_eq!(actor.state.status, Status::Done);
+        assert!(actor.state.turn_id.is_none());
+        assert!(actor.state.error.is_none());
+        assert!(actor.state.rejected_submission.is_none());
+        assert!(!actor.redirect_pending);
+    }
+
+    #[test]
+    fn claude_steer_joins_the_running_turn_at_a_tool_boundary() {
+        // Sequence A: the echo arrives inside the same turn; one result ends it.
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        let steer = steered_turn(&mut reader, &mut actor);
+        actor.message(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash","content":"done"}]}})).unwrap();
+        actor
+            .message(json!({"type":"user","uuid":steer["uuid"],"message":{"role":"user","content":"use the other branch"}}))
+            .unwrap();
+        assert!(steer_acknowledged(&actor));
+        assert!(actor.state.status.busy());
+        assert_steer_turn_finishes(&mut actor);
+    }
+
+    #[test]
+    fn claude_steer_after_the_last_tool_runs_as_a_follow_up_turn() {
+        // Sequence B: the turn completes before the echo, then the steer runs.
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.tracks_session_state = true;
+        actor.session_idle = false;
+        let steer = steered_turn(&mut reader, &mut actor);
+        actor.message(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash","content":"done"}]}})).unwrap();
+        actor.message(json!({"type":"assistant","message":{"id":"m1b","content":[{"type":"text","text":"Built."}]}})).unwrap();
+        actor.message(json!({"type":"result","subtype":"success","terminal_reason":"completed","is_error":false,"queued_turn_count":0,"result_index":0})).unwrap();
+        assert!(actor.state.status.busy());
+        assert!(actor.state.turn_id.is_some());
+        assert!(actor.pending_completion.is_none());
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
+            .unwrap();
+        assert!(actor.state.status.busy());
+        actor
+            .message(json!({"type":"system","subtype":"init","model":"claude"}))
+            .unwrap();
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"running"}))
+            .unwrap();
+        actor
+            .message(json!({"type":"user","uuid":steer["uuid"],"message":{"role":"user","content":"use the other branch"}}))
+            .unwrap();
+        assert!(steer_acknowledged(&actor));
+        actor.message(json!({"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"Switched."}]}})).unwrap();
+        actor.message(json!({"type":"result","subtype":"success","terminal_reason":"completed","is_error":false,"queued_turn_count":0,"result_index":1,"user_message_uuids":[steer["uuid"]]})).unwrap();
+        assert!(actor.state.status.busy());
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
+            .unwrap();
+        assert_eq!(actor.state.status, Status::Done);
+        assert!(actor.state.error.is_none());
+        assert!(actor.state.rejected_submission.is_none());
+    }
+
+    #[test]
+    fn claude_aborted_results_before_a_steer_echo_keep_the_turn_alive() {
+        // Sequences C and D: an aborted result precedes the steer's echo.
+        for (reason, subtype, is_error) in [
+            ("aborted_tools", "success", false),
+            ("aborted_streaming", "error_during_execution", true),
+        ] {
+            let mut actor = actor();
+            let mut reader = transport(&mut actor);
+            let steer = steered_turn(&mut reader, &mut actor);
+            actor.message(json!({"type":"result","subtype":subtype,"terminal_reason":reason,"is_error":is_error,"queued_turn_count":0})).unwrap();
+            assert!(actor.state.status.busy(), "{reason}");
+            assert!(actor.state.turn_id.is_some());
+            assert!(actor.state.error.is_none());
+            assert!(actor.state.rejected_submission.is_none());
+            let tool = actor
+                .state
+                .saved
+                .items
+                .iter()
+                .find(|item| item["id"] == "bash")
+                .unwrap();
+            assert_eq!(tool["status"], "interrupted");
+            actor
+                .message(json!({"type":"user","uuid":steer["uuid"],"message":{"role":"user","content":"use the other branch"}}))
+                .unwrap();
+            assert!(steer_acknowledged(&actor));
+            assert_steer_turn_finishes(&mut actor);
+        }
     }
 
     #[test]
