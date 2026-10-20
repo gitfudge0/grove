@@ -1,214 +1,63 @@
 <div align="center">
 
-# grove
+# Grove
 
-a worktree launchpad for ai coding agents
+**Your projects. Your worktrees. Your agents. One native app.**
 
-[![grove UI preview with Codex, Claude Code, and terminal sessions](assets/showcase/grove-launch.jpg)](assets/showcase/grove-launch.mp4)
+Run Codex, Claude Code, OpenCode, and terminals side by side, without losing your place.
 
-[Watch the 22-second Grove UI preview](assets/showcase/grove-launch.mp4)
+[Download Grove](https://github.com/gitfudge0/grove/releases/latest) · [Release notes](RELEASE_NOTES.md) · [MIT](LICENSE-MIT) / [Apache-2.0](LICENSE-APACHE)
 
-_Illustrated Grove UI with fictional project data. Music: [Happy Beats & Business Moves Vol. 12](https://ende.app/en/song/12881-happy-beats-business-moves-vol-12) by Sascha Ende ([CC BY 4.0](https://creativecommons.org/licenses/by/4.0/))._
+![Grove in dark mode, with three native Codex conversations across the Studio, Orbit, and Atlas project worktrees](assets/showcase/grove-grid.png)
 
-[![license: MIT](https://img.shields.io/badge/license-MIT-9ece6a?style=flat-square)](#license)
-[![platform: linux | macOS | Windows (alpha)](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20Windows%20(alpha)-7aa2f7?style=flat-square)](#requirements)
-[![built with: rust](https://img.shields.io/badge/built%20with-rust-bb9af7?style=flat-square)](https://www.rust-lang.org/)
+<sub>Actual Grove UI. Fictional projects and conversations.</sub>
 
 </div>
 
-grove is a native desktop app for managing git worktrees across projects and running ai coding agents side by side. enable **Native Agents (experimental)** in Settings to use Grove-owned Codex and Claude Code conversation UIs backed by their installed CLIs. the setting is off by default; both agents otherwise run in terminals. OpenCode and shells run in embedded PTYs, with optional tmux persistence.
+## Install
 
-## table of contents
+Download your installer from the [latest release](https://github.com/gitfudge0/grove/releases/latest):
 
-- [why grove](#why-grove)
-- [install](#install)
-- [quickstart](#quickstart)
-- [sessions](#sessions)
-- [keyboard](#keyboard)
-- [supported agents](#supported-agents)
-- [appearance](#appearance)
-- [requirements](#requirements)
-- [telemetry](#telemetry)
-- [uninstall](#uninstall)
-- [license](#license)
+- **macOS:** open the `.dmg` for Apple Silicon (`arm64`) or Intel (`x86_64`), then drag Grove to Applications.
+- **Linux:** install the `.deb` for `amd64` with `sudo apt install ./Grove-*.deb`. Requires a graphical X11 or XWayland session.
+- **Windows (alpha):** run the `.msi`. Expect rough edges.
 
-## why grove
-
-if you regularly drive more than one ai coding agent at a time, you have probably ended up with a tab graveyard, a forest of detached tmux sessions, or a window manager full of nearly-identical terminals. grove collapses that into one focused surface.
-
-- **projects, worktrees, and sessions in one place.** the sidebar can show a project tree, a flat activity stream of every session, or a persistent home terminal.
-- **sessions are the unit of work.** every agent you spawn lives in a managed conversation or terminal session. switch sessions without leaving grove, or open a worktree terminal beside an active agent.
-- **worktrees, not branches.** grove treats `git worktree` as a first-class primitive. create, list, and destroy worktrees per project, and launch agents directly inside them.
-- **native Codex and Claude Code conversations.** streamed replies, expandable tool output, multiline prompts, explicit approval controls, interruption, and thread recovery belong to Grove's UI. agents still execute locally through their installed CLI.
-- **native PTYs.** agents run as real terminal sessions, so full-screen CLIs, mouse selection, paste, scrollback, and terminal output behave like terminal work.
-- **stays out of the way.** running sessions are visible in the sidebar without turning the app into a dashboard.
-- **recoverable sessions.** native agent conversations save their thread identity, captured history, and draft. tmux-backed terminals keep their processes running across Grove exits; direct PTYs end on exit.
-
-## install
-
-one-liner (requires `git` and a rust toolchain):
+If an installer is unavailable, build from source on macOS or Linux (requires Rust, Git, and the [development prerequisites](#develop)):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gitfudge0/grove/main/install.sh | bash
 ```
 
-or clone and install locally:
+Install [Git](https://git-scm.com/) and your preferred agent CLI separately, and sign in through that CLI. Grove uses the tools already on your machine. `tmux` is optional on macOS and Linux for persistent terminal sessions.
+
+Open Grove, add a project folder, then start a conversation in the main checkout or create a worktree. Enable **Settings → Native Agents (experimental)** for native Codex and Claude Code transcripts on macOS and Linux. Toggle grid mode with **⌘G** on macOS or **Ctrl+Shift+G** on Linux.
+
+### macOS security prompt
+
+If macOS blocks Grove, try opening it once, then go to **System Settings → Privacy & Security → Open Anyway** ([Apple’s instructions](https://support.apple.com/102445)).
+
+If needed, remove quarantine from the downloaded Grove app only, then reopen it:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Grove.app
+```
+
+## Develop
+
+Install [Rust](https://rustup.rs/) and Git. On macOS, install the command line tools with `xcode-select --install`. Linux needs the system packages listed in the [build workflow](.github/workflows/release.yml); Windows uses Rust’s MSVC toolchain and the C++ build tools.
 
 ```sh
 git clone https://github.com/gitfudge0/grove.git
 cd grove
+cargo run
+```
+
+To build and install a release app locally on macOS or Linux:
+
+```sh
 ./install.sh
 ```
 
-`install.sh` builds a release bundle with [`cargo-bundle`] (installing it on first run) and installs grove as a clickable native app:
+The script installs `cargo-bundle` if needed, builds Grove, and installs the native app. On Windows, use `cargo run` for development.
 
-- **macOS** — copies `Grove.app` to `/Applications` (or `~/Applications`). launch it from Spotlight or Launchpad.
-- **linux** — installs the generated `.deb` via `dpkg`, or falls back to a binary plus a `grove.desktop` launcher and icon under `~/.local`. launch "Grove" from your application menu.
-- **windows (alpha)** — no `install.sh` support yet; download the `.msi` from the [latest release](https://github.com/gitfudge0/grove/releases/latest) and run it. windows support is new and less battle-tested than macOS/linux — expect rough edges, and please file issues.
-
-when launched from a desktop menu or app launcher, grove recovers your shell’s exported environment (including `PATH`) once on startup, so it can find `claude`, `git`, and your agents without starting another login shell for every session. grove refreshes the environment automatically every 10 minutes, or use **Settings → Shell environment → Refresh now** after changing exported variables. refreshes apply to new sessions; existing sessions stay unchanged. set `GROVE_FORCE_LOGIN_PATH=1` to force this even from a terminal. on windows, grove uses `pwsh` (PowerShell 7+) when available, falling back to the built-in `powershell.exe`.
-
-[`cargo-bundle`]: https://github.com/burtonageo/cargo-bundle
-
-## quickstart
-
-```sh
-grove                       # launch the desktop app
-```
-
-then:
-
-1. add a project by choosing a local folder. grove can use an existing git repository, initialize git, or use the folder without git.
-2. start in the main checkout, or create a separate worktree for an existing git repository with at least one commit. a newly initialized repository needs its first commit before you can create another worktree. folders without git can still run sessions, but cannot create worktrees.
-3. start `claude`, `codex`, `opencode`, or a terminal session in the chosen checkout. if an agent CLI is missing, you can still start a terminal.
-
-the app exposes common actions as row controls, toolbar buttons, and keyboard shortcuts. there is no separate `grove tui` mode.
-
-## sessions
-
-agents run as managed sessions rather than replacing grove. each session belongs to a project and worktree. with Native Agents (experimental) enabled, new Codex and Claude Code sessions render a native conversation; other sessions render an embedded PTY.
-
-native Codex and Claude Code conversations are available on macOS and Linux; Windows keeps its existing terminal sessions. Both agents use your installed CLI, existing sign-in, configured model, and permission settings. press Enter or use Send to submit a prompt; Shift+Enter inserts a new line. while a turn is running, Enter or Queue queues an input, and Codex’s Steer now sends it to the current turn. Claude Code supports queuing and interruption; steering an active turn is unavailable in its stream protocol. remove pending queued inputs individually; after a stop or failure, use Send next to explicitly resume the queue. queued inputs stay in session memory and are not restored after an app restart. paste text or clipboard images into the composer; image attachments appear before sending and can be removed. replies render Markdown, including code blocks and lists. drag to highlight conversation text and copy the selection, or use Copy for a complete message. expand a tool-call group, then an individual call to inspect live commands, reasoning, and output. active tool groups show a text shimmer. approvals display the command, directory, reason, and available file changes, with explicit approve-once and deny controls. unsupported interactions fail visibly; Grove never automatically approves them.
-
-native agent child processes stop when their session closes or Grove exits. on restart with Native Agents (experimental) enabled, Grove resumes saved threads for available projects/worktrees. disabling the setting leaves open conversations running and preserves saved threads for a later enabled restart. closing a session forgets Grove's recovery record without deleting the CLI's own history. a failed request is never automatically resubmitted: inspect the recovered conversation before retrying. recovery files live in `GROVE_CONFIG_DIR/codex-sessions` (or Grove's normal config directory) and contain conversation text and embedded image drafts.
-
-Claude Code uses its own permission modes (Ask for permission, Accept edits, Plan, Deny unapproved tools, and Bypass permissions); these are Claude checks rather than an operating-system sandbox. Claude skills and SDK commands appear as slash commands. Tool questions requiring structured answers fail visibly rather than being silently approved.
-
-native Codex preserves additional context roots and merges explicitly supplied writable roots with the effective Codex workspace-write configuration. existing tmux Codex sessions retain their terminal interface.
-
-the desktop app has three sidebar views:
-
-| view | purpose |
-|---|---|
-| **tree** | projects, worktrees, and their sessions |
-| **activity** | all sessions grouped by running, idle, and worktrees with no sessions |
-| **terminal** | persistent home terminals rooted at `~` |
-
-from an active desktop session, the `term` control opens a right-docked shell for the same worktree. you can keep the agent on one side and run git, tests, or edits in the adjacent terminal panel.
-
-the `mod+n` launcher doubles as a command palette: recent worktrees first, plus settings, and each project's setup/run/teardown scripts as row actions.
-
-grove supports two terminal session backends. these settings do not change the native agent conversation transports:
-
-| backend | when to use | persistence |
-|---|---|---|
-| **tmux** | recommended when `tmux` is installed | sessions survive grove exits and are rediscovered on next launch |
-| **native** | no tmux dependency | sessions end when grove exits |
-
-when you start your first managed project session with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new terminal sessions. with Native Agents (experimental) enabled, new Codex and Claude Code sessions use native conversations. existing sessions keep the backend they were started with.
-
-## keyboard
-
-`mod` is `cmd` on macOS and `ctrl+shift` on linux.
-
-| shortcut | action |
-|---|---|
-| `mod+n` | open the launcher / command palette |
-| `cmd+alt+n` (macOS) / `ctrl+alt+n` | new session in the current worktree — note: no shift, so this is not `mod+alt+n` |
-| `mod+j` / `mod+k` | next / previous session outside grid view |
-| `mod+←↓↑→` / `mod+h j k l` | move focus to an adjacent grid tile |
-| `mod+alt+←↓↑→` / `mod+alt+h j k l` | swap the focused grid tile with its neighbor (`mod+shift` also works on macOS) |
-| `mod+1`..`mod+9` | select the nth session |
-| `mod+g` | toggle the grid (agent view) |
-| `mod+r` | enter grid resize mode while the grid is open |
-| `←↓↑→` / `h j k l` | move the split beside the focused tile by 5% in grid resize mode |
-| `shift+←↓↑→` / `shift+h j k l` | move that split by 1% in grid resize mode |
-| `enter` / `esc` | leave grid resize mode |
-| `mod+enter` | toggle zen mode |
-| `mod+,` | open settings |
-| `mod+=` / `mod+-` / `mod+0` | zoom in / out / reset |
-| `mod+w` | request to close the focused session (confirm in the prompt) |
-| `mod+c` / `mod+v` | copy selection / paste into the focused session |
-| `ctrl+shift+←` / `ctrl+shift+→` | resize the terminal panel (workspace view only) |
-| `mod+/` | show the shortcut overlay |
-| `esc` | close modals |
-
-everything else on the keyboard goes straight to the focused session's PTY.
-
-grid seams can also be dragged with the mouse. double-click one seam to reset only that split. grid sizing lasts for the current grove run and resets to equal shares when the grid topology changes.
-
-## supported agents
-
-| agent | command |
-|---|---|
-| claude code | `claude` |
-| codex | `codex` |
-| opencode | `opencode` |
-| terminal | your login shell, for ad-hoc work in a worktree |
-
-each agent must be installed and available on your `PATH`. grove does not bundle, update, or authenticate any agent; it spawns them.
-
-## appearance
-
-grove uses fixed light and dark palettes. In settings, choose System to follow your OS, or select Dark or Light. The choice persists across launches.
-
-## release highlights
-
-Release carousels are authored in `assets/highlights/manifest.json` and bundled with Grove; release notes are not converted into slides at runtime. Each release entry uses the exact installed version (for example `1.0.8`). Set `enabled: true` only for releases you want to show automatically. A disabled entry is a draft and does not interrupt normal launches.
-
-For an enabled release, Grove opens the carousel once on first launch of that version and records that version as seen. You can dismiss it at any time. Other versions do not inherit that release's carousel. You can replay an enabled carousel from Settings → Changelog → View highlights.
-
-Choose two to four user-visible changes and write a benefit-led title and a short description. Each slide needs a stable `id`, `title`, and `description`. To add media, capture the released UI using clean demo projects, keep files under `assets/highlights/<version>/`, and provide `media` with `kind`, `src`, and descriptive `alt` text. Omit `media` for a text-only slide; Grove shows its title and description without a preview area. Supported kinds are `image`, `gif`, and `video`. GIFs and videos require a `poster` image. GIFs start playing automatically and provide Pause/Play controls; reduced motion keeps the poster still. Videos open in the system player from Play video. Keep screenshots and posters legible at the carousel size. Images and GIFs may optionally include `frame` with `zoom` (1–8), the source `aspect_ratio`, and `position_x` / `position_y` (0–1, from left/top to right/bottom). An optional `highlight: [left, top, width, height]` outlines a feature using normalized coordinates in the source image. Framed images and GIFs zoom within the clipped media area; omitted framing preserves the full image. GIF posters must use the same dimensions and framing as the animation.
-
-To test a draft without consuming its first-launch state, use a debug build:
-
-```sh
-GROVE_HIGHLIGHTS_DEBUG=1 GROVE_HIGHLIGHTS_VERSION=1.0.8 cargo run
-```
-
-`GROVE_HIGHLIGHTS_DEBUG=1` opens the selected carousel at every launch of a debug build, including disabled drafts. `GROVE_HIGHLIGHTS_VERSION` selects an authored version for preview; it does not change normal release selection. Settings → Changelog → Preview release highlights reopens it as often as needed; in a debug build, `cmd+shift+h` on macOS (`ctrl+shift+h` elsewhere) also opens the preview. Release builds ignore the debug override. Use `GROVE_CONFIG_DIR=/tmp/grove-highlights-test` and `GROVE_TELEMETRY=off` for an isolated review workspace.
-
-The first `1.0.2` slide uses a two-state GIF captured from the native app, with a 1.5-second hold on the expanded and collapsed sidebar. The outlined toggle follows its real position in each state; The loop starts automatically; Pause animation keeps the poster still.
-
-The enabled `1.0.8` entry covers changes since `v1.0.2` in three text-only slides: session navigation, cross-project launching, and updates. The original `1.0.2` entry and media remain available for explicit debug previews. See [release notes](RELEASE_NOTES.md) for the smaller changes and fixes.
-
-## requirements
-
-- rust toolchain (`cargo`) for installation from source
-- `git`
-- linux, macOS, or windows (alpha) with a graphical desktop session
-- Grove on Linux uses X11, including XWayland on Wayland desktops, to embed WebKitGTK 4.1 and GTK 3 inline HTML previews. Source builds need `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, and `libx11-dev`; packaged installs declare the runtime libraries and XWayland.
-- Windows inline HTML previews require the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/). Grove uses the installed runtime rather than bundling a browser. If it is missing, the preview shows an installation error and the HTML source remains available.
-- `tmux` (optional, recommended for persistent sessions — macOS/linux only; windows always runs native sessions)
-
-On a Wayland desktop, install and enable XWayland, then launch Grove normally from your desktop session. Grove selects X11 automatically and reports an actionable error if `DISPLAY` is unavailable.
-
-## telemetry
-
-grove sends anonymous usage events: app launch (project count, tmux setting), an hourly heartbeat, session created/ended (agent type, native vs tmux, duration in minutes, open-session counts), worktree created, update applied/declined (version), error kinds (session spawn or worktree creation failed — the kind only, no details), UI feature pings (launcher/settings opened, zoom changed, grid tile moved), and panic messages — each tagged with app version and OS.
-
-it never sends project names, file paths, git data, prompts, or session/terminal content.
-
-to disable, toggle "share anonymous usage data" off in the settings modal, or set `GROVE_TELEMETRY=off` in your environment.
-
-## uninstall
-
-```sh
-./uninstall.sh
-```
-
-removes the app bundle (or `.deb`/`~/.local` install on linux) that `install.sh` installed. your project registrations and appearance setting live under `~/.config/grove` and are left in place; delete that directory if you want a clean slate.
-
-## license
-
-[MIT](LICENSE).
+To disable anonymous usage telemetry, turn off **Share anonymous usage data** in Settings or set `GROVE_TELEMETRY=off`.
