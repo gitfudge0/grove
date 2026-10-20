@@ -2209,6 +2209,9 @@ mod tests {
                 let mut args = custom.clone();
                 args.extend(["--system-prompt".into(), "User system prompt".into()]);
                 let command = launch_command(&args, &actor.state.saved).unwrap();
+                assert!(command.get_envs().any(|(key, value)| {
+                    key == "CLAUDE_CODE_ENABLE_TODO_TOOLS" && value == Some("1".as_ref())
+                }));
                 let argv = command
                     .get_args()
                     .map(|arg| arg.to_string_lossy().into_owned())

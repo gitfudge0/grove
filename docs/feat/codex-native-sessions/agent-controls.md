@@ -28,6 +28,15 @@ Controls use exact provider request IDs. Duplicate deliveries do not create dupl
 
 Policy choices are constructed from the original provider request inside the core actor. UI data cannot introduce a command prefix, host, permission profile, or suggestion that the provider did not offer. No choice is selected automatically.
 
+## Structured task lists
+
+Grove enables Codex's native `update_plan` tool with the per-thread configuration
+`tools.update_plan.enabled = true` on both `thread/start` and `thread/resume`.
+Codex otherwise defaults that tool to disabled; developer instructions asking for
+it cannot register the tool. Native `turn/plan/updated` notifications remain the
+source of persisted task-list snapshots. Existing sessions pick up this setting
+when their Codex thread reconnects; an already running turn retains its tools.
+
 ## Explicit capability boundaries
 
 The installed Codex `ServerRequest` schema contains ten variants. All ten are handled: seven user-facing request families above, plus the following three host capabilities:

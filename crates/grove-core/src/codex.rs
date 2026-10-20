@@ -2211,7 +2211,11 @@ impl Actor {
         self.request("initialize",json!({"clientInfo":{"name":"grove","title":"Grove","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}),Pending::Initialize)
     }
     fn start_thread(&mut self, writable_roots: Option<Vec<Value>>) -> Result<(), String> {
-        let mut params = json!({"cwd": self.state.saved.cwd});
+        // Codex disables its native plan tool by default. Instructions alone do
+        // not register it; enable it for both new and resumed Grove threads.
+        let mut params = json!({"cwd": self.state.saved.cwd, "config": {
+            "tools.update_plan.enabled": true
+        }});
         params["developerInstructions"] = json!(format!(
             "{}{}{}",
             self.developer_instructions,
@@ -2223,7 +2227,7 @@ impl Actor {
             crate::tasks::CODEX_GUIDANCE
         ));
         if let Some(roots) = writable_roots {
-            params["config"] = json!({"sandbox_workspace_write.writable_roots": roots});
+            params["config"]["sandbox_workspace_write.writable_roots"] = json!(roots);
         }
         let method = if let Some(thread) = &self.state.saved.thread_id {
             params["threadId"] = json!(thread);
@@ -5856,6 +5860,40 @@ mod tests {
                 assert!(guidance.contains("Keep step statuses current"));
                 if let Some(custom) = custom {
                     assert!(guidance.starts_with(&format!("{custom}\n\n")));
+                }
+            }
+        }
+    }
+    #[test]
+    fn native_plan_tool_is_enabled_for_new_and_resumed_threads_with_roots() {
+        for resume in [false, true] {
+            for roots in [None, Some(vec![json!("/tmp/grove-worktree")])] {
+                let (mut actor, mut reader) = idle_actor();
+                if !resume {
+                    actor.state.saved.thread_id = None;
+                }
+                actor.start_thread(roots.clone()).unwrap();
+                let request = read_line(&mut reader);
+                assert_eq!(
+                    request["method"],
+                    if resume {
+                        "thread/resume"
+                    } else {
+                        "thread/start"
+                    }
+                );
+                assert_eq!(
+                    request["params"]["config"]["tools.update_plan.enabled"],
+                    true
+                );
+                match roots {
+                    Some(roots) => assert_eq!(
+                        request["params"]["config"]["sandbox_workspace_write.writable_roots"],
+                        json!(roots)
+                    ),
+                    None => assert!(request["params"]["config"]
+                        .get("sandbox_workspace_write.writable_roots")
+                        .is_none()),
                 }
             }
         }
