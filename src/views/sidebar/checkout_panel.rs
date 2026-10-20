@@ -121,14 +121,6 @@ impl Sidebar {
                     .collect();
             }
         }
-        if let Some(target) = self.selected_worktree() {
-            return vec![target];
-        }
-        if let Some(Selection::Project(idx)) = self.selection {
-            if let Some(project) = cx.global::<SettingsState>().store.projects.get(idx) {
-                return vec![(idx, project.path.clone())];
-            }
-        }
         Vec::new()
     }
 
@@ -461,7 +453,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.checkout_panel.narrow_content = None;
-        for kind in ["branch", "publish", "summary", "commit"] {
+        for kind in ["checkout", "publish", "summary", "commit"] {
             self.checkout_panel
                 .trigger_focus
                 .entry(kind)
@@ -583,38 +575,6 @@ impl Sidebar {
                         .my(rpx(SPACE_SM)),
                 );
             let state = self.checkout_panel.state.clone().and_then(Result::ok);
-            let branch = state.as_ref().map_or(
-                if self.checkout_panel.loading {
-                    "Reading branch…".into()
-                } else {
-                    "Git unavailable".into()
-                },
-                |state| {
-                    state
-                        .branch
-                        .clone()
-                        .unwrap_or_else(|| "Detached HEAD".into())
-                },
-            );
-            let target = path.clone();
-            card = card.child(
-                checkout_row("checkout-branch", branch, "git-branch", window, cx)
-                    .with_focus_handle(self.checkout_panel.trigger_focus["branch"].clone())
-                    .disabled(state.is_none() && targets.len() == 1)
-                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                    .on_click(
-                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                            this.checkout_menu(
-                                false,
-                                idx,
-                                target.clone(),
-                                event.position(),
-                                window,
-                                cx,
-                            );
-                        }),
-                    ),
-            );
             let target = path.clone();
             let busy = self.checkout_panel.busy;
             let same_job = self.checkout_panel.commit_job_path.as_ref() == Some(&path)
@@ -684,41 +644,39 @@ impl Sidebar {
                 })),
             );
         } else {
+            let target = targets.first().cloned();
             card = card
                 .child(
-                    checkout_row("checkout-finder", "Open in Finder", "folder", window, cx)
-                        .disabled(true),
+                    checkout_row("checkout-finder", "Choose checkout", "folder", window, cx)
+                        .with_focus_handle(self.checkout_panel.trigger_focus["checkout"].clone())
+                        .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                        .on_click(cx.listener(
+                            move |this, event: &gpui::ClickEvent, window, cx| {
+                                if let Some((idx, path)) = &target {
+                                    this.checkout_menu(
+                                        false,
+                                        *idx,
+                                        path.clone(),
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            },
+                        )),
                 )
                 .child(
                     checkout_row("checkout-script", "Add project script", "plus", window, cx)
                         .disabled(true),
-                );
-            let target = targets.first().cloned();
-            card = card
+                )
                 .child(
-                    checkout_row(
-                        "checkout-branch",
-                        "Choose checkout",
-                        "git-branch",
-                        window,
-                        cx,
-                    )
-                    .with_focus_handle(self.checkout_panel.trigger_focus["branch"].clone())
-                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                    .on_click(cx.listener(
-                        move |this, event: &gpui::ClickEvent, window, cx| {
-                            if let Some((idx, path)) = &target {
-                                this.checkout_menu(
-                                    false,
-                                    *idx,
-                                    path.clone(),
-                                    event.position(),
-                                    window,
-                                    cx,
-                                );
-                            }
-                        },
-                    )),
+                    div()
+                        .id("checkout-divider")
+                        .debug_selector(|| "checkout-divider".into())
+                        .w_full()
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .my(rpx(SPACE_SM)),
                 )
                 .child(
                     checkout_row(
@@ -811,7 +769,7 @@ impl Sidebar {
         self.checkout_panel.return_focus = self
             .checkout_panel
             .trigger_focus
-            .get(if publish { "publish" } else { "branch" })
+            .get(if publish { "publish" } else { "checkout" })
             .cloned();
         self.checkout_panel.popup_position = Some(position);
         if self.checkout_panel.confirmation_focus.is_none() {
@@ -1009,7 +967,7 @@ mod tests {
         assert!(!panel.accepts_result("/one", 1));
     }
     #[gpui::test]
-    fn five_icon_rows_clear_appbar_and_narrow_disclosure_keeps_header(
+    fn four_icon_rows_clear_appbar_and_narrow_disclosure_keeps_header(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
@@ -1025,11 +983,27 @@ mod tests {
                 ..Default::default()
             }));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
         });
-        let (_, cx) = cx.add_window_view(|window, cx| {
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(crate::runtime::Runtime::new);
+            let path = "/grove-checkout-layout-fixture".to_owned();
+            let id = runtime.read(cx).registry.clone().update(cx, |registry, _| {
+                registry.insert_meta("Checkout QA".into(), path.clone(), Agent::Codex)
+            });
+            runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![grove_core::git::Worktree {
+                        path,
+                        branch: "main".into(),
+                        mtime: None,
+                        is_main: true,
+                    }],
+                );
+            });
             let mut sidebar = Sidebar::new(runtime, window, cx);
-            sidebar.selection = Some(Selection::Project(0));
+            sidebar.selection = Some(Selection::Session(id));
             sidebar.initial_selection_pending = false;
             sidebar
         });
@@ -1046,7 +1020,6 @@ mod tests {
         let rows = [
             ("checkout-finder", "checkout-finder-icon"),
             ("checkout-script", "checkout-script-icon"),
-            ("checkout-branch", "checkout-branch-icon"),
             ("checkout-commit-publish", "checkout-commit-publish-icon"),
             ("checkout-changes", "checkout-changes-icon"),
         ];
@@ -1063,12 +1036,13 @@ mod tests {
             }
         }
         assert!(cx.debug_bounds("checkout-path").is_none());
+        assert!(cx.debug_bounds("checkout-branch").is_none());
         cx.simulate_resize(gpui::size(gpui::px(500.), gpui::px(600.)));
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-        let header = cx.debug_bounds("canvas-section-header").unwrap();
+        let header = cx.debug_bounds("terminal-header-1").unwrap();
         let panel = cx.debug_bounds("checkout-panel").unwrap();
         assert_eq!(header.top(), gpui::px(0.));
         assert!(panel.top() >= header.bottom());
@@ -1086,5 +1060,34 @@ mod tests {
             let _ = window.draw(cx);
         });
         assert!(cx.debug_bounds("checkout-card").is_none());
+
+        for width in [1280., 500.] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+            for selection in [
+                Some(Selection::Project(0)),
+                Some(Selection::Worktree(
+                    0,
+                    "/grove-checkout-layout-fixture".into(),
+                )),
+                Some(Selection::Session(SessionId::from_raw(u64::MAX))),
+                None,
+            ] {
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.selection = selection;
+                        sidebar.checkout_panel.expanded = true;
+                        assert!(sidebar.checkout_targets(cx).is_empty());
+                        cx.notify();
+                    });
+                });
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                assert!(cx.debug_bounds("checkout-card").is_none());
+                assert!(cx.debug_bounds("checkout-panel").is_none());
+                assert!(cx.debug_bounds("checkout-summary").is_none());
+            }
+        }
     }
 }
