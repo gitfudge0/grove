@@ -1633,7 +1633,12 @@ impl CodexView {
     }
 
     fn toggle_tasks(&mut self, cx: &mut Context<Self>) {
-        self.tasks_expanded = !self.tasks_expanded;
+        if self.composer_collapsed {
+            self.set_composer_collapsed(false, cx);
+            self.tasks_expanded = true;
+        } else {
+            self.tasks_expanded = !self.tasks_expanded;
+        }
         cx.notify();
     }
 
@@ -1647,7 +1652,9 @@ impl CodexView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let expanded = self.tasks_expanded;
+        // Browsing temporarily compacts both docked surfaces without changing
+        // the user's task disclosure preference.
+        let expanded = self.tasks_expanded && !self.composer_collapsed;
         let phase = task_phase(status);
         let (done, total) = (list.done(), list.total());
         let summary = task_summary(list, phase);
@@ -5155,7 +5162,23 @@ fn tool_visible(state: &codex::Snapshot, index: usize) -> bool {
     if !state.status.busy() {
         return true;
     }
-    let start = state
+    let start = active_work_start(state);
+    if index < start {
+        return true;
+    }
+    state
+        .saved
+        .items
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(index, item)| *index >= start && is_tool_item(item))
+        .is_some_and(|(current, _)| current == index)
+}
+
+/// New turns can start without a new user message (for example, manual compaction).
+fn active_work_start(state: &codex::Snapshot) -> usize {
+    state
         .saved
         .work_periods
         .iter()
@@ -5171,18 +5194,7 @@ fn tool_visible(state: &codex::Snapshot, index: usize) -> bool {
                     .unwrap_or(0)
             },
             |period| period.start_item,
-        );
-    if index < start {
-        return true;
-    }
-    state
-        .saved
-        .items
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(index, item)| *index >= start && is_tool_item(item))
-        .is_some_and(|(current, _)| current == index)
+        )
 }
 
 /// Explicit message phases win; older providers keep their last response outside work.
@@ -5203,20 +5215,14 @@ fn work_commentary(state: &codex::Snapshot, index: usize) -> bool {
 
 fn work_is_active_at(state: &codex::Snapshot, index: usize) -> bool {
     state.status.busy()
+        && index >= active_work_start(state)
         && state
             .saved
             .work_periods
             .iter()
             .rev()
             .find(|period| period.start_item <= index)
-            .map_or_else(
-                || {
-                    !state.saved.items[index + 1..]
-                        .iter()
-                        .any(|item| item["type"] == "userMessage")
-                },
-                |period| period.end_item.is_none(),
-            )
+            .is_none_or(|period| period.end_item.is_none())
 }
 
 fn work_key_at(state: &codex::Snapshot, index: usize) -> String {
@@ -5324,14 +5330,7 @@ fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, Stri
         .rposition(|item| item["type"] == "userMessage")
         .unwrap_or(0);
     let start = period.map_or(fallback_start, |period| period.start_item);
-    let latest_start = state
-        .saved
-        .items
-        .iter()
-        .rposition(|item| item["type"] == "userMessage")
-        .unwrap_or(0);
-    let active = state.status.busy()
-        && period.map_or(start >= latest_start, |period| period.end_item.is_none());
+    let active = work_is_active_at(state, index);
     let end = period
         .and_then(|period| period.end_item)
         .unwrap_or(state.saved.items.len());
@@ -9066,6 +9065,69 @@ mod tests {
     }
 
     #[gpui::test]
+    fn manual_compaction_preserves_completed_work_disclosures(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, updates) = fixture(cx);
+        let mut state = snapshot();
+        state.status = Status::Done;
+        state.saved.items = vec![
+            json!({"id":"prompt","type":"userMessage","content":[{"text":"Check status"}]}),
+            json!({"id":"comment","type":"agentMessage","phase":"commentary","text":"Checking status"}),
+            json!({"id":"reason","type":"reasoning","text":"Inspect the checkout"}),
+            json!({"id":"command","type":"commandExecution","command":"pwd","status":"completed"}),
+            json!({"id":"answer","type":"agentMessage","phase":"final_answer","text":"Done"}),
+        ];
+        // Imported history has no recorded work periods. A new compaction turn
+        // must not make that completed history part of the live turn.
+        assert!(state.saved.work_periods.is_empty());
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-body-1").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-2").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-3").is_none());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input
+                    .update(cx, |input, cx| input.set_value("/compact", window, cx));
+                view.submit(window, cx);
+            })
+        });
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Compact)));
+        state.apply(&json!({"method":"turn/started","params":{"threadId":state.saved.thread_id,"turn":{"id":"compact-turn"}}}));
+        for method in ["item/started", "item/completed"] {
+            state.apply(&json!({"method":method,"params":{"threadId":state.saved.thread_id,"turnId":"compact-turn","item":{"id":"compact","type":codex::COMPACTION_ITEM}}}));
+            updates.send(state.clone()).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            assert!(
+                cx.debug_bounds("codex-message-body-1").is_none(),
+                "{method}"
+            );
+            assert!(cx.debug_bounds("codex-toggle-tool-2").is_none(), "{method}");
+            assert!(cx.debug_bounds("codex-toggle-tool-3").is_none(), "{method}");
+            assert!(cx.debug_bounds("codex-message-body-4").is_some());
+        }
+        state.apply(&json!({"method":"turn/completed","params":{"threadId":state.saved.thread_id,"turn":{"id":"compact-turn","status":"completed"}}}));
+        updates.send(state).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-toggle-tool-2").is_none());
+        assert!(cx.debug_bounds("codex-toggle-tool-3").is_none());
+        // The disclosure still opens normally after compaction.
+        let header = cx.debug_bounds("codex-work-header-1").unwrap();
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-body-1").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tool-2").is_some());
+        assert!(cx.debug_bounds("codex-toggle-tool-3").is_some());
+    }
+
+    #[gpui::test]
     fn compaction_shows_the_live_activity_line_even_after_tools(cx: &mut gpui::TestAppContext) {
         let (_view, cx, _, updates) = fixture(cx);
         let mut state = snapshot();
@@ -10526,7 +10588,13 @@ mod tests {
             view.input.update(cx, |input, cx| input.set_value(draft, window, cx));
             view.input.focus_handle(cx).focus(window, cx);
             view.session.update(cx, |session, cx| {
-                session.state.saved.items = vec![json!({"id":"long","type":"agentMessage","text":"Earlier response.\n\n".repeat(80)})];
+                session.state.saved.items = vec![
+                    json!({"id":"plan","type":"plan","plan":[
+                        {"step":"Inspect","status":"completed"},
+                        {"step":"Implement","status":"inProgress"},
+                        {"step":"Verify","status":"pending"}]}),
+                    json!({"id":"long","type":"agentMessage","text":"Earlier response.\n\n".repeat(80)}),
+                ];
                 cx.notify();
             });
             cx.notify();
@@ -10534,6 +10602,8 @@ mod tests {
         draw(cx);
         draw(cx);
         let expanded = cx.debug_bounds("codex-composer-input").unwrap().size.height;
+        let expanded_tasks = cx.debug_bounds("codex-task-strip-panel").unwrap().size.height;
+        assert!(cx.debug_bounds("codex-task-list").is_some());
         let scroll = |delta, cx: &mut gpui::VisualTestContext| {
             let bounds = cx.debug_bounds("codex-messages").unwrap();
             cx.simulate_event(gpui::ScrollWheelEvent {
@@ -10556,6 +10626,10 @@ mod tests {
         });
         assert!(cx.debug_bounds("codex-composer-input").unwrap().size.height < expanded);
         assert!(cx.debug_bounds("codex-attachments").is_none());
+        assert!(cx.debug_bounds("codex-task-strip").is_some());
+        assert!(cx.debug_bounds("codex-task-list").is_none());
+        assert!(cx.debug_bounds("codex-task-strip-panel").unwrap().size.height < expanded_tasks);
+        assert!(view.read_with(cx, |view, _| view.tasks_expanded));
         // The editor retained focus during scrolling; clicking it still expands it.
         let input = cx.debug_bounds("codex-composer-input").unwrap();
         cx.simulate_mouse_down(
@@ -10571,6 +10645,7 @@ mod tests {
         draw(cx);
         view.read_with(cx, |view, _| assert!(!view.composer_collapsed));
         assert!(cx.debug_bounds("codex-attachments").is_some());
+        assert!(cx.debug_bounds("codex-task-list").is_some());
         scroll(400.0, cx);
         view.read_with(cx, |view, _| assert!(view.composer_collapsed));
         scroll(-100000.0, cx);
@@ -10597,6 +10672,24 @@ mod tests {
             action,
             Action::Submit { .. } | Action::SubmitWithMode { .. }
         )));
+        assert!(cx.debug_bounds("codex-task-list").is_some());
+        // A manually folded checklist remains folded after another browse cycle.
+        let header = cx.debug_bounds("codex-task-strip").unwrap();
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(!view.read_with(cx, |view, _| view.tasks_expanded));
+        scroll(400.0, cx);
+        assert!(cx.debug_bounds("codex-task-list").is_none());
+        scroll(-100000.0, cx);
+        assert!(!view.read_with(cx, |view, _| view.composer_collapsed));
+        assert!(cx.debug_bounds("codex-task-list").is_none());
+        // The compact header remains actionable while browsing.
+        scroll(400.0, cx);
+        let header = cx.debug_bounds("codex-task-strip").unwrap();
+        cx.simulate_click(header.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(!view.read_with(cx, |view, _| view.composer_collapsed));
+        assert!(cx.debug_bounds("codex-task-list").is_some());
     }
 
     #[gpui::test]
