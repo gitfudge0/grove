@@ -36,6 +36,12 @@ strip = "symbols"
 lto = "thin"
 codegen-units = 1
 
+# Measured ~4% smaller on arm64; keep dependencies tuned for throughput.
+# Package overrides need explicit stripping to preserve the shipped symbol policy.
+[profile.release.package.grove]
+opt-level = "s"
+strip = "symbols"
+
 # Denied in production paths only. CI runs a second `--all-targets` pass with
 # these allowed, so test modules keep using unwrap() freely.
 [workspace.lints.rust]
