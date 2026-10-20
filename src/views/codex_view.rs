@@ -483,7 +483,6 @@ pub struct CodexView {
     composer_transition_from: Option<gpui::Pixels>,
     composer_transition_generation: usize,
     composer_motion_finished: Rc<Cell<bool>>,
-    subagent_panel: Entity<super::subagent_panel::SubagentPanel>,
     tasks_expanded: bool,
     task_cache: Option<Rc<TaskCache>>,
     _subscriptions: Vec<Subscription>,
@@ -622,7 +621,6 @@ impl CodexView {
             composer_transition_from: None,
             composer_transition_generation: 0,
             composer_motion_finished: Rc::new(Cell::new(true)),
-            subagent_panel: cx.new(super::subagent_panel::SubagentPanel::new),
             tasks_expanded: false,
             task_cache: None,
             checkout_context: None,
@@ -3521,13 +3519,6 @@ impl Render for CodexView {
                 })
         });
         let queued = self.queue_tray(&state, window, cx);
-        self.subagent_panel.update(cx, |panel, cx| {
-            panel.set_agents(
-                state.saved.thread_id.clone().unwrap_or_default(),
-                codex::active_subagents(&state.saved.work_periods),
-                cx,
-            )
-        });
         let task_strip = task_cache.list.as_ref().map(|list| {
             let rendered = message_child;
             let jumps = list
@@ -3812,7 +3803,6 @@ impl Render for CodexView {
                             .gap(rpx(SPACE_MD))
                             .when(focused_launch, |rail| rail.child(self.launch_intro(&state)))
                             .when_some(task_strip, gpui::ParentElement::child)
-                            .child(self.subagent_panel.clone())
                             .when(!self.composer_collapsed, |rail| rail.child(choices))
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
                             .child(

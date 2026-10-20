@@ -20,7 +20,6 @@ pub mod tokens;
 mod worktree_launcher;
 
 mod codex_view;
-pub(crate) mod subagent_panel;
 pub mod components;
 mod inline_html;
 mod mermaid;
