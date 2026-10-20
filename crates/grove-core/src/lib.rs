@@ -5,6 +5,7 @@ pub mod attention;
 pub mod checkpoint;
 pub mod claude;
 pub mod claude_agents;
+mod claude_transcript;
 pub mod codex;
 pub mod control;
 pub mod controls;

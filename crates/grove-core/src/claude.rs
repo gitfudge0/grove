@@ -1,8 +1,8 @@
 //! Grove-owned Claude Code sessions using the CLI's streaming SDK transport.
 //! The subprocess owns credentials, tools, permissions, and conversation persistence.
 use crate::codex::{
-    self, Action, Connection, Handle, QuestionRequest, QueuedPrompt, SavedSession, Snapshot,
-    Status, SubmissionMode,
+    self, Action, Connection, EditCheckpoint, Handle, PendingEdit, QuestionRequest, QueuedPrompt,
+    SavedSession, Snapshot, Status, SubmissionMode,
 };
 use serde_json::{json, Value};
 use std::{
@@ -149,6 +149,7 @@ fn launch_command(
         command.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
     }
     command.env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1");
+    command.env("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1");
     // The native question panel renders the extended text and number schema.
     command.env("CLAUDE_CODE_QUESTION_EXTENDED", "1");
     command.env(
@@ -158,7 +159,37 @@ fn launch_command(
     if let Some(task) = task_id {
         command.env("GROVE_TASK_ID", task);
     }
-    if let Some(id) = &saved.thread_id {
+    let pending_resume = saved.pending_edit.as_ref().map(|edit| codex::ClaudeResume {
+        original_session: saved.claude_resume.as_ref().map_or_else(
+            || saved.thread_id.clone(),
+            |resume| resume.original_session.clone(),
+        ),
+        assistant_uuid: saved
+            .items
+            .get(edit.target)
+            .and_then(|item| item["claudePreviousAssistantUuid"].as_str())
+            .map(str::to_owned),
+        human_uuid: edit.turn_id.clone(),
+        fork_id: edit.claude_fork_id.clone().unwrap_or_default(),
+    });
+    if let Some(resume) = pending_resume.as_ref().or(saved.claude_resume.as_ref()) {
+        command.arg("--session-id").arg(&resume.fork_id);
+        if let Some(anchor) = &resume.assistant_uuid {
+            command
+                .arg("--resume")
+                .arg(
+                    resume
+                        .original_session
+                        .as_deref()
+                        .ok_or("Missing original Claude session")?,
+                )
+                .arg("--resume-session-at")
+                .arg(anchor)
+                .arg("--resume-drops-turn")
+                .arg(&resume.human_uuid)
+                .arg("--fork-session");
+        }
+    } else if let Some(id) = &saved.thread_id {
         command.arg("--resume").arg(id);
     }
     if let Some(model) = &saved.composer.model {
@@ -304,6 +335,11 @@ struct Actor {
     deferred: Option<QueuedPrompt>,
     in_flight: Option<QueuedPrompt>,
     input_uuid: Option<String>,
+    inline_uuid: Option<String>,
+    deferred_inline: bool,
+    last_assistant_uuid: Option<String>,
+    redirect_pending: bool,
+    transcript: crate::claude_transcript::ClaudeTranscriptState,
     /// A host `/compact` is in flight; its echo is represented by the divider, not a bubble.
     compact_pending: bool,
     /// Model of the latest primary assistant message, used to pick its context window.
@@ -335,8 +371,17 @@ impl Actor {
         let task_id = task_id.or_else(|| saved.task_id.clone());
         saved.config_args = launch_options(&args).map_or_else(|_| args.clone(), |v| v.0);
         saved.task_id.clone_from(&task_id);
+        let mut transcript = crate::claude_transcript::ClaudeTranscriptState::default();
+        transcript.restore(&mut saved.items);
+        let last_assistant_uuid = saved
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| item["claudeAssistantUuid"].as_str().map(str::to_owned));
+        let mut state = Snapshot::new(saved);
+        state.edit_supported = true;
         Self {
-            state: Snapshot::new(saved),
+            state,
             args,
             task_id,
             input,
@@ -356,6 +401,11 @@ impl Actor {
             deferred: None,
             in_flight: None,
             input_uuid: None,
+            inline_uuid: None,
+            deferred_inline: false,
+            last_assistant_uuid,
+            redirect_pending: false,
+            transcript,
             compact_pending: false,
             context_model: None,
             queue_ready: true,
@@ -500,9 +550,23 @@ impl Actor {
         received
     }
     fn publish(&self) {
-        let _ = self.updates.send(self.state.clone());
+        let mut snapshot = self.state.clone();
+        snapshot.can_redirect = self.initialized
+            && self.process.is_some()
+            && self.state.status.busy()
+            && self.state.turn_id.is_some()
+            && !self.state.compacting
+            && self.in_flight.is_none()
+            && self.pending_completion.is_none()
+            && !self.configuring
+            && !self.interrupting
+            && !self.redirect_pending
+            && self.state.saved.pending_edit.is_none();
+        let _ = self.updates.send(snapshot);
     }
     fn fail(&mut self, error: String) {
+        self.redirect_pending = false;
+        self.deferred_inline = false;
         self.state.finish_work();
         self.state.mark_queue_uncertain();
         self.process.take();
@@ -521,6 +585,7 @@ impl Actor {
             self.state.rejected_submission = Some(prompt.id);
         }
         self.input_uuid = None;
+        self.inline_uuid = None;
         if let Some(prompt) = self.deferred.take() {
             self.state.rejected_submission = Some(prompt.id);
         }
@@ -547,6 +612,7 @@ impl Actor {
         self.write(json!({"type":"control_request","request_id":id,"request":request}))
     }
     fn start(&mut self) -> Result<(), String> {
+        self.redirect_pending = false;
         if self.in_flight.is_some() {
             self.state.mark_queue_uncertain();
         }
@@ -554,6 +620,11 @@ impl Actor {
         self.pid.store(0, Ordering::SeqCst);
         if self.stopping.load(Ordering::SeqCst) {
             return Err("Claude Code session is stopping".into());
+        }
+        // Forking never mutates the original provider conversation. On uncertain
+        // startup, restore the current workspace and retain the original history.
+        if self.state.saved.pending_edit.is_some() && self.process.is_none() {
+            self.recover_edit()?;
         }
         let (args, initial) = launch_options(&self.args)?;
         if self.state.saved.thread_id.is_none() && self.initial.is_none() && self.deferred.is_none()
@@ -573,6 +644,7 @@ impl Actor {
             self.state.rejected_submission = Some(prompt.id);
         }
         self.input_uuid = None;
+        self.inline_uuid = None;
         self.compact_pending = false;
         self.state.compacting = false;
         self.initialized = false;
@@ -609,9 +681,200 @@ impl Actor {
         )?;
         Ok(())
     }
+    fn capture_edit_checkpoint(&mut self) {
+        let mut roots = vec![std::path::PathBuf::from(&self.state.saved.cwd)];
+        roots.extend(
+            self.state
+                .saved
+                .roots
+                .iter()
+                .map(|root| std::path::PathBuf::from(&root.wt_path)),
+        );
+        if let Ok(files) = crate::checkpoint::repository_roots(&roots)
+            .and_then(|roots| crate::checkpoint::capture(&roots))
+        {
+            self.state.saved.edit_checkpoints.push(EditCheckpoint {
+                start_item: self.state.saved.items.len(),
+                turn_id: None,
+                files,
+            });
+        }
+    }
+    fn redirect(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
+        codex::validate_prompt(&text, &images)?;
+        if !self.initialized
+            || !self.state.status.busy()
+            || self.state.turn_id.is_none()
+            || self.state.compacting
+            || self.in_flight.is_some()
+            || self.pending_completion.is_some()
+            || self.configuring
+            || self.interrupting
+            || self.redirect_pending
+        {
+            return Err("Wait for an active Claude Code turn before redirecting.".into());
+        }
+        let uuid = nonce();
+        let queued = self.state.queued_prompts.iter().any(|p| p.id == id);
+        if queued {
+            self.state.queue_sending.push(id);
+            self.state.queue_steering.push(id);
+        }
+        // Priority now interrupts tools, then starts another provider turn. It is
+        // deliberately not represented as Codex's same-turn steer operation.
+        if let Err(error) = self.write(json!({"type":"user","uuid":uuid,"session_id":self.state.saved.thread_id,"priority":"now","origin":{"kind":"human"},"message":{"role":"user","content":user_content(&text,&images)},"parent_tool_use_id":null})) {
+            self.state.mark_queue_uncertain();
+            self.queue_ready = false;
+            return Err(error);
+        }
+        self.input_uuid = Some(uuid);
+        self.in_flight = Some(QueuedPrompt { id, text, images });
+        self.redirect_pending = true;
+        self.pending_completion = None;
+        self.state.error = None;
+        Ok(())
+    }
+    fn edit_message(
+        &mut self,
+        index: usize,
+        message_id: String,
+        composer_draft: Option<(String, Vec<String>)>,
+    ) -> Result<(), String> {
+        let checkpoint = self.state.editable_message(index)?.clone();
+        if self.process.is_none()
+            || !self.pending.is_empty()
+            || self.in_flight.is_some()
+            || !self.initialized
+            || (self.tracks_session_state && !self.session_idle)
+        {
+            return Err("Wait for Claude Code to finish reconnecting before editing.".into());
+        }
+        let item = &self.state.saved.items[index];
+        if item["id"] != message_id {
+            return Err("This message changed; select Edit again.".into());
+        }
+        let text = codex::item_text(item);
+        let images = item["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|part| part["type"] == "image")
+            .filter_map(|part| part["url"].as_str().map(str::to_owned))
+            .collect();
+        let mut roots = vec![std::path::PathBuf::from(&self.state.saved.cwd)];
+        roots.extend(
+            self.state
+                .saved
+                .roots
+                .iter()
+                .map(|root| std::path::PathBuf::from(&root.wt_path)),
+        );
+        let recovery = crate::checkpoint::capture(&crate::checkpoint::repository_roots(&roots)?)?;
+        self.state.saved.pending_edit = Some(PendingEdit {
+            target: checkpoint.start_item,
+            turn_id: checkpoint.turn_id.ok_or("Missing human turn identity")?,
+            text,
+            images,
+            recovery,
+            composer_draft,
+            claude_fork_id: Some(nonce()),
+        });
+        // Persist the complete original transcript and recovery snapshot before
+        // touching files. Fork failure cannot destroy the original conversation.
+        codex::persist(&self.state.saved)?;
+        if let Err(error) = checkpoint.files.restore() {
+            self.recover_edit()?;
+            return Err(error);
+        }
+        self.process.take();
+        self.pid.store(0, Ordering::SeqCst);
+        let args = launch_options(&self.args)?.0;
+        let process = match spawn(&args, &self.state.saved, self.task_id.as_deref()) {
+            Ok(process) => process,
+            Err(error) => {
+                self.recover_edit()?;
+                return Err(error);
+            }
+        };
+        self.pid.store(process.child.id(), Ordering::SeqCst);
+        self.process = Some(process);
+        self.pending.clear();
+        self.blocks.clear();
+        self.message_id.clear();
+        self.started = Instant::now();
+        self.redirect_pending = false;
+        self.initialized = false;
+        self.configuring = false;
+        self.tracks_session_state = false;
+        self.pending_completion = None;
+        self.session_idle = true;
+        self.state.status = Status::Starting;
+        self.control(json!({"subtype":"initialize","hooks":null}))?;
+        Ok(())
+    }
+    fn recover_edit(&mut self) -> Result<(), String> {
+        if let Some(edit) = &self.state.saved.pending_edit {
+            edit.recovery.restore()?;
+        }
+        let mut saved = self.state.saved.clone();
+        saved.pending_edit = None;
+        codex::persist(&saved)?;
+        self.state.saved = saved;
+        Ok(())
+    }
+    fn finish_edit(&mut self) -> Result<(), String> {
+        let Some(edit) = self.state.saved.pending_edit.clone() else {
+            return Ok(());
+        };
+        let mut saved = self.state.saved.clone();
+        saved.claude_resume = Some(codex::ClaudeResume {
+            original_session: saved.claude_resume.as_ref().map_or_else(
+                || saved.thread_id.clone(),
+                |resume| resume.original_session.clone(),
+            ),
+            assistant_uuid: saved
+                .items
+                .get(edit.target)
+                .and_then(|item| item["claudePreviousAssistantUuid"].as_str())
+                .map(str::to_owned),
+            human_uuid: edit.turn_id.clone(),
+            fork_id: edit
+                .claude_fork_id
+                .clone()
+                .ok_or("Missing Claude fork identity")?,
+        });
+        saved.thread_id.clone_from(&edit.claude_fork_id);
+        saved.items.truncate(edit.target);
+        saved
+            .edit_checkpoints
+            .retain(|checkpoint| checkpoint.start_item < edit.target);
+        saved
+            .work_periods
+            .retain(|period| period.start_item < edit.target);
+        let (text, images) = edit.composer_draft.unwrap_or((edit.text, edit.images));
+        saved.draft = text;
+        saved.draft_images = images;
+        saved.pending_edit = None;
+        saved.context = None;
+        codex::persist(&saved)?;
+        self.state.saved = saved;
+        self.transcript.restore(&mut self.state.saved.items);
+        self.last_assistant_uuid = self
+            .state
+            .saved
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| item["claudeAssistantUuid"].as_str().map(str::to_owned));
+        self.state.edited_messages += 1;
+        self.state.context_tokens = None;
+        self.state.turn_id = None;
+        Ok(())
+    }
     fn submit(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
         let result = self.submit_inner(id, text, images);
         if result.is_err() {
+            self.deferred_inline = false;
             self.state.mark_queue_uncertain();
             self.state.rejected_submission = Some(id);
         }
@@ -638,10 +901,23 @@ impl Actor {
             }
             return Ok(());
         }
+        self.capture_edit_checkpoint();
         let content = user_content(&text, &images);
         let uuid = nonce();
         self.write(json!({"type":"user","uuid":uuid,"session_id":self.state.saved.thread_id.as_deref().unwrap_or(""),"message":{"role":"user","content":content},"parent_tool_use_id":null}))?;
+        if let Some(checkpoint) = self
+            .state
+            .saved
+            .edit_checkpoints
+            .last_mut()
+            .filter(|checkpoint| checkpoint.turn_id.is_none())
+        {
+            checkpoint.turn_id = Some(uuid.clone());
+        }
         self.input_uuid = Some(uuid.clone());
+        if std::mem::take(&mut self.deferred_inline) {
+            self.inline_uuid = Some(uuid.clone());
+        }
         self.in_flight = Some(QueuedPrompt { id, text, images });
         self.state.begin_work();
         self.state.status = Status::Working;
@@ -657,7 +933,10 @@ impl Actor {
         if uuid.as_str() != self.input_uuid.as_deref() || self.input_uuid.is_none() {
             return;
         }
+        let inline = self.inline_uuid.as_deref() == self.input_uuid.as_deref();
         self.input_uuid = None;
+        self.inline_uuid = None;
+        self.state.saved.claude_resume = None;
         let Some(prompt) = self.in_flight.take() else {
             return;
         };
@@ -677,11 +956,11 @@ impl Actor {
         self.state
             .saved
             .items
-            .push(json!({"id":uuid,"type":"userMessage","content":parts}));
+            .push(json!({"id":uuid,"type":"userMessage","content":parts,"claudeHumanUuid":uuid,"claudePreviousAssistantUuid":self.last_assistant_uuid}));
         if self.state.saved.title.is_none() {
             self.state.saved.title = Some(prompt.text.chars().take(80).collect());
         }
-        if !self.state.queued_prompts.iter().any(|p| p.id == prompt.id) {
+        if !inline && !self.state.queued_prompts.iter().any(|p| p.id == prompt.id) {
             self.state
                 .saved
                 .clear_submitted_draft(&prompt.text, &prompt.images);
@@ -690,6 +969,7 @@ impl Actor {
             .queued_prompts
             .retain(|queued| queued.id != prompt.id);
         self.state.queue_sending.retain(|id| *id != prompt.id);
+        self.state.queue_steering.retain(|id| *id != prompt.id);
         self.state.queue_uncertain.retain(|id| *id != prompt.id);
         self.state.accepted_prompts += 1;
         self.state.accepted_submission = Some(prompt.id);
@@ -727,21 +1007,49 @@ impl Actor {
         self.blocks.clear();
         self.message_id.clear();
         self.input_uuid = None;
+        self.inline_uuid = None;
         self.context_model = None;
         self.queue_ready = true;
         let cleared = self.state.cleared_conversations + 1;
         self.state = Snapshot::new(saved);
+        self.state.edit_supported = true;
+        self.last_assistant_uuid = None;
+        self.deferred_inline = false;
+        self.redirect_pending = false;
+        self.transcript.restore(&mut self.state.saved.items);
         self.state.cleared_conversations = cleared;
         Ok(())
     }
     fn action(&mut self, action: Action) -> Result<(), String> {
+        if self.state.saved.pending_edit.is_some()
+            && !matches!(
+                action,
+                Action::Reconnect | Action::Stop { .. } | Action::Draft(_) | Action::DraftImages(_)
+            )
+        {
+            return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
+        }
         match action {
-            Action::EditMessage { .. }
-            | Action::EditMessageInline { .. }
-            | Action::PromptInline { .. } => {
-                return Err(
-                    "Editing sent messages is not supported by this Claude Code connection.".into(),
+            Action::EditMessage { index, message_id } => {
+                self.edit_message(index, message_id, None)?;
+            }
+            Action::EditMessageInline { index, message_id } => {
+                let draft = (
+                    self.state.saved.draft.clone(),
+                    self.state.saved.draft_images.clone(),
                 );
+                self.edit_message(index, message_id, Some(draft))?;
+            }
+            Action::PromptInline { text, images } => {
+                let draft = (
+                    self.state.saved.draft.clone(),
+                    self.state.saved.draft_images.clone(),
+                );
+                self.submit(0, text, images)?;
+                self.inline_uuid.clone_from(&self.input_uuid);
+                self.deferred_inline = self.deferred.is_some();
+                self.state.saved.draft = draft.0;
+                self.state.saved.draft_images = draft.1;
             }
             Action::ClearConversation => {
                 self.clear_conversation(codex::persist)?;
@@ -779,8 +1087,10 @@ impl Actor {
             } => match mode {
                 SubmissionMode::Send => self.submit(id, text, images)?,
                 SubmissionMode::Steer => {
-                    self.state.rejected_submission = Some(id);
-                    return Err("Claude Code does not support steering an active turn. Queue the message or interrupt first.".into());
+                    if let Err(error) = self.redirect(id, text, images) {
+                        self.state.rejected_submission = Some(id);
+                        return Err(error);
+                    }
                 }
                 SubmissionMode::Queue => {
                     if let Err(error) = codex::validate_prompt(&text, &images) {
@@ -803,8 +1113,18 @@ impl Actor {
                     self.state.queue_edit = None;
                 }
             }
-            Action::SteerQueued(_) => {
-                return Err("Claude Code does not support steering an active turn".into());
+            Action::SteerQueued(id) => {
+                if !self.state.queue_editable(id) || self.state.queue_edit == Some(id) {
+                    return Err("This queued input cannot be redirected right now".into());
+                }
+                let prompt = self
+                    .state
+                    .queued_prompts
+                    .iter()
+                    .find(|p| p.id == id)
+                    .cloned()
+                    .ok_or("Queued input unavailable")?;
+                self.redirect(id, prompt.text, prompt.images)?;
             }
             Action::RemoveQueued(id) => self.state.remove_queued(id)?,
             Action::DismissUncertainQueued(id) => {
@@ -837,10 +1157,20 @@ impl Actor {
                 if text.len() > 512 * 1024 {
                     return Err("Draft text limit: 512 KiB".into());
                 }
+                if let Some(edit) = &mut self.state.saved.pending_edit {
+                    if let Some((draft, _)) = &mut edit.composer_draft {
+                        draft.clone_from(&text);
+                    }
+                }
                 self.state.saved.draft = text;
             }
             Action::DraftImages(images) => {
                 codex::validate_images(&images)?;
+                if let Some(edit) = &mut self.state.saved.pending_edit {
+                    if let Some((_, draft_images)) = &mut edit.composer_draft {
+                        draft_images.clone_from(&images);
+                    }
+                }
                 self.state.saved.draft_images = images;
             }
             Action::Metadata { project, roots } => {
@@ -1060,7 +1390,10 @@ impl Actor {
             return Ok(());
         }
         if let Some(session) = value["session_id"].as_str().filter(|id| !id.is_empty()) {
-            if let Some(primary) = &self.state.saved.thread_id {
+            if self.state.saved.pending_edit.is_some() {
+                // A fork's new identity is committed together with its truncated
+                // transcript only after initialize succeeds.
+            } else if let Some(primary) = &self.state.saved.thread_id {
                 if primary != session {
                     return Ok(());
                 }
@@ -1100,6 +1433,7 @@ impl Actor {
                     self.state.resolved_effort = self.state.effort.clone();
                 }
                 if pending.as_deref() == Some("initialize") {
+                    self.finish_edit()?;
                     self.initialized = true;
                     self.state.status = Status::Idle;
                     let data = &response["response"];
@@ -1305,6 +1639,12 @@ impl Actor {
                 if let Some(error) = value["error"].as_str() {
                     self.state.error = Some(format!("Claude Code: {error}"));
                 }
+                if let Some(uuid) = value["uuid"].as_str() {
+                    self.last_assistant_uuid = Some(uuid.to_owned());
+                    if let Some(item) = self.state.saved.items.last_mut() {
+                        item["claudeAssistantUuid"] = json!(uuid);
+                    }
+                }
                 let usage = &message["usage"];
                 let used = [
                     "input_tokens",
@@ -1328,7 +1668,7 @@ impl Actor {
                 if let Some(content) = value["message"]["content"].as_array() {
                     for block in content {
                         if block["type"] == "tool_result" {
-                            self.tool_result(block);
+                            self.tool_result_with_structured(block, value.get("tool_use_result"));
                         }
                     }
                 }
@@ -1346,6 +1686,18 @@ impl Actor {
                 }
             }
             "result" => {
+                if (self.redirect_pending || value["terminal_reason"] == "aborted_tools")
+                    && value["queued_turn_count"].as_u64().unwrap_or(0) > 0
+                {
+                    self.redirect_pending = false;
+                    for item in &mut self.state.saved.items {
+                        if item["status"] == "inProgress" {
+                            item["status"] = json!("interrupted");
+                        }
+                    }
+                    return Ok(());
+                }
+                self.redirect_pending = false;
                 if let Some(models) = value["modelUsage"].as_object() {
                     let window = self
                         .context_model
@@ -1387,6 +1739,7 @@ impl Actor {
                         }
                     }
                     self.input_uuid = None;
+                    self.inline_uuid = None;
                     self.queue_ready = false;
                 }
                 self.state.turn_id = None;
@@ -1533,12 +1886,23 @@ impl Actor {
                     json!({"id":tool_id,"type":"mcpToolCall","server":"Claude Code","tool":block["name"],"arguments":block["input"],"status":"inProgress"})
                 };
                 if let Some(old) = old {
-                    for key in ["status", "result", "error", "aggregatedOutput", "progress"] {
+                    for key in [
+                        "status",
+                        "result",
+                        "error",
+                        "aggregatedOutput",
+                        "progress",
+                        "structuredResult",
+                        "plan",
+                        "text",
+                        "detached",
+                    ] {
                         if let Some(value) = old.get(key) {
                             item[key] = value.clone();
                         }
                     }
                 }
+                self.transcript.normalize_tool_item(&mut item);
                 self.upsert(item);
             }
             _ => {}
@@ -1592,7 +1956,11 @@ impl Actor {
             _ => {}
         }
     }
+    #[cfg(test)]
     fn tool_result(&mut self, block: &Value) {
+        self.tool_result_with_structured(block, None);
+    }
+    fn tool_result_with_structured(&mut self, block: &Value, structured: Option<&Value>) {
         let Some(item) = self
             .state
             .saved
@@ -1607,22 +1975,18 @@ impl Actor {
         } else {
             block["content"].as_array().cloned().unwrap_or_default()
         };
-        item["status"] = json!(if block["is_error"] == true {
-            "failed"
-        } else {
-            "completed"
-        });
+        self.transcript.apply_tool_result(
+            item,
+            &json!(content),
+            structured,
+            block["is_error"] == true,
+        );
         if item["type"] == "commandExecution" {
             item["aggregatedOutput"] = json!(content
                 .iter()
-                .filter_map(|v| v["text"].as_str())
+                .filter_map(|part| part["text"].as_str())
                 .collect::<Vec<_>>()
                 .join("\n"));
-        } else {
-            item["result"] = json!({"content":content});
-        }
-        if block["is_error"] == true {
-            item["error"] = json!({"message":content.iter().filter_map(|v|v["text"].as_str()).collect::<Vec<_>>().join("\n")});
         }
     }
 }
@@ -1644,6 +2008,345 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
     }
+    #[test]
+    fn deferred_inline_preserves_identical_composer_after_configuration() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.reconfigure = true;
+        actor.state.saved.draft = "same text".into();
+        actor
+            .action(Action::PromptInline {
+                text: "same text".into(),
+                images: vec![],
+            })
+            .unwrap();
+        assert!(actor.deferred_inline);
+        let _ = read(&mut reader);
+        actor.state.status = Status::Idle;
+        let prompt = actor.deferred.take().unwrap();
+        actor.submit(prompt.id, prompt.text, prompt.images).unwrap();
+        let sent = read(&mut reader);
+        actor.acknowledge_input(&sent["uuid"]);
+        assert_eq!(actor.state.saved.draft, "same text");
+        actor.deferred_inline = true;
+        actor.fail("failure".into());
+        assert!(!actor.deferred_inline);
+    }
+
+    #[test]
+    fn failed_redirect_does_not_disable_redirecting_after_reconnect() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("old".into());
+        actor
+            .redirect(91, "first correction".into(), vec![])
+            .unwrap();
+        let _ = read(&mut reader);
+        actor.fail("transport disconnected".into());
+        assert!(!actor.redirect_pending);
+        let mut reconnected = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("new".into());
+        actor
+            .redirect(92, "second correction".into(), vec![])
+            .unwrap();
+        assert_eq!(read(&mut reconnected)["priority"], "now");
+        // A startup that exits before spawn must also clear transient redirect state.
+        actor.stopping.store(true, Ordering::SeqCst);
+        assert!(actor.start().is_err());
+        assert!(!actor.redirect_pending);
+    }
+
+    #[test]
+    fn inline_prompt_echo_preserves_identical_independent_composer() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.state.saved.draft = "same text".into();
+        actor
+            .action(Action::PromptInline {
+                text: "same text".into(),
+                images: vec![],
+            })
+            .unwrap();
+        let sent = read(&mut reader);
+        actor.acknowledge_input(&sent["uuid"]);
+        assert_eq!(actor.state.saved.draft, "same text");
+    }
+
+    #[test]
+    fn edit_journal_recovers_files_and_only_commits_truncation_after_success() {
+        let repo = tempfile::tempdir().unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(repo.path())
+            .status()
+            .unwrap()
+            .success());
+        let root = repo.path().canonicalize().unwrap();
+        let file = root.join("work");
+        fs_err::write(&file, "current workspace").unwrap();
+        let recovery = crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap();
+        let mut actor = actor();
+        actor.state.saved.key = format!("test-claude-edit-{}", nonce());
+        let journal = codex::recovery_dir()
+            .unwrap()
+            .join(format!("{}.json", actor.state.saved.key));
+        actor.state.saved.thread_id = Some("original".into());
+        actor.state.saved.items = vec![
+            json!({"id":"before","type":"agentMessage","text":"retained","claudeAssistantUuid":"assistant"}),
+            json!({"id":"target","type":"userMessage","content":[{"type":"text","text":"original prompt"}],"claudeHumanUuid":"human","claudePreviousAssistantUuid":"assistant"}),
+            json!({"id":"later","type":"agentMessage","text":"later"}),
+        ];
+        actor.state.saved.pending_edit = Some(PendingEdit {
+            target: 1,
+            turn_id: "human".into(),
+            text: "original prompt".into(),
+            images: vec![],
+            recovery: recovery.clone(),
+            composer_draft: Some(("independent draft".into(), vec![])),
+            claude_fork_id: Some("fork".into()),
+        });
+        codex::persist(&actor.state.saved).unwrap();
+        fs_err::write(&file, "pre target snapshot").unwrap();
+        actor.recover_edit().unwrap();
+        assert_eq!(fs_err::read_to_string(&file).unwrap(), "current workspace");
+        assert_eq!(actor.state.saved.items.len(), 3);
+        assert_eq!(actor.state.saved.thread_id.as_deref(), Some("original"));
+        assert!(actor.state.saved.pending_edit.is_none());
+        actor.state.saved.pending_edit = Some(PendingEdit {
+            target: 1,
+            turn_id: "human".into(),
+            text: "original prompt".into(),
+            images: vec![],
+            recovery,
+            composer_draft: Some(("independent draft".into(), vec![])),
+            claude_fork_id: Some("fork".into()),
+        });
+        actor
+            .action(Action::Draft("newer independent draft".into()))
+            .unwrap();
+        let newer_images = vec!["data:image/png;base64,aGVsbG8=".into()];
+        actor
+            .action(Action::DraftImages(newer_images.clone()))
+            .unwrap();
+        actor.finish_edit().unwrap();
+        assert_eq!(actor.state.saved.draft_images, newer_images);
+        assert_eq!(actor.state.saved.items.len(), 1);
+        assert_eq!(actor.state.saved.thread_id.as_deref(), Some("fork"));
+        assert_eq!(actor.state.saved.draft, "newer independent draft");
+        assert_eq!(
+            actor
+                .state
+                .saved
+                .claude_resume
+                .as_ref()
+                .unwrap()
+                .original_session
+                .as_deref(),
+            Some("original")
+        );
+        // Editing an earlier retained turn before resending must branch from
+        // the persisted original, never from the not-yet-created fork.
+        actor.state.saved.items.push(json!({"id":"earlier-human","type":"userMessage","claudePreviousAssistantUuid":"older-assistant"}));
+        actor.state.saved.pending_edit = Some(PendingEdit {
+            target: 1,
+            turn_id: "older-human".into(),
+            text: "older".into(),
+            images: vec![],
+            recovery: crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap(),
+            composer_draft: None,
+            claude_fork_id: Some("second-fork".into()),
+        });
+        let pending_command = launch_command(&[], &actor.state.saved, None).unwrap();
+        let pending_args = pending_command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(pending_args
+            .windows(2)
+            .any(|pair| pair == ["--resume", "original"]));
+        actor.finish_edit().unwrap();
+        assert_eq!(
+            actor
+                .state
+                .saved
+                .claude_resume
+                .as_ref()
+                .unwrap()
+                .original_session
+                .as_deref(),
+            Some("original")
+        );
+        let durable: SavedSession =
+            serde_json::from_slice(&fs_err::read(&journal).unwrap()).unwrap();
+        assert!(durable.pending_edit.is_none());
+        assert!(durable.claude_resume.is_some());
+        fs_err::remove_file(journal).unwrap();
+    }
+
+    #[test]
+    fn naturally_completed_redirect_keeps_the_correction_until_its_echo() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("old".into());
+        actor.tracks_session_state = true;
+        actor.session_idle = false;
+        actor.redirect(81, "correction".into(), vec![]).unwrap();
+        let sent = read(&mut reader);
+        actor
+            .message(json!({"type":"result","terminal_reason":"completed","queued_turn_count":1}))
+            .unwrap();
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
+            .unwrap();
+        assert!(actor.state.status.busy());
+        assert_eq!(actor.in_flight.as_ref().unwrap().id, 81);
+        actor.acknowledge_input(&sent["uuid"]);
+        actor
+            .message(json!({"type":"result","terminal_reason":"completed","queued_turn_count":0}))
+            .unwrap();
+        assert_eq!(actor.state.status, Status::Done);
+    }
+
+    #[test]
+    fn claude_fork_recipe_survives_save_and_reconnect_before_first_prompt() {
+        let mut actor = actor();
+        actor.state.saved.thread_id = Some("fork-id".into());
+        actor.state.saved.claude_resume = Some(codex::ClaudeResume {
+            original_session: Some("original-id".into()),
+            assistant_uuid: Some("assistant-id".into()),
+            human_uuid: "human-id".into(),
+            fork_id: "fork-id".into(),
+        });
+        let saved: SavedSession =
+            serde_json::from_value(serde_json::to_value(&actor.state.saved).unwrap()).unwrap();
+        let command = launch_command(&[], &saved, None).unwrap();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for pair in [
+            ["--resume", "original-id"],
+            ["--resume-session-at", "assistant-id"],
+            ["--resume-drops-turn", "human-id"],
+            ["--session-id", "fork-id"],
+        ] {
+            assert!(args.windows(2).any(|actual| actual == pair));
+        }
+        assert!(args.iter().any(|arg| arg == "--fork-session"));
+        actor.state.saved.claude_resume = Some(saved.claude_resume.unwrap());
+        actor
+            .message(json!({"type":"system","subtype":"init","session_id":"fork-id"}))
+            .unwrap();
+        assert!(actor.state.saved.claude_resume.is_some());
+        actor
+            .message(json!({"type":"result","is_error":false}))
+            .unwrap();
+        assert!(actor.state.saved.claude_resume.is_some());
+        actor.input_uuid = Some("accepted".into());
+        actor.in_flight = Some(QueuedPrompt {
+            id: 1,
+            text: "revised".into(),
+            images: vec![],
+        });
+        actor.acknowledge_input(&json!("unrelated"));
+        assert!(actor.state.saved.claude_resume.is_some());
+        actor.acknowledge_input(&json!("accepted"));
+        assert!(actor.state.saved.claude_resume.is_none());
+    }
+
+    #[test]
+    fn redirect_intermediate_result_retains_input_and_waits_for_authoritative_idle() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("old".into());
+        actor.tracks_session_state = true;
+        actor.session_idle = false;
+        actor.state.saved.draft = "correction".into();
+        actor
+            .action(Action::SubmitWithMode {
+                id: 91,
+                text: "correction".into(),
+                images: vec![],
+                mode: SubmissionMode::Steer,
+            })
+            .unwrap();
+        let sent = read(&mut reader);
+        assert_eq!(sent["priority"], "now");
+        assert_eq!(sent["origin"]["kind"], "human");
+        actor.message(json!({"type":"result","terminal_reason":"aborted_tools","queued_turn_count":1,"is_error":false})).unwrap();
+        assert_eq!(actor.in_flight.as_ref().unwrap().id, 91);
+        assert!(actor.state.status.busy());
+        actor.acknowledge_input(&sent["uuid"]);
+        actor.acknowledge_input(&sent["uuid"]);
+        assert_eq!(actor.state.saved.items.len(), 1);
+        actor
+            .message(json!({"type":"result","is_error":false}))
+            .unwrap();
+        assert!(actor.state.status.busy());
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
+            .unwrap();
+        assert_eq!(actor.state.status, Status::Done);
+    }
+
+    #[test]
+    fn redirected_queue_locks_until_echo_and_preserves_independent_draft() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("old".into());
+        actor.state.saved.draft = "independent".into();
+        actor.state.queued_prompts.push(QueuedPrompt {
+            id: 12,
+            text: "redirect".into(),
+            images: vec![],
+        });
+        actor.action(Action::SteerQueued(12)).unwrap();
+        let sent = read(&mut reader);
+        assert!(actor.action(Action::RemoveQueued(12)).is_err());
+        assert_eq!(actor.state.queue_steering, vec![12]);
+        actor.acknowledge_input(&sent["uuid"]);
+        assert!(actor.state.queue_steering.is_empty());
+        assert!(actor.state.queued_prompts.is_empty());
+        assert_eq!(actor.state.saved.draft, "independent");
+    }
+
+    #[test]
+    fn historical_claude_messages_require_new_anchors_before_editing() {
+        let mut actor = actor();
+        actor.state.saved.provider = codex::Provider::Claude;
+        actor.state.status = Status::Idle;
+        actor
+            .state
+            .saved
+            .items
+            .push(json!({"id":"old","type":"userMessage","content":[]}));
+        assert!(actor
+            .state
+            .editable_message(0)
+            .unwrap_err()
+            .contains("anchor"));
+        actor.state.saved.items[0]["claudeHumanUuid"] = json!("old");
+        assert!(actor
+            .state
+            .editable_message(0)
+            .unwrap_err()
+            .contains("checkpoint"));
+    }
+
     #[test]
     fn work_period_waits_for_claude_idle_and_closes_on_disconnect() {
         let mut actor = actor();

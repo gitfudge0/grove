@@ -60,6 +60,8 @@ pub struct WorkPeriod {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
     #[serde(default)]
+    pub claude_resume: Option<ClaudeResume>,
+    #[serde(default)]
     pub edit_checkpoints: Vec<EditCheckpoint>,
     #[serde(default)]
     pub pending_edit: Option<PendingEdit>,
@@ -90,6 +92,15 @@ pub struct SavedSession {
     #[serde(default)]
     pub context: Option<ContextUsage>,
 }
+/// A Claude fork is not persisted by the CLI until its first prompt. Retain the
+/// exact launch recipe across that window so reconnect cannot lose prior context.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClaudeResume {
+    pub original_session: Option<String>,
+    pub assistant_uuid: Option<String>,
+    pub human_uuid: String,
+    pub fork_id: String,
+}
 /// Workspace state immediately before a provider turn began.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EditCheckpoint {
@@ -107,11 +118,14 @@ pub struct PendingEdit {
     pub recovery: crate::checkpoint::Checkpoint,
     #[serde(default)]
     pub composer_draft: Option<(String, Vec<String>)>,
+    #[serde(default)]
+    pub claude_fork_id: Option<String>,
 }
 impl SavedSession {
     pub(crate) fn fresh_conversation(&self) -> Self {
         let mut saved = self.clone();
         saved.thread_id = None;
+        saved.claude_resume = None;
         saved.edit_checkpoints.clear();
         saved.pending_edit = None;
         saved.title = None;
@@ -511,6 +525,7 @@ pub struct Snapshot {
     pub cleared_conversations: u64,
     pub edited_messages: u64,
     pub edit_supported: bool,
+    pub can_redirect: bool,
     pub accepted_submission: Option<u64>,
     pub rejected_submission: Option<u64>,
     pub queued_prompts: Vec<QueuedPrompt>,
@@ -586,13 +601,20 @@ impl Snapshot {
     }
 
     pub fn editable_message(&self, index: usize) -> Result<&EditCheckpoint, String> {
-        if self.saved.provider != Provider::Codex {
-            return Err(
-                "Editing sent messages is not supported by this Claude Code connection.".into(),
-            );
-        }
         if !self.edit_supported {
-            return Err("Editing requires a new Codex conversation with rewind support. Older legacy conversations cannot be edited.".into());
+            return Err("Editing requires a conversation with rewind support. Older legacy conversations cannot be edited.".into());
+        }
+        if self.saved.provider == Provider::Claude {
+            let item = self
+                .saved
+                .items
+                .get(index)
+                .ok_or("This message is no longer available.")?;
+            if item["claudeHumanUuid"].as_str().is_none()
+                || (index > 0 && item["claudePreviousAssistantUuid"].as_str().is_none())
+            {
+                return Err("No Claude conversation anchor is available. Only newly captured turns can be edited.".into());
+            }
         }
         if self.saved.pending_edit.is_some() {
             return Err("An interrupted edit needs recovery. Reconnect to reconcile the conversation before continuing.".into());
@@ -699,6 +721,7 @@ impl Snapshot {
             cleared_conversations: 0,
             edited_messages: 0,
             edit_supported: false,
+            can_redirect: false,
             accepted_submission: None,
             rejected_submission: None,
             queued_prompts: Vec::new(),
@@ -1981,6 +2004,7 @@ impl Actor {
             images,
             recovery,
             composer_draft,
+            claude_fork_id: None,
         });
         // Persist recovery before the first filesystem mutation or provider request.
         persist(&self.state.saved)?;
@@ -3440,6 +3464,7 @@ mod tests {
     use super::*;
     fn saved() -> SavedSession {
         SavedSession {
+            claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,
             provider: Provider::Codex,

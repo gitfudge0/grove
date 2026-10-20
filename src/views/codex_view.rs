@@ -1306,10 +1306,7 @@ impl CodexView {
                 }
                 let exiting = motion_row.exiting;
                 let locked = exiting || !state.queue_editable(id) || self.queue_editor.is_some();
-                let steer = !locked
-                    && state.saved.provider == codex::Provider::Codex
-                    && state.status.busy()
-                    && state.turn_id.is_some();
+                let steer = !locked && active_turn_redirect_available(state);
                 let selected = self.queue_selected == Some(id);
                 let label = if prompt.images.is_empty() {
                     collapsed_draft_preview(&prompt.text)
@@ -1371,7 +1368,11 @@ impl CodexView {
                             .text_size(rpx(TEXT_MICRO))
                             .text_color(c::FG_MUTE())
                             .child(if state.queue_steering.contains(&id) {
-                                "Steering…"
+                                if state.saved.provider == codex::Provider::Claude {
+                                    "Redirecting…"
+                                } else {
+                                    "Steering…"
+                                }
                             } else {
                                 "Sending…"
                             }),
@@ -1402,43 +1403,42 @@ impl CodexView {
                                 }
                             })),
                     )
-                    .when(state.saved.provider == codex::Provider::Codex, |row| {
-                        row.child(
-                            header_control("codex-steer-queued", "Steer into the current turn")
-                                .w_auto()
-                                .px(rpx(SPACE_SM))
-                                .tab_index(0)
-                                .tab_stop(steer)
-                                .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                .flex()
-                                .items_center()
-                                .gap(rpx(SPACE_SM))
-                                .child(crate::icons::icon(
-                                    "steer",
-                                    ICON_MD,
-                                    if steer { c::FG_DIM() } else { c::FG_MUTE() },
-                                ))
-                                .child(
-                                    div()
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(if steer { c::FG_DIM() } else { c::FG_MUTE() })
-                                        .child("Steer"),
-                                )
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if action_key(event) && steer {
-                                            this.queue_action(Action::SteerQueued(id), cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if steer {
-                                        this.queue_action(Action::SteerQueued(id), cx);
-                                    }
-                                })),
+                    .child(
+                        header_control(
+                            "codex-steer-queued",
+                            redirect_description(state.saved.provider),
                         )
-                    })
+                        .w_auto()
+                        .px(rpx(SPACE_SM))
+                        .tab_index(0)
+                        .tab_stop(steer)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .child(crate::icons::icon(
+                            "steer",
+                            ICON_MD,
+                            if steer { c::FG_DIM() } else { c::FG_MUTE() },
+                        ))
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(if steer { c::FG_DIM() } else { c::FG_MUTE() })
+                                .child(redirect_label(state.saved.provider)),
+                        )
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if action_key(event) && steer {
+                                this.queue_action(Action::SteerQueued(id), cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if steer {
+                                this.queue_action(Action::SteerQueued(id), cx);
+                            }
+                        })),
+                    )
                     .child(
                         header_control("codex-remove-queued", "Remove queued message")
                             .tab_index(0)
@@ -1820,10 +1820,7 @@ impl CodexView {
         }
         let state = &self.session.read(cx).state;
         if self.draft_action_pending(cx)
-            || (mode == SubmissionMode::Steer
-                && (!state.status.busy()
-                    || state.saved.provider != codex::Provider::Codex
-                    || state.turn_id.is_none()))
+            || (mode == SubmissionMode::Steer && !active_turn_redirect_available(state))
         {
             return;
         }
@@ -2585,6 +2582,9 @@ impl Render for CodexView {
                 .as_str()
                 .map_or_else(|| index.to_string(), str::to_owned);
             let expanded = self.expanded.contains(&id);
+            let plan_details = kind == "plan"
+                && state.saved.provider == codex::Provider::Claude
+                && item["tool"].is_string();
             let text = codex::item_text(item);
             let role = match kind {
                 "userMessage" => "You",
@@ -2694,7 +2694,12 @@ impl Render for CodexView {
                                             })
                                         })
                                     {
-                                        "You · Steering…".to_owned()
+                                        if state.saved.provider == codex::Provider::Claude {
+                                            "You · Redirecting…"
+                                        } else {
+                                            "You · Steering…"
+                                        }
+                                        .to_owned()
                                     } else if tool {
                                         tool_summary(item)
                                     } else {
@@ -2702,7 +2707,8 @@ impl Render for CodexView {
                                     },
                                 ),
                         )
-                        .when(tool, |row| {
+                        .when(tool || plan_details, |row| {
+                            let keyboard_toggle = toggle.clone();
                             row.child(
                                 header_control(
                                     "codex-expand",
@@ -2716,6 +2722,18 @@ impl Render for CodexView {
                                     if expanded { "chev-down" } else { "chev-right" },
                                     ICON_MD,
                                     c::FG_DIM(),
+                                ))
+                                .debug_selector(move || format!("codex-toggle-details-{index}"))
+                                .aria_expanded(expanded)
+                                .tab_index(0)
+                                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                .on_key_down(cx.listener(
+                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if action_key(event) {
+                                            this.toggle_expansion(&keyboard_toggle, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
                                 ))
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -2859,6 +2877,24 @@ impl Render for CodexView {
                             TextView::markdown(
                                 ("codex-tool-text", index),
                                 format!("```text\n{}\n```", text.replace("```", "` ` `")),
+                            )
+                            .style(markdown_style(window))
+                            .selectable(true),
+                        ),
+                );
+            }
+            if plan_details && expanded {
+                row = row.child(
+                    div()
+                        .id(("codex-plan-detail", index))
+                        .debug_selector(move || format!("codex-plan-detail-{index}"))
+                        .child(
+                            TextView::markdown(
+                                ("codex-plan-tool-text", index),
+                                format!(
+                                    "```text\n{}\n```",
+                                    tool_detail(item).replace("```", "` ` `")
+                                ),
                             )
                             .style(markdown_style(window))
                             .selectable(true),
@@ -3170,8 +3206,7 @@ impl Render for CodexView {
             || self.pending_image_pastes > 0
             || stopping
             || (self.input.read(cx).value().trim().is_empty() && self.images.is_empty());
-        let steer_available =
-            state.saved.provider == codex::Provider::Codex && state.turn_id.is_some();
+        let steer_available = active_turn_redirect_available(&state);
         let editing = self
             .queue_editor
             .as_ref()
@@ -3442,6 +3477,7 @@ impl Render for CodexView {
                                 div()
                                     .id("codex-composer-hints")
                                     .debug_selector(|| "codex-composer-hints".into())
+                                    .aria_description(redirect_description(state.saved.provider))
                                     .w_full()
                                     .px(rpx(SPACE_2XL))
                                     .flex()
@@ -3459,9 +3495,13 @@ impl Render for CodexView {
                                     } else if editing {
                                         "Enter to save"
                                     } else if busy && steer_available {
-                                        "Enter to queue · ⌘Enter to steer"
+                                        if state.saved.provider == codex::Provider::Claude {
+                                            "Enter to queue · ⌘Enter to redirect"
+                                        } else {
+                                            "Enter to queue · ⌘Enter to steer"
+                                        }
                                     } else if busy {
-                                        "Enter to queue · Steer unavailable"
+                                        "Enter to queue"
                                     } else {
                                         "Enter to send"
                                     })
@@ -5243,8 +5283,65 @@ fn tool_summary(item: &serde_json::Value) -> String {
     summary.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn active_turn_redirect_available(state: &codex::Snapshot) -> bool {
+    matches!(
+        state.status,
+        codex::Status::Working | codex::Status::Waiting
+    ) && state.turn_id.is_some()
+        && !state.compacting
+        && state.saved.pending_edit.is_none()
+        && (state.saved.provider == codex::Provider::Codex || state.can_redirect)
+}
+
+fn redirect_label(provider: codex::Provider) -> &'static str {
+    match provider {
+        codex::Provider::Codex => "Steer",
+        codex::Provider::Claude => "Redirect",
+    }
+}
+
+fn redirect_description(provider: codex::Provider) -> &'static str {
+    match provider {
+        codex::Provider::Codex => "Steer into the current turn",
+        codex::Provider::Claude => "Redirect the current work; running tools may be interrupted",
+    }
+}
+
 fn tool_detail(item: &serde_json::Value) -> String {
-    let text = codex::item_text(item);
+    let mut text = if item["type"] == "plan" && item["tool"].is_string() {
+        String::new()
+    } else {
+        codex::item_text(item)
+    };
+    if matches!(
+        item["type"].as_str(),
+        Some("fileChange" | "webSearch" | "plan")
+    ) {
+        if let Some(content) = item["result"]["content"].as_array() {
+            for result in content.iter().filter_map(|block| block["text"].as_str()) {
+                if !result.is_empty() && !text.contains(result) {
+                    text.push_str("\n\n");
+                    text.push_str(result);
+                }
+            }
+        }
+        if let Some(error) = item["error"]
+            .as_str()
+            .or_else(|| item["error"]["message"].as_str())
+        {
+            if !text.contains(error) {
+                text.push_str("\n\n");
+                text.push_str(error);
+            }
+        }
+        if let Some(arguments) = item.get("arguments") {
+            return format!(
+                "Arguments:\n{}\n\n{}",
+                serde_json::to_string_pretty(arguments).unwrap_or_default(),
+                text.trim()
+            );
+        }
+    }
     match item["type"].as_str().unwrap_or_default() {
         "mcpToolCall" => {
             let arguments = item.get("arguments").or_else(|| item.get("input"));
@@ -5256,7 +5353,7 @@ fn tool_detail(item: &serde_json::Value) -> String {
                 None => text,
             }
         }
-        "commandExecution" | "fileChange" | "reasoning" | "webSearch" => text,
+        "commandExecution" | "fileChange" | "reasoning" | "webSearch" | "plan" => text,
         _ => serde_json::to_string_pretty(item).unwrap_or(text),
     }
 }
@@ -7346,6 +7443,7 @@ mod tests {
     }
     fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
+            claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,
             provider: grove_core::codex::Provider::Codex,
@@ -8957,15 +9055,118 @@ mod tests {
         );
     }
 
+    #[test]
+    fn redirect_controls_require_an_active_unblocked_turn_for_both_providers() {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.status = Status::Working;
+            assert!(!active_turn_redirect_available(&state));
+            state.turn_id = Some("active".into());
+            if provider == codex::Provider::Claude {
+                assert!(!active_turn_redirect_available(&state));
+                state.can_redirect = true;
+            }
+            assert!(active_turn_redirect_available(&state));
+            state.compacting = true;
+            assert!(!active_turn_redirect_available(&state));
+            state.compacting = false;
+            state.status = Status::Starting;
+            assert!(!active_turn_redirect_available(&state));
+        }
+        assert_eq!(redirect_label(codex::Provider::Claude), "Redirect");
+        assert!(redirect_description(codex::Provider::Claude).contains("interrupted"));
+    }
+
     #[gpui::test]
-    fn unsupported_steer_keeps_draft_and_enter_queues(cx: &mut gpui::TestAppContext) {
+    fn claude_active_turn_redirect_dispatches_and_preserves_draft_until_ack(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (view, cx, actions, _) = fixture(cx);
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
                     session.state.saved.provider = codex::Provider::Claude;
                     session.state.status = Status::Working;
-                    session.state.turn_id = Some("active-turn".into());
+                    session.state.turn_id = Some("active".into());
+                    session.state.can_redirect = true;
+                    cx.notify();
+                });
+                view.input.update(cx, |input, cx| {
+                    input.set_value("change direction", window, cx);
+                });
+                view.submit_mode(SubmissionMode::Steer, window, cx);
+                assert_eq!(view.input.read(cx).value().as_ref(), "change direction");
+            });
+        });
+        assert!(actions.try_iter().any(|action| matches!(action, Action::SubmitWithMode { mode: SubmissionMode::Steer, text, .. } if text == "change direction")));
+    }
+
+    #[gpui::test]
+    fn claude_plan_keeps_checklist_visible_and_opens_original_tool_details(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = codex::Provider::Claude;
+                    session.state.saved.items = vec![serde_json::json!({
+                        "id":"claude-plan", "type":"plan", "tool":"TaskUpdate",
+                        "text":"- [x] Verify parity", "status":"completed",
+                        "arguments":{"taskId":"7","status":"completed"},
+                        "result":{"content":[{"type":"text","text":"Updated task #7 status"}]}
+                    })];
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-body-0").is_some());
+        assert!(cx.debug_bounds("codex-plan-detail-0").is_none());
+        let toggle = cx.debug_bounds("codex-toggle-details-0").unwrap();
+        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("codex-plan-detail-0").is_some());
+        assert!(cx.debug_bounds("codex-message-body-0").is_some());
+        assert!(view.read_with(cx, |view, _| view.expanded.contains("claude-plan")));
+        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("codex-plan-detail-0").is_none());
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = codex::Provider::Codex;
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-body-0").is_some());
+        assert!(cx.debug_bounds("codex-toggle-details-0").is_none());
+    }
+
+    #[test]
+    fn specialized_claude_disclosures_preserve_results_arguments_and_errors() {
+        for kind in ["fileChange", "webSearch", "plan"] {
+            let item = serde_json::json!({"type":kind, "arguments":{"query":"requested input"}, "result":{"content":[{"text":"returned result"}]}, "error":{"message":"tool failed"}});
+            let detail = tool_detail(&item);
+            assert!(detail.contains("requested input"));
+            assert!(detail.contains("returned result"));
+            assert!(detail.contains("tool failed"));
+            assert!(!detail.contains("\"content\""));
+        }
+    }
+
+    #[gpui::test]
+    fn unavailable_redirect_keeps_draft_and_enter_queues(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = codex::Provider::Claude;
+                    session.state.status = Status::Working;
+                    session.state.turn_id = None;
                     cx.notify();
                 });
                 view.input
