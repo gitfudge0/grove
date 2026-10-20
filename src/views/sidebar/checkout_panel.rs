@@ -427,6 +427,7 @@ impl Sidebar {
         if let Some(message) = &self.checkout_panel.message {
             form = form.child(
                 div()
+                    .id("checkout-operation-message")
                     .role(gpui::Role::Status)
                     .text_color(c::FG_DIM())
                     .child(message.clone()),
