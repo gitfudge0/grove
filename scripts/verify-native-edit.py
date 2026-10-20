@@ -2,9 +2,9 @@
 """Launch a disposable two-turn native Codex fixture for sent-message editing.
 
 Inspect the printed app using native UI controls. Cancel edit first (no changes),
-then confirm edit on the first message: note.txt must become 'Before either turn',
-the transcript must clear, and the original prompt must enter the composer.
-Submit an edited prompt: the file and provider history must reflect that prompt.
+then edit the first message inline and press Send. Confirm Edit and restore:
+the file and provider history must reflect the edited prompt, later replies must
+be removed, and an unrelated composer draft must remain unchanged.
 Use --fail-revert once to exercise provider rejection without restoring files.
 Only stop the PID printed in fixture.json; no user project or credentials are used.
 """
@@ -130,8 +130,8 @@ def main():
         path=root/('prompt-'+str(index)+'.txt');path.write_text(prompt)
         cli('sessions','input',session_id,'--input-file',path)
         wait_until(lambda: len(json.loads((root/'provider-state.json').read_text())['turns'])==index and idle(),'turn '+str(index))
-    evidence['selectors']=['codex-edit-message-0','codex-edit-confirmation','codex-confirm-edit','codex-cancel-edit']
-    evidence['expected_after_restore']={'note':'Before either turn\n','created_file_exists':False,'provider_turns':0,'composer':'First request: make the first change'}
+    evidence['selectors']=['codex-edit-message-0','codex-inline-editor','codex-send-message-edit','codex-cancel-message-edit','codex-edit-confirmation','codex-confirm-edit','codex-cancel-edit']
+    evidence['expected_after_edit']={'provider_turns':1,'composer':'unchanged unrelated draft','original_message_editor':'inline in transcript','confirmation':'inline in transcript','later_replies_removed':True}
     (root/'fixture.json').write_text(json.dumps(evidence,indent=2))
     print(json.dumps(evidence,indent=2),flush=True)
 

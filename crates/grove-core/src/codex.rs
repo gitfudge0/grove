@@ -105,6 +105,8 @@ pub struct PendingEdit {
     pub text: String,
     pub images: Vec<String>,
     pub recovery: crate::checkpoint::Checkpoint,
+    #[serde(default)]
+    pub composer_draft: Option<(String, Vec<String>)>,
 }
 impl SavedSession {
     pub(crate) fn fresh_conversation(&self) -> Self {
@@ -1264,6 +1266,14 @@ pub enum Action {
         index: usize,
         message_id: String,
     },
+    EditMessageInline {
+        index: usize,
+        message_id: String,
+    },
+    PromptInline {
+        text: String,
+        images: Vec<String>,
+    },
     ResetConfiguration,
     Configure {
         model: Option<String>,
@@ -1660,6 +1670,7 @@ enum Pending {
     Turn {
         submission: Option<u64>,
     },
+    InlineTurn,
     Steer {
         submission: u64,
         turn: String,
@@ -1922,6 +1933,14 @@ impl Actor {
         }
     }
     fn edit_message(&mut self, index: usize, message_id: String) -> Result<(), String> {
+        self.edit_message_with_draft(index, message_id, None)
+    }
+    fn edit_message_with_draft(
+        &mut self,
+        index: usize,
+        message_id: String,
+        composer_draft: Option<(String, Vec<String>)>,
+    ) -> Result<(), String> {
         let record = self.state.editable_message(index)?.clone();
         if self.process.is_none() || !self.pending.is_empty() {
             return Err("Wait for the provider to finish reconnecting before editing.".into());
@@ -1961,6 +1980,7 @@ impl Actor {
             text,
             images,
             recovery,
+            composer_draft,
         });
         // Persist recovery before the first filesystem mutation or provider request.
         persist(&self.state.saved)?;
@@ -1978,7 +1998,9 @@ impl Actor {
             self.pid.store(0, Ordering::SeqCst);
             self.process = None;
             self.state.status = Status::Disconnected;
-            return Err(format!("Edit delivery is uncertain. Reconnect to recover the workspace and conversation: {error}"));
+            return Err(format!(
+                "Edit delivery is uncertain. Reconnect to recover the workspace and conversation: {error}"
+            ));
         }
         self.state.status = Status::Working;
         self.state.error = None;
@@ -2010,8 +2032,9 @@ impl Actor {
         saved
             .work_periods
             .retain(|period| period.start_item < edit.target);
-        saved.draft = edit.text;
-        saved.draft_images = edit.images;
+        let (text, images) = edit.composer_draft.unwrap_or((edit.text, edit.images));
+        saved.draft = text;
+        saved.draft_images = images;
         saved.context = None;
         persist(&saved)?;
         self.state.saved = saved;
@@ -2036,6 +2059,7 @@ impl Actor {
                 matches!(
                     r.kind,
                     Pending::Turn { .. }
+                        | Pending::InlineTurn
                         | Pending::QueuedTurn { .. }
                         | Pending::Compact
                         | Pending::AsyncAnswer { .. }
@@ -2133,6 +2157,7 @@ impl Actor {
                 matches!(
                     r.kind,
                     Pending::Turn { .. }
+                        | Pending::InlineTurn
                         | Pending::QueuedTurn { .. }
                         | Pending::Steer { .. }
                         | Pending::Compact
@@ -2168,6 +2193,7 @@ impl Actor {
                 matches!(
                     r.kind,
                     Pending::Turn { .. }
+                        | Pending::InlineTurn
                         | Pending::QueuedTurn { .. }
                         | Pending::Steer { .. }
                         | Pending::Compact
@@ -2210,6 +2236,7 @@ impl Actor {
                 matches!(
                     r.kind,
                     Pending::Turn { .. }
+                        | Pending::InlineTurn
                         | Pending::QueuedTurn { .. }
                         | Pending::Steer { .. }
                         | Pending::Compact
@@ -2243,7 +2270,10 @@ impl Actor {
     }
     fn action(&mut self, action: Action) -> Result<bool, String> {
         if self.state.saved.pending_edit.is_some()
-            && !matches!(action, Action::Reconnect | Action::Stop { .. })
+            && !matches!(
+                action,
+                Action::Reconnect | Action::Stop { .. } | Action::Draft(_) | Action::DraftImages(_)
+            )
         {
             if let Action::Submit { id, .. } | Action::SubmitWithMode { id, .. } = &action {
                 self.state.rejected_submission = Some(*id);
@@ -2252,6 +2282,33 @@ impl Actor {
         }
         match action {
             Action::EditMessage { index, message_id } => self.edit_message(index, message_id)?,
+            Action::EditMessageInline { index, message_id } => {
+                let draft = (
+                    self.state.saved.draft.clone(),
+                    self.state.saved.draft_images.clone(),
+                );
+                self.edit_message_with_draft(index, message_id, Some(draft))?;
+            }
+            Action::PromptInline { text, images } => {
+                validate_prompt(&text, &images)?;
+                if self.state.status.busy()
+                    || self.state.turn_id.is_some()
+                    || !self.pending.is_empty()
+                {
+                    return Err("Wait for the provider before sending the edited message.".into());
+                }
+                if self.process.is_none() || self.state.saved.thread_id.is_none() {
+                    return Err("Reconnect before sending the edited message.".into());
+                }
+                self.capture_edit_checkpoint();
+                self.request(
+                    "turn/start",
+                    self.turn_params(self.input(&text, images)),
+                    Pending::InlineTurn,
+                )?;
+                self.state.status = Status::Working;
+                self.state.error = None;
+            }
             Action::ClearConversation => {
                 self.clear_conversation(persist)?;
                 if let Err(error) = self.start() {
@@ -2448,6 +2505,11 @@ impl Actor {
                     .values()
                     .any(|r| matches!(r.kind, Pending::Turn { .. } | Pending::QueuedTurn { .. }))
                 {
+                    if let Some(edit) = &mut self.state.saved.pending_edit {
+                        if let Some((_, draft_images)) = &mut edit.composer_draft {
+                            draft_images.clone_from(&images);
+                        }
+                    }
                     self.state.saved.draft_images = images;
                 }
             }
@@ -2457,6 +2519,11 @@ impl Actor {
                     .values()
                     .any(|request| matches!(request.kind, Pending::Turn { .. }))
                 {
+                    if let Some(edit) = &mut self.state.saved.pending_edit {
+                        if let Some((draft, _)) = &mut edit.composer_draft {
+                            draft.clone_from(&text);
+                        }
+                    }
                     self.state.saved.draft = text;
                 }
             }
@@ -3149,6 +3216,13 @@ impl Actor {
                     return Err("Codex returned an unexpected edit acknowledgement. Reconnect to reconcile the conversation; the workspace recovery was preserved.".into());
                 }
                 self.finish_edit()?;
+            }
+            Pending::InlineTurn => {
+                self.bind_edit_checkpoint(result);
+                self.state.accepted_prompts = self.state.accepted_prompts.saturating_add(1);
+                if self.state.status == Status::Working {
+                    self.state.turn_id = result["turn"]["id"].as_str().map(str::to_owned);
+                }
             }
             Pending::Turn { submission } => {
                 self.bind_edit_checkpoint(result);
@@ -5375,6 +5449,90 @@ mod tests {
         assert!(edit_disk(&fixture).pending_edit.is_none());
         assert_eq!(edit_disk(&fixture).items, earlier);
         assert_eq!(fixture.actor.state.status, Status::Idle);
+    }
+    #[test]
+    #[cfg(unix)]
+    fn inline_edit_preserves_composer_through_restore_and_submission_ack() {
+        let mut fixture = edit_fixture();
+        let image = "data:image/png;base64,aGVsbG8=".to_owned();
+        fixture.actor.state.saved.draft = "Unrelated draft".into();
+        fixture.actor.state.saved.draft_images = vec![image.clone()];
+        fixture
+            .actor
+            .action(Action::EditMessageInline {
+                index: 2,
+                message_id: "target".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            edit_disk(&fixture)
+                .pending_edit
+                .unwrap()
+                .composer_draft
+                .unwrap()
+                .0,
+            "Unrelated draft"
+        );
+        fixture
+            .actor
+            .action(Action::Draft("Newer composer draft".into()))
+            .unwrap();
+        let id = edit_pending(&fixture.actor);
+        fixture
+            .actor
+            .message(json!({"id":id,"result":{"thread":{"id":"thread-1"}}}))
+            .unwrap();
+        assert_eq!(fixture.actor.state.saved.draft, "Newer composer draft");
+        assert_eq!(fixture.actor.state.saved.draft_images, vec![image.clone()]);
+        fixture
+            .actor
+            .action(Action::PromptInline {
+                text: "Edited target".into(),
+                images: vec![image.clone()],
+            })
+            .unwrap();
+        fixture
+            .actor
+            .action(Action::Draft("Typing during send".into()))
+            .unwrap();
+        fixture
+            .actor
+            .action(Action::DraftImages(Vec::new()))
+            .unwrap();
+        let id = edit_pending(&fixture.actor);
+        fixture
+            .actor
+            .message(json!({"id":id,"result":{"turn":{"id":"edited-turn","status":"inProgress"}}}))
+            .unwrap();
+        assert_eq!(fixture.actor.state.saved.draft, "Typing during send");
+        assert!(fixture.actor.state.saved.draft_images.is_empty());
+        assert_eq!(fixture.actor.state.accepted_prompts, 1);
+        assert_eq!(fixture.actor.state.saved.items.len(), 2);
+    }
+    #[test]
+    #[cfg(unix)]
+    fn inline_edit_failure_preserves_composer_and_original_history() {
+        let mut fixture = edit_fixture();
+        let items = fixture.actor.state.saved.items.clone();
+        fixture.actor.state.saved.draft = "Keep composer".into();
+        fixture
+            .actor
+            .action(Action::EditMessageInline {
+                index: 2,
+                message_id: "target".into(),
+            })
+            .unwrap();
+        let id = edit_pending(&fixture.actor);
+        fixture
+            .actor
+            .message(json!({"id":id,"error":{"message":"Rejected restore"}}))
+            .unwrap();
+        assert_eq!(fixture.actor.state.saved.draft, "Keep composer");
+        assert_eq!(fixture.actor.state.saved.items, items);
+        assert_eq!(
+            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            "latest workspace"
+        );
     }
     #[test]
     #[cfg(unix)]
