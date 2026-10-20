@@ -1,11 +1,14 @@
 //! Checkout actions live beside the selected canvas, outside its scroll region.
 use super::*;
-use crate::views::components::{form_action, form_field, project_field_well, transcript_action};
+use crate::views::components::{form_action, project_field_well, transcript_action};
 use gpui_component::{
     menu::{PopupMenu, PopupMenuItem},
     Disableable,
 };
-use grove_core::checkout_git::{self, CheckoutGitState, GitAction};
+use grove_core::{
+    checkout_git::{self, CheckoutGitState, GitAction},
+    commit_agent::{self, CommitControl, CommitOutcome, CommitPhase},
+};
 use std::path::Path;
 
 const CARD_WIDTH: f32 = 280.;
@@ -46,14 +49,35 @@ pub(super) struct CheckoutPanel {
     popup_subscription: Option<gpui::Subscription>,
     generation: u64,
     checked_at: Option<Instant>,
-    commit_open: bool,
-    commit_generation: u64,
-    commit_all: bool,
-    commit_expected: Option<Result<CheckoutGitState, String>>,
-    commit_message: Option<Entity<InputState>>,
-    commit_observer: Option<gpui::Subscription>,
+    commit_status: CommitUi,
+    commit_job: u64,
+    commit_job_path: Option<String>,
+    commit_job_generation: u64,
+    commit_control: Option<std::sync::Arc<CommitControl>>,
     restore_focus: bool,
 }
+
+#[derive(Default)]
+enum CommitUi {
+    #[default]
+    Idle,
+    Generating,
+    Canceling,
+    Committing,
+    Succeeded,
+    Failed,
+}
+
+enum CommitEvent {
+    Progress(CommitPhase),
+    Finished(
+        Result<CommitOutcome, String>,
+        Result<CheckoutGitState, String>,
+    ),
+}
+
+const COMMIT_POLL_INTERVAL: Duration = Duration::from_millis(80);
+const COMMIT_SUCCESS_FEEDBACK: Duration = Duration::from_secs(2);
 
 impl CheckoutPanel {
     fn accepts_result(&self, path: &str, generation: u64) -> bool {
@@ -140,16 +164,7 @@ impl Sidebar {
         if self.checkout_panel.busy || self.checkout_panel.path.as_ref() != Some(&path) {
             return;
         }
-        let commit = matches!(
-            action,
-            GitAction::Commit { .. } | GitAction::CommitAll { .. }
-        );
-        let source = if commit {
-            &self.checkout_panel.commit_expected
-        } else {
-            &self.checkout_panel.state
-        };
-        let Some(Ok(expected)) = source.clone() else {
+        let Some(Ok(expected)) = self.checkout_panel.state.clone() else {
             return;
         };
         let generation = self.checkout_panel.generation;
@@ -170,7 +185,6 @@ impl Sidebar {
                     this.checkout_panel.checked_at = Some(Instant::now());
                     this.checkout_panel.state = Some(state);
                     if result.is_ok() {
-                        this.checkout_panel.commit_open = false;
                         this.checkout_panel.publish = None;
                         this.checkout_panel.restore_focus = true;
                     }
@@ -193,60 +207,147 @@ impl Sidebar {
         .detach();
     }
 
-    fn checkout_begin_commit(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn checkout_commit_provider(&self, cx: &App) -> Result<grove_core::codex::Provider, String> {
+        let selected = match self.selection {
+            Some(Selection::Session(id)) => self
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .meta(id)
+                .map(|meta| meta.agent),
+            _ => None,
+        };
+        commit_provider(selected, cx.global::<SettingsState>().store.default_agent)
+    }
+
+    fn checkout_begin_commit(&mut self, path: String, cx: &mut Context<Self>) {
         if self.checkout_panel.busy || self.checkout_panel.path.as_ref() != Some(&path) {
             return;
         }
-        let refreshing = self.checkout_panel.commit_open;
-        self.checkout_panel.commit_generation =
-            self.checkout_panel.commit_generation.wrapping_add(1);
-        let request = self.checkout_panel.commit_generation;
-        self.checkout_panel.return_focus = self.checkout_panel.trigger_focus.get("commit").cloned();
-        self.checkout_panel.commit_open = true;
-        self.checkout_panel.commit_expected = None;
-        self.checkout_panel.message = None;
-        let input = if refreshing {
-            self.checkout_panel.commit_message.clone()
-        } else {
-            None
-        }
-        .unwrap_or_else(|| {
-            cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Fix checkout actions"))
-        });
-        self.checkout_panel.commit_observer = Some(cx.observe(&input, |_, _, cx| cx.notify()));
-        input.read(cx).focus_handle(cx).focus(window, cx);
-        self.checkout_panel.commit_message = Some(input);
+        let provider = match self.checkout_commit_provider(cx) {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.checkout_panel.commit_status = CommitUi::Failed;
+                self.checkout_panel.message = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        self.checkout_panel.commit_job = self.checkout_panel.commit_job.wrapping_add(1);
+        let job = self.checkout_panel.commit_job;
         let generation = self.checkout_panel.generation;
+        let control = std::sync::Arc::new(CommitControl::default());
+        self.checkout_panel.commit_control = Some(control.clone());
+        self.checkout_panel.commit_job_path = Some(path.clone());
+        self.checkout_panel.commit_job_generation = generation;
+        self.checkout_panel.commit_status = CommitUi::Generating;
+        self.checkout_panel.busy = true;
+        self.checkout_panel.message = None;
+        let (send, receive) = std::sync::mpsc::channel();
+        let target = path.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let result = commit_agent::commit_with_control(
+                    Path::new(&target),
+                    provider,
+                    &control,
+                    |phase| {
+                        let _ = send.send(CommitEvent::Progress(phase));
+                    },
+                );
+                let state = checkout_git::inspect(Path::new(&target));
+                let _ = send.send(CommitEvent::Finished(result, state));
+            })
+            .detach();
         cx.spawn(async move |this, cx| {
-            let target = path.clone();
-            let prepared = cx
-                .background_executor()
-                .spawn(async move { checkout_git::prepare_commit(Path::new(&target)) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.checkout_panel.accepts_result(&path, generation)
-                    && this.checkout_panel.commit_open
-                    && this.checkout_panel.commit_generation == request
-                {
-                    if let Ok(state) = &prepared {
-                        this.checkout_panel.commit_all = state.staged_files.is_empty();
+            let mut succeeded = false;
+            'updates: loop {
+                loop {
+                    match receive.try_recv() {
+                        Ok(event) => {
+                            let finished = matches!(event, CommitEvent::Finished(..));
+                            let updated = this.update(cx, |this, cx| {
+                                if this.checkout_panel.commit_job != job { return; }
+                                let current = this.checkout_panel.accepts_result(&path, generation);
+                                match event {
+                                    CommitEvent::Progress(phase) if current => {
+                                        match phase {
+                                            CommitPhase::Generating if !matches!(this.checkout_panel.commit_status, CommitUi::Canceling) => this.checkout_panel.commit_status = CommitUi::Generating,
+                                            CommitPhase::Committing => this.checkout_panel.commit_status = CommitUi::Committing,
+                                            CommitPhase::Generating => {},
+                                        }
+                                    }
+                                    CommitEvent::Finished(result, state) => {
+                                        this.checkout_panel.busy = false;
+                                        this.checkout_panel.commit_control = None;
+                                        this.checkout_panel.commit_job_path = None;
+                                        if current {
+                                            this.checkout_panel.state = Some(state);
+                                            this.checkout_panel.checked_at = Some(Instant::now());
+                                            let canceled = matches!(this.checkout_panel.commit_status, CommitUi::Canceling);
+                                            match result {
+                                                Ok(outcome) => { succeeded = true; this.checkout_panel.commit_status = CommitUi::Succeeded; this.checkout_panel.message = Some(format!("Committed: {}", outcome.subject)); }
+                                                Err(_) if canceled => { this.checkout_panel.commit_status = CommitUi::Idle; this.checkout_panel.message = Some("Commit canceled.".into()); }
+                                                Err(error) => { this.checkout_panel.commit_status = CommitUi::Failed; this.checkout_panel.message = Some(error); }
+                                            }
+                                        }
+                                    }
+                                    CommitEvent::Progress(_) => {},
+                                }
+                                cx.notify();
+                            });
+                            if updated.is_err() || finished { break 'updates; }
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            let _ = this.update(cx, |this, cx| {
+                                if this.checkout_panel.commit_job == job {
+                                    this.checkout_panel.busy = false; this.checkout_panel.commit_control = None; this.checkout_panel.commit_job_path = None;
+                                    if this.checkout_panel.accepts_result(&path, generation) {
+                                        this.checkout_panel.commit_status = CommitUi::Failed;
+                                        this.checkout_panel.message = Some("Commit generation ended unexpectedly. Retry the commit.".into());
+                                    }
+                                    cx.notify();
+                                }
+                            });
+                            break 'updates;
+                        }
                     }
-                    this.checkout_panel.commit_expected = Some(prepared);
-                    cx.notify();
                 }
+                cx.background_executor().timer(COMMIT_POLL_INTERVAL).await;
+            }
+            if succeeded {
+                cx.background_executor().timer(COMMIT_SUCCESS_FEEDBACK).await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.checkout_panel.commit_job == job && this.checkout_panel.accepts_result(&path, generation) {
+                        this.checkout_panel.commit_status = CommitUi::Idle; cx.notify();
+                    }
+                });
+            }
+            cx.background_executor().timer(STATUS_REFRESH_INTERVAL).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.checkout_panel.commit_job == job && this.checkout_panel.accepts_result(&path, generation) { cx.notify(); }
             });
-        })
-        .detach();
+        }).detach();
         cx.notify();
+    }
+
+    fn checkout_cancel_commit(&mut self, cx: &mut Context<Self>) {
+        if let Some(control) = &self.checkout_panel.commit_control {
+            self.checkout_panel.commit_status = if control.cancel() {
+                CommitUi::Canceling
+            } else {
+                CommitUi::Committing
+            };
+            cx.notify();
+        }
     }
 
     fn checkout_cancel_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.checkout_panel.busy {
             return;
         }
-        self.checkout_panel.commit_generation =
-            self.checkout_panel.commit_generation.wrapping_add(1);
-        self.checkout_panel.commit_open = false;
         self.checkout_panel.publish = None;
         self.checkout_panel.message = None;
         if let Some(focus) = self.checkout_panel.return_focus.take() {
@@ -271,107 +372,7 @@ impl Sidebar {
             .flex()
             .flex_col()
             .gap(rpx(SPACE_3XL));
-        if self.checkout_panel.commit_open {
-            form = form.child(div().text_size(rpx(TEXT_DISPLAY)).child("Commit changes"));
-            if let Some(Ok(expected)) = self.checkout_panel.commit_expected.clone() {
-                let all = self.checkout_panel.commit_all;
-                let files = if all {
-                    expected.changed_files.clone()
-                } else {
-                    expected.staged_files.clone()
-                };
-                form = form.child(div().text_color(c::FG_DIM()).child(if all {
-                    "All listed tracked and untracked changes will be staged and committed. Ignored files stay excluded."
-                } else { "Only the listed staged changes will be committed. Unstaged changes stay outside this commit." }))
-                    .child(div().text_size(rpx(TEXT_SMALL)).child(format!("{} · {}", expected.branch.clone().unwrap_or_else(|| "Detached HEAD".into()), path)));
-                let mut scope = project_field_well(false, false)
-                    .id("checkout-commit-scope")
-                    .h_auto()
-                    .justify_start()
-                    .py(rpx(SPACE_LG))
-                    .max_h(rpx(MODAL_SCROLL_MAX_H))
-                    .overflow_y_scroll();
-                for file in &files {
-                    scope = scope.child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .min_w_0()
-                            .truncate()
-                            .child(file.clone()),
-                    );
-                }
-                form = form.child(scope).child(
-                    form_action(
-                        "checkout-review-commit",
-                        "Review changes",
-                        false,
-                        window,
-                        cx,
-                    )
-                    .on_click(cx.listener({
-                        let path = path.clone();
-                        move |this, _, window, cx| {
-                            this.act(Action::OpenWorktreeDiff(path.clone()), window, cx);
-                        }
-                    })),
-                );
-                if let Some(input) = &self.checkout_panel.commit_message {
-                    let message = input.read(cx).value().trim().to_string();
-                    form = form.child(form_field(
-                        "checkout-commit-message",
-                        "Commit message",
-                        input,
-                        None,
-                        window,
-                        cx,
-                    ));
-                    if !expected.staged_files.is_empty() && !all {
-                        form = form.child(
-                            form_action(
-                                "checkout-commit-all-scope",
-                                "Include all changes instead",
-                                false,
-                                window,
-                                cx,
-                            )
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.checkout_panel.commit_all = true;
-                                cx.notify();
-                            })),
-                        );
-                    }
-                    let target = path.clone();
-                    let label = if all {
-                        "Stage all and commit"
-                    } else {
-                        "Commit staged changes"
-                    };
-                    form = form.child(
-                        form_action("checkout-confirm-commit", label, true, window, cx)
-                            .disabled(busy || message.is_empty() || files.is_empty())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let action = if all {
-                                    GitAction::CommitAll {
-                                        message: message.clone(),
-                                    }
-                                } else {
-                                    GitAction::Commit {
-                                        message: message.clone(),
-                                    }
-                                };
-                                this.checkout_run(target.clone(), action, cx);
-                            })),
-                    );
-                }
-            } else {
-                let text = match &self.checkout_panel.commit_expected {
-                    Some(Err(error)) => error.as_str(),
-                    _ => "Preparing the exact commit scope…",
-                };
-                form = form.child(div().text_color(c::FG_DIM()).child(text.to_string()));
-            }
-        } else if let Some(remote) = self.checkout_panel.publish.clone() {
+        if let Some(remote) = self.checkout_panel.publish.clone() {
             let branch = self
                 .checkout_panel
                 .state
@@ -408,21 +409,6 @@ impl Sidebar {
                         );
                     })),
                 );
-        }
-        if self.checkout_panel.commit_open && !busy && self.checkout_panel.message.is_some() {
-            let target = path.clone();
-            form = form.child(
-                form_action(
-                    "checkout-refresh-commit-scope",
-                    "Review current scope",
-                    false,
-                    window,
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.checkout_begin_commit(target.clone(), window, cx);
-                })),
-            );
         }
         if let Some(message) = &self.checkout_panel.message {
             form = form.child(
@@ -488,7 +474,7 @@ impl Sidebar {
             self.checkout_panel.chosen_root = None;
             self.checkout_panel.path = None;
             self.checkout_panel.publish = None;
-            self.checkout_panel.commit_open = false;
+            self.checkout_panel.commit_status = CommitUi::Idle;
             self.checkout_panel.popup = None;
             self.checkout_panel.popup_subscription = None;
             self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
@@ -515,6 +501,7 @@ impl Sidebar {
             .h_auto()
             .justify_start()
             .w_full()
+            .px_0()
             .py(rpx(SPACE_LG))
             .gap(rpx(SPACE_XS));
         if let Some((idx, path)) = selected {
@@ -526,7 +513,7 @@ impl Sidebar {
                 self.checkout_panel.loading = false;
                 self.checkout_panel.message = None;
                 self.checkout_panel.publish = None;
-                self.checkout_panel.commit_open = false;
+                self.checkout_panel.commit_status = CommitUi::Idle;
             }
             if (self.checkout_panel.state.is_none()
                 || self
@@ -537,7 +524,7 @@ impl Sidebar {
             {
                 self.checkout_load(path.clone(), cx);
             }
-            if self.checkout_panel.commit_open || self.checkout_panel.publish.is_some() {
+            if self.checkout_panel.publish.is_some() {
                 return self.render_checkout_confirmation(window, cx);
             }
             let project = cx.global::<SettingsState>().store.projects[idx].clone();
@@ -583,6 +570,9 @@ impl Sidebar {
                 )
                 .child(
                     div()
+                        .id("checkout-divider")
+                        .debug_selector(|| "checkout-divider".into())
+                        .w_full()
                         .border_t_1()
                         .border_color(c::BORDER_SOFT())
                         .my(rpx(SPACE_SM)),
@@ -622,7 +612,22 @@ impl Sidebar {
             );
             let target = path.clone();
             let busy = self.checkout_panel.busy;
-            let (label, glyph, enabled) = commit_row_state(state.as_ref());
+            let same_job = self.checkout_panel.commit_job_path.as_ref() == Some(&path)
+                && self.checkout_panel.commit_job_generation == self.checkout_panel.generation;
+            let active_other = busy && self.checkout_panel.commit_job_path.is_some() && !same_job;
+            let (base_label, _, base_enabled) = commit_row_state(state.as_ref());
+            let (label, enabled) = if active_other {
+                ("Commit in progress", false)
+            } else {
+                match self.checkout_panel.commit_status {
+                    CommitUi::Generating if same_job => ("Generating… Cancel", true),
+                    CommitUi::Canceling if same_job => ("Canceling…", false),
+                    CommitUi::Committing if same_job => ("Committing…", false),
+                    CommitUi::Succeeded => ("Committed", false),
+                    CommitUi::Failed => ("Retry commit", !busy),
+                    _ => (base_label, base_enabled && !busy),
+                }
+            };
             let publish = state.as_ref().is_some_and(|state| {
                 !state.dirty
                     && state.upstream.is_none()
@@ -631,43 +636,22 @@ impl Sidebar {
                     && !state.remotes.is_empty()
             });
             let dirty = state.as_ref().is_some_and(|state| state.dirty);
-            card = card.child(
-                checkout_row("checkout-commit-publish", label, glyph, window, cx)
-                    .disabled(busy || !enabled)
-                    .with_focus_handle(
-                        self.checkout_panel.trigger_focus
-                            [if publish { "publish" } else { "commit" }]
-                        .clone(),
-                    )
-                    .tooltip(self.checkout_panel.message.clone().unwrap_or_else(|| {
-                        self.checkout_panel
-                            .state
-                            .as_ref()
-                            .and_then(|state| state.as_ref().err())
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                "Commit or publish changes from this checkout".into()
-                            })
-                    }))
-                    .on_click(
-                        cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                            if dirty {
-                                this.checkout_begin_commit(target.clone(), window, cx);
-                            } else if publish {
-                                this.checkout_menu(
-                                    true,
-                                    idx,
-                                    target.clone(),
-                                    event.position(),
-                                    window,
-                                    cx,
-                                );
-                            } else {
-                                this.checkout_run(target.clone(), GitAction::Push, cx);
-                            }
-                        }),
-                    ),
-            );
+            let retry = matches!(self.checkout_panel.commit_status, CommitUi::Failed);
+            let cancel =
+                same_job && matches!(self.checkout_panel.commit_status, CommitUi::Generating);
+            card = card.child(checkout_row("checkout-commit-publish", label, "git", window, cx)
+                .disabled(!enabled)
+                .with_focus_handle(self.checkout_panel.trigger_focus[if publish { "publish" } else { "commit" }].clone())
+                .tooltip(self.checkout_panel.message.clone().unwrap_or_else(|| {
+                    self.checkout_panel.state.as_ref().and_then(|state| state.as_ref().err()).cloned().unwrap_or_else(||
+                        "Generate a commit message and commit staged changes, or all nonignored changes when nothing is staged.".into())
+                }))
+                .on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    if cancel { this.checkout_cancel_commit(cx); }
+                    else if dirty || retry { this.checkout_begin_commit(target.clone(), cx); }
+                    else if publish { this.checkout_menu(true, idx, target.clone(), event.position(), window, cx); }
+                    else { this.checkout_run(target.clone(), GitAction::Push, cx); }
+                })));
             let git = self.runtime.read(cx).tree.read(cx).git_states();
             let changes = git.get(crate::paths::normalize_wt_path(&path));
             let mut changes_row =
@@ -906,6 +890,20 @@ impl Sidebar {
     }
 }
 
+fn commit_provider(
+    selected: Option<Agent>,
+    configured: Option<Agent>,
+) -> Result<grove_core::codex::Provider, String> {
+    match selected
+        .filter(|agent| matches!(agent, Agent::Codex | Agent::Claude))
+        .or(configured)
+    {
+        Some(Agent::Codex) => Ok(grove_core::codex::Provider::Codex),
+        Some(Agent::Claude) => Ok(grove_core::codex::Provider::Claude),
+        _ => Err("Choose Codex or Claude Code as your default agent to generate commits.".into()),
+    }
+}
+
 fn checkout_row(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -919,6 +917,7 @@ fn checkout_row(
         .icon_only()
         .w_full()
         .h(rpx(ROW_H))
+        .px(rpx(FORM_FIELD_INSET + SPACE_LG))
         .gap(rpx(SPACE_LG))
         .child(
             div()
@@ -946,21 +945,37 @@ fn commit_row_state(state: Option<&CheckoutGitState>) -> (&'static str, &'static
     }
     if state.upstream.is_none() {
         return if state.remotes.is_empty() {
-            ("No remote configured", "arrow-up", false)
+            ("No remote configured", "git", false)
         } else {
-            ("Publish branch", "arrow-up", true)
+            ("Publish branch", "git", true)
         };
     }
     if state.ahead.is_some_and(|ahead| ahead > 0) {
-        ("Push commits", "arrow-up", true)
-    } else {
+        ("Push commits", "git", true)
+    } else if state.ahead == Some(0) {
         ("No local commits", "git", false)
+    } else {
+        ("Commit status unavailable", "git", false)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_commit_provider_follows_session_then_supported_default() {
+        use grove_core::codex::Provider;
+        assert_eq!(
+            commit_provider(Some(Agent::Claude), Some(Agent::Codex)),
+            Ok(Provider::Claude)
+        );
+        assert_eq!(
+            commit_provider(Some(Agent::Terminal), Some(Agent::Codex)),
+            Ok(Provider::Codex)
+        );
+        assert!(commit_provider(Some(Agent::OpenCode), Some(Agent::OpenCode)).is_err());
+        assert!(commit_provider(None, None).is_err());
+    }
     #[test]
     fn multiple_roots_require_a_current_explicit_choice() {
         let targets = vec![(0, "/one".into()), (1, "/two".into())];
@@ -1018,6 +1033,9 @@ mod tests {
         });
         let card = cx.debug_bounds("checkout-card").unwrap();
         assert!(card.top() >= gpui::px(APPBAR_H + SPACE_3XL));
+        let divider = cx.debug_bounds("checkout-divider").unwrap();
+        assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
+        assert!(divider.right() >= card.right() - gpui::px(SPACE_XS));
         let rows = [
             ("checkout-finder", "checkout-finder-icon"),
             ("checkout-script", "checkout-script-icon"),

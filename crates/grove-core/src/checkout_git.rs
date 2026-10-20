@@ -39,6 +39,15 @@ fn git(path: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 fn git_with_index(path: &Path, args: &[&str], index: Option<&Path>) -> Result<String, String> {
+    git_with_index_limit(path, args, index, None)
+}
+
+fn git_with_index_limit(
+    path: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+    limit: Option<usize>,
+) -> Result<String, String> {
     let output = tempfile::tempfile().map_err(|_| "Could not prepare Git operation".to_string())?;
     let errors = tempfile::tempfile().map_err(|_| "Could not prepare Git operation".to_string())?;
     let mut command = Command::new("git");
@@ -128,6 +137,26 @@ fn git_with_index(path: &Path, args: &[&str], index: Option<&Path>) -> Result<St
                 output
                     .seek(SeekFrom::Start(0))
                     .map_err(|_| "Could not read Git output")?;
+                if let Some(limit) = limit {
+                    let mut bytes = Vec::new();
+                    output
+                        .take((limit + 1) as u64)
+                        .read_to_end(&mut bytes)
+                        .map_err(|_| "Could not read Git output")?;
+                    let truncated = bytes.len() > limit;
+                    bytes.truncate(limit);
+                    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+                    let marker = "\n[context truncated]";
+                    if truncated || text.len() > limit {
+                        let mut end = limit.saturating_sub(marker.len()).min(text.len());
+                        while !text.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        text.truncate(end);
+                        text.push_str(marker);
+                    }
+                    return Ok(text);
+                }
                 let mut text = String::new();
                 output
                     .read_to_string(&mut text)
@@ -245,6 +274,102 @@ pub fn prepare_commit(path: &Path) -> Result<CheckoutGitState, String> {
         return Err("Checkout changed while preparing commit. Review it again".into());
     }
     Ok(state)
+}
+
+/// Exact temporary-index scope supplied to the commit-message generator.
+/// This contains private repository content and must never be logged.
+pub struct CommitContext {
+    pub state: CheckoutGitState,
+    pub all_changes: bool,
+    pub summary: String,
+    pub patch: String,
+}
+
+pub fn prepare_commit_context(path: &Path) -> Result<CommitContext, String> {
+    let root = git(path, &["rev-parse", "--show-toplevel"])?;
+    let path = Path::new(&root);
+    let state = prepare_commit(path)?;
+    let all_changes = state.staged_files.is_empty();
+    if state.changed_files.is_empty() {
+        return Err("There are no changes to commit".into());
+    }
+    let index = path.join(git(path, &["rev-parse", "--git-path", "index"])?);
+    let lock_path = index.with_extension("lock");
+    let _lock_file = fs_err::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .map_err(|_| "Git index is busy. Finish the other Git operation and retry")?;
+    let _lock = IndexLock(lock_path);
+    let temporary =
+        tempfile::NamedTempFile::new_in(index.parent().ok_or("Could not locate Git index")?)
+            .map_err(|_| "Could not prepare commit context")?;
+    if index.exists() {
+        fs_err::copy(&index, temporary.path()).map_err(|_| "Could not prepare commit context")?;
+    } else {
+        fs_err::remove_file(temporary.path()).map_err(|_| "Could not prepare commit context")?;
+        git_with_index(path, &["read-tree", "--empty"], Some(temporary.path()))?;
+    }
+    let current = inspect(path)?;
+    if current.head != state.head
+        || current.branch != state.branch
+        || current.staged_identity != state.staged_identity
+        || current.configuration_identity != state.configuration_identity
+    {
+        return Err(
+            "Checkout changed while preparing commit context. Retry after reviewing changes".into(),
+        );
+    }
+    if all_changes {
+        if Some(working_snapshot(path)?) != state.working_identity {
+            return Err(
+                "Checkout changed while preparing commit context. Retry after reviewing changes"
+                    .into(),
+            );
+        }
+        git_with_index(path, &["add", "-A", "--", ":/"], Some(temporary.path()))?;
+        if Some(working_snapshot(path)?) != state.working_identity {
+            return Err(
+                "Checkout changed while preparing commit context. Retry after reviewing changes"
+                    .into(),
+            );
+        }
+    }
+    let summary = git_with_index_limit(
+        path,
+        &[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--stat",
+            "--no-renames",
+        ],
+        Some(temporary.path()),
+        Some(8_000),
+    )?;
+    let patch = git_with_index_limit(
+        path,
+        &[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--unified=3",
+        ],
+        Some(temporary.path()),
+        Some(50_000),
+    )?;
+    if patch.trim().is_empty() {
+        return Err("There are no changes to commit".into());
+    }
+    Ok(CommitContext {
+        state,
+        all_changes,
+        summary,
+        patch,
+    })
 }
 
 fn validate_message(message: &str) -> Result<(), String> {
