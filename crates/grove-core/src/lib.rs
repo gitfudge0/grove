@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod attention;
+pub mod checkout_git;
 pub mod checkpoint;
 pub mod claude;
 pub mod claude_agents;

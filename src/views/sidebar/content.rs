@@ -899,7 +899,11 @@ impl Sidebar {
                     );
                 }),
             )
-            .when(!self.is_zen(), |pane| pane.child(header));
+            .when(!self.is_zen(), |pane| pane.child(header))
+            .when_some(
+                self.checkout_panel.narrow_content.take(),
+                gpui::ParentElement::child,
+            );
         if let Some(message) = state.message(error.as_deref()).filter(|_| native.is_none()) {
             let mut banner = div()
                 .id(gpui::SharedString::from(format!(
@@ -1399,7 +1403,7 @@ impl Sidebar {
         }
         card.into_any_element()
     }
-    pub(super) fn render_content(
+    pub(super) fn render_content_body(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1610,6 +1614,10 @@ impl Sidebar {
             if let Some(path) = path {
                 section = section
                     .child(canvas_section_header(project.name.clone()))
+                    .when_some(
+                        self.checkout_panel.narrow_content.take(),
+                        gpui::ParentElement::child,
+                    )
                     .child(
                         div()
                             .id("project-start-scroll")
@@ -1648,6 +1656,10 @@ impl Sidebar {
                         sidebar_worktree_name(&selected_worktree.name, selected_worktree.is_main)
                             .into(),
                     ))
+                    .when_some(
+                        self.checkout_panel.narrow_content.take(),
+                        gpui::ParentElement::child,
+                    )
                     .child(
                         div()
                             .id("worktree-start-scroll")
@@ -1700,23 +1712,29 @@ impl Sidebar {
                     .text_color(c::FG_DIM())
                     .child(details)
                     .child("Choose a session in the sidebar, or hover or focus a worktree to reveal Codex, Claude Code, and Terminal launch actions.");
-                section = section.child(canvas_section_header(title)).child(
-                    div()
-                        .id("worktree-prompt-scroll")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .child(
-                            div()
-                                .w_full()
-                                .min_h_full()
-                                .p(rpx(SPACE_3XL))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(prompt),
-                        ),
-                );
+                section = section
+                    .child(canvas_section_header(title))
+                    .when_some(
+                        self.checkout_panel.narrow_content.take(),
+                        gpui::ParentElement::child,
+                    )
+                    .child(
+                        div()
+                            .id("worktree-prompt-scroll")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_h_full()
+                                    .p(rpx(SPACE_3XL))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(prompt),
+                            ),
+                    );
             }
         } else {
             let (title, description) = if no_projects {
@@ -1770,25 +1788,31 @@ impl Sidebar {
                             ),
                     )
                 });
-            section = section.child(canvas_section_header(title.into())).child(
-                div()
-                    .id("canvas-empty-scroll")
-                    .debug_selector(|| "canvas-empty-scroll".into())
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(
-                        div()
-                            .w_full()
-                            .min_h_full()
-                            .p(rpx(SPACE_3XL))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(card),
-                    ),
-            );
+            section = section
+                .child(canvas_section_header(title.into()))
+                .when_some(
+                    self.checkout_panel.narrow_content.take(),
+                    gpui::ParentElement::child,
+                )
+                .child(
+                    div()
+                        .id("canvas-empty-scroll")
+                        .debug_selector(|| "canvas-empty-scroll".into())
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(
+                            div()
+                                .w_full()
+                                .min_h_full()
+                                .p(rpx(SPACE_3XL))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(card),
+                        ),
+                );
         }
         section
             .when_some(self.content_error.clone(), |section, error| {

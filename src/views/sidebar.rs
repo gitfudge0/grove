@@ -1,4 +1,5 @@
 //! Workspace-scoped navigation. UI state is kept per workspace while processes keep running.
+mod checkout_panel;
 mod collapsed;
 mod content;
 mod grid;
@@ -391,6 +392,7 @@ fn effective_rail_width(preferred: f32, logical_width: f32) -> f32 {
 }
 
 pub struct Sidebar {
+    checkout_panel: checkout_panel::CheckoutPanel,
     project_panel: Option<Entity<projects::ProjectPanel>>,
     project_setup: Option<Entity<project_setup::ProjectSetup>>,
     settings_panel: Option<Entity<super::settings_panel::SettingsPanel>>,
@@ -580,6 +582,7 @@ impl Sidebar {
             }));
         }
         Self {
+            checkout_panel: checkout_panel::CheckoutPanel::default(),
             project_panel: None,
             project_setup: None,
             settings_panel: None,
