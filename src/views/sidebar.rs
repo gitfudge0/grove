@@ -2410,6 +2410,7 @@ impl Sidebar {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn open_archived_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.navigation_available() {
             self.act(Action::ArchivedProjects, window, cx);

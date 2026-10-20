@@ -165,11 +165,6 @@ impl Shell {
                             .update(cx, |panel, cx| panel.close(window, cx));
                         this.open_highlights(*debug, window, cx);
                     }
-                    SettingsPanelEvent::OpenArchivedProjects => {
-                        this.sidebar.update(cx, |sidebar, cx| {
-                            sidebar.open_archived_projects(window, cx);
-                        });
-                    }
                 },
             );
         let sidebar_events =
@@ -3692,27 +3687,5 @@ mod tests {
                 Some(zoom)
             );
         });
-    }
-
-    #[gpui::test]
-    fn settings_archived_event_opens_sidebar_project_panel(cx: &mut gpui::TestAppContext) {
-        cx.update(init);
-        let (shell, cx) = cx.add_window_view(Shell::new);
-        draw(cx);
-        cx.update(|window, cx| {
-            let settings = shell.read(cx).settings.clone();
-            settings.update(cx, |settings, cx| settings.open(window, cx));
-        });
-        draw(cx);
-        cx.update(|window, cx| {
-            let settings = shell.read(cx).settings.clone();
-            settings.update(cx, |settings, cx| {
-                settings.close(window, cx);
-                cx.emit(SettingsPanelEvent::OpenArchivedProjects);
-            });
-        });
-        draw(cx);
-        cx.update(|_, cx| assert!(!shell.read(cx).settings.read(cx).is_open()));
-        assert!(cx.debug_bounds("project-panel").is_some());
     }
 }

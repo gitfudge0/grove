@@ -447,3 +447,38 @@ pub fn question_disclosure(
             c::FG_DIM(),
         ))
 }
+
+/// Neutral Settings action and choice geometry. Selection never changes its border.
+pub fn settings_control(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+    selected: bool,
+    enabled: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .tab_index(if enabled { 0 } else { -1 })
+        .aria_label(label.into())
+        .aria_selected(selected)
+        .px(rpx(SPACE_LG))
+        .h(rpx(CONTROL_H))
+        .flex()
+        .items_center()
+        .rounded(rpx(RADIUS_CONTROL))
+        .bg(if selected {
+            c::BG_HOVER()
+        } else {
+            c::FIELD_FILL()
+        })
+        .border_1()
+        .border_color(c::BORDER_SOFT())
+        .text_size(rpx(TEXT_SMALL))
+        .text_color(if enabled { c::FG() } else { c::FG_DIM() })
+        .when(enabled, |el| {
+            el.cursor_pointer()
+                .hover(|style| style.bg(c::BG_HOVER()))
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+        })
+        .when(!enabled, |el| el.opacity(OPACITY_DISABLED))
+}

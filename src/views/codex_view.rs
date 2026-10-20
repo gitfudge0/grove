@@ -2863,11 +2863,11 @@ impl Render for CodexView {
             draft_disabled
         };
         let primary_label = if editing {
-            "Save queued message · Enter"
+            "Save queued message · Enter · Shift+Enter for a new line"
         } else if busy {
-            "Queue · Enter · Send after the current turn finishes"
+            "Queue · Enter · Send after the current turn finishes · Shift+Enter for a new line"
         } else {
-            "Send · Enter · Start a new turn"
+            "Send · Enter · Start a new turn · Shift+Enter for a new line"
         };
         let choices = self.composer_choices(&state, window, cx);
         let collapsed = self.composer_collapsed;
@@ -3131,24 +3131,22 @@ impl Render for CodexView {
                                     .flex_wrap()
                                     .justify_end()
                                     .text_right()
+                                    .whitespace_normal()
                                     .gap(rpx(SPACE_SM))
                                     .text_size(rpx(TEXT_MICRO))
                                     .text_color(c::FG_DIM())
-                                    .child(if stopping || self.submitted.is_some() {
-                                        div().child(if stopping { "Stopping…" } else { "Sending…" })
+                                    .child(if stopping {
+                                        "Stopping…"
+                                    } else if self.submitted.is_some() {
+                                        "Sending…"
+                                    } else if editing {
+                                        "Enter to save"
+                                    } else if busy && steer_available {
+                                        "Enter to queue · ⌘Enter to steer"
+                                    } else if busy {
+                                        "Enter to queue · Steer unavailable"
                                     } else {
-                                        div().flex().items_center().flex_wrap().gap(rpx(SPACE_LG))
-                                            .child(div().flex().items_center().gap(rpx(SPACE_SM))
-                                                .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
-                                                .child(if editing { "Save" } else if busy { "Queue" } else { "Send" }))
-                                            .when(busy, |row| row.child(div().flex().items_center().gap(rpx(SPACE_SM))
-                                                .child(crate::icons::icon("command", ICON_SM, c::FG_DIM()))
-                                                .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
-                                                .child(if steer_available { "Steer now" } else { "Steer unavailable" })))
-                                            .child(div().flex().items_center().gap(rpx(SPACE_SM))
-                                                .child(crate::icons::icon("shift", ICON_SM, c::FG_DIM()))
-                                                .child(crate::icons::icon("enter", ICON_SM, c::FG_DIM()))
-                                                .child("New line"))
+                                        "Enter to send"
                                     })
                             )
                             .when(focused_launch, |rail| rail.child(self.launch_starters(provider, cx))),

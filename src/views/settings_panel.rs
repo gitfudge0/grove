@@ -24,12 +24,55 @@ use grove_core::{
 use std::collections::HashSet;
 
 const FOCUS_SCAN_LIMIT: usize = 128;
+const SHORTCUT_KEY_W: f32 = FIELD_LABEL_COL_W + SPACE_20 * 2.0;
 
-/// The shell owns navigation to the existing archived-project panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Category {
+    #[default]
+    General,
+    Agents,
+    Terminal,
+    Privacy,
+    About,
+}
+
+impl Category {
+    const ALL: [Self; 5] = [
+        Self::General,
+        Self::Agents,
+        Self::Terminal,
+        Self::Privacy,
+        Self::About,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Agents => "Agents",
+            Self::Terminal => "Terminal",
+            Self::Privacy => "Privacy",
+            Self::About => "About",
+        }
+    }
+}
+
+fn agent_display_label(agent: Agent) -> &'static str {
+    match agent {
+        Agent::Codex => "Codex",
+        Agent::Claude => "Claude Code",
+        Agent::OpenCode => "OpenCode",
+        Agent::Terminal => "Terminal",
+    }
+}
+
+fn runs_agents_in_terminal(store: &Store) -> bool {
+    !store.native_agents_enabled
+}
+
+/// Settings navigation actions handled by the shell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettingsPanelEvent {
     Closed,
-    OpenArchivedProjects,
     OpenHighlights { debug: bool },
 }
 
@@ -85,6 +128,9 @@ pub struct SettingsPanel {
     return_focus: Option<FocusHandle>,
     open: bool,
     page: Page,
+    category: Category,
+    nested_return_focus: Option<FocusHandle>,
+    standalone_shortcuts: bool,
     error: Option<String>,
     scroll: ScrollHandle,
     _settings_observer: Subscription,
@@ -104,6 +150,9 @@ impl SettingsPanel {
             return_focus: None,
             open: false,
             page: Page::Settings,
+            category: Category::General,
+            nested_return_focus: None,
+            standalone_shortcuts: false,
             error: None,
             scroll: ScrollHandle::new(),
             _settings_observer: cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
@@ -123,6 +172,8 @@ impl SettingsPanel {
         self.return_focus = window.focused(cx);
         self.open = true;
         self.page = Page::Settings;
+        self.standalone_shortcuts = false;
+        self.nested_return_focus = None;
         self.error = None;
         self.scroll.set_offset(gpui::Point::default());
         self.focus.focus(window, cx);
@@ -131,6 +182,7 @@ impl SettingsPanel {
 
     pub fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open(window, cx);
+        self.standalone_shortcuts = true;
         self.show(Page::Shortcuts, cx);
     }
 
@@ -140,6 +192,8 @@ impl SettingsPanel {
         }
         self.open = false;
         self.page = Page::Settings;
+        self.standalone_shortcuts = false;
+        self.nested_return_focus = None;
         self.error = None;
         if let Some(focus) = self.return_focus.take() {
             focus.focus(window, cx);
@@ -228,7 +282,7 @@ impl SettingsPanel {
 
     fn set_backend(&mut self, tmux: bool, cx: &mut Context<Self>) {
         if tmux && !grove_core::tmux::available() {
-            self.error = Some("tmux is not installed; native sessions remain selected.".into());
+            self.error = Some("tmux is not installed; built-in sessions remain selected.".into());
             cx.notify();
             return;
         }
@@ -246,23 +300,18 @@ impl SettingsPanel {
         self.save(cx, |store| store.default_agent = Some(agent));
     }
 
-    fn toggle_permissions(&mut self, cx: &mut Context<Self>) {
+    fn set_permissions(&mut self, skip: bool, cx: &mut Context<Self>) {
         self.save(cx, |store| {
-            let on = store.dangerously_skip_permissions_enabled.unwrap_or(false);
-            store.dangerously_skip_permissions_enabled = Some(!on);
+            store.dangerously_skip_permissions_enabled = Some(skip);
         });
     }
 
-    fn toggle_chrome(&mut self, cx: &mut Context<Self>) {
-        self.save(cx, |store| {
-            store.chrome_enabled = Some(!store.chrome_enabled.unwrap_or(false));
-        });
+    fn set_chrome(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.save(cx, |store| store.chrome_enabled = Some(enabled));
     }
 
-    fn toggle_native_agents(&mut self, cx: &mut Context<Self>) {
-        self.save(cx, |store| {
-            store.native_agents_enabled = !store.native_agents_enabled;
-        });
+    fn set_agents_in_terminal(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.save(cx, |store| store.native_agents_enabled = !enabled);
     }
 
     fn toggle_telemetry(&mut self, cx: &mut Context<Self>) {
@@ -283,9 +332,26 @@ impl SettingsPanel {
         }
     }
 
-    fn open_archived(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.close(window, cx);
-        cx.emit(SettingsPanelEvent::OpenArchivedProjects);
+    fn select_category(&mut self, category: Category, cx: &mut Context<Self>) {
+        self.category = category;
+        self.nested_return_focus = None;
+        self.standalone_shortcuts = false;
+        self.show(Page::Settings, cx);
+    }
+
+    fn open_nested(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.standalone_shortcuts = false;
+        self.nested_return_focus = window.focused(cx);
+        self.show(page, cx);
+        self.focus.focus(window, cx);
+    }
+
+    fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.standalone_shortcuts = false;
+        self.show(Page::Settings, cx);
+        if let Some(focus) = self.nested_return_focus.take() {
+            focus.focus(window, cx);
+        }
     }
 
     fn show(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -301,8 +367,10 @@ impl SettingsPanel {
 
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
-            "escape" if self.page == Page::Shortcuts => self.close(window, cx),
-            "escape" if self.page != Page::Settings => self.show(Page::Settings, cx),
+            "escape" if self.page == Page::Shortcuts && self.standalone_shortcuts => {
+                self.close(window, cx);
+            }
+            "escape" if self.page != Page::Settings => self.back(window, cx),
             "escape" => self.close(window, cx),
             "tab" => {
                 for _ in 0..FOCUS_SCAN_LIMIT {
@@ -332,35 +400,38 @@ impl SettingsPanel {
         selected: bool,
         enabled: bool,
     ) -> gpui::Stateful<gpui::Div> {
+        super::components::settings_control(id, label, selected, enabled)
+    }
+
+    fn choice(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        label: impl Into<gpui::SharedString>,
+        selected: bool,
+        enabled: bool,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.button(id, label, selected, enabled)
+            .border_0()
+            .bg(if selected { c::BG_HOVER() } else { c::BG() })
+    }
+
+    fn choices() -> gpui::Div {
         div()
-            .id(id)
-            .tab_index(if enabled { 0 } else { -1 })
-            .aria_label(label.into())
-            .px(rpx(SPACE_2XL))
-            .h(rpx(CONTROL_H + SPACE_LG))
             .flex()
-            .items_center()
-            .rounded(rpx(RADIUS_CONTROL))
-            .bg(if selected {
-                c::BG_HOVER()
-            } else {
-                c::FIELD_FILL()
-            })
+            .flex_wrap()
+            .gap(rpx(SPACE_XS))
+            .p(rpx(SPACE_XS))
             .border_1()
-            .border_color(if selected {
-                c::CYAN()
-            } else {
-                c::BORDER_SOFT()
-            })
-            .text_size(rpx(TEXT_BODY))
-            .text_color(if enabled { c::FG() } else { c::FG_DIM() })
-            .when(!enabled, |el| el.opacity(OPACITY_DISABLED))
+            .border_color(c::BORDER_SOFT())
+            .rounded(rpx(RADIUS_CONTROL))
     }
 
     fn section(label: &'static str) -> gpui::Div {
         div()
-            .text_size(rpx(TEXT_MICRO))
-            .font_weight(FontWeight::SEMIBOLD)
+            .pt(rpx(SPACE_20))
+            .pb(rpx(SPACE_SM))
+            .text_size(rpx(TEXT_SMALL))
+            .font_weight(FontWeight::MEDIUM)
             .text_color(c::FG_DIM())
             .child(label)
     }
@@ -377,13 +448,13 @@ impl SettingsPanel {
             .flex_wrap()
             .items_center()
             .justify_between()
-            .gap(rpx(SPACE_LG))
-            .py(rpx(SPACE_LG))
-            .border_b_1()
+            .gap(rpx(SPACE_3XL))
+            .py(rpx(SPACE_XL))
+            .border_t_1()
             .border_color(c::BORDER_SOFT())
             .child(
                 div()
-                    .min_w_0()
+                    .min_w(rpx(FIELD_LABEL_COL_W))
                     .flex_1()
                     .flex()
                     .flex_col()
@@ -391,6 +462,7 @@ impl SettingsPanel {
                     .child(
                         div()
                             .text_size(rpx(TEXT_BODY))
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(c::FG())
                             .child(label),
                     )
@@ -421,19 +493,16 @@ impl SettingsPanel {
         let mut body = div()
             .flex()
             .flex_col()
-            .gap(rpx(SPACE_LG))
-            .child(Self::section("AGENT SKILL"))
+            .child(Self::section("Grove skill"))
             .child(
                 div()
                     .text_size(rpx(TEXT_SMALL))
                     .text_color(c::FG_DIM())
-                    .child(
-                    "Install globally to manage projects, worktrees, and sessions through Grove.",
-                ),
+                    .child("Install globally to manage projects, worktrees, and sessions."),
             );
         for agent in AgentTarget::ALL {
             let result = skill_install::status(agent, &InstallScope::User);
-            let (label, detail, enabled) = match result {
+            let (label, detail, full_detail, enabled) = match result {
                 Ok(installation) => {
                     let (label, enabled) = match installation.status {
                         InstallStatus::Missing => ("Install", true),
@@ -442,17 +511,27 @@ impl SettingsPanel {
                         }
                         InstallStatus::Conflict => ("Existing skill", false),
                     };
-                    let detail = if installation.status == InstallStatus::Conflict {
-                        format!(
-                            "Existing skill preserved at {}",
-                            installation.path.display()
+                    let full_path = installation.path.display().to_string();
+                    let display_path = dirs::home_dir()
+                        .and_then(|home| {
+                            installation
+                                .path
+                                .strip_prefix(home)
+                                .ok()
+                                .map(|path| format!("~/{}", path.display()))
+                        })
+                        .unwrap_or_else(|| full_path.clone());
+                    let (detail, full_detail) = if installation.status == InstallStatus::Conflict {
+                        (
+                            format!("Existing skill preserved at {display_path}"),
+                            format!("Existing skill preserved at {full_path}"),
                         )
                     } else {
-                        installation.path.display().to_string()
+                        (display_path, full_path)
                     };
-                    (label, detail, enabled)
+                    (label, detail, full_detail, enabled)
                 }
-                Err(error) => ("Unavailable", error.to_string(), false),
+                Err(error) => ("Unavailable", error.to_string(), error.to_string(), false),
             };
             body = body.child(Self::setting_row(
                 agent.label(),
@@ -463,19 +542,21 @@ impl SettingsPanel {
                     false,
                     enabled,
                 )
+                .aria_description(full_detail.clone())
+                .tooltip(move |window, cx| {
+                    super::components::tooltip(full_detail.clone(), window).build(window, cx)
+                })
                 .child(label)
                 .when(enabled, |button| {
                     button
-                        .cursor_pointer()
-                        .hover(|style| style.bg(c::BG_HOVER()))
-                        .focus_visible(|style| style.bg(c::BG_HOVER()))
                         .on_click(cx.listener(move |this, _, _, cx| this.install_skill(agent, cx)))
                 }),
             ));
         }
         body.child(
             div()
-                .text_size(rpx(TEXT_SMALL))
+                .pt(rpx(SPACE_LG))
+                .text_size(rpx(TEXT_MICRO))
                 .text_color(c::FG_DIM())
                 .child("Start a new agent session, then ask it to use the grove skill."),
         )
@@ -490,18 +571,14 @@ impl SettingsPanel {
         let tmux_available = grove_core::tmux::available();
         let skip = store.dangerously_skip_permissions_enabled.unwrap_or(false);
         let chrome = store.chrome_enabled.unwrap_or(false);
-        let native_agents = store.native_agents_enabled;
+        let terminal_agents = cfg!(windows) || runs_agents_in_terminal(store);
         let telemetry = SettingsState::telemetry_enabled(store);
         let reduce_motion = store.reduce_motion.unwrap_or(false);
-        let archived = store.archived_count();
-        let mut body = div().flex().flex_col().gap(rpx(SPACE_3XL));
+        let mut body = div().flex().flex_col();
 
-        let appearances = div()
-            .flex()
-            .flex_wrap()
-            .gap(rpx(SPACE_SM))
+        let appearances = Self::choices()
             .child(
-                self.button(
+                self.choice(
                     "settings-appearance-system",
                     "System",
                     mode == Appearance::FollowSystem,
@@ -513,7 +590,7 @@ impl SettingsPanel {
                 ),
             )
             .child(
-                self.button(
+                self.choice(
                     "settings-appearance-dark",
                     "Dark",
                     mode == Appearance::Dark,
@@ -523,7 +600,7 @@ impl SettingsPanel {
                 .on_click(cx.listener(|this, _, _, cx| this.set_appearance(Appearance::Dark, cx))),
             )
             .child(
-                self.button(
+                self.choice(
                     "settings-appearance-light",
                     "Light",
                     mode == Appearance::Light,
@@ -532,11 +609,9 @@ impl SettingsPanel {
                 .child("Light")
                 .on_click(cx.listener(|this, _, _, cx| this.set_appearance(Appearance::Light, cx))),
             );
-        let sidebar_appearances = div()
-            .flex()
-            .gap(rpx(SPACE_SM))
+        let sidebar_appearances = Self::choices()
             .child(
-                self.button(
+                self.choice(
                     "settings-sidebar-frosted",
                     "Frosted sidebar",
                     sidebar_appearance == SidebarAppearance::Frosted,
@@ -548,7 +623,7 @@ impl SettingsPanel {
                 })),
             )
             .child(
-                self.button(
+                self.choice(
                     "settings-sidebar-solid",
                     "Solid sidebar",
                     sidebar_appearance == SidebarAppearance::Solid,
@@ -559,11 +634,9 @@ impl SettingsPanel {
                     this.set_sidebar_appearance(SidebarAppearance::Solid, window, cx);
                 })),
             );
-        let zoom_control = div()
-            .flex()
-            .gap(rpx(SPACE_SM))
+        let zoom_control = Self::choices()
             .child(
-                self.button(
+                self.choice(
                     "settings-zoom-out",
                     "Zoom out",
                     false,
@@ -575,12 +648,12 @@ impl SettingsPanel {
                 }),
             )
             .child(
-                self.button("settings-zoom-reset", "Reset zoom", false, true)
+                self.choice("settings-zoom-reset", "Reset zoom", false, true)
                     .child(format!("{:.0}%", zoom * 100.0))
                     .on_click(cx.listener(|this, _, _, cx| this.set_zoom(0.0, cx))),
             )
             .child(
-                self.button("settings-zoom-in", "Zoom in", false, zoom < zoom::ZOOM_MAX)
+                self.choice("settings-zoom-in", "Zoom in", false, zoom < zoom::ZOOM_MAX)
                     .child("+")
                     .when(zoom < zoom::ZOOM_MAX, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| this.set_zoom(ZOOM_STEP, cx)))
@@ -595,44 +668,48 @@ impl SettingsPanel {
             )
             .child(if reduce_motion { "On" } else { "Off" })
             .on_click(cx.listener(|this, _, _, cx| this.toggle_reduce_motion(cx)));
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_LG))
-                .child(Self::section("APPEARANCE"))
-                .child(Self::setting_row(
-                    "Appearance",
-                    "Follow your system or choose light or dark",
-                    appearances,
-                ))
-                .child(Self::setting_row(
-                    "Sidebar",
-                    "Blurred backdrop or solid color",
-                    sidebar_appearances,
-                ))
-                .child(Self::setting_row(
-                    "App size",
-                    "Scale the interface",
-                    zoom_control,
-                ))
-                .child(Self::setting_row(
-                    "Reduce motion",
-                    "Skip decorative interface transitions",
-                    reduce_motion_control,
-                )),
-        );
+        body = body.when(self.category == Category::General, |body| {
+            body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(Self::section("Appearance"))
+                    .child(Self::setting_row(
+                        "Appearance",
+                        "Follow your system or choose light or dark",
+                        appearances,
+                    ))
+                    .child(Self::setting_row(
+                        "Sidebar",
+                        "Blurred backdrop or solid color",
+                        sidebar_appearances,
+                    ))
+                    .child(Self::setting_row(
+                        "App size",
+                        "Scale the interface",
+                        zoom_control,
+                    ))
+                    .child(Self::setting_row(
+                        "Reduce motion",
+                        "Skip decorative interface transitions",
+                        reduce_motion_control,
+                    )),
+            )
+        });
 
-        let backend = div()
-            .flex()
-            .gap(rpx(SPACE_SM))
+        let backend = Self::choices()
             .child(
-                self.button("settings-backend-native", "Native backend", !tmux_on, true)
-                    .child("Native")
-                    .on_click(cx.listener(|this, _, _, cx| this.set_backend(false, cx))),
+                self.choice(
+                    "settings-backend-native",
+                    "Built-in backend",
+                    !tmux_on,
+                    true,
+                )
+                .child("Built-in")
+                .on_click(cx.listener(|this, _, _, cx| this.set_backend(false, cx))),
             )
             .child(
-                self.button(
+                self.choice(
                     "settings-backend-tmux",
                     "Tmux backend",
                     tmux_on,
@@ -643,30 +720,47 @@ impl SettingsPanel {
                     el.on_click(cx.listener(|this, _, _, cx| this.set_backend(true, cx)))
                 }),
             );
-        let permissions = self
-            .button(
-                "settings-permissions",
-                "Toggle permission prompts",
-                skip,
-                true,
-            )
-            .child(if skip { "Skip prompts" } else { "Ask me" })
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_permissions(cx)));
-        let browser = self
-            .button("settings-chrome", "Toggle Claude in Chrome", chrome, true)
-            .child(if chrome { "On" } else { "Off" })
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_chrome(cx)));
-        let native_agents_button = self
-            .button(
-                "settings-native-agents",
-                "Toggle native agents",
-                native_agents,
-                !cfg!(windows),
-            )
-            .child(if native_agents { "On" } else { "Off" })
-            .when(!cfg!(windows), |el| {
-                el.on_click(cx.listener(|this, _, _, cx| this.toggle_native_agents(cx)))
-            });
+        let mut permissions = Self::choices();
+        for (enabled, label) in [(false, "Ask before running"), (true, "Skip prompts")] {
+            permissions = permissions.child(
+                self.choice(
+                    format!("settings-permissions-{enabled}"),
+                    label,
+                    skip == enabled,
+                    true,
+                )
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_permissions(enabled, cx))),
+            );
+        }
+        let mut browser = Self::choices();
+        let mut terminal_agents_control = Self::choices();
+        for (enabled, label) in [(false, "Off"), (true, "On")] {
+            browser = browser.child(
+                self.choice(
+                    format!("settings-chrome-{enabled}"),
+                    format!("Claude in Chrome {label}"),
+                    chrome == enabled,
+                    true,
+                )
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_chrome(enabled, cx))),
+            );
+            terminal_agents_control = terminal_agents_control.child(
+                self.choice(
+                    format!("settings-terminal-agents-{enabled}"),
+                    format!("Run agents in terminal {label}"),
+                    terminal_agents == enabled,
+                    !cfg!(windows),
+                )
+                .child(label)
+                .when(!cfg!(windows), |el| {
+                    el.on_click(
+                        cx.listener(move |this, _, _, cx| this.set_agents_in_terminal(enabled, cx)),
+                    )
+                }),
+            );
+        }
         let environment = self.runtime.read(cx).shell_environment.clone();
         let environment_state = environment.read(cx).state();
         let refreshing = environment_state == RefreshState::Refreshing;
@@ -714,58 +808,24 @@ impl SettingsPanel {
                     )
                 },
             );
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_LG))
-                .child(Self::section("AGENTS & TERMINAL"))
-                .child(Self::setting_row(
-                    "Backend",
-                    if tmux_available {
-                        "New terminal sessions use this backend"
-                    } else {
-                        "tmux is unavailable on this system"
-                    },
-                    backend,
-                ))
-                .child(Self::setting_row(
-                    "Native Agents (experimental)",
-                    "Use native Codex and Claude Code for new sessions; saved conversations return after restart",
-                    native_agents_button,
-                ))
-                .child(Self::setting_row(
-                    "Permissions",
-                    "Skip lets agents run commands without asking",
-                    permissions,
-                ))
-                .child(Self::setting_row(
-                    "Claude in Chrome",
-                    "Let Claude read and control Chrome tabs",
-                    browser,
-                ))
-                .child(Self::setting_row(
-                    "Shell environment",
-                    if cfg!(windows) {
-                        "Shell environment refresh is unavailable on Windows."
-                    } else {
-                        "Refreshes every 10 minutes. Changes apply to new sessions."
-                    },
-                    environment_control,
-                )),
-        );
+        let terminal_body = div().flex().flex_col()
+            .child(Self::section("New terminal sessions"))
+            .child(Self::setting_row("Terminal backend", if tmux_available { "Existing sessions keep their current backend." } else { "Tmux is not installed. Built-in remains available." }, backend))
+            .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Tmux keeps terminal processes running after Grove exits. Built-in terminals end when Grove exits. Grove’s conversation view has separate recovery."))
+            .child(Self::section("Environment"))
+            .child(Self::setting_row("Shell environment", if cfg!(windows) { "Shell environment refresh is unavailable on Windows." } else { "Refreshes every 10 minutes. Changes apply to new sessions." }, environment_control));
 
-        let mut agents = div().flex().flex_wrap().gap(rpx(SPACE_SM));
+        let mut agents = Self::choices();
         for agent in Agent::ALL {
             let available = agent.available();
             let selected = store.default_agent == Some(agent);
             let label = if available {
-                agent.label().to_string()
+                agent_display_label(agent).to_string()
             } else {
-                format!("{} (unavailable)", agent.label())
+                format!("{} (unavailable)", agent_display_label(agent))
             };
             agents = agents.child(
-                self.button(
+                self.choice(
                     format!("settings-agent-{}", agent.label()),
                     label.clone(),
                     selected,
@@ -779,23 +839,26 @@ impl SettingsPanel {
                 }),
             );
         }
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_LG))
-                .child(Self::section("DEFAULT AGENT"))
-                .child(Self::setting_row(
-                    "New sessions",
-                    "Unavailable agents cannot be selected",
-                    agents,
-                )),
-        );
+        body = body.when(self.category == Category::Agents, |body| body.child(
+            div().flex().flex_col()
+                .child(Self::section("New sessions"))
+                .child(Self::setting_row("Default agent", "Start new sessions with this agent.", agents))
+                .child(Self::setting_row("Run agents in terminal", "Use the Codex and Claude Code command-line interfaces instead of Grove’s conversation view. Applies to new sessions.", terminal_agents_control))
+                .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(if cfg!(windows) {
+                    "Windows supports terminal agents only."
+                } else {
+                    "Conversation view is experimental. OpenCode always uses a terminal. Open and saved conversations are preserved."
+                }))
+                .child(Self::section("Agent access"))
+                .child(Self::setting_row("Permission prompts", "Choose how agents run commands.", permissions))
+                .when(skip, |body| body.child(div().id("settings-permission-warning").role(gpui::Role::Alert).text_size(rpx(TEXT_SMALL)).text_color(c::AMBER()).child("Agents can run commands without asking. Use only in projects you trust.")))
+                .child(Self::setting_row("Claude in Chrome", "Let Claude read and control Chrome tabs.", browser))
+                .child(self.skill_body(cx))
+        ));
+        body = body.when(self.category == Category::Terminal, |body| {
+            body.child(terminal_body)
+        });
 
-        let archived_button = self
-            .button("settings-archived", "Open archived projects", false, true)
-            .child(format!("Open ({archived})"))
-            .on_click(cx.listener(|this, _, window, cx| this.open_archived(window, cx)));
         let telemetry_button = self
             .button(
                 "settings-telemetry",
@@ -805,23 +868,12 @@ impl SettingsPanel {
             )
             .child(if telemetry { "On" } else { "Off" })
             .on_click(cx.listener(|this, _, _, cx| this.toggle_telemetry(cx)));
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_LG))
-                .child(Self::section("DATA & PROJECTS"))
-                .child(Self::setting_row(
-                    "Archived projects",
-                    "Restore or remove project registrations",
-                    archived_button,
-                ))
-                .child(Self::setting_row(
-                    "Share anonymous usage data",
-                    "Usage and diagnostics",
-                    telemetry_button,
-                )),
-        );
+        body = body.when(self.category == Category::Privacy, |body| body.child(
+            div().flex().flex_col()
+                .child(Self::section("Usage & diagnostics"))
+                .child(Self::setting_row("Share anonymous usage data", "Help improve Grove with usage events and diagnostics.", telemetry_button))
+                .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Usage events include app and session activity, version, OS, diagnostic error types, and scrubbed panic locations. Project names, file paths, Git data, prompts, and conversation or terminal content are excluded. GROVE_TELEMETRY=off also disables collection."))
+        ));
 
         let upgrade = self.runtime.read(cx).upgrade.clone();
         let upgrade = upgrade.read(cx);
@@ -907,35 +959,36 @@ impl SettingsPanel {
             .child(
                 self.button("settings-changelog", "View changelog", false, true)
                     .child("Changelog")
-                    .on_click(cx.listener(|this, _, _, cx| this.show(Page::Changelog, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_nested(Page::Changelog, window, cx);
+                    })),
             );
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_LG))
-                .child(Self::section("UPDATES"))
-                .child(Self::setting_row(
+        body = body.when(self.category == Category::About, |body| {
+            body.child(div().flex().flex_col().child(Self::section("Grove")).child(
+                Self::setting_row(
                     "Grove version",
                     format!("v{} · {status}", env!("CARGO_PKG_VERSION")),
                     actions,
-                )),
-        );
-        body = body.child(self.skill_body(cx));
-        body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_LG))
-                .child(Self::section("KEYBOARD"))
-                .child(Self::setting_row(
-                    "Shortcuts",
-                    "Commands for the current view",
-                    self.button("settings-shortcuts", "View shortcuts", false, true)
-                        .child("View shortcuts")
-                        .on_click(cx.listener(|this, _, _, cx| this.show(Page::Shortcuts, cx))),
-                )),
-        )
+                ),
+            ))
+        });
+        body.when(self.category == Category::General, |body| {
+            body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(Self::section("Keyboard"))
+                    .child(Self::setting_row(
+                        "Shortcuts",
+                        "Commands for the current view",
+                        self.button("settings-shortcuts", "View shortcuts", false, true)
+                            .child("View shortcuts")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_nested(Page::Shortcuts, window, cx);
+                            })),
+                    )),
+            )
+        })
     }
 
     fn shortcuts_body(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -970,10 +1023,10 @@ impl SettingsPanel {
                     .py(rpx(SPACE_SM))
                     .child(
                         div()
-                            .min_w(rpx(135.0))
+                            .min_w(rpx(SHORTCUT_KEY_W))
                             .font_family(crate::fonts::UI_FAMILY)
                             .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::CYAN())
+                            .text_color(c::FG_DIM())
                             .child(chord),
                     )
                     .child(
@@ -993,7 +1046,10 @@ impl SettingsPanel {
             );
         }
         let _ = cx;
-        body
+        body.child(Self::section("GROVE’S CONVERSATION VIEW"))
+            .child(Self::setting_row("Enter", "Send when idle; queue input while an agent turn is running.", div()))
+            .child(Self::setting_row("Shift+Enter", "Insert a new line.", div()))
+            .child(Self::setting_row("Steer current turn", "Codex only, while an agent turn is running. Claude Code supports queueing and interruption; steering is unavailable.", div().text_size(rpx(TEXT_SMALL)).child(format!("{}+Enter", keymap::platform_mod_label()))))
     }
 
     fn changelog_body(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -1063,7 +1119,7 @@ impl Focusable for SettingsPanel {
 }
 
 impl Render for SettingsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = match self.page {
             Page::Settings => "Settings",
             Page::Shortcuts => "Shortcuts",
@@ -1082,118 +1138,169 @@ impl Render for SettingsPanel {
             .min_h_0()
             .flex()
             .flex_col()
+            .items_center()
+            .px(rpx(SPACE_20))
+            .pt(rpx(SPACE_20 * 2.0))
+            .pb(rpx(SPACE_20))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::key))
             .child(
                 div()
-                    .h(rpx(36.))
-                    .flex_shrink_0()
-                    .px(rpx(SPACE_3XL))
-                    .flex()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(c::BORDER_SOFT())
-                    .text_size(rpx(TEXT_BODY))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(title),
-            )
-            .child(
-                div()
-                    .id("settings-scroll")
-                    .debug_selector(|| "settings-scroll".into())
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .px(rpx(SPACE_3XL))
-                    .py(rpx(36.))
-                    .flex()
-                    .items_start()
-                    .justify_center()
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(rpx(620.))
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(rpx(SPACE_3XL))
-                            .child(
-                                div()
-                                    .text_size(rpx(24.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(title),
-                            )
-                            .child(body),
-                    ),
-            )
-            .when_some(self.error.clone(), |panel, error| {
-                panel.child(motion::fast(
-                    div()
-                        .id("settings-error")
-                        .role(gpui::Role::Alert)
-                        .px(rpx(SPACE_3XL))
-                        .py(rpx(SPACE_LG))
-                        .text_size(rpx(TEXT_BODY))
-                        .text_color(c::FORM_ERROR())
-                        .child(error.clone()),
-                    format!("settings-error-{error}"),
-                    cx,
-                ))
-            })
-            .child(
-                div()
-                    .id("settings-footer")
-                    .debug_selector(|| "settings-footer".into())
+                    .id("settings-content")
+                    .debug_selector(|| "settings-content".into())
                     .w_full()
-                    .border_t_1()
-                    .border_color(c::BORDER_SOFT())
-                    .px(rpx(SPACE_3XL))
-                    .py(rpx(SPACE_3XL))
+                    .max_w(rpx(MODAL_W_XL))
+                    .h_full()
+                    .min_h_0()
+                    .min_w_0()
                     .flex()
-                    .justify_center()
+                    .flex_col()
                     .child(
                         div()
+                            .id("settings-heading")
+                            .debug_selector(|| "settings-heading".into())
                             .w_full()
-                            .max_w(rpx(620.))
-                            .min_w_0()
+                            .flex_shrink_0()
                             .flex()
-                            .justify_between()
                             .items_center()
-                            .gap(rpx(SPACE_2XL))
+                            .justify_between()
+                            .gap(rpx(SPACE_LG))
+                            .text_size(rpx(TEXT_TITLE))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title)
                             .child(
                                 div()
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_LG))
+                                    .when(self.page != Page::Settings, |actions| {
+                                        actions.child(
+                                            self.button(
+                                                "settings-back",
+                                                "Back to settings",
+                                                false,
+                                                true,
+                                            )
+                                            .child("Back")
+                                            .on_click(
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.back(window, cx);
+                                                }),
+                                            ),
+                                        )
+                                    })
                                     .child(
-                                        "Tab to move · Esc to close · Changes save automatically",
+                                        super::components::header_control(
+                                            "settings-close",
+                                            "Close settings",
+                                        )
+                                        .tab_index(0)
+                                        .cursor_pointer()
+                                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                        .debug_selector(|| "settings-close".into())
+                                        .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
+                                        .on_click(
+                                            cx.listener(|this, _, window, cx| {
+                                                this.close(window, cx);
+                                            }),
+                                        ),
                                     ),
-                            )
-                            .child(
-                                self.button(
-                                    "settings-close",
-                                    if self.page == Page::Settings {
-                                        "Close settings"
-                                    } else {
-                                        "Back to settings"
-                                    },
-                                    false,
-                                    true,
-                                )
-                                .child(if self.page == Page::Settings {
-                                    "Close"
-                                } else {
-                                    "Back"
-                                })
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        if this.page == Page::Settings {
-                                            this.close(window, cx);
+                            ),
+                    )
+                    .when(self.page == Page::Settings, |region| {
+                        region.child(
+                            div()
+                                .id("settings-category-navigation")
+                                .debug_selector(|| "settings-category-navigation".into())
+                                .w_full()
+                                .flex_shrink_0()
+                                .flex()
+                                .gap(rpx(SPACE_20))
+                                .mt(rpx(SPACE_3XL))
+                                .overflow_x_scroll()
+                                .border_b_1()
+                                .border_color(c::BORDER_SOFT())
+                                .children(Category::ALL.into_iter().map(|category| {
+                                    let selected = self.category == category;
+                                    div()
+                                        .id(format!("settings-category-{}", category.label()))
+                                        .role(gpui::Role::Button)
+                                        .aria_label(category.label())
+                                        .aria_selected(selected)
+                                        .tab_index(0)
+                                        .flex_shrink_0()
+                                        .px(rpx(SPACE_XS))
+                                        .py(rpx(SPACE_LG))
+                                        .border_b_2()
+                                        .border_color(if selected { c::FG_DIM() } else { c::BG() })
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .font_weight(if selected {
+                                            FontWeight::MEDIUM
                                         } else {
-                                            this.show(Page::Settings, cx);
-                                        }
-                                    },
-                                )),
+                                            FontWeight::NORMAL
+                                        })
+                                        .text_color(if selected { c::FG() } else { c::FG_DIM() })
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(c::BG_HOVER()))
+                                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                        .debug_selector(move || {
+                                            format!("settings-category-{}", category.label())
+                                        })
+                                        .child(category.label())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.select_category(category, cx);
+                                        }))
+                                })),
+                        )
+                    })
+                    .when_some(self.error.clone(), |region, error| {
+                        region.child(motion::fast(
+                            div()
+                                .id("settings-error")
+                                .debug_selector(|| "settings-error".into())
+                                .role(gpui::Role::Alert)
+                                .flex_shrink_0()
+                                .w_full()
+                                .py(rpx(SPACE_LG))
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FORM_ERROR())
+                                .child(error.clone()),
+                            format!("settings-error-{error}"),
+                            cx,
+                        ))
+                    })
+                    .child(
+                        div()
+                            .id("settings-scroll")
+                            .debug_selector(|| "settings-scroll".into())
+                            .w_full()
+                            .min_w_0()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .child(
+                                div()
+                                    .id("settings-body")
+                                    .debug_selector(|| "settings-body".into())
+                                    .w_full()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .when(self.page != Page::Settings, |body| {
+                                        body.pt(rpx(SPACE_20))
+                                    })
+                                    .child(body)
+                                    .child(
+                                        div()
+                                            .id("settings-save-note")
+                                            .debug_selector(|| "settings-save-note".into())
+                                            .pt(rpx(SPACE_3XL))
+                                            .pb(rpx(SPACE_LG))
+                                            .text_size(rpx(TEXT_MICRO))
+                                            .text_color(c::FG_DIM())
+                                            .child("Changes save automatically"),
+                                    ),
                             ),
                     ),
             )
@@ -1243,6 +1350,17 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    #[test]
+    fn terminal_agent_choice_inverts_existing_native_preference() {
+        let mut store = Store {
+            native_agents_enabled: true,
+            ..Store::default()
+        };
+        assert!(!runs_agents_in_terminal(&store));
+        store.native_agents_enabled = false;
+        assert!(runs_agents_in_terminal(&store));
     }
 
     #[test]
@@ -1306,7 +1424,58 @@ mod tests {
     }
 
     #[gpui::test]
-    fn settings_body_scrolls_while_footer_stays_fixed(cx: &mut gpui::TestAppContext) {
+    fn nested_shortcuts_after_direct_shortcuts_return_to_general(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open_shortcuts(window, cx);
+                panel.back(window, cx);
+                panel.open_nested(Page::Shortcuts, window, cx);
+            });
+        });
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(panel.read(cx).is_open());
+            assert_eq!(panel.read(cx).page, Page::Settings);
+            assert_eq!(panel.read(cx).category, Category::General);
+        });
+    }
+
+    #[gpui::test]
+    fn category_navigation_activates_with_keyboard_and_resets_scroll(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
+        draw(cx);
+        // The category choices are the first keyboard stops, in displayed order.
+        for chord in ["tab", "tab", "tab", "enter"] {
+            cx.simulate_keystrokes(chord);
+            draw(cx);
+        }
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(panel.read(cx).category, Category::Agents);
+            assert_eq!(panel.read(cx).page, Page::Settings);
+            assert_eq!(panel.read(cx).scroll.offset(), gpui::Point::default());
+        });
+    }
+
+    #[gpui::test]
+    fn settings_body_scrolls_while_heading_and_tabs_stay_reachable(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
             let runtime = cx.new(Runtime::new);
@@ -1317,8 +1486,15 @@ mod tests {
         draw(cx);
 
         let scroll = cx.debug_bounds("settings-scroll").expect("scroll viewport");
-        let footer = cx.debug_bounds("settings-footer").expect("fixed footer");
-        assert_eq!(scroll.bottom(), footer.top());
+        let heading = cx.debug_bounds("settings-heading").expect("local heading");
+        let tabs = cx
+            .debug_bounds("settings-category-navigation")
+            .expect("tabs");
+        let close = cx.debug_bounds("settings-close").expect("close");
+        assert_eq!(tabs.bottom(), scroll.top());
+        assert!(scroll.bottom() <= gpui::px(200.));
+        assert!(close.top() >= heading.top() && close.bottom() <= heading.bottom());
+        assert!(cx.debug_bounds("settings-footer").is_none());
         assert!(panel.read_with(cx, |panel, _| panel.scroll.max_offset().y) > gpui::px(0.));
 
         cx.simulate_event(gpui::ScrollWheelEvent {
@@ -1329,7 +1505,56 @@ mod tests {
         });
         draw(cx);
         assert!(panel.read_with(cx, |panel, _| panel.scroll.offset().y) < gpui::px(0.));
-        assert_eq!(cx.debug_bounds("settings-footer"), Some(footer));
+        assert_eq!(cx.debug_bounds("settings-heading"), Some(heading));
+        assert_eq!(cx.debug_bounds("settings-category-navigation"), Some(tabs));
+        assert_eq!(cx.debug_bounds("settings-close"), Some(close));
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.error = Some("Could not save settings.".into());
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let error = cx
+            .debug_bounds("settings-error")
+            .expect("visible save error");
+        let scroll = cx.debug_bounds("settings-scroll").expect("bounded scroll");
+        assert!(error.top() >= tabs.bottom());
+        assert_eq!(error.bottom(), scroll.top());
+        assert!(error.bottom() < gpui::px(200.));
+        assert_eq!(cx.debug_bounds("settings-close"), Some(close));
+    }
+
+    #[gpui::test]
+    fn desktop_tabs_and_body_share_one_centered_content_column(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        draw(cx);
+        let content = cx.debug_bounds("settings-content").expect("content column");
+        let heading = cx.debug_bounds("settings-heading").expect("heading");
+        let tabs = cx
+            .debug_bounds("settings-category-navigation")
+            .expect("tabs");
+        let body = cx.debug_bounds("settings-body").expect("body");
+        let general = cx
+            .debug_bounds("settings-category-General")
+            .expect("General tab");
+        let agents = cx
+            .debug_bounds("settings-category-Agents")
+            .expect("Agents tab");
+        assert_eq!(content.size.width, gpui::px(MODAL_W_XL));
+        assert_eq!(content.center().x, gpui::px(640.));
+        assert_eq!(heading.left(), body.left());
+        assert_eq!(tabs.left(), body.left());
+        assert_eq!(tabs.size.width, body.size.width);
+        assert_eq!(general.top(), agents.top());
+        assert!(agents.left() > general.right());
+        assert!(tabs.bottom() <= body.top());
     }
 
     #[gpui::test]
@@ -1342,7 +1567,8 @@ mod tests {
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.open(window, cx);
-                panel.show(Page::Changelog, cx);
+                panel.select_category(Category::About, cx);
+                panel.open_nested(Page::Changelog, window, cx);
             });
         });
         draw(cx);
@@ -1351,6 +1577,7 @@ mod tests {
         cx.update(|_, cx| {
             assert!(panel.read(cx).is_open());
             assert_eq!(panel.read(cx).page, Page::Settings);
+            assert_eq!(panel.read(cx).category, Category::About);
         });
     }
 
