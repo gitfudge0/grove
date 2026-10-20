@@ -92,7 +92,7 @@ pub fn launch_options(args: &[String]) -> Result<(Vec<String>, Option<String>), 
 
 pub fn connect(saved: SavedSession, args: Vec<String>, task_id: Option<String>) -> Connection {
     let (handle, input) = Handle::channel();
-    let (updates, output) = mpsc::channel();
+    let (updates, output) = crate::latest::channel();
     let pid = handle.1.clone();
     let stopping = handle.2.clone();
     std::thread::spawn(move || {
@@ -288,7 +288,7 @@ struct Actor {
     args: Vec<String>,
     task_id: Option<String>,
     input: mpsc::Receiver<Action>,
-    updates: mpsc::Sender<Snapshot>,
+    updates: crate::latest::Sender<Snapshot>,
     pid: Arc<AtomicU32>,
     stopping: Arc<AtomicBool>,
     process: Option<Process>,
@@ -323,7 +323,7 @@ impl Actor {
         args: Vec<String>,
         task_id: Option<String>,
         input: mpsc::Receiver<Action>,
-        updates: mpsc::Sender<Snapshot>,
+        updates: crate::latest::Sender<Snapshot>,
         pid: Arc<AtomicU32>,
         stopping: Arc<AtomicBool>,
     ) -> Self {
@@ -416,18 +416,10 @@ impl Actor {
             if self.stopping.load(Ordering::SeqCst) {
                 continue;
             }
-            loop {
-                let message = self.process.as_ref().and_then(|p| p.lines.try_recv().ok());
-                let Some(message) = message else { break };
-                match message {
-                    Ok(value) => {
-                        if let Err(error) = self.message(value) {
-                            self.fail(error);
-                        }
-                    }
-                    Err(error) => self.fail(error),
-                }
-                self.dirty = true;
+            // The UI consumes complete state, so intermediate protocol deltas
+            // need not each clone the accumulated conversation. A bounded batch
+            // also lets actions and publication run during continuous output.
+            if self.receive_batch() {
                 self.publish();
             }
             if self.dirty && self.last_persist.elapsed() >= Duration::from_millis(250) {
@@ -488,6 +480,24 @@ impl Actor {
         } else {
             self.dirty = false;
         }
+    }
+    fn receive_batch(&mut self) -> bool {
+        let mut received = false;
+        for _ in 0..256 {
+            let message = self.process.as_ref().and_then(|p| p.lines.try_recv().ok());
+            let Some(message) = message else { break };
+            match message {
+                Ok(value) => {
+                    if let Err(error) = self.message(value) {
+                        self.fail(error);
+                    }
+                }
+                Err(error) => self.fail(error),
+            }
+            self.dirty = true;
+            received = true;
+        }
+        received
     }
     fn publish(&self) {
         let _ = self.updates.send(self.state.clone());
@@ -1616,7 +1626,7 @@ mod tests {
     fn actor() -> Actor {
         let saved:SavedSession=serde_json::from_value(json!({"key":"claude-test","provider":"claude","project":"test","cwd":"/tmp","label":"Claude","roots":[],"thread_id":null,"items":[]})).unwrap();
         let (_, input) = mpsc::channel();
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = crate::latest::channel();
         Actor::new(
             saved,
             Vec::new(),
@@ -1942,6 +1952,42 @@ mod tests {
             lines,
         });
         output
+    }
+    #[test]
+    fn protocol_batches_yield_with_backlog_and_preserve_pending_order() {
+        let mut actor = actor();
+        let _reader = transport(&mut actor);
+        let (send, lines) = mpsc::channel();
+        actor.process.as_mut().unwrap().lines = lines;
+        // Unknown future protocol events are deliberately ignored by message(),
+        // but must still be bounded and consumed in transport order.
+        for sequence in 0..600 {
+            send.send(Ok(json!({"type":"future_event", "sequence":sequence})))
+                .unwrap();
+        }
+        assert!(actor.receive_batch());
+        assert!(actor.dirty);
+        let next = actor
+            .process
+            .as_ref()
+            .unwrap()
+            .lines
+            .try_recv()
+            .unwrap()
+            .unwrap();
+        assert_eq!(next["sequence"], 256);
+        assert!(actor.receive_batch());
+        let next = actor
+            .process
+            .as_ref()
+            .unwrap()
+            .lines
+            .try_recv()
+            .unwrap()
+            .unwrap();
+        assert_eq!(next["sequence"], 513);
+        assert!(actor.receive_batch());
+        assert!(!actor.receive_batch());
     }
     fn read(reader: &mut impl BufRead) -> Value {
         let mut line = String::new();
@@ -2363,7 +2409,7 @@ mod tests {
             vec!["--model".into(), "sonnet".into(), "--chrome".into()];
         original.state.saved.task_id = Some("task".into());
         let (_, input) = mpsc::channel();
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = crate::latest::channel();
         let restored = Actor::new(
             original.state.saved,
             Vec::new(),

@@ -480,7 +480,7 @@ impl HighlightTheme {
 
 /// Registry for code highlighter languages.
 pub struct LanguageRegistry {
-    languages: Mutex<HashMap<SharedString, LanguageConfig>>,
+    languages: Mutex<HashMap<SharedString, Option<LanguageConfig>>>,
 }
 
 impl LanguageRegistry {
@@ -489,7 +489,7 @@ impl LanguageRegistry {
         static INSTANCE: LazyLock<LanguageRegistry> = LazyLock::new(|| LanguageRegistry {
             languages: Mutex::new(
                 languages::Language::all()
-                    .map(|language| (language.name().into(), language.config()))
+                    .map(|language| (SharedString::new_static(language.name()), None))
                     .collect(),
             ),
         });
@@ -501,7 +501,7 @@ impl LanguageRegistry {
         self.languages
             .lock()
             .unwrap()
-            .insert(lang.to_string().into(), config.clone());
+            .insert(lang.into(), Some(config.clone()));
     }
 
     /// Returns a list of all registered language names.
@@ -512,10 +512,17 @@ impl LanguageRegistry {
     /// Returns the language configuration for the given language name.
     pub fn language(&self, name: &str) -> Option<LanguageConfig> {
         // Try to get by name first, there may have a custom language registered Then try to get built-in language to support short language names, e.g. "js" for "javascript"
-        let languages = self.languages.lock().unwrap();
-        languages.get(name).cloned().or_else(|| {
-            Language::from_name(name).and_then(|language| languages.get(language.name()).cloned())
-        })
+        let mut languages = self.languages.lock().unwrap();
+        let key = if languages.contains_key(name) {
+            name
+        } else {
+            Language::from_name(name)?.name()
+        };
+        let entry = languages.get_mut(key)?;
+        if entry.is_none() {
+            *entry = Some(Language::from_name(key)?.config());
+        }
+        entry.clone()
     }
 }
 

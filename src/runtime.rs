@@ -1620,7 +1620,7 @@ mod tests {
             };
             let connection = grove_core::codex::Connection {
                 handle: handle.clone(),
-                updates: receive,
+                updates: receive.into(),
             };
             let session = cx.new(|cx| {
                 crate::entities::codex_session::CodexSession::from_connection(

@@ -606,14 +606,15 @@ impl Language {
 
         let language = tree_sitter::Language::new(language);
 
-        LanguageConfig::new(
-            self.name(),
-            language,
-            self.injection_languages(),
-            query,
-            injection,
-            locals,
-        )
+        // Built-in queries already live in the executable; borrow their bytes.
+        LanguageConfig {
+            name: SharedString::new_static(self.name()),
+            language: Some(language),
+            injection_languages: self.injection_languages(),
+            highlights: SharedString::new_static(query),
+            injections: SharedString::new_static(injection),
+            locals: SharedString::new_static(locals),
+        }
     }
 }
 

@@ -1329,7 +1329,7 @@ impl Handle {
 }
 pub struct Connection {
     pub handle: Handle,
-    pub updates: mpsc::Receiver<Snapshot>,
+    pub updates: crate::latest::Receiver<Snapshot>,
 }
 
 pub fn recovery_dir() -> Result<PathBuf, String> {
@@ -1467,7 +1467,7 @@ pub fn connect(saved: SavedSession, args: Vec<String>, task_id: Option<String>) 
         return crate::claude::connect(saved, args, task_id);
     }
     let (handle, receive) = Handle::channel();
-    let (updates, output) = mpsc::channel();
+    let (updates, output) = crate::latest::channel();
     let actor_pid = handle.1.clone();
     let actor_stopping = handle.2.clone();
     std::thread::spawn(move || {
@@ -1616,7 +1616,7 @@ struct Request {
 struct Actor {
     state: Snapshot,
     actions: mpsc::Receiver<Action>,
-    updates: mpsc::Sender<Snapshot>,
+    updates: crate::latest::Sender<Snapshot>,
     process: Option<Process>,
     pending: HashMap<u64, Request>,
     seq: u64,
@@ -1638,7 +1638,7 @@ impl Actor {
     fn new(
         saved: SavedSession,
         actions: mpsc::Receiver<Action>,
-        updates: mpsc::Sender<Snapshot>,
+        updates: crate::latest::Sender<Snapshot>,
         args: Vec<String>,
         task_id: Option<String>,
     ) -> Self {
@@ -3152,7 +3152,7 @@ mod tests {
     }
     fn actor() -> Actor {
         let (_, actions) = mpsc::channel();
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = crate::latest::channel();
         let mut actor = Actor::new(saved(), actions, updates, Vec::new(), None);
         actor.state = state();
         actor

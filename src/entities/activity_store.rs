@@ -320,13 +320,7 @@ impl ActivityStore {
             .filter_map(|(id, ..)| registry.read(cx).session(*id).map(|e| (*id, e.clone())))
             .collect();
 
-        // Only worth polling while a live Claude session exists to inform (`tick.rs:120-124`).
-        if let Some(poller) = self.poller.as_ref() {
-            let any_claude = sessions
-                .iter()
-                .any(|(_, agent, ..)| *agent == Agent::Claude);
-            poller.set_wanted(any_claude);
-        }
+        let mut wants_native_poll = false;
 
         let mut newly_waiting = false;
         let mut changed = false;
@@ -369,6 +363,10 @@ impl ActivityStore {
                         s.root_pid(),
                     )
                 });
+
+            // Structured sessions use their actor status above. Only a live terminal
+            // Claude session needs the external native-status fallback (including tmux).
+            wants_native_poll |= alive && *agent == Agent::Claude;
 
             let tracker = self.trackers.entry(*id).or_default();
             // A counter that went backwards means the parser was reset — resync rather than go silent forever.
@@ -442,6 +440,10 @@ impl ActivityStore {
                 tracker.state = new_state;
                 tracker.state_since = Instant::now();
             }
+        }
+
+        if let Some(poller) = self.poller.as_ref() {
+            poller.set_wanted(wants_native_poll);
         }
 
         // Prune trackers to live ids: a killed session's tracker must not keep its `WaitingForInput` in the badge count.

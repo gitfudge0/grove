@@ -2379,7 +2379,7 @@ mod tests {
             state.status = grove_core::codex::Status::Idle;
             let connection = grove_core::codex::Connection {
                 handle: handle.clone(),
-                updates: receive,
+                updates: receive.into(),
             };
             let session = cx.new(|cx| {
                 crate::entities::codex_session::CodexSession::from_connection(state, connection, cx)

@@ -2827,6 +2827,7 @@ dependencies = [
  "raw-window-handle",
  "resvg 0.46.0",
  "rust-embed",
+ "rustc-hash 2.1.2",
  "semver",
  "serde_json",
  "tempfile",

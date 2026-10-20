@@ -30,9 +30,51 @@ use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
     fmt::Write as _,
+    hash::{Hash, Hasher},
     rc::Rc,
     sync::Arc,
 };
+
+/// Fixed-size content comparison without serializing or retaining the transcript.
+/// Hash full values, including equal-length streaming edits and optimistic items.
+fn transcript_content_signature(items: &[serde_json::Value], thread: Option<&str>) -> [u64; 2] {
+    std::array::from_fn(|domain| {
+        let mut hasher = rustc_hash::FxHasher::default();
+        domain.hash(&mut hasher);
+        thread.hash(&mut hasher);
+        items.len().hash(&mut hasher);
+        for item in items {
+            hash_transcript_value(item, &mut hasher);
+        }
+        hasher.finish()
+    })
+}
+
+/// Value's Hash implementation canonicalizes objects using an allocated sorted
+/// vector when serde_json preserves insertion order. Render comparison only needs
+/// the same ordered structure as JSON serialization, so visit entries directly.
+fn hash_transcript_value(value: &serde_json::Value, hasher: &mut impl Hasher) {
+    std::mem::discriminant(value).hash(hasher);
+    match value {
+        serde_json::Value::Null => {}
+        serde_json::Value::Bool(value) => value.hash(hasher),
+        serde_json::Value::Number(value) => value.hash(hasher),
+        serde_json::Value::String(value) => value.hash(hasher),
+        serde_json::Value::Array(values) => {
+            values.len().hash(hasher);
+            for value in values {
+                hash_transcript_value(value, hasher);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            values.len().hash(hasher);
+            for (key, value) in values {
+                key.hash(hasher);
+                hash_transcript_value(value, hasher);
+            }
+        }
+    }
+}
 
 const STOP_HOVER_OPACITY: f32 = 0.8;
 const CHAT_MAX_W: f32 = 760.0;
@@ -393,7 +435,7 @@ pub struct CodexView {
     previews: HashMap<String, Arc<gpui::Image>>,
     pending_image_pastes: usize,
     scroll: gpui::ScrollHandle,
-    last_content: String,
+    last_content: Option<[u64; 2]>,
     smooth_follow: bool,
     last_follow_offset: Option<gpui::Pixels>,
     last_follow_max: gpui::Pixels,
@@ -520,7 +562,7 @@ impl CodexView {
             previews,
             pending_image_pastes: 0,
             scroll,
-            last_content: String::new(),
+            last_content: None,
             smooth_follow: false,
             last_follow_offset: None,
             last_follow_max: gpui::Pixels::ZERO,
@@ -1857,7 +1899,10 @@ impl Render for CodexView {
             .collect();
         state.saved.items.extend(optimistic_items);
         // Tool output/status and same-length streaming replacements also change layout.
-        let content = serde_json::to_string(&state.saved.items).unwrap_or_default();
+        let content = Some(transcript_content_signature(
+            &state.saved.items,
+            state.saved.thread_id.as_deref(),
+        ));
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
             <= rpx(SPACE_20).to_pixels(window.rem_size());
         if let Some(toward_bottom) = self.pending_composer_scroll.take() {
@@ -1887,7 +1932,7 @@ impl Render for CodexView {
                 *shown = text.len();
             }
         }
-        let initial_transcript = self.last_content.is_empty() || changed_thread;
+        let initial_transcript = self.last_content.is_none() || changed_thread;
         let stream_keys: HashSet<_> = state
             .saved
             .items
@@ -6821,7 +6866,7 @@ mod tests {
                 state,
                 Connection {
                     handle,
-                    updates: receive,
+                    updates: receive.into(),
                 },
                 cx,
             )
@@ -6911,7 +6956,7 @@ mod tests {
         let (updates, receive) = mpsc::channel();
         let connection = Connection {
             handle,
-            updates: receive,
+            updates: receive.into(),
         };
         let mut view = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
@@ -8463,7 +8508,7 @@ mod tests {
                     snapshot(),
                     Connection {
                         handle,
-                        updates: receive,
+                        updates: receive.into(),
                     },
                     cx,
                 )
@@ -8968,7 +9013,7 @@ mod tests {
         let (view, cx, _, _) = fixture(cx);
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
-                view.last_content.clear(); // Model mounting an existing saved transcript.
+                view.last_content = None; // Model mounting an existing saved transcript.
                 view.session.update(cx, |session, cx| {
                     session.state.status = Status::Working;
                     session.state.saved.items =
@@ -10839,5 +10884,37 @@ mod tests {
             .starts_with("data:image/png;base64,")));
         cx.update(|window, cx| view.update(cx, |view, cx| view.submit(window, cx)));
         assert!(actions.try_iter().any(|action| matches!(action, Action::Submit {text,images,..} if text.trim()=="Image 1 inspect screenshot" && images.len()==1 && images[0].starts_with("data:image/png;base64,"))));
+    }
+}
+
+#[cfg(test)]
+mod transcript_signature_tests {
+    use super::transcript_content_signature;
+    use serde_json::json;
+
+    #[test]
+    fn content_signature_tracks_equal_length_edits_optimistic_items_images_and_threads() {
+        let mut items = vec![json!({"id":"answer", "type":"agentMessage", "text":"one"})];
+        let original = transcript_content_signature(&items, Some("thread-a"));
+        assert_eq!(
+            original,
+            transcript_content_signature(&items, Some("thread-a"))
+        );
+        items[0]["text"] = json!("two");
+        let replaced = transcript_content_signature(&items, Some("thread-a"));
+        assert_ne!(original, replaced);
+        items.push(json!({"id":"optimistic", "type":"userMessage", "text":"next"}));
+        let optimistic = transcript_content_signature(&items, Some("thread-a"));
+        assert_ne!(replaced, optimistic);
+        items[1]["images"] = json!(["data:image/png;base64,AAAA"]);
+        let image = transcript_content_signature(&items, Some("thread-a"));
+        assert_ne!(optimistic, image);
+        items[1]["images"] = json!(["data:image/png;base64,BBBB"]);
+        let edited_image = transcript_content_signature(&items, Some("thread-a"));
+        assert_ne!(image, edited_image);
+        assert_ne!(
+            edited_image,
+            transcript_content_signature(&items, Some("thread-b"))
+        );
     }
 }

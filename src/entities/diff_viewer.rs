@@ -1,6 +1,6 @@
 //! The diff viewer's gpui-side state, loaded off the main thread. All diff arithmetic lives in `grove_core::diff`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Instant, SystemTime};
 
 use gpui::{AppContext as _, Context};
@@ -11,6 +11,19 @@ use grove_core::storage::DiffMode;
 
 /// Matched to `ProjectTree`'s `GIT_POLL_INTERVAL` so the file list refreshes on the same rhythm as the git-state chips it's opened from.
 const LIVE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Each patch already has line/byte guards in grove-core; bound how many baked
+/// patch and row representations a viewer retains while browsing files.
+const PATCH_CACHE_ENTRIES: usize = 8;
+
+/// Touch an entry and return the least recently used path when capacity is exceeded.
+fn touch_cached_path(order: &mut VecDeque<String>, path: &str) -> Option<String> {
+    order.retain(|cached| cached != path);
+    order.push_back(path.to_string());
+    (order.len() > PATCH_CACHE_ENTRIES)
+        .then(|| order.pop_front())
+        .flatten()
+}
 
 /// Session-only, scoped per worktree — switching worktrees does not carry an expansion set over.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -47,6 +60,7 @@ pub struct DiffViewerState {
     /// Directories default to expanded; this holds only the ones explicitly collapsed.
     pub tree_expanded: std::collections::HashSet<String>,
     pub patch_cache: HashMap<String, CachedPatch>,
+    patch_cache_order: VecDeque<String>,
     pub loading: bool,
     /// Throttle for [`Self::maybe_refresh_live`], on [`LIVE_REFRESH_INTERVAL`]'s cadence rather than firing every render.
     last_live_refresh: Option<Instant>,
@@ -75,6 +89,7 @@ impl DiffViewerState {
             list_style: FileListStyle::Flat,
             tree_expanded: std::collections::HashSet::new(),
             patch_cache: HashMap::new(),
+            patch_cache_order: VecDeque::new(),
             loading: true,
             last_live_refresh: None,
             live_refresh_inflight: false,
@@ -162,6 +177,7 @@ impl DiffViewerState {
         let reconciled = diff::reconcile(&self.files, &new_files, prev_selected.as_deref());
         for path in &reconciled.evicted {
             self.patch_cache.remove(path);
+            self.patch_cache_order.retain(|cached| cached != path);
         }
         self.files = new_files;
         self.selected_path.clone_from(&reconciled.selected);
@@ -186,7 +202,9 @@ impl DiffViewerState {
         }
         self.selected_path = Some(path.clone());
         cx.notify();
-        if !self.patch_cache.contains_key(&path) {
+        if self.patch_cache.contains_key(&path) {
+            let _ = touch_cached_path(&mut self.patch_cache_order, &path);
+        } else {
             self.load_patch(&path, cx);
         }
     }
@@ -250,6 +268,14 @@ impl DiffViewerState {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                // A late result for an abandoned selection must not refill the cache
+                // or evict the file currently being read. Selecting it again reloads it.
+                if this.selected_path.as_deref() != Some(insert_key.as_str()) {
+                    return;
+                }
+                if let Some(evicted) = touch_cached_path(&mut this.patch_cache_order, &insert_key) {
+                    this.patch_cache.remove(&evicted);
+                }
                 // Only the O(1) `Rc` wrapping happens on the main thread — `Rc` is not `Send`.
                 this.patch_cache.insert(
                     insert_key,
@@ -393,5 +419,33 @@ impl DiffViewerState {
     pub fn set_mode(&mut self, mode: DiffMode, cx: &mut Context<Self>) {
         self.mode = mode;
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn patch_cache_keeps_recently_selected_files_and_bounds_browsing_history() {
+        let mut order = VecDeque::new();
+        for index in 0..PATCH_CACHE_ENTRIES {
+            assert_eq!(
+                touch_cached_path(&mut order, &format!("file-{index}")),
+                None
+            );
+        }
+        assert_eq!(touch_cached_path(&mut order, "file-0"), None);
+        assert_eq!(
+            touch_cached_path(&mut order, "next-file"),
+            Some("file-1".to_string())
+        );
+        assert_eq!(order.len(), PATCH_CACHE_ENTRIES);
+        assert_eq!(order.back().map(String::as_str), Some("next-file"));
+        assert!(order.iter().any(|path| path == "file-0"));
+        for index in 0..100 {
+            let _ = touch_cached_path(&mut order, &format!("later-{index}"));
+            assert_eq!(order.len(), PATCH_CACHE_ENTRIES);
+        }
     }
 }

@@ -178,6 +178,7 @@ dirs.workspace = true
 # grove-core already consumes, so no new crate enters `Cargo.lock`.
 ureq.workspace = true
 serde_json.workspace = true
+rustc-hash = "=2.1.2"
 # Vendored, not a git dep: see vendor/gpui-component/README.md for the source,
 # rev, license and the full list of manifest edits.
 # Clipboard screenshots (including macOS TIFF) are validated off-thread and
