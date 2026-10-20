@@ -191,7 +191,7 @@ impl Sidebar {
     }
 }
 
-/// The sidebar row's "3/7 ▬" cell, placed just before the Git counts.
+/// The sidebar row's "3/7 ▬" cell: before the Git counts in list rows, trailing in tree rows.
 pub(super) fn row_progress(id: SessionId, glance: &TaskGlance) -> AnyElement {
     div()
         .id(("session-tasks", id.raw()))

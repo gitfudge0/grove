@@ -3657,13 +3657,6 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .when_some(tasks.as_ref(), |slot, tasks| {
-                        slot.child(
-                            div()
-                                .group_hover("session-row", |progress| progress.opacity(0.0))
-                                .child(task_glance::row_progress(id, tasks)),
-                        )
-                    })
                     .child(
                         self.control(
                             ("close-session", id.raw()),
@@ -3752,6 +3745,9 @@ impl Sidebar {
                         )
                     }),
             )
+            .when_some(tasks.as_ref(), |row, tasks| {
+                row.child(task_glance::row_progress(id, tasks))
+            })
         };
         let row = if list {
             let selected = self.selection == Some(Selection::Session(id));
@@ -8815,11 +8811,11 @@ for line in sys.stdin:
             assert!(close.right() <= status.left());
             let progress = cx.debug_bounds("session-tasks-1").unwrap();
             let leading = cx.debug_bounds("session-tree-leading-1").unwrap();
-            assert!(progress.left() >= leading.left());
-            assert!(progress.right() <= leading.right());
+            assert!(title.right() <= progress.left());
+            assert_eq!(f32::from(row.right() - progress.right()), HIERARCHY_INSET);
             assert_eq!(close, leading);
             assert_eq!(f32::from(leading.left() - row.left()), HIERARCHY_INSET);
-            // The shared slot reserves its full width while hover replaces progress.
+            // Hover reveals close in the reserved leading slot without moving the title.
             cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
             draw(cx);
             assert_eq!(cx.debug_bounds("session-tree-title-1").unwrap(), title);
