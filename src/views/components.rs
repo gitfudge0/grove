@@ -4,7 +4,7 @@ use crate::theme as c;
 use gpui::{div, prelude::*, Div, MouseButton, Stateful};
 
 const FORM_FIELD_H: f32 = 60.;
-const FORM_FIELD_INSET: f32 = 14.;
+pub(super) const FORM_FIELD_INSET: f32 = 14.;
 const FORM_FIELD_VALUE: f32 = 16.;
 
 /// Preferred width for a truncating label whose trailing control stays adjacent.

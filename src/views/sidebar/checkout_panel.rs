@@ -1,6 +1,8 @@
 //! Checkout actions live beside the selected canvas, outside its scroll region.
 use super::*;
-use crate::views::components::{form_action, project_field_well, transcript_action};
+use crate::views::components::{
+    form_action, project_field_well, transcript_action, FORM_FIELD_INSET,
+};
 use gpui_component::{
     menu::{PopupMenu, PopupMenuItem},
     Disableable,
