@@ -2,8 +2,9 @@
 use super::{
     components::{
         form_action, header_control, header_control_with_hover, header_control_with_tooltip,
-        project_field_well, question_choice, question_disclosure, task_mark, task_meter, tooltip,
-        tooltip_content, transcript_action, truncation_safe_label_width, TaskPhase,
+        project_field_well, question_choice, question_disclosure, shimmer_label, task_mark,
+        task_meter, tooltip, tooltip_content, transcript_action, truncation_safe_label_width,
+        TaskPhase,
     },
     rpx,
     tokens::*,
@@ -87,8 +88,6 @@ const COMPOSER_MIN_H: f32 = 72.0;
 const USER_BUBBLE_MAX_W: f32 = 600.0;
 const IMAGE_PREVIEW_EDGE: f32 = 56.0;
 const COMPOSER_TOKEN_UNDERLINE: f32 = 1.0;
-const TOOL_SHIMMER_PERIOD: std::time::Duration = std::time::Duration::from_millis(1600);
-const TOOL_SHIMMER_WIDTH: f32 = 0.2;
 const QUEUED_PROMPTS_MAX_H: f32 = 144.0;
 const QUESTION_PANEL_MAX_H: f32 = 360.0;
 const TOOL_DETAIL_MAX_H: f32 = 280.0;
@@ -5393,55 +5392,6 @@ fn tool_is_running(state: &codex::Snapshot, index: usize) -> bool {
             && index + 1 == state.saved.items.len())
 }
 
-/// A label whose glyphs carry a moving highlight while `running`; static with reduced motion.
-fn shimmer_label(id: gpui::ElementId, label: String, running: bool, cx: &App) -> gpui::AnyElement {
-    if !running || cx.reduce_motion() {
-        return div().child(label).into_any_element();
-    }
-    div()
-        .with_animation(
-            id,
-            gpui::Animation::new(TOOL_SHIMMER_PERIOD).repeat(),
-            move |element, progress| {
-                element.child(
-                    gpui::StyledText::new(label.clone())
-                        .with_highlights(shimmer_highlights(&label, progress)),
-                )
-            },
-        )
-        .into_any_element()
-}
-
-fn shimmer_highlights(
-    text: &str,
-    progress: f32,
-) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
-    let count = text.chars().count().max(1) as f32;
-    let center = progress * (1.0 + TOOL_SHIMMER_WIDTH * 2.0) - TOOL_SHIMMER_WIDTH;
-    let dim = c::FG_DIM();
-    let bright = c::FG();
-    text.char_indices()
-        .enumerate()
-        .map(|(index, (start, character))| {
-            let strength =
-                (1.0 - ((index as f32 / count - center).abs() / TOOL_SHIMMER_WIDTH)).max(0.0);
-            let color = gpui::Hsla {
-                h: dim.h + (bright.h - dim.h) * strength,
-                s: dim.s + (bright.s - dim.s) * strength,
-                l: dim.l + (bright.l - dim.l) * strength,
-                a: dim.a + (bright.a - dim.a) * strength,
-            };
-            (
-                start..start + character.len_utf8(),
-                gpui::HighlightStyle {
-                    color: Some(color),
-                    ..Default::default()
-                },
-            )
-        })
-        .collect()
-}
-
 fn is_tool_item(item: &serde_json::Value) -> bool {
     !matches!(
         item["type"].as_str(),
@@ -10489,8 +10439,8 @@ mod tests {
         let (_, cx, _, _) = fixture(cx);
         cx.update(|_, _| {
             let label = "5 tool calls · Running…";
-            let early = shimmer_highlights(label, 0.25);
-            let later = shimmer_highlights(label, 0.75);
+            let early = super::super::components::shimmer_highlights(label, 0.25);
+            let later = super::super::components::shimmer_highlights(label, 0.75);
             assert_eq!(early.len(), label.chars().count());
             assert!(early
                 .iter()
@@ -10602,7 +10552,11 @@ mod tests {
         draw(cx);
         draw(cx);
         let expanded = cx.debug_bounds("codex-composer-input").unwrap().size.height;
-        let expanded_tasks = cx.debug_bounds("codex-task-strip-panel").unwrap().size.height;
+        let expanded_tasks = cx
+            .debug_bounds("codex-task-strip-panel")
+            .unwrap()
+            .size
+            .height;
         assert!(cx.debug_bounds("codex-task-list").is_some());
         let scroll = |delta, cx: &mut gpui::VisualTestContext| {
             let bounds = cx.debug_bounds("codex-messages").unwrap();
@@ -10628,7 +10582,13 @@ mod tests {
         assert!(cx.debug_bounds("codex-attachments").is_none());
         assert!(cx.debug_bounds("codex-task-strip").is_some());
         assert!(cx.debug_bounds("codex-task-list").is_none());
-        assert!(cx.debug_bounds("codex-task-strip-panel").unwrap().size.height < expanded_tasks);
+        assert!(
+            cx.debug_bounds("codex-task-strip-panel")
+                .unwrap()
+                .size
+                .height
+                < expanded_tasks
+        );
         assert!(view.read_with(cx, |view, _| view.tasks_expanded));
         // The editor retained focus during scrolling; clicking it still expands it.
         let input = cx.debug_bounds("codex-composer-input").unwrap();

@@ -228,6 +228,12 @@ fn svg_for(name: &str) -> String {
         }
         // Generic git commit — a node on a horizontal line.
         "git" => r#"<circle cx="8" cy="8" r="2.5"/><path d="M1.5 8h4M10.5 8h4"/>"#,
+        // Outgoing commits — upload to the upstream bar.
+        "git-push" => r#"<path d="M8 13V5M4.5 8.5 8 5l3.5 3.5M3 2.5h10"/>"#,
+        // Publish a new remote branch — cloud upload.
+        "git-publish" => {
+            r#"<path d="M4.5 11.5H4a2.5 2.5 0 0 1-.2-5A4.25 4.25 0 0 1 12 5.4a3 3 0 0 1 .5 6.1H12M8 14V8m-2.5 2.5L8 8l2.5 2.5"/>"#
+        }
         // Git branch with a slash through it — git disabled.
         "no-git" => {
             r#"<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="3.5" r="1.5"/><path d="M11.5 5v1.5a3 3 0 0 1-3 3H4.5M4.5 5v6"/><path d="M2.5 13.5l11-11"/>"#

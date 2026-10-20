@@ -1,8 +1,6 @@
 //! Checkout actions live beside the selected canvas, outside its scroll region.
 use super::*;
-use crate::views::components::{
-    form_action, project_field_well, transcript_action, FORM_FIELD_INSET,
-};
+use crate::views::components::{form_action, project_field_well, shimmer_label, transcript_action};
 use gpui_component::{
     menu::{PopupMenu, PopupMenuItem},
     Disableable,
@@ -37,6 +35,8 @@ pub(super) struct CheckoutPanel {
     state: Option<Result<CheckoutGitState, String>>,
     loading: bool,
     busy: bool,
+    network_action: Option<(&'static str, &'static str)>,
+    network_target: Option<(String, u64)>,
     message: Option<String>,
     publish: Option<String>,
     expanded: bool,
@@ -165,7 +165,12 @@ impl Sidebar {
         };
         let generation = self.checkout_panel.generation;
         self.checkout_panel.busy = true;
-        self.checkout_panel.message = Some("Working…".into());
+        self.checkout_panel.network_target = Some((path.clone(), generation));
+        self.checkout_panel.network_action = Some(match action {
+            GitAction::Publish { .. } => ("Publishing…", "git-publish"),
+            _ => ("Pushing…", "git-push"),
+        });
+        self.checkout_panel.message = None;
         cx.spawn(async move |this, cx| {
             let target = path.clone();
             let (result, state) = cx
@@ -177,6 +182,8 @@ impl Sidebar {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.checkout_panel.busy = false;
+                this.checkout_panel.network_action = None;
+                this.checkout_panel.network_target = None;
                 if this.checkout_panel.accepts_result(&path, generation) {
                     this.checkout_panel.checked_at = Some(Instant::now());
                     this.checkout_panel.state = Some(state);
@@ -396,6 +403,17 @@ impl Sidebar {
                         cx,
                     )
                     .disabled(busy)
+                    .when(busy, |button| {
+                        button
+                            .icon_only()
+                            .child(icon("git-publish", ICON_MD, c::FG_DIM()))
+                            .child(shimmer_label(
+                                "checkout-publish-shimmer".into(),
+                                "Publishing…".into(),
+                                true,
+                                cx,
+                            ))
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.checkout_run(
                             publish_path.clone(),
@@ -499,7 +517,7 @@ impl Sidebar {
             .justify_start()
             .w_full()
             .px_0()
-            .py(rpx(SPACE_LG))
+            .py(rpx(SPACE_SM))
             .gap(rpx(SPACE_XS));
         if let Some((idx, path)) = selected {
             if self.checkout_panel.path.as_ref() != Some(&path) {
@@ -579,18 +597,39 @@ impl Sidebar {
             let busy = self.checkout_panel.busy;
             let same_job = self.checkout_panel.commit_job_path.as_ref() == Some(&path)
                 && self.checkout_panel.commit_job_generation == self.checkout_panel.generation;
-            let active_other = busy && self.checkout_panel.commit_job_path.is_some() && !same_job;
-            let (base_label, _, base_enabled) = commit_row_state(state.as_ref());
-            let (label, enabled) = if active_other {
-                ("Commit in progress", false)
+            let same_network =
+                self.checkout_panel
+                    .network_target
+                    .as_ref()
+                    .is_some_and(|(target, generation)| {
+                        target == &path && *generation == self.checkout_panel.generation
+                    });
+            let active_other = busy
+                && ((self.checkout_panel.commit_job_path.is_some() && !same_job)
+                    || (self.checkout_panel.network_target.is_some() && !same_network));
+            let (base_label, base_glyph, base_enabled) = commit_row_state(state.as_ref());
+            let initial_loading =
+                self.checkout_panel.loading && self.checkout_panel.state.is_none();
+            let (label, glyph, enabled, loading) = if active_other {
+                ("Git operation in progress", "git", false, true)
+            } else if let Some((label, glyph)) = self
+                .checkout_panel
+                .network_action
+                .filter(|_| busy && same_network)
+            {
+                (label, glyph, false, true)
+            } else if initial_loading {
+                ("Checking status…", "git", false, true)
             } else {
                 match self.checkout_panel.commit_status {
-                    CommitUi::Generating if same_job => ("Generating… Cancel", true),
-                    CommitUi::Canceling if same_job => ("Canceling…", false),
-                    CommitUi::Committing if same_job => ("Committing…", false),
-                    CommitUi::Succeeded => ("Committed", false),
-                    CommitUi::Failed => ("Retry commit", !busy),
-                    _ => (base_label, base_enabled && !busy),
+                    CommitUi::Generating if same_job => {
+                        ("Generating… Cancel", "sparkle", true, true)
+                    }
+                    CommitUi::Canceling if same_job => ("Canceling…", "stop", false, true),
+                    CommitUi::Committing if same_job => ("Committing…", "git", false, true),
+                    CommitUi::Succeeded => ("Committed", "check", false, false),
+                    CommitUi::Failed => ("Retry commit", "git", !busy, false),
+                    _ => (base_label, base_glyph, base_enabled && !busy, false),
                 }
             };
             let publish = state.as_ref().is_some_and(|state| {
@@ -604,7 +643,7 @@ impl Sidebar {
             let retry = matches!(self.checkout_panel.commit_status, CommitUi::Failed);
             let cancel =
                 same_job && matches!(self.checkout_panel.commit_status, CommitUi::Generating);
-            card = card.child(checkout_row("checkout-commit-publish", label, "git", window, cx)
+            card = card.child(checkout_loading_row("checkout-commit-publish", label, glyph, loading, window, cx)
                 .disabled(!enabled)
                 .with_focus_handle(self.checkout_panel.trigger_focus[if publish { "publish" } else { "commit" }].clone())
                 .tooltip(self.checkout_panel.message.clone().unwrap_or_else(|| {
@@ -619,9 +658,15 @@ impl Sidebar {
                 })));
             let git = self.runtime.read(cx).tree.read(cx).git_states();
             let changes = git.get(crate::paths::normalize_wt_path(&path));
-            let mut changes_row =
-                checkout_row("checkout-changes", "Changes", "unified", window, cx)
-                    .disabled(state.is_none());
+            let mut changes_row = checkout_loading_row(
+                "checkout-changes",
+                "Changes",
+                "unified",
+                initial_loading,
+                window,
+                cx,
+            )
+            .disabled(state.is_none());
             if let Some(changes) =
                 changes.filter(|changes| changes.dirty || changes.added > 0 || changes.removed > 0)
             {
@@ -876,23 +921,54 @@ fn checkout_row(
     window: &Window,
     cx: &App,
 ) -> gpui_component::button::Button {
+    checkout_loading_row(id, label, glyph, false, window, cx)
+}
+
+fn checkout_loading_row(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    glyph: &'static str,
+    loading: bool,
+    window: &Window,
+    cx: &App,
+) -> gpui_component::button::Button {
     let label = label.into();
     checkout_action(id, label.clone(), false, window, cx)
         .debug_selector(move || id.into())
         .icon_only()
         .w_full()
         .h(rpx(ROW_H))
-        .px(rpx(FORM_FIELD_INSET + SPACE_LG))
-        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_2XL))
         .child(
             div()
-                .id(SharedString::from(format!("{id}-icon")))
-                .debug_selector(move || format!("{id}-icon"))
-                .w(rpx(ICON_LG))
-                .flex_shrink_0()
-                .child(icon(glyph, ICON_MD, c::FG_DIM())),
+                .flex()
+                .items_center()
+                .flex_1()
+                .min_w_0()
+                .gap(rpx(SPACE_2XL))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-icon")))
+                        .debug_selector(move || format!("{id}-icon"))
+                        .w(rpx(ICON_LG))
+                        .flex_shrink_0()
+                        .child(icon(glyph, ICON_MD, c::FG_DIM())),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-label")))
+                        .debug_selector(move || format!("{id}-label"))
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(shimmer_label(
+                            SharedString::from(format!("{id}-shimmer")).into(),
+                            label.to_string(),
+                            loading,
+                            cx,
+                        )),
+                ),
         )
-        .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
 fn commit_row_state(state: Option<&CheckoutGitState>) -> (&'static str, &'static str, bool) {
@@ -912,11 +988,11 @@ fn commit_row_state(state: Option<&CheckoutGitState>) -> (&'static str, &'static
         return if state.remotes.is_empty() {
             ("No remote configured", "git", false)
         } else {
-            ("Publish branch", "git", true)
+            ("Publish branch", "git-publish", true)
         };
     }
     if state.ahead.is_some_and(|ahead| ahead > 0) {
-        ("Push commits", "git", true)
+        ("Push commits", "git-push", true)
     } else if state.ahead == Some(0) {
         ("No local commits", "git", false)
     } else {
@@ -1018,15 +1094,34 @@ mod tests {
         assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
         assert!(divider.right() >= card.right() - gpui::px(SPACE_XS));
         let rows = [
-            ("checkout-finder", "checkout-finder-icon"),
-            ("checkout-script", "checkout-script-icon"),
-            ("checkout-commit-publish", "checkout-commit-publish-icon"),
-            ("checkout-changes", "checkout-changes-icon"),
+            (
+                "checkout-finder",
+                "checkout-finder-icon",
+                "checkout-finder-label",
+            ),
+            (
+                "checkout-script",
+                "checkout-script-icon",
+                "checkout-script-label",
+            ),
+            (
+                "checkout-commit-publish",
+                "checkout-commit-publish-icon",
+                "checkout-commit-publish-label",
+            ),
+            (
+                "checkout-changes",
+                "checkout-changes-icon",
+                "checkout-changes-label",
+            ),
         ];
         let mut icon_x = None;
-        for (id, icon_id) in rows {
+        for (id, icon_id, label_id) in rows {
             let row = cx.debug_bounds(id).unwrap();
             let glyph = cx.debug_bounds(icon_id).unwrap();
+            let label = cx.debug_bounds(label_id).unwrap();
+            assert_eq!(label.left() - glyph.right(), gpui::px(SPACE_2XL));
+            assert_eq!(glyph.left() - row.left(), gpui::px(SPACE_2XL));
             assert!(row.top() >= card.top() && row.bottom() <= card.bottom());
             assert_eq!(row.size.height, gpui::px(ROW_H));
             if let Some(x) = icon_x {
