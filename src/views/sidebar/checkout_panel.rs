@@ -1019,16 +1019,16 @@ mod tests {
         let card = cx.debug_bounds("checkout-card").unwrap();
         assert!(card.top() >= gpui::px(APPBAR_H + SPACE_3XL));
         let rows = [
-            "checkout-finder",
-            "checkout-script",
-            "checkout-branch",
-            "checkout-commit-publish",
-            "checkout-changes",
+            ("checkout-finder", "checkout-finder-icon"),
+            ("checkout-script", "checkout-script-icon"),
+            ("checkout-branch", "checkout-branch-icon"),
+            ("checkout-commit-publish", "checkout-commit-publish-icon"),
+            ("checkout-changes", "checkout-changes-icon"),
         ];
         let mut icon_x = None;
-        for id in rows {
+        for (id, icon_id) in rows {
             let row = cx.debug_bounds(id).unwrap();
-            let glyph = cx.debug_bounds(&format!("{id}-icon")).unwrap();
+            let glyph = cx.debug_bounds(icon_id).unwrap();
             assert!(row.top() >= card.top() && row.bottom() <= card.bottom());
             assert_eq!(row.size.height, gpui::px(ROW_H));
             if let Some(x) = icon_x {
