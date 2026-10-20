@@ -34,6 +34,7 @@ use std::{
     sync::Arc,
 };
 
+const STOP_HOVER_OPACITY: f32 = 0.8;
 const CHAT_MAX_W: f32 = 760.0;
 const COMPOSER_MENU_W: f32 = 320.0;
 const MINIMAP_PREVIEW_W: f32 = 320.0;
@@ -132,17 +133,22 @@ fn composer_icon(
     disabled: bool,
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let fill = if icon == "stop" { c::RED() } else { c::FG() };
     header_control_with_hover(
         id,
         label,
         if disabled {
             if primary {
-                c::FG()
+                fill
             } else {
                 c::FIELD_FILL()
             }
         } else if primary {
-            c::FG_DIM()
+            if icon == "stop" {
+                c::RED().opacity(STOP_HOVER_OPACITY)
+            } else {
+                c::FG_DIM()
+            }
         } else {
             c::BG_HOVER()
         },
@@ -152,7 +158,7 @@ fn composer_icon(
     .rounded_full()
     .tab_index(0)
     .tab_stop(!disabled)
-    .when(primary, |button| button.bg(c::FG()))
+    .when(primary, |button| button.bg(fill))
     .aria_description(if disabled { "Unavailable" } else { label })
     .when(!disabled, |button| {
         button.focus_visible(|style| style.border_1().border_color(c::SEL_RING()))
@@ -700,6 +706,23 @@ impl CodexView {
             {
                 return false;
             }
+            let steering = pending
+                .optimistic
+                .as_ref()
+                .is_some_and(|item| item["localSteering"] == true);
+            let queued_steering = pending
+                .optimistic
+                .as_ref()
+                .is_some_and(|item| item["localQueuedSteering"] == true);
+            let steering_pending = steering
+                && (state
+                    .queued_prompts
+                    .iter()
+                    .any(|prompt| prompt.id == pending.submission)
+                    || (!queued_steering && state.accepted_submission != Some(pending.submission)));
+            if let Some(optimistic) = &mut pending.optimistic {
+                optimistic["localSteering"] = steering_pending.into();
+            }
             pending.existing.extend(consumed.iter().cloned());
             let id = state.saved.items.iter().find_map(|item| {
                 let id = item["id"].as_str()?;
@@ -721,9 +744,9 @@ impl CodexView {
                         };
                         images(item) == images(optimistic)
                     }))
-                .then_some(id)
+                .then_some((id, item))
             });
-            if let Some(id) = id {
+            if let Some((id, item)) = id {
                 consumed.insert(id.to_owned());
                 if let Some(optimistic) = &pending.optimistic {
                     if let Some(animation) = self
@@ -736,15 +759,81 @@ impl CodexView {
                     self.animating_bubbles
                         .insert(id.to_owned(), (now, Rc::new(Cell::new(false))));
                 }
-                false
+                if steering_pending {
+                    let mut echo = item.clone();
+                    echo["localSteering"] = true.into();
+                    echo["localQueuedSteering"] = queued_steering.into();
+                    pending.optimistic = Some(echo);
+                    true
+                } else {
+                    false
+                }
             } else {
                 true
             }
         });
     }
+    fn record_submission_bubble(
+        &mut self,
+        submission: u64,
+        text: String,
+        images: Vec<String>,
+        steering: bool,
+        queued_steering: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = format!("local-submission-{submission}");
+        if !cx.reduce_motion() {
+            self.animating_bubbles.insert(
+                id.clone(),
+                (cx.background_executor().now(), Rc::new(Cell::new(false))),
+            );
+        }
+        let mut content = vec![serde_json::json!({"type":"text", "text":text})];
+        content.extend(
+            images
+                .iter()
+                .map(|url| serde_json::json!({"type":"image", "url":url})),
+        );
+        let state = &self.session.read(cx).state;
+        self.bubble_entrances.push(BubbleEntrance {
+            submission,
+            existing: state.saved.items.iter().filter_map(|item| item["id"].as_str().map(str::to_owned)).collect(),
+            thread: state.saved.thread_id.clone(),
+            text,
+            optimistic: Some(serde_json::json!({"id":id, "type":"userMessage", "content":content, "localSteering":steering, "localQueuedSteering":queued_steering})),
+        });
+        self.follow_after_submit = true;
+    }
     fn queue_action(&mut self, action: Action, cx: &mut Context<Self>) -> bool {
+        let steering = if let Action::SteerQueued(id) = &action {
+            self.session
+                .read(cx)
+                .state
+                .queued_prompts
+                .iter()
+                .find(|prompt| prompt.id == *id)
+                .cloned()
+        } else {
+            None
+        };
         match self.session.read(cx).handle.send(action) {
-            Ok(()) => true,
+            Ok(()) => {
+                if let Some(prompt) = steering {
+                    self.bubble_entrances
+                        .retain(|pending| pending.submission != prompt.id);
+                    self.record_submission_bubble(
+                        prompt.id,
+                        prompt.text,
+                        prompt.images,
+                        true,
+                        true,
+                        cx,
+                    );
+                    cx.notify();
+                }
+                true
+            }
             Err(error) => {
                 self.session.update(cx, |session, cx| {
                     session.state.error = Some(error);
@@ -986,20 +1075,30 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if self.queue_motion_rows.is_empty() {
+        let steering_ids: HashSet<_> = self
+            .bubble_entrances
+            .iter()
+            .filter(|pending| {
+                pending
+                    .optimistic
+                    .as_ref()
+                    .is_some_and(|item| item["localSteering"] == true)
+            })
+            .map(|pending| pending.submission)
+            .collect();
+        if self
+            .queue_motion_rows
+            .iter()
+            .all(|row| steering_ids.contains(&row.prompt.id))
+        {
             return div().into_any_element();
         }
         let count = state
             .queued_prompts
             .iter()
-            .filter(|prompt| !state.queue_steering.contains(&prompt.id))
+            .filter(|prompt| !steering_ids.contains(&prompt.id))
             .count();
-        let has_steering = !state.queue_steering.is_empty();
-        let pending_count = if has_steering {
-            state.queued_prompts.len()
-        } else {
-            count
-        };
+        let pending_count = count;
         let collapsed = self.queue_collapsed;
         let mut tray = composer_tray(window)
             .id("codex-queued-prompts")
@@ -1015,7 +1114,7 @@ impl CodexView {
                             .flex_1()
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
-                            .child(if has_steering { "Pending" } else { "Queued" }),
+                            .child("Queued"),
                     )
                     .child(
                         div()
@@ -1084,6 +1183,9 @@ impl CodexView {
             for motion_row in &self.queue_motion_rows {
                 let prompt = &motion_row.prompt;
                 let id = prompt.id;
+                if steering_ids.contains(&id) {
+                    continue;
+                }
                 let exiting = motion_row.exiting;
                 let locked = exiting || !state.queue_editable(id) || self.queue_editor.is_some();
                 let steer = !locked
@@ -1600,39 +1702,30 @@ impl CodexView {
             session.submit_with_mode(text.clone(), self.images.clone(), mode, cx)
         });
         if let Ok(submission) = result {
-            // Keep unacknowledged sends in the local transcript projection only.
-            // Queue and steer retain their existing provider-driven presentation.
-            let optimistic = (mode == SubmissionMode::Send).then(|| {
-                let id = format!("local-submission-{submission}");
-                if !cx.reduce_motion() {
-                    self.animating_bubbles.insert(
-                        id.clone(),
-                        (cx.background_executor().now(), Rc::new(Cell::new(false))),
-                    );
-                }
-                let mut content = vec![serde_json::json!({"type":"text", "text":text})];
-                content.extend(
-                    self.images
-                        .iter()
-                        .map(|url| serde_json::json!({"type":"image", "url":url})),
+            if mode != SubmissionMode::Queue {
+                self.record_submission_bubble(
+                    submission,
+                    text.clone(),
+                    self.images.clone(),
+                    mode == SubmissionMode::Steer,
+                    false,
+                    cx,
                 );
-                serde_json::json!({"id":id, "type":"userMessage", "content":content})
-            });
-            self.bubble_entrances.push(BubbleEntrance {
-                submission,
-                existing: self
-                    .session
-                    .read(cx)
-                    .state
-                    .saved
-                    .items
-                    .iter()
-                    .filter_map(|item| item["id"].as_str().map(str::to_owned))
-                    .collect(),
-                thread: self.session.read(cx).state.saved.thread_id.clone(),
-                text: text.clone(),
-                optimistic,
-            });
+            } else {
+                let state = &self.session.read(cx).state;
+                self.bubble_entrances.push(BubbleEntrance {
+                    submission,
+                    existing: state
+                        .saved
+                        .items
+                        .iter()
+                        .filter_map(|item| item["id"].as_str().map(str::to_owned))
+                        .collect(),
+                    thread: state.saved.thread_id.clone(),
+                    text: text.clone(),
+                    optimistic: None,
+                });
+            }
             self.submitted = Some(text);
             self.submitted_ack = Some(submission);
             self.follow_after_submit = true;
@@ -1750,11 +1843,19 @@ impl Render for CodexView {
             self.submitted = None;
             self.submitted_ack = None;
         }
-        state.saved.items.extend(
-            self.bubble_entrances
-                .iter()
-                .filter_map(|pending| pending.optimistic.clone()),
-        );
+        let optimistic_items: Vec<_> = self
+            .bubble_entrances
+            .iter()
+            .filter_map(|pending| pending.optimistic.clone())
+            .filter(|item| {
+                !state
+                    .saved
+                    .items
+                    .iter()
+                    .any(|saved| saved["id"] == item["id"])
+            })
+            .collect();
+        state.saved.items.extend(optimistic_items);
         // Tool output/status and same-length streaming replacements also change layout.
         let content = serde_json::to_string(&state.saved.items).unwrap_or_default();
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
@@ -2420,11 +2521,22 @@ impl Render for CodexView {
                                 .truncate()
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
-                                .child(if tool {
-                                    tool_summary(item)
-                                } else {
-                                    role.to_owned()
-                                }),
+                                .child(
+                                    if kind == "userMessage"
+                                        && self.bubble_entrances.iter().any(|pending| {
+                                            pending.optimistic.as_ref().is_some_and(|bubble| {
+                                                bubble["id"] == item["id"]
+                                                    && bubble["localSteering"] == true
+                                            })
+                                        })
+                                    {
+                                        "You · Steering…".to_owned()
+                                    } else if tool {
+                                        tool_summary(item)
+                                    } else {
+                                        role.to_owned()
+                                    },
+                                ),
                         )
                         .when(tool, |row| {
                             row.child(
@@ -3092,22 +3204,14 @@ impl Render for CodexView {
                                                     }))
                                             ))
                                             .when(busy, |row| row.child(
-                                                div().mr(rpx(SPACE_SM)).child(
-                                                    composer_icon("codex-stop", if stopping { "Stopping the current turn" } else { "Stop · Interrupt the current turn" }, "stop", stopping || state.turn_id.is_none(), false)
-                                                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                                                            if action_key(event) { this.interrupt(cx); cx.stop_propagation(); }
-                                                        }))
-                                                        .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
-                                                )
-                                            ).child(
-                                                composer_icon("codex-steer", if steer_available { "Steer now · ⌘Enter · Send into the current turn" } else { "Steer unavailable" }, "arrow-up", draft_disabled || !steer_available, false)
-                                                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                                        if action_key(event) { this.submit_mode(SubmissionMode::Steer, window, cx); cx.stop_propagation(); }
+                                                composer_icon("codex-stop", if stopping { "Stopping the current turn" } else { "Stop · Interrupt the current turn" }, "stop", stopping || state.turn_id.is_none(), true)
+                                                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                                                        if action_key(event) { this.interrupt(cx); cx.stop_propagation(); }
                                                     }))
-                                                    .on_click(cx.listener(|this, _, window, cx| this.submit_mode(SubmissionMode::Steer, window, cx)))
+                                                    .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
                                             ))
-                                            .child(
-                                                composer_icon("codex-send", primary_label, if busy && !editing { "queue" } else { "arrow-up" }, primary_disabled, true)
+                                            .when(!busy, |row| row.child(
+                                                composer_icon("codex-send", primary_label, "arrow-up", primary_disabled, true)
                                                     .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                                                         if action_key(event) {
                                                             if !primary_disabled { this.submit(window, cx); }
@@ -3117,7 +3221,7 @@ impl Render for CodexView {
                                                     .on_click(cx.listener(move |this, _, window, cx| {
                                                         if !primary_disabled { this.submit(window, cx); }
                                                     }))
-                                            )
+                                            ))
                                     ),
                             )
                             )
@@ -7300,6 +7404,102 @@ mod tests {
         });
     }
     #[gpui::test]
+    fn steering_bubble_survives_early_echo_until_ack_and_recovers_rejection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, _| {
+                    session.state.status = Status::Working;
+                    session.state.turn_id = Some("turn".into());
+                });
+                view.input
+                    .update(cx, |input, cx| input.set_value("steer me", window, cx));
+                view.submit_mode(SubmissionMode::Steer, window, cx);
+                assert_eq!(view.bubble_entrances.len(), 1);
+                assert_eq!(
+                    view.bubble_entrances[0].optimistic.as_ref().unwrap()["localSteering"],
+                    true
+                );
+                assert!(view.session.read(cx).state.saved.items.is_empty());
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-row-0").is_some());
+        let id = actions
+            .try_iter()
+            .find_map(|action| match action {
+                Action::SubmitWithMode {
+                    id,
+                    mode: SubmissionMode::Steer,
+                    ..
+                } => Some(id),
+                _ => None,
+            })
+            .unwrap();
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let mut state = view.session.read(cx).state.clone();
+                state.saved.items.push(
+                    json!({"id":"echo", "type":"userMessage", "content":[{"text":"steer me"}]}),
+                );
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                let bubble = view.bubble_entrances[0].optimistic.as_ref().unwrap();
+                assert_eq!(bubble["id"], "echo");
+                assert_eq!(bubble["localSteering"], true);
+                state.accepted_submission = Some(id);
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                assert!(view.bubble_entrances.is_empty());
+                view.record_submission_bubble(id + 1, "retry".into(), vec![], true, false, cx);
+                state.rejected_submission = Some(id + 1);
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                assert!(view.bubble_entrances.is_empty());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn queued_steering_projects_once_and_keeps_echo_gap_visible(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, _| {
+                    session.state.status = Status::Working;
+                    session.state.turn_id = Some("turn".into());
+                    session.state.accepted_submission = Some(42);
+                    session.state.queued_prompts.push(codex::QueuedPrompt {
+                        id: 42,
+                        text: "queued steer".into(),
+                        images: vec![],
+                    });
+                });
+                assert!(view.queue_action(Action::SteerQueued(42), cx));
+                let mut state = view.session.read(cx).state.clone();
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                assert_eq!(
+                    view.bubble_entrances[0].optimistic.as_ref().unwrap()["localSteering"],
+                    true
+                );
+                state.queued_prompts.clear();
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                assert_eq!(
+                    view.bubble_entrances[0].optimistic.as_ref().unwrap()["localSteering"],
+                    false
+                );
+                state.saved.items.push(
+                    json!({"id":"echo", "type":"userMessage", "content":[{"text":"queued steer"}]}),
+                );
+                view.sync_bubble_entrances(&state, true, cx.background_executor().now());
+                assert!(view.bubble_entrances.is_empty());
+            });
+        });
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::SteerQueued(42))));
+    }
+
+    #[gpui::test]
     fn sending_bubble_rises_and_settles_without_replay(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, updates) = fixture(cx);
         draw(cx);
@@ -8390,6 +8590,67 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[gpui::test]
+    fn composer_replaces_send_with_stop_until_turn_finishes(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        draw(cx);
+        assert!(cx.debug_bounds("codex-send").is_some());
+        assert!(cx.debug_bounds("codex-stop").is_none());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input
+                    .update(cx, |input, cx| input.set_value("Start work", window, cx));
+                view.submit(window, cx);
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    session.state.turn_id = None;
+                    cx.notify();
+                });
+            });
+        });
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Submit { text, .. } if text == "Start work")));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-send").is_none());
+        assert!(cx.debug_bounds("codex-steer").is_none());
+        let stop = cx.debug_bounds("codex-stop").unwrap();
+        cx.simulate_click(stop.center(), gpui::Modifiers::default());
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Interrupt)));
+        view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.turn_id = Some("active-turn".into());
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let stop = cx.debug_bounds("codex-stop").unwrap();
+        cx.simulate_click(stop.center(), gpui::Modifiers::default());
+        cx.simulate_click(stop.center(), gpui::Modifiers::default());
+        assert_eq!(
+            actions
+                .try_iter()
+                .filter(|action| matches!(action, Action::Interrupt))
+                .count(),
+            1
+        );
+        draw(cx);
+        assert!(cx.debug_bounds("codex-send").is_none());
+        view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.status = Status::Done;
+                session.state.turn_id = None;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-send").is_some());
+        assert!(cx.debug_bounds("codex-stop").is_none());
+        assert!(cx.debug_bounds("codex-steer").is_none());
     }
 
     #[gpui::test]
