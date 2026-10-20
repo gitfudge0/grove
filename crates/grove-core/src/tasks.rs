@@ -60,9 +60,6 @@ pub struct TaskList {
     pub explanation: Option<String>,
     /// Index of the snapshot item.
     pub item: usize,
-    /// True when a userMessage item exists after `item` (a new turn began and
-    /// has not published a list yet).
-    pub stale: bool,
 }
 
 impl TaskList {
@@ -99,7 +96,8 @@ pub fn is_checklist(item: &Value) -> bool {
     item["type"] == "plan" && item["plan"].is_array()
 }
 
-/// Latest checklist snapshot; None if none or if latest snapshot is empty.
+/// Latest session checklist snapshot, retained across turns until explicitly
+/// updated or replaced. None if none or if the latest snapshot is empty.
 pub fn current(items: &[Value]) -> Option<TaskList> {
     let index = items.iter().rposition(is_checklist)?;
     let entries = entries(&items[index]);
@@ -121,14 +119,10 @@ pub fn current(items: &[Value]) -> Option<TaskList> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(str::to_owned);
-    let stale = items[index + 1..]
-        .iter()
-        .any(|item| item["type"] == "userMessage");
     Some(TaskList {
         tasks,
         explanation,
         item: index,
-        stale,
     })
 }
 
@@ -271,7 +265,6 @@ mod tests {
         assert_eq!(list.item, 1);
         assert_eq!((list.done(), list.total()), (1, 3));
         assert!(!list.all_done());
-        assert!(!list.stale);
         assert_eq!(list.explanation.as_deref(), Some("Fixing the bug"));
         assert_eq!(list.current().unwrap().step, "Implement");
         assert_eq!(list.now_label(), Some("Implement"));
@@ -308,12 +301,46 @@ mod tests {
     }
 
     #[test]
-    fn stale_when_a_user_message_follows_the_snapshot() {
-        let plan = json!([{"id":"step-0","step":"A","status":"inProgress"}]);
-        let mut items = vec![user(), codex("t1", plan), json!({"type":"agentMessage"})];
-        assert!(!current(&items).unwrap().stale);
-        items.push(user());
-        assert!(current(&items).unwrap().stale);
+    fn session_checklist_survives_question_answer_and_transcript_reload() {
+        let mut items = vec![
+            user(),
+            codex(
+                "t1",
+                json!([
+                    {"step":"Inspect","status":"completed"},
+                    {"step":"Implement","status":"inProgress"},
+                    {"step":"Test","status":"pending"}
+                ]),
+            ),
+            json!({"type":"agentMessage","text":"Which option should I implement?"}),
+        ];
+        let before = current(&items).unwrap();
+        items.push(json!({"type":"userMessage","content":[{"text":"Both equally"}]}));
+        items.push(json!({"type":"agentMessage","text":"Continuing implementation"}));
+        assert_eq!(current(&items), Some(before.clone()));
+        let restored: Vec<Value> =
+            serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
+        assert_eq!(current(&restored), Some(before));
+
+        items.push(codex(
+            "t2",
+            json!([
+                {"step":"Inspect","status":"completed"},
+                {"step":"Implement","status":"completed"},
+                {"step":"Test","status":"inProgress"}
+            ]),
+        ));
+        let updated = current(&items).unwrap();
+        assert_eq!((updated.done(), updated.total()), (2, 3));
+        assert_eq!(updated.now_label(), Some("Test"));
+        assert_eq!(updated.tasks[1].started_at, 1);
+        items.push(codex(
+            "t3",
+            json!([{"step":"Follow up","status":"pending"}]),
+        ));
+        assert_eq!(current(&items).unwrap().tasks[0].step, "Follow up");
+        items.push(codex("t4", json!([])));
+        assert!(current(&items).is_none());
     }
 
     #[test]

@@ -1,9 +1,10 @@
-//! Cross-session task-list progress: the sidebar row's done/total cell and the
-//! grid tile header's current-step cluster.
+//! Cross-session task progress: the sidebar row's done/total cell and the
+//! shared main/grid header's compact lifecycle control and task disclosure.
 //!
 //! Progress is derived from a structured session's saved transcript items.
 //! [`TaskGlanceCache`] runs from a per-session observer (not from render), so
-//! a frame only reads the cached [`TaskGlance`].
+//! compact headers read the cached [`TaskGlance`]; an open disclosure reads
+//! the current full checklist.
 
 use super::{Sidebar, HIERARCHY_META_TEXT, SESSION_META_LINE_H, SESSION_SPINNER_PERIOD};
 use crate::{
@@ -15,12 +16,14 @@ use crate::{
         tokens::*,
     },
 };
-use gpui::{div, prelude::*, AnimationExt as _, AnyElement, App, Context};
+use gpui::{div, prelude::*, AnimationExt as _, AnyElement, App, Context, FocusHandle, Window};
+use gpui_component::ElementExt as _;
 use grove_core::{
     codex::Status,
     tasks::{self, TaskList, TaskStatus},
 };
 use serde_json::Value;
+use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 /// The summary of a session's current task list that the sidebar and grid
 /// headers render.
@@ -28,7 +31,6 @@ use serde_json::Value;
 pub(super) struct TaskGlance {
     pub done: usize,
     pub total: usize,
-    pub stale: bool,
     /// Status of the first in-progress task, if any.
     pub current: Option<TaskStatus>,
     /// The current task's active form, else its step.
@@ -40,7 +42,6 @@ impl TaskGlance {
         Self {
             done: list.done(),
             total: list.total(),
-            stale: list.stale,
             current: list.current().map(|task| task.status),
             now: list.now_label().map(str::to_owned),
         }
@@ -55,15 +56,6 @@ impl TaskGlance {
         format!("{}/{}", self.done, self.total)
     }
 
-    /// The tile header's trailing text: the current step, or the finish line.
-    pub fn now_label(&self) -> Option<String> {
-        if self.all_done() {
-            Some("All tasks done".into())
-        } else {
-            self.now.clone()
-        }
-    }
-
     /// Appended to the row tooltip: "Rendering task strip · 3 of 7 tasks done".
     pub fn tooltip_suffix(&self) -> String {
         let count = format!("{} of {} tasks done", self.done, self.total);
@@ -72,32 +64,10 @@ impl TaskGlance {
             None => count,
         }
     }
-
-    /// The status the leading mark represents.
-    pub fn mark_status(&self) -> TaskStatus {
-        if self.all_done() {
-            TaskStatus::Completed
-        } else {
-            self.current.unwrap_or(TaskStatus::Pending)
-        }
-    }
-
-    /// The mark's phase: a stale list is muted; a finished list keeps its
-    /// green check; otherwise the owning session's status decides.
-    pub fn mark_phase(&self, status: Status) -> TaskPhase {
-        if self.all_done() && !self.stale {
-            TaskPhase::Running
-        } else {
-            task_phase(status, self.stale)
-        }
-    }
 }
 
 /// How the current task's mark reads for a session in `status`.
-pub(super) fn task_phase(status: Status, stale: bool) -> TaskPhase {
-    if stale {
-        return TaskPhase::Stale;
-    }
+pub(super) fn task_phase(status: Status) -> TaskPhase {
     match status {
         Status::Starting | Status::Working => TaskPhase::Running,
         Status::Waiting => TaskPhase::Waiting,
@@ -107,7 +77,7 @@ pub(super) fn task_phase(status: Status, stale: bool) -> TaskPhase {
 }
 
 /// Memoises [`tasks::current`] for one session. Only a changed checklist
-/// snapshot re-parses the list; newer items merely re-check staleness.
+/// snapshot re-parses the list; continuation messages retain the summary.
 #[derive(Default)]
 pub(super) struct TaskGlanceCache {
     index: Option<usize>,
@@ -120,22 +90,17 @@ impl TaskGlanceCache {
         self.glance.as_ref()
     }
 
-    /// Refreshes from `items`; returns whether the glance changed.
+    /// Refreshes from `items`; returns whether checklist content or its summary changed.
     pub fn refresh(&mut self, items: &[Value]) -> bool {
         let index = items.iter().rposition(tasks::is_checklist);
+        let snapshot_changed =
+            self.index != index || index.is_some_and(|at| self.item != items[at]);
         let glance = match index {
             None => {
                 self.item = Value::Null;
                 None
             }
-            Some(at) if self.index == Some(at) && self.item == items[at] => {
-                self.glance.clone().map(|glance| TaskGlance {
-                    stale: items[at + 1..]
-                        .iter()
-                        .any(|item| item["type"] == "userMessage"),
-                    ..glance
-                })
-            }
+            Some(at) if self.index == Some(at) && self.item == items[at] => self.glance.clone(),
             Some(at) => {
                 self.item = items[at].clone();
                 tasks::current(items).map(|list| TaskGlance::from_list(&list))
@@ -144,7 +109,7 @@ impl TaskGlanceCache {
         self.index = index;
         let changed = glance != self.glance;
         self.glance = glance;
-        changed
+        snapshot_changed || changed
     }
 }
 
@@ -159,6 +124,8 @@ impl Sidebar {
             .filter_map(|meta| registry.codex(meta.id).map(|s| (meta.id, s.clone())))
             .collect();
         let live: std::collections::HashSet<_> = sessions.iter().map(|(id, _)| *id).collect();
+        self.header_tasks.triggers.retain(|id, _| live.contains(id));
+        self.header_tasks.bounds.retain(|id, _| live.contains(id));
         self.task_glance_observers.retain(|id, _| live.contains(id));
         self.task_glances.retain(|id, _| live.contains(id));
         for (id, session) in sessions {
@@ -205,78 +172,396 @@ pub(super) fn row_progress(id: SessionId, glance: &TaskGlance) -> AnyElement {
         .line_height(rpx(SESSION_META_LINE_H))
         .text_color(c::FG_DIM())
         .whitespace_nowrap()
-        .when(glance.stale, |cell| cell.opacity(OPACITY_DISABLED))
         .child(glance.count_label())
         .child(task_meter(glance.done, glance.total, ICON_LG))
         .into_any_element()
 }
 
-/// The grid tile header cluster: mark, "3/7", meter and the current step.
-pub(super) fn tile_progress(
-    id: SessionId,
-    glance: &TaskGlance,
-    status: Status,
-    cx: &App,
-) -> AnyElement {
-    let mark_status = glance.mark_status();
-    let phase = glance.mark_phase(status);
+/// Focus and disclosure state for the shared main/grid session header.
+#[derive(Default)]
+pub(super) struct HeaderTasks {
+    pub open: Option<SessionId>,
+    triggers: HashMap<SessionId, FocusHandle>,
+    bounds: HashMap<SessionId, Rc<Cell<gpui::Bounds<gpui::Pixels>>>>,
+    popup_focus: Option<FocusHandle>,
+}
+
+fn header_label(status: Status, glance: &TaskGlance) -> String {
+    match status {
+        Status::Starting | Status::Working => glance.count_label(),
+        _ => format!("{} · {}", lifecycle_label(status), glance.count_label()),
+    }
+}
+
+fn lifecycle_label(status: Status) -> &'static str {
+    match status {
+        Status::Starting => "Starting",
+        Status::Working => "Working",
+        Status::Waiting => "Needs you",
+        Status::Failed | Status::Disconnected => "Failed",
+        Status::Done => "Done",
+        Status::Idle | Status::Interrupted => "Idle",
+    }
+}
+
+fn lifecycle_color(status: Status) -> gpui::Hsla {
+    match status {
+        Status::Starting | Status::Working => c::BLUE(),
+        Status::Waiting => c::AMBER(),
+        Status::Failed | Status::Disconnected => c::RED(),
+        _ => c::FG_DIM(),
+    }
+}
+
+fn lifecycle_mark(status: Status, cx: &App) -> AnyElement {
     let mark = div()
-        .id(("grid-header-task-mark", id.raw()))
         .size(rpx(ICON_SM))
         .flex_shrink_0()
         .flex()
         .items_center()
         .justify_center();
-    let mark = if mark_status == TaskStatus::InProgress
-        && phase == TaskPhase::Running
-        && !cx.reduce_motion()
-    {
-        mark.with_animation(
-            ("grid-header-task-spinner", id.raw()),
-            gpui::Animation::new(SESSION_SPINNER_PERIOD).repeat(),
-            move |element, progress| {
-                let frame =
-                    (progress * crate::entities::animation_clock::SPINNER_FRAMES as f32) as u64;
-                element.child(task_mark(mark_status, phase, frame))
-            },
-        )
-        .into_any_element()
-    } else {
-        mark.child(task_mark(mark_status, phase, 0))
-            .into_any_element()
-    };
-    div()
-        .id(("grid-header-tasks", id.raw()))
-        .debug_selector(move || format!("grid-header-tasks-{}", id.raw()))
-        .min_w_0()
-        .overflow_hidden()
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_SM))
-        .font_family(crate::fonts::UI_FAMILY)
-        .text_size(rpx(TEXT_SMALL))
-        .text_color(c::FG_DIM())
-        .whitespace_nowrap()
-        .when(glance.stale, |cluster| cluster.opacity(OPACITY_DISABLED))
-        .child(mark)
-        .child(
-            div()
-                .flex_shrink_0()
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .child(glance.count_label()),
-        )
-        .child(task_meter(glance.done, glance.total, ICON_LG))
-        .when_some(glance.now_label(), |cluster, now| {
-            cluster.child(
-                div()
-                    .debug_selector(move || format!("grid-header-task-now-{}", id.raw()))
-                    .min_w_0()
-                    .max_w(rpx(MODAL_W_SM / 3.))
-                    .truncate()
-                    .child(now),
+    match status {
+        Status::Starting | Status::Working if !cx.reduce_motion() => mark
+            .with_animation(
+                "header-task-spinner",
+                gpui::Animation::new(SESSION_SPINNER_PERIOD).repeat(),
+                move |element, progress| {
+                    let frame =
+                        (progress * crate::entities::animation_clock::SPINNER_FRAMES as f32) as u64;
+                    element.child(task_mark(TaskStatus::InProgress, TaskPhase::Running, frame))
+                },
             )
-        })
-        .into_any_element()
+            .into_any_element(),
+        Status::Starting | Status::Working => mark
+            .child(task_mark(TaskStatus::InProgress, TaskPhase::Running, 0))
+            .into_any_element(),
+        Status::Waiting => mark
+            .child(crate::icons::icon("task-waiting", ICON_SM, c::AMBER()))
+            .into_any_element(),
+        Status::Failed | Status::Disconnected => mark
+            .child(crate::icons::icon("close", ICON_SM, c::RED()))
+            .into_any_element(),
+        Status::Done => mark
+            .child(crate::icons::icon("check", ICON_SM, c::GREEN()))
+            .into_any_element(),
+        _ => mark
+            .child(task_mark(TaskStatus::Pending, TaskPhase::Stale, 0))
+            .into_any_element(),
+    }
+}
+
+impl Sidebar {
+    pub(super) fn sync_header_task_disclosure(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.header_tasks.open else {
+            return;
+        };
+        let active = self.active_canvas_sessions(cx).contains(&(id, false));
+        let visible = active
+            && (self.mode == super::ViewMode::Grid
+                || self.selection == Some(super::Selection::Session(id)));
+        let has_list = self
+            .runtime
+            .read(cx)
+            .registry
+            .read(cx)
+            .codex(id)
+            .is_some_and(|session| tasks::current(&session.read(cx).state.saved.items).is_some());
+        if !visible || !has_list || self.is_zen() {
+            if self
+                .header_tasks
+                .popup_focus
+                .as_ref()
+                .is_some_and(|focus| focus.contains_focused(window, cx))
+            {
+                self.focus.focus(window, cx);
+            }
+            self.dismiss_header_tasks(false, window, cx);
+        }
+    }
+
+    pub(super) fn dismiss_header_tasks_for_navigation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .header_tasks
+            .popup_focus
+            .as_ref()
+            .is_some_and(|focus| focus.contains_focused(window, cx))
+        {
+            self.focus.focus(window, cx);
+        }
+        self.dismiss_header_tasks(false, window, cx);
+    }
+
+    pub(super) fn focus_header_task_disclosure(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(focus) = &self.header_tasks.popup_focus {
+            focus.focus(window, cx);
+        }
+    }
+
+    pub(super) fn dismiss_header_tasks(
+        &mut self,
+        restore_focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = self.header_tasks.open.take() {
+            if restore_focus {
+                if let Some(focus) = self.header_tasks.triggers.get(&id) {
+                    focus.focus(window, cx);
+                }
+            }
+            cx.notify();
+        }
+    }
+
+    fn toggle_header_tasks(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.header_tasks.open == Some(id) {
+            self.dismiss_header_tasks(true, window, cx);
+        } else {
+            self.dismiss_project_context(cx);
+            self.header_tasks.open = Some(id);
+            self.header_tasks
+                .popup_focus
+                .get_or_insert_with(|| cx.focus_handle())
+                .focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn header_task_progress(
+        &mut self,
+        id: SessionId,
+        status: Status,
+        _window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let glance = self.task_glance(id)?.clone();
+        let focus = self
+            .header_tasks
+            .triggers
+            .entry(id)
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
+        let bounds = self.header_tasks.bounds.entry(id).or_default().clone();
+        let name = format!(
+            "{} · {} of {} tasks complete",
+            lifecycle_label(status),
+            glance.done,
+            glance.total
+        );
+        let tooltip = format!("{name} · Show task list");
+        Some(
+            div()
+                .id(("header-tasks", id.raw()))
+                .debug_selector(move || format!("header-tasks-{}", id.raw()))
+                .track_focus(&focus)
+                .relative()
+                .role(gpui::Role::Button)
+                .tab_index(0)
+                .aria_label(name)
+                .aria_expanded(self.header_tasks.open == Some(id))
+                .h(rpx(CHROME_CONTROL_H))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .px(rpx(SPACE_SM))
+                .rounded(rpx(RADIUS_CONTROL))
+                .text_size(rpx(TEXT_MICRO))
+                .text_color(lifecycle_color(status))
+                .whitespace_nowrap()
+                .hover(|style| style.bg(c::BG_HOVER()))
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .when(self.header_tasks.open == Some(id), |el| {
+                    el.bg(c::BG_HOVER())
+                })
+                .on_prepaint(move |rect, _, _| bounds.set(rect))
+                .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                    focus.focus(window, cx);
+                    cx.stop_propagation();
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.toggle_header_tasks(id, window, cx);
+                }))
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.is_held
+                        {
+                            cx.stop_propagation();
+                            this.toggle_header_tasks(id, window, cx);
+                        }
+                    }),
+                )
+                .tooltip(move |window, cx| {
+                    crate::views::components::tooltip(tooltip.clone(), window).build(window, cx)
+                })
+                .child(lifecycle_mark(status, cx))
+                .child(header_label(status, &glance))
+                .into_any_element(),
+        )
+    }
+
+    pub(super) fn header_task_disclosure(
+        &mut self,
+        id: SessionId,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if self.header_tasks.open != Some(id) {
+            return None;
+        }
+        let session = self.runtime.read(cx).registry.read(cx).codex(id)?.clone();
+        let state = &session.read(cx).state;
+        let Some(list) = tasks::current(&state.saved.items) else {
+            self.header_tasks.open = None;
+            return None;
+        };
+        let status = state.status;
+        let focus = self.header_tasks.popup_focus.as_ref()?.clone();
+        let trigger = self.header_tasks.bounds.get(&id)?.clone();
+        let position = trigger.get().bottom_right();
+        let margin = rpx(SPACE_LG).to_pixels(window.rem_size());
+        let mut rows = div()
+            .id(("header-task-list", id.raw()))
+            .role(gpui::Role::Group)
+            .aria_label("Tasks")
+            .max_h(rpx(MODAL_SCROLL_MAX_H))
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG));
+        for (index, task) in list.tasks.iter().enumerate() {
+            let status_label = match task.status {
+                TaskStatus::Completed => "Completed",
+                TaskStatus::InProgress => "In progress",
+                TaskStatus::Pending => "Pending",
+            };
+            rows = rows.child(
+                div()
+                    .id((
+                        gpui::SharedString::from(format!("header-task-row-{}", id.raw())),
+                        index,
+                    ))
+                    .debug_selector(move || format!("header-task-row-{}-{index}", id.raw()))
+                    .role(gpui::Role::Group)
+                    .aria_label(format!("{status_label} · {}", task.step))
+                    .flex()
+                    .items_start()
+                    .gap(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_SMALL))
+                    .child(task_mark(task.status, task_phase(status), 0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .child(task.step.clone()),
+                    ),
+            );
+        }
+        let heading = format!(
+            "{} · {} of {} tasks complete",
+            lifecycle_label(status),
+            list.done(),
+            list.total()
+        );
+        let panel = div()
+            .id(("header-task-disclosure", id.raw()))
+            .debug_selector(move || format!("header-task-disclosure-{}", id.raw()))
+            .track_focus(&focus)
+            .tab_index(0)
+            .role(gpui::Role::Group)
+            .aria_label(heading.clone())
+            .occlude()
+            .w(rpx(MODAL_W_SM))
+            .max_w(window.viewport_size().width - margin - margin)
+            .max_h(window.viewport_size().height - margin - margin)
+            .overflow_y_scroll()
+            .p(rpx(SPACE_3XL))
+            .rounded(rpx(RADIUS_GROUP))
+            .bg(c::SURFACE_RAISED())
+            .border_1()
+            .border_color(c::BORDER())
+            .font_family(crate::fonts::UI_FAMILY)
+            .text_color(c::FG())
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_2XL))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.dismiss_header_tasks(true, window, cx);
+                }
+            }))
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down_out(cx.listener(
+                move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    if !trigger.get().contains(&event.position) {
+                        this.dismiss_header_tasks(false, window, cx);
+                    }
+                },
+            ))
+            .child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(heading),
+            )
+            .when(list.all_done(), |panel| {
+                panel.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("All tasks done"),
+                )
+            })
+            .when_some(list.now_label(), |panel, now| {
+                panel.child(
+                    div()
+                        .id(("header-task-current", id.raw()))
+                        .debug_selector(move || format!("header-task-current-{}", id.raw()))
+                        .role(gpui::Role::Status)
+                        .aria_label(format!("Current: {now}"))
+                        .text_size(rpx(TEXT_SMALL))
+                        .whitespace_normal()
+                        .child(format!("Current: {now}")),
+                )
+            })
+            .when_some(list.explanation, |panel, explanation| {
+                panel.child(
+                    div()
+                        .id(("header-task-explanation", id.raw()))
+                        .role(gpui::Role::Group)
+                        .aria_label(explanation.clone())
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .whitespace_normal()
+                        .child(explanation),
+                )
+            })
+            .child(rows);
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .anchor(gpui::Anchor::TopRight)
+                    .position(position)
+                    .snap_to_window_with_margin(margin)
+                    .child(panel),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -304,12 +589,11 @@ mod tests {
         ])];
         let glance = TaskGlance::from_list(&tasks::current(&items).unwrap());
         assert_eq!(glance.count_label(), "1/3");
-        assert_eq!(glance.now_label().as_deref(), Some("Render task strip"));
+        assert_eq!(glance.now.as_deref(), Some("Render task strip"));
         assert_eq!(
             glance.tooltip_suffix(),
             "Render task strip · 1 of 3 tasks done"
         );
-        assert_eq!(glance.mark_status(), TaskStatus::InProgress);
         assert!(!glance.all_done());
     }
 
@@ -319,23 +603,33 @@ mod tests {
         let glance = TaskGlance::from_list(&tasks::current(&items).unwrap());
         assert!(glance.all_done());
         assert_eq!(glance.count_label(), "2/2");
-        assert_eq!(glance.now_label().as_deref(), Some("All tasks done"));
+        assert!(glance.now.is_none());
         assert_eq!(glance.tooltip_suffix(), "2 of 2 tasks done");
-        assert_eq!(glance.mark_status(), TaskStatus::Completed);
-        assert_eq!(glance.mark_phase(Status::Done), TaskPhase::Running);
     }
 
     #[test]
-    fn task_phase_follows_session_status_and_staleness() {
-        assert_eq!(task_phase(Status::Working, false), TaskPhase::Running);
-        assert_eq!(task_phase(Status::Starting, false), TaskPhase::Running);
-        assert_eq!(task_phase(Status::Waiting, false), TaskPhase::Waiting);
-        assert_eq!(task_phase(Status::Interrupted, false), TaskPhase::Halted);
-        assert_eq!(task_phase(Status::Failed, false), TaskPhase::Halted);
-        assert_eq!(task_phase(Status::Disconnected, false), TaskPhase::Halted);
-        assert_eq!(task_phase(Status::Idle, false), TaskPhase::Stale);
-        assert_eq!(task_phase(Status::Done, false), TaskPhase::Stale);
-        assert_eq!(task_phase(Status::Working, true), TaskPhase::Stale);
+    fn header_progress_preserves_lifecycle_when_all_tasks_are_complete() {
+        let glance = TaskGlance::from_list(
+            &tasks::current(&[plan(&[("A", "completed"), ("B", "completed")])]).unwrap(),
+        );
+        assert_eq!(header_label(Status::Working, &glance), "2/2");
+        assert_eq!(header_label(Status::Waiting, &glance), "Needs you · 2/2");
+        assert_eq!(header_label(Status::Failed, &glance), "Failed · 2/2");
+        assert_eq!(header_label(Status::Disconnected, &glance), "Failed · 2/2");
+        assert_eq!(lifecycle_color(Status::Waiting), c::AMBER());
+        assert_eq!(lifecycle_color(Status::Failed), c::RED());
+    }
+
+    #[test]
+    fn task_phase_follows_session_status() {
+        assert_eq!(task_phase(Status::Working), TaskPhase::Running);
+        assert_eq!(task_phase(Status::Starting), TaskPhase::Running);
+        assert_eq!(task_phase(Status::Waiting), TaskPhase::Waiting);
+        assert_eq!(task_phase(Status::Interrupted), TaskPhase::Halted);
+        assert_eq!(task_phase(Status::Failed), TaskPhase::Halted);
+        assert_eq!(task_phase(Status::Disconnected), TaskPhase::Halted);
+        assert_eq!(task_phase(Status::Idle), TaskPhase::Stale);
+        assert_eq!(task_phase(Status::Done), TaskPhase::Stale);
     }
 
     #[test]
@@ -358,10 +652,16 @@ mod tests {
         assert!(cache.refresh(&items));
         assert_eq!(cache.glance().unwrap().now.as_deref(), Some("B"));
 
-        // A new turn without a list marks it stale.
+        // A clarification answer retains the same session summary.
         items.push(json!({"type": "userMessage", "text": "next"}));
-        assert!(cache.refresh(&items));
-        assert!(cache.glance().unwrap().stale);
+        let before = cache.glance().cloned();
+        assert!(!cache.refresh(&items));
+        assert_eq!(cache.glance(), before.as_ref());
+        let restored: Vec<Value> =
+            serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
+        let mut restored_cache = TaskGlanceCache::default();
+        assert!(restored_cache.refresh(&restored));
+        assert_eq!(restored_cache.glance(), cache.glance());
 
         // An empty latest snapshot clears the list.
         items.push(plan(&[]));

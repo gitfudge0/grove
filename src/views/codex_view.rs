@@ -102,8 +102,6 @@ const CONTEXT_RING_SEGMENTS: f32 = 48.0;
 const TASK_STRIP_HEAD_H: f32 = CONTROL_H;
 /// One task row in the expanded strip (DESIGN.md row-h).
 const TASK_ROW_H: f32 = CONTROL_H + SPACE_SM;
-/// The "From previous turn" pill: a dense control less its vertical inset.
-const TASK_PILL_H: f32 = CONTROL_H - SPACE_SM * 2.0;
 /// One full turn of the running task mark.
 const TASK_SPINNER_PERIOD: std::time::Duration =
     std::time::Duration::from_millis(MOTION_SLOW_MS * 4);
@@ -798,7 +796,7 @@ impl CodexView {
                     ))
                     .on_click(
                         cx.listener(move |this, _, window, cx| {
-                            this.use_starter(prompt, window, cx)
+                            this.use_starter(prompt, window, cx);
                         }),
                     ),
             );
@@ -1650,8 +1648,7 @@ impl CodexView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let expanded = self.tasks_expanded;
-        let dimmed = list.stale;
-        let phase = task_phase(status, dimmed);
+        let phase = task_phase(status);
         let (done, total) = (list.done(), list.total());
         let summary = task_summary(list, phase);
         let header_status = task_header_status(list);
@@ -1728,11 +1725,10 @@ impl CodexView {
             .flex()
             .items_center()
             .gap(rpx(SPACE_LG))
-            .when(dimmed, |cluster| cluster.opacity(OPACITY_DISABLED))
             .child(animated_task_mark(
                 "codex-task-strip-mark",
                 header_status,
-                task_mark_phase(header_status, phase, dimmed),
+                task_mark_phase(header_status, phase),
                 cx,
             ))
             .child(div().flex_shrink_0().text_color(c::FG_DIM()).child("Tasks"))
@@ -1768,23 +1764,6 @@ impl CodexView {
                 ICON_MD,
                 c::FG_MUTE(),
             ))
-            .when(dimmed, |header| {
-                header.child(
-                    div()
-                        .id("codex-task-strip-stale")
-                        .debug_selector(|| "codex-task-strip-stale".into())
-                        .flex_shrink_0()
-                        .h(rpx(TASK_PILL_H))
-                        .flex()
-                        .items_center()
-                        .px(rpx(SPACE_MD))
-                        .rounded_full()
-                        .border_1()
-                        .border_color(c::BORDER())
-                        .text_size(rpx(TEXT_MICRO))
-                        .child("From previous turn"),
-                )
-            })
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if action_key(event) {
                     this.toggle_tasks(cx);
@@ -1802,7 +1781,6 @@ impl CodexView {
                 .overflow_y_scroll()
                 .flex()
                 .flex_col()
-                .when(dimmed, |rows| rows.opacity(OPACITY_DISABLED))
                 .when_some(list.explanation.clone(), |rows, explanation| {
                     rows.child(
                         div()
@@ -1839,7 +1817,7 @@ impl CodexView {
                         .child(animated_task_mark(
                             ("codex-task-row-mark", task_index),
                             task.status,
-                            task_mark_phase(task.status, phase, dimmed),
+                            task_mark_phase(task.status, phase),
                             cx,
                         ))
                         .child(
@@ -4036,7 +4014,7 @@ impl CodexView {
                         form_action("codex-send-message-edit", "Send", true, window, cx)
                             .disabled(send_disabled)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.confirm_inline_edit(window, cx)
+                                this.confirm_inline_edit(window, cx);
                             })),
                     ),
             )
@@ -5478,8 +5456,8 @@ struct TaskCache {
     list: Option<TaskList>,
 }
 
-/// Changes only when a checklist snapshot changes or the transcript grows (a
-/// later user message makes the list stale), so streaming text reuses the cache.
+/// Changes when a checklist snapshot changes or transcript indices change, so
+/// streaming text reuses the cache.
 fn task_cache_key(items: &[serde_json::Value]) -> u64 {
     let mut hasher = rustc_hash::FxHasher::default();
     items.len().hash(&mut hasher);
@@ -5499,13 +5477,9 @@ fn task_cache(items: &[serde_json::Value], key: u64) -> TaskCache {
     }
 }
 
-/// How in-progress marks read for the session's state. A list left behind by a
-/// newer turn is Stale (and the strip dims); a finished or idle turn with
-/// unfinished items keeps the same static mark without dimming.
-fn task_phase(status: codex::Status, stale: bool) -> TaskPhase {
-    if stale {
-        return TaskPhase::Stale;
-    }
+/// How in-progress marks read for the session's state. Idle or finished
+/// sessions keep a static mark while retaining their checklist.
+fn task_phase(status: codex::Status) -> TaskPhase {
     match status {
         codex::Status::Starting | codex::Status::Working => TaskPhase::Running,
         codex::Status::Waiting => TaskPhase::Waiting,
@@ -5516,9 +5490,9 @@ fn task_phase(status: codex::Status, stale: bool) -> TaskPhase {
     }
 }
 
-/// Completed marks stay green unless the whole strip is dimmed as stale.
-fn task_mark_phase(status: TaskStatus, phase: TaskPhase, dimmed: bool) -> TaskPhase {
-    if status == TaskStatus::Completed && !dimmed {
+/// Completed marks stay green across session states and continuation turns.
+fn task_mark_phase(status: TaskStatus, phase: TaskPhase) -> TaskPhase {
+    if status == TaskStatus::Completed {
         TaskPhase::Running
     } else {
         phase
@@ -7892,14 +7866,14 @@ mod tests {
                     view.input
                         .update(cx, |input, cx| input.set_value("", window, cx));
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             let rail = cx.debug_bounds("codex-message-minimap").unwrap();
             let marker = cx.debug_bounds("codex-minimap-message-0").unwrap();
             let transcript = cx.debug_bounds("codex-messages").unwrap();
             let composer = cx.debug_bounds("codex-composer").unwrap();
-            cx.update(|_, cx| view.update(cx, |view, cx| view.toggle_tasks(cx)));
+            cx.update(|_, cx| view.update(cx, CodexView::toggle_tasks));
             draw(cx);
             assert!(
                 cx.debug_bounds("codex-messages").unwrap().size.height < transcript.size.height
@@ -7913,7 +7887,7 @@ mod tests {
                         input.set_value("A longer draft\n".repeat(20), window, cx);
                     });
                     cx.notify();
-                })
+                });
             });
             draw(cx);
             assert!(cx.debug_bounds("codex-composer").unwrap().size.height > composer.size.height);
@@ -8205,9 +8179,9 @@ mod tests {
                     .unwrap()
                     .input
                     .update(cx, |input, cx| {
-                        input.set_value("Edited inline request", window, cx)
+                        input.set_value("Edited inline request", window, cx);
                     });
-            })
+            });
         });
         cx.simulate_keystrokes("enter");
         draw(cx);
@@ -9822,7 +9796,7 @@ mod tests {
         assert!(cx.debug_bounds("codex-toggle-details-0").is_none());
     }
 
-    fn task_list(statuses: &[TaskStatus], stale: bool) -> TaskList {
+    fn task_list(statuses: &[TaskStatus]) -> TaskList {
         TaskList {
             tasks: statuses
                 .iter()
@@ -9837,12 +9811,11 @@ mod tests {
                 .collect(),
             explanation: None,
             item: 0,
-            stale,
         }
     }
 
     #[test]
-    fn task_phase_maps_session_status_and_stale_lists() {
+    fn task_phase_maps_session_status() {
         for (status, phase) in [
             (Status::Starting, TaskPhase::Running),
             (Status::Working, TaskPhase::Running),
@@ -9853,20 +9826,15 @@ mod tests {
             (Status::Idle, TaskPhase::Stale),
             (Status::Done, TaskPhase::Stale),
         ] {
-            assert_eq!(task_phase(status, false), phase, "{status:?}");
-            assert_eq!(task_phase(status, true), TaskPhase::Stale, "{status:?}");
+            assert_eq!(task_phase(status), phase, "{status:?}");
         }
-        // Completed marks stay green unless the whole strip is dimmed.
+        // Completed marks stay green even when the session is idle.
         assert_eq!(
-            task_mark_phase(TaskStatus::Completed, TaskPhase::Stale, false),
+            task_mark_phase(TaskStatus::Completed, TaskPhase::Stale),
             TaskPhase::Running
         );
         assert_eq!(
-            task_mark_phase(TaskStatus::Completed, TaskPhase::Stale, true),
-            TaskPhase::Stale
-        );
-        assert_eq!(
-            task_mark_phase(TaskStatus::InProgress, TaskPhase::Halted, false),
+            task_mark_phase(TaskStatus::InProgress, TaskPhase::Halted),
             TaskPhase::Halted
         );
     }
@@ -9874,7 +9842,7 @@ mod tests {
     #[test]
     fn task_summary_reads_per_state() {
         use TaskStatus::{Completed, InProgress, Pending};
-        let list = task_list(&[Completed, InProgress, Pending], false);
+        let list = task_list(&[Completed, InProgress, Pending]);
         assert_eq!(task_header_status(&list), InProgress);
         assert_eq!(
             task_summary(&list, TaskPhase::Running).text(),
@@ -9893,12 +9861,12 @@ mod tests {
             "Stopped at Step 1"
         );
         assert_eq!(task_summary(&list, TaskPhase::Stale).text(), "Doing step 1");
-        let done = task_list(&[Completed; 7], false);
+        let done = task_list(&[Completed; 7]);
         assert_eq!(task_header_status(&done), Completed);
         for phase in [TaskPhase::Running, TaskPhase::Halted, TaskPhase::Waiting] {
             assert_eq!(task_summary(&done, phase).text(), "All 7 tasks done");
         }
-        let pending = task_list(&[Completed, Pending], false);
+        let pending = task_list(&[Completed, Pending]);
         assert_eq!(task_header_status(&pending), Pending);
         assert_eq!(
             task_summary(&pending, TaskPhase::Running),
@@ -9932,7 +9900,7 @@ mod tests {
         items.push(json!({"id":"u2", "type":"userMessage", "content":[{"text":"Next"}]}));
         assert_ne!(task_cache_key(&items), changed);
         let cache = task_cache(&items, task_cache_key(&items));
-        assert!(cache.list.as_ref().is_some_and(|list| list.stale));
+        assert_eq!(cache.list.unwrap().done(), 1);
     }
 
     #[gpui::test]
@@ -9967,6 +9935,53 @@ mod tests {
         assert_eq!(list.total(), 2);
         assert_eq!(list.tasks[0].status, TaskStatus::InProgress);
         assert!(cx.debug_bounds("codex-task-strip").is_some());
+    }
+
+    #[gpui::test]
+    fn session_task_strip_survives_a_clarification_answer(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            cx.set_reduce_motion(true);
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Waiting;
+                    session.state.saved.items = vec![
+                        json!({"id":"p1", "type":"plan", "plan":[
+                            {"step":"Inspect", "status":"completed"},
+                            {"step":"Implement", "status":"inProgress"},
+                            {"step":"Verify", "status":"pending"}]}),
+                        json!({"id":"q1", "type":"agentMessage", "text":"Which option?"}),
+                    ];
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-task-strip").is_some());
+        let before = view.read_with(cx, |view, _| {
+            view.task_cache.as_ref().unwrap().list.clone().unwrap()
+        });
+        assert_eq!((before.done(), before.total()), (1, 3));
+        assert_eq!(before.now_label(), Some("Implement"));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    session.state.saved.items.push(
+                        json!({"id":"u2", "type":"userMessage", "content":[{"text":"Both equally"}]}),
+                    );
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-task-strip").is_some());
+        assert!(cx.debug_bounds("codex-task-row-1").is_some());
+        assert!(cx.debug_bounds("codex-task-strip-stale").is_none());
+        let after = view.read_with(cx, |view, _| {
+            view.task_cache.as_ref().unwrap().list.clone().unwrap()
+        });
+        assert_eq!(after, before);
     }
 
     #[gpui::test]
@@ -10055,20 +10070,26 @@ mod tests {
             "jump aligns the first transcript content after the hidden task update"
         );
         assert!(view.read_with(cx, |view, _| view.composer_collapsed));
-        // A new turn without a new list dims the strip and labels it.
+        // Answering a clarification keeps the session checklist current.
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
                 view.tasks_expanded = false;
                 view.session.update(cx, |session, cx| {
                     session.state.saved.items.push(
-                        json!({"id":"u2", "type":"userMessage", "content":[{"text":"Next"}]}),
+                        json!({"id":"u2", "type":"userMessage", "content":[{"text":"Both equally"}]}),
                     );
                     cx.notify();
                 });
             });
         });
         draw(cx);
-        assert!(cx.debug_bounds("codex-task-strip-stale").is_some());
+        assert!(cx.debug_bounds("codex-task-strip").is_some());
+        assert!(cx.debug_bounds("codex-task-strip-stale").is_none());
+        let list = view.read_with(cx, |view, _| {
+            view.task_cache.as_ref().unwrap().list.clone().unwrap()
+        });
+        assert_eq!((list.done(), list.total()), (1, 3));
+        assert_eq!(list.now_label(), Some("Implement"));
     }
 
     #[test]

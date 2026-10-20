@@ -513,6 +513,7 @@ pub struct Sidebar {
         ),
     >,
     task_glances: HashMap<SessionId, task_glance::TaskGlanceCache>,
+    header_tasks: task_glance::HeaderTasks,
     age_timer: Option<gpui::Task<()>>,
     #[cfg(test)]
     age_ticks: u64,
@@ -689,6 +690,7 @@ impl Sidebar {
             observed_titles: HashMap::new(),
             task_glance_observers: HashMap::new(),
             task_glances: HashMap::new(),
+            header_tasks: task_glance::HeaderTasks::default(),
             age_timer: None,
             #[cfg(test)]
             age_ticks: 0,
@@ -805,6 +807,7 @@ impl Sidebar {
             self.pending_close = None;
             self.pending_home_close = None;
             self.canvas_close_anchor = None;
+            self.dismiss_header_tasks_for_navigation(window, cx);
             self.grid_drag = None;
             self.grid_session_drag = None;
             self.pending_remove = None;
@@ -2202,6 +2205,7 @@ impl Sidebar {
 
     fn navigation_available(&self) -> bool {
         !self.confirmation_open()
+            && self.header_tasks.open.is_none()
             && self.diff_viewer.is_none()
             && self.project_panel.is_none()
             && self.project_setup.is_none()
@@ -3649,48 +3653,6 @@ impl Sidebar {
             .gap(rpx(SPACE_SM))
             .items_center()
             .rounded(rpx(SESSION_ROW_RADIUS))
-            .child(
-                div()
-                    .id(("session-tree-leading", id.raw()))
-                    .debug_selector(move || format!("session-tree-leading-{}", id.raw()))
-                    .relative()
-                    .min_w(rpx(CONTROL_H))
-                    .h(rpx(CONTROL_H))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        self.control(
-                            ("close-session", id.raw()),
-                            format!("Close {} in {}", meta.label, meta.project),
-                            Action::Close(id),
-                            cx,
-                        )
-                        .absolute()
-                        .inset_0()
-                        .w_full()
-                        .h_full()
-                        .debug_selector(move || format!("session-tree-close-{}", id.raw()))
-                        .opacity(0.0)
-                        .group_hover("session-row", |button| button.opacity(1.0))
-                        .focus_visible(|button| button.opacity(1.0))
-                        .when_some(
-                            self.session_close_bounds.get(&id).cloned(),
-                            |button, bounds| {
-                                button.child(
-                                    gpui::canvas(
-                                        move |rect, _, _| bounds.set(rect),
-                                        |_, (), _, _| {},
-                                    )
-                                    .absolute()
-                                    .inset_0(),
-                                )
-                            },
-                        )
-                        .child(icon("close", ICON_XS, c::FG_DIM())),
-                    ),
-            )
             .child(motion::fast(
                 div()
                     .id(("session-tree-status", id.raw()))
@@ -3748,9 +3710,56 @@ impl Sidebar {
                         )
                     }),
             )
-            .when_some(tasks.as_ref(), |row, tasks| {
-                row.child(task_glance::row_progress(id, tasks))
-            })
+            .child(
+                div()
+                    .id(("session-tree-trailing", id.raw()))
+                    .group("session-trailing")
+                    .debug_selector(move || format!("session-tree-trailing-{}", id.raw()))
+                    .relative()
+                    .min_w(rpx(CONTROL_H))
+                    .h(rpx(CONTROL_H))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .when_some(tasks.as_ref(), |slot, tasks| {
+                        slot.child(
+                            div()
+                                .group_hover("session-trailing", Styled::invisible)
+                                .child(task_glance::row_progress(id, tasks)),
+                        )
+                    })
+                    .child(
+                        self.control(
+                            ("close-session", id.raw()),
+                            format!("Close {} in {}", meta.label, meta.project),
+                            Action::Close(id),
+                            cx,
+                        )
+                        .absolute()
+                        .inset_0()
+                        .w_full()
+                        .h_full()
+                        .debug_selector(move || format!("session-tree-close-{}", id.raw()))
+                        .opacity(0.0)
+                        .group_hover("session-trailing", |button| button.opacity(1.0))
+                        .focus_visible(|button| button.opacity(1.0))
+                        .when_some(
+                            self.session_close_bounds.get(&id).cloned(),
+                            |button, bounds| {
+                                button.child(
+                                    gpui::canvas(
+                                        move |rect, _, _| bounds.set(rect),
+                                        |_, (), _, _| {},
+                                    )
+                                    .absolute()
+                                    .inset_0(),
+                                )
+                            },
+                        )
+                        .child(icon("close", ICON_XS, c::FG_DIM())),
+                    ),
+            )
         };
         let row = if list {
             let selected = self.selection == Some(Selection::Session(id));
@@ -4902,6 +4911,16 @@ impl Render for Sidebar {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab" && this.header_tasks.open.is_some() {
+                    this.focus_header_task_disclosure(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape" && this.header_tasks.open.is_some() {
+                    this.dismiss_header_tasks(true, window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" {
                     if let Some(selector) = this.workspace_selector.clone() {
                         if selector
@@ -8736,7 +8755,7 @@ for line in sys.stdin:
                 crate::entities::codex_session::CodexSession::from_connection(state, connection, cx)
             });
             registry.update(cx, |registry, _| {
-                registry.attach_codex(SessionId::from_raw(1), session, handle)
+                registry.attach_codex(SessionId::from_raw(1), session, handle);
             });
             Sidebar::new(runtime, window, cx)
         });
@@ -8819,19 +8838,28 @@ for line in sys.stdin:
             assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
             assert!(status.right() <= launcher.left());
             assert!(launcher.right() <= title.left());
-            assert!(close.right() <= status.left());
             let progress = cx.debug_bounds("session-tasks-1").unwrap();
-            let leading = cx.debug_bounds("session-tree-leading-1").unwrap();
+            let trailing = cx.debug_bounds("session-tree-trailing-1").unwrap();
             assert!(title.right() <= progress.left());
-            assert_eq!(f32::from(row.right() - progress.right()), HIERARCHY_INSET);
-            assert_eq!(close, leading);
-            assert_eq!(f32::from(leading.left() - row.left()), HIERARCHY_INSET);
-            // Hover reveals close in the reserved leading slot without moving the title.
-            cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+            assert_eq!(progress.right(), close.right());
+            assert_eq!(f32::from(row.right() - close.right()), HIERARCHY_INSET);
+            assert_eq!(close, trailing);
+            assert_eq!(f32::from(status.left() - row.left()), HIERARCHY_INSET);
+            // The progress shares the close target at the row's trailing inset.
+            // Hovering the title keeps progress visible and its geometry stable.
+            cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
             draw(cx);
             assert_eq!(cx.debug_bounds("session-tree-title-1").unwrap(), title);
             assert_eq!(cx.debug_bounds("session-tree-close-1").unwrap(), close);
-            let empty_slot = cx.debug_bounds("session-tree-leading-2").unwrap();
+            assert!(cx.debug_bounds("session-tasks-1").is_some());
+            cx.simulate_mouse_move(progress.center(), None, gpui::Modifiers::default());
+            draw(cx);
+            assert!(cx.debug_bounds("session-tasks-1").is_none());
+            assert_eq!(cx.debug_bounds("session-tree-close-1").unwrap(), close);
+            cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
+            draw(cx);
+            assert!(cx.debug_bounds("session-tasks-1").is_some());
+            let empty_slot = cx.debug_bounds("session-tree-trailing-2").unwrap();
             assert_eq!(cx.debug_bounds("session-tree-close-2").unwrap(), empty_slot);
             assert_eq!(f32::from(empty_slot.size.width), CONTROL_H);
             assert!(status.top() >= row.top() && status.bottom() <= row.bottom());
@@ -10371,7 +10399,8 @@ for line in sys.stdin:
             sidebar.update(cx, |sidebar, cx| sidebar.act(Action::Menu(0), window, cx));
         });
         draw(cx);
-        cx.simulate_keystrokes("down down down down enter");
+        // Remove remains last while readiness-dependent worktree actions refresh.
+        cx.simulate_keystrokes("up enter");
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.confirmation_open()));
         for _ in 0..5 {

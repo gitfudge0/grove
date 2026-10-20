@@ -30,6 +30,7 @@ const FORM_PRIMARY_MIN_W: f32 = 130.;
 const FORM_SECONDARY_MIN_W: f32 = 100.;
 const SESSION_HEADER_H: f32 = 36.;
 const SESSION_ICON_SLOT: f32 = 24.;
+const HEADER_PREFIX_FRACTION: f32 = 0.4;
 const EMPTY_CARD_W: f32 = 430.;
 const EMPTY_CARD_PAD: f32 = 24.;
 const EMPTY_TITLE_SIZE: f32 = 18.;
@@ -602,7 +603,7 @@ impl Sidebar {
             (registry.meta(id)?.clone(), registry.session(id).cloned())
         };
         let workspaces = &cx.global::<SettingsState>().store.workspaces;
-        let workspace = workspaces.name(workspaces.active);
+        let workspace = workspaces.name(workspaces.active).to_owned();
         let worktree = self
             .snapshot
             .projects
@@ -719,12 +720,21 @@ impl Sidebar {
         }
         let bounds = self.canvas_bounds.entry(id).or_default().clone();
         let close_name = format!("Close {agent} session {task} in {context}");
-        let close = self.canvas_close_button(id, home, close_name, cx);
+        let close = self.canvas_close_button(id, home, close_name, cx).when(
+            bounds.get().size.width > rpx(MODAL_W_XL).to_pixels(window.rem_size()),
+            |button| {
+                button
+                    .opacity(0.0)
+                    .group_hover("session-header", |button| button.opacity(1.0))
+                    .focus(|button| button.opacity(1.0))
+            },
+        );
         let title_tooltip = accessible_label.clone();
         let active = matches!(
             self.selection,
             Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id
         );
+        let header_owner = cx.entity().entity_id();
         let mut header = div()
             .id(gpui::SharedString::from(format!(
                 "terminal-header-{}",
@@ -732,11 +742,22 @@ impl Sidebar {
             )))
             .debug_selector(move || format!("terminal-header-{}", id.raw()))
             .aria_label(accessible_label.clone())
+            .group("session-header")
             .relative()
             .child(
-                gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
-                    .absolute()
-                    .inset_0(),
+                gpui::canvas(
+                    move |rect, window, cx| {
+                        let threshold = rpx(MODAL_W_XL).to_pixels(window.rem_size());
+                        let was_wide = bounds.get().size.width > threshold;
+                        bounds.set(rect);
+                        if was_wide != (rect.size.width > threshold) {
+                            cx.notify(header_owner);
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
             )
             .min_w_0()
             .flex_shrink_0()
@@ -771,6 +792,9 @@ impl Sidebar {
             .justify_center()
             .child(icon(meta.agent.icon_name(), ICON_LG, c::FG()));
         let status = div()
+            .id(("header-status", id.raw()))
+            .role(gpui::Role::Status)
+            .aria_label(state.label())
             .flex_shrink_0()
             .text_size(rpx(TEXT_MICRO))
             .text_color(state.color())
@@ -781,15 +805,10 @@ impl Sidebar {
             format!("canvas-session-status-{}-{}", id.raw(), state.label()),
             cx,
         );
-        let task_progress = native.as_ref().filter(|_| grid).and_then(|native| {
-            let glance = self.task_glance(id)?;
-            Some(super::task_glance::tile_progress(
-                id,
-                glance,
-                native.read(cx).state.status,
-                cx,
-            ))
+        let task_progress = native.as_ref().and_then(|native| {
+            self.header_task_progress(id, native.read(cx).state.status, window, cx)
         });
+        let header_status = task_progress.unwrap_or(status);
         header = header
             .h(rpx(if grid { SESSION_HEADER_H } else { APPBAR_H }))
             .child(
@@ -807,29 +826,79 @@ impl Sidebar {
                     .child(agent_icon)
                     .child(
                         div()
-                            .debug_selector(move || format!("session-header-worktree-{}", id.raw()))
-                            .flex_auto()
+                            .flex_1()
                             .min_w_0()
-                            .truncate()
+                            .flex()
+                            .items_center()
                             .text_size(rpx(TEXT_BODY))
-                            .text_color(c::FG_DIM())
-                            .child(if home { "~".to_owned() } else { location.clone() }),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
                             .text_color(c::FG_MUTE())
-                            .child("/"),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(move || format!("session-header-title-{}", id.raw()))
-                            .flex_auto()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_size(rpx(TEXT_BODY))
-                            .child(task),
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .max_w(gpui::relative(HEADER_PREFIX_FRACTION))
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("session-header-project-{}", id.raw())
+                                            })
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(if home {
+                                                workspace.clone()
+                                            } else {
+                                                meta.project.clone()
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!(
+                                                    "session-header-project-separator-{}",
+                                                    id.raw()
+                                                )
+                                            })
+                                            .flex_shrink_0()
+                                            .child("/"),
+                                    )
+                                    .child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!("session-header-worktree-{}", id.raw())
+                                            })
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(if home {
+                                                "~".to_owned()
+                                            } else {
+                                                location.clone()
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .debug_selector(move || {
+                                                format!(
+                                                    "session-header-title-separator-{}",
+                                                    id.raw()
+                                                )
+                                            })
+                                            .flex_shrink_0()
+                                            .child("/"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(move || {
+                                        format!("session-header-title-{}", id.raw())
+                                    })
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(c::FG())
+                                    .child(task),
+                            ),
                     ),
             )
             .child(
@@ -843,10 +912,9 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_MD))
-                    .child(status)
+                    .child(header_status)
                     .child(close),
-            )
-            .when_some(task_progress, gpui::ParentElement::child);
+            );
         let header = if grid {
             let selected = matches!(
                 self.selection,
@@ -900,6 +968,10 @@ impl Sidebar {
                 }),
             )
             .when(!self.is_zen(), |pane| pane.child(header))
+            .when_some(
+                self.header_task_disclosure(id, window, cx),
+                gpui::ParentElement::child,
+            )
             .when_some(
                 self.checkout_panel.narrow_content.take(),
                 gpui::ParentElement::child,
@@ -1060,7 +1132,7 @@ impl Sidebar {
             .justify_center()
             .rounded(rpx(RADIUS_CONTROL))
             .hover(|style| style.bg(c::BG_HOVER()))
-            .focus(|style| style.bg(c::BG_HOVER()))
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
             .tooltip(move |window, cx| {
                 crate::views::components::tooltip(label.clone(), window).build(window, cx)
             })
@@ -1408,6 +1480,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.sync_header_task_disclosure(window, cx);
         if let Some(settings) = &self.settings_panel {
             if settings.read(cx).is_open() {
                 return motion::slow(
@@ -2374,6 +2447,7 @@ mod tests {
             sidebar
         });
         draw(cx);
+        assert_contiguous_session_breadcrumb(cx);
         for selector in [
             "terminal-header-1",
             "terminal-header-left-1",
@@ -2392,6 +2466,7 @@ mod tests {
             });
         });
         draw(cx);
+        assert_contiguous_session_breadcrumb(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.mode == ViewMode::Grid));
         let header = cx.debug_bounds("terminal-header-1").unwrap();
         cx.simulate_mouse_down(
@@ -2425,7 +2500,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn grid_tile_header_shows_task_progress_only_with_a_list(cx: &mut gpui::TestAppContext) {
+    fn shared_header_compacts_tasks_and_discloses_them_without_grid_drag(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
@@ -2495,15 +2572,16 @@ mod tests {
         });
         let id = crate::entities::session_registry::SessionId::from_raw(1);
         draw(cx);
-        // The single-session header leaves progress to the composer strip.
+        // Main and grid share one compact progress control.
         assert!(cx.debug_bounds("terminal-header-1").is_some());
+        assert!(cx.debug_bounds("header-tasks-1").is_some());
+        assert!(cx.debug_bounds("grid-header-task-now-1").is_none());
         assert!(cx.debug_bounds("grid-header-tasks-1").is_none());
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.task_glance(id).cloned()),
             Some(super::super::task_glance::TaskGlance {
                 done: 1,
                 total: 2,
-                stale: false,
                 current: Some(grove_core::tasks::TaskStatus::InProgress),
                 now: Some("Render task strip".into()),
             })
@@ -2515,8 +2593,43 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(cx.debug_bounds("grid-header-tasks-1").is_some());
-        assert!(cx.debug_bounds("grid-header-task-now-1").is_some());
+        assert!(cx.debug_bounds("header-tasks-1").is_some());
+        assert!(cx.debug_bounds("grid-header-task-now-1").is_none());
+        let progress = cx.debug_bounds("header-tasks-1").unwrap();
+        let close = cx.debug_bounds("canvas-close-1").unwrap();
+        let header = cx.debug_bounds("terminal-header-1").unwrap();
+        assert!(progress.right() <= close.left());
+        assert!(close.right() <= header.right());
+        cx.simulate_mouse_down(
+            progress.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_none()));
+        cx.simulate_mouse_up(
+            progress.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert!(cx.debug_bounds("header-task-disclosure-1").is_some());
+        assert!(cx.debug_bounds("header-task-current-1").is_some());
+        assert!(cx.debug_bounds("header-task-row-1-0").is_some());
+        assert!(cx.debug_bounds("header-task-row-1-1").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx.debug_bounds("header-task-disclosure-1").is_none());
+        // Escape restores the trigger: Enter must open it again without moving focus.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(cx.debug_bounds("header-task-disclosure-1").is_some());
+        cx.simulate_resize(gpui::size(gpui::px(440.), gpui::px(240.)));
+        draw(cx);
+        let disclosure = cx.debug_bounds("header-task-disclosure-1").unwrap();
+        assert!(disclosure.left() >= gpui::px(0.) && disclosure.top() >= gpui::px(0.));
+        assert!(disclosure.right() <= gpui::px(440.) && disclosure.bottom() <= gpui::px(240.));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
         // A transcript update reaches the header through the session observer.
         cx.update(|_, cx| {
             let session = sidebar
@@ -2537,8 +2650,12 @@ mod tests {
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar
             .task_glance(id)
             .is_some_and(super::super::task_glance::TaskGlance::all_done)));
-        assert!(cx.debug_bounds("grid-header-task-now-1").is_some());
-        // No list, no cluster.
+        assert!(cx.debug_bounds("header-tasks-1").is_some());
+        assert!(cx.debug_bounds("grid-header-task-now-1").is_none());
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(cx.debug_bounds("header-task-disclosure-1").is_some());
+        // Removing a list also dismisses its open disclosure.
         cx.update(|_, cx| {
             let session = sidebar
                 .read(cx)
@@ -2556,7 +2673,9 @@ mod tests {
         });
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.task_glance(id).is_none()));
-        assert!(cx.debug_bounds("grid-header-tasks-1").is_none());
+        assert!(cx.debug_bounds("header-tasks-1").is_none());
+        assert!(cx.debug_bounds("header-task-disclosure-1").is_none());
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.header_tasks.open.is_none()));
     }
 
     #[gpui::test]
@@ -2600,10 +2719,7 @@ mod tests {
         let title = cx.debug_bounds("session-header-title-1").unwrap();
         assert!(worktree.right() < title.left());
         assert!(title.right() <= close.left());
-        for zone in [
-            "terminal-header-left-1",
-            "terminal-header-right-1",
-        ] {
+        for zone in ["terminal-header-left-1", "terminal-header-right-1"] {
             let bounds = cx.debug_bounds(zone).unwrap();
             assert!(f32::from(bounds.center().y - header.center().y).abs() < 1.);
         }
@@ -2637,8 +2753,20 @@ mod tests {
         let title = cx.debug_bounds("session-header-title-1").unwrap();
         let worktree = cx.debug_bounds("session-header-worktree-1").unwrap();
         let close = cx.debug_bounds("canvas-close-1").unwrap();
+        let displayed_worktree = sidebar.read_with(cx, |sidebar, _| {
+            sidebar
+                .snapshot
+                .projects
+                .iter()
+                .flat_map(|project| &project.worktrees)
+                .find(|worktree| worktree.path == "/grove-canvas-fixture")
+                .map_or_else(
+                    || "/grove-canvas-fixture".to_owned(),
+                    |worktree| worktree.name.clone(),
+                )
+        });
         let worktree_width = cx.update(|window, _| {
-            let text: gpui::SharedString = "/grove-canvas-fixture".into();
+            let text: gpui::SharedString = displayed_worktree.into();
             let run = window.text_style().to_run(text.len());
             window
                 .text_system()
@@ -2851,6 +2979,27 @@ mod tests {
         assert_eq!(worktree_error_field("Worktree path /x already exists."), 2);
         assert_eq!(worktree_error_field("git rev-parse --verify failed"), 2);
     }
+    fn assert_contiguous_session_breadcrumb(cx: &mut gpui::VisualTestContext) {
+        let selectors = [
+            "session-header-project-1",
+            "session-header-project-separator-1",
+            "session-header-worktree-1",
+            "session-header-title-separator-1",
+            "session-header-title-1",
+        ];
+        for adjacent in selectors.windows(2) {
+            let left = cx.debug_bounds(adjacent[0]).unwrap();
+            let right = cx.debug_bounds(adjacent[1]).unwrap();
+            assert_eq!(
+                left.right(),
+                right.left(),
+                "breadcrumb segments must remain adjacent: {} and {}",
+                adjacent[0],
+                adjacent[1],
+            );
+        }
+    }
+
     fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
         cx.update(|window, cx| {
