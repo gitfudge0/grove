@@ -73,8 +73,10 @@ enum CommitUi {
 enum CommitEvent {
     Progress(CommitPhase),
     Finished(
-        Result<CommitOutcome, String>,
-        Result<CheckoutGitState, String>,
+        Box<(
+            Result<CommitOutcome, String>,
+            Result<CheckoutGitState, String>,
+        )>,
     ),
 }
 
@@ -259,7 +261,7 @@ impl Sidebar {
                     },
                 );
                 let state = checkout_git::inspect(Path::new(&target));
-                let _ = send.send(CommitEvent::Finished(result, state));
+                let _ = send.send(CommitEvent::Finished(Box::new((result, state))));
             })
             .detach();
         cx.spawn(async move |this, cx| {
@@ -280,7 +282,8 @@ impl Sidebar {
                                             CommitPhase::Generating => {},
                                         }
                                     }
-                                    CommitEvent::Finished(result, state) => {
+                                    CommitEvent::Finished(finished) => {
+                                        let (result, state) = *finished;
                                         this.checkout_panel.busy = false;
                                         this.checkout_panel.commit_control = None;
                                         this.checkout_panel.commit_job_path = None;
