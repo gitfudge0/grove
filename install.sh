@@ -37,26 +37,14 @@ if ! cargo bundle --help >/dev/null 2>&1; then
   cargo install cargo-bundle
 fi
 
-# Keep the command agents discover in sync with the installed desktop. Older
-# cargo installs left an independent GUI-only executable here.
-install_cli_link() {
+# Remove only the obsolete command link created by older Grove installers.
+remove_cli_link() {
   local executable="$1"
-  local cli_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
-  mkdir -p "$cli_dir"
-  if [ "$executable" = "$cli_dir/grove" ] || [ "$executable" -ef "$cli_dir/grove" ]; then
-    echo "CLI already installed at $executable"
-    return
+  local cli_path="${CARGO_HOME:-$HOME/.cargo}/bin/grove"
+  if [ -L "$cli_path" ] && [ "$(readlink "$cli_path")" = "$executable" ]; then
+    rm "$cli_path"
+    echo "Removed obsolete Grove CLI link: $cli_path"
   fi
-  if [ -d "$cli_dir/grove" ] && [ ! -L "$cli_dir/grove" ]; then
-    echo "Error: refusing to replace directory $cli_dir/grove" >&2
-    return 1
-  fi
-  ln -sfn "$executable" "$cli_dir/grove"
-  echo "Installed CLI: $cli_dir/grove -> $executable"
-  case ":$PATH:" in
-    *":$cli_dir:"*) ;;
-    *) echo "Add $cli_dir to your PATH to use grove commands." ;;
-  esac
 }
 
 OS="$(uname -s)"
@@ -124,7 +112,7 @@ case "$OS" in
     fi
     echo
     echo "Installed $(basename "$APP") to $DEST"
-    install_cli_link "$DEST/$(basename "$APP")/Contents/MacOS/grove"
+    remove_cli_link "$DEST/$(basename "$APP")/Contents/MacOS/grove"
     echo "Launch it from Spotlight or Launchpad."
     ;;
 
@@ -133,7 +121,7 @@ case "$OS" in
     if [ -n "$DEB" ] && command -v dpkg >/dev/null 2>&1; then
       echo "Installing $DEB (sudo)..."
       sudo dpkg -i "$DEB" || sudo apt-get -f install -y
-      install_cli_link "/usr/bin/grove"
+      remove_cli_link "/usr/bin/grove"
       echo "Installed. Launch 'Grove' from your application menu."
     else
       # Fallback: binary + .desktop + icon under ~/.local (no root needed).
@@ -156,7 +144,7 @@ EOF
       command -v update-desktop-database >/dev/null 2>&1 \
         && update-desktop-database "$HOME/.local/share/applications" || true
       echo
-      install_cli_link "$HOME/.local/bin/grove"
+      remove_cli_link "$HOME/.local/bin/grove"
       echo "Installed grove to ~/.local/bin and a launcher to $DESKTOP"
       echo "Ensure ~/.local/bin is on your PATH; launch 'Grove' from your menu."
     fi

@@ -21,10 +21,7 @@ Line counts below describe the reviewed snapshot and exclude this report.
 | crates/grove-core/src/lib.rs | Modified | Expose Codex backend | +1/-0 | Internal API |
 | crates/grove-core/src/codex.rs | Added | Actor, protocol projection, persistence, lifecycle, regression tests | +1879 | Core integration |
 | crates/grove-core/examples/codex_native_smoke.rs | Added | Opt-in real-provider smoke | +180 | Verification only |
-| scripts/verify-cli-surface.py | Modified | Deterministic app-server peer and isolated CLI acceptance | +50/-5 | Verification only |
-| scripts/verify-native-codex.py | Added | Installed isolated real-provider acceptance | +221 | Verification only |
 | src/app.rs | Modified | Component Root initialization contract | +2/-1 | Window-wide |
-| src/control_runtime.rs | Modified | Native sessions input/logs/status/task reconciliation | +59/-34 | Public CLI behavior |
 | src/entities/activity_store.rs | Modified | Native activity projection | +19/-0 | Shared activity |
 | src/entities/mod.rs | Modified | Register observable entity | +1/-0 | Low |
 | src/entities/codex_session.rs | Added | Actor snapshots and tracked submission API | +103 | UI/backend boundary |
@@ -56,7 +53,7 @@ Line counts below describe the reviewed snapshot and exclude this report.
 
 ```mermaid
 flowchart TD
-    Launch[Existing sidebar / palette / CLI launcher] --> Runtime[Grove Runtime]
+    Launch[Existing sidebar / palette launcher] --> Runtime[Grove Runtime]
     Runtime --> Choice{Session transport}
     Choice -->|New native Codex| Entity[CodexSession observable entity]
     Entity -->|Submission ID and actions| Actor[Background Codex actor]
@@ -103,11 +100,10 @@ Parent verification reported from raw command output on the reviewed source:
 - Workspace nextest: **1,144 passed, 2 skipped** in 16.979 seconds. Only equivalent lint corrections followed this run.
 - All-target Clippy passed with the repository's test unwrap/expect allowances; production Clippy passed without those allowances. Scoped Cargo formatting, the five intended vendor modules' formatting, typos, and `git diff --check` passed. Cargo Machete found no unused dependencies; doctests completed successfully with zero doctests.
 - The real-provider core smoke passed initialization, an effective additional writable root, streaming and command output, persisted same-thread resume and MARIGOLD recall, image color recognition, interruption, and stop cleanup.
-- The CLI installer fixture passed its safety cases. The optimized release built in 3m09s, bundled, signed with the configured identity, and installed to `/Applications/Grove.app`.
+- The optimized release built in 3m09s, bundled, signed with the configured identity, and installed to `/Applications/Grove.app`.
 - Installed isolated real-provider acceptance passed **114 commands**, including sparse Finder-style PATH launch, native creation, actual prompt and `pwd`, Markdown/live updates, owner restart and same-thread recall, and session/recovery cleanup. Evidence: `/private/tmp/grove-native-codex-efheckw3/{summary,cleanup,owner,commands}.json`. Its designated owner exited and no owned child processes remained.
 - A token-pair contrast calculation found body/metadata/composer ratios of 16.26/7.54/16.09 in dark and 18.40/5.70/16.00 in light. This supports palette contrast only; it is not rendered visual verification.
 
-The separate legacy CLI surface acceptance also passed **109 commands**; evidence is under `/private/tmp/grove-cli-surface-e_wgvfdt`. Its designated disposable owner exited. The parent confirmed the production configuration hash remained unchanged across the gates, the user's running Grove instance remained alive, and the final diff whitespace check was clean. No commit or push was performed.
 
 ## Recommendations
 

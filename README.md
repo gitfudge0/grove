@@ -16,7 +16,7 @@ _Illustrated Grove UI with fictional project data. Music: [Happy Beats & Busines
 
 </div>
 
-grove is a native desktop app for managing git worktrees across projects and running ai coding agents side by side. enable **Native Agents (experimental)** in Settings to use Grove-owned Codex and Claude Code conversation UIs backed by their installed CLIs. the setting is off by default; both agents otherwise run in terminals. OpenCode and shells run in embedded PTYs, with optional tmux persistence. `grove` opens the desktop app directly.
+grove is a native desktop app for managing git worktrees across projects and running ai coding agents side by side. enable **Native Agents (experimental)** in Settings to use Grove-owned Codex and Claude Code conversation UIs backed by their installed CLIs. the setting is off by default; both agents otherwise run in terminals. OpenCode and shells run in embedded PTYs, with optional tmux persistence.
 
 ## table of contents
 
@@ -24,7 +24,6 @@ grove is a native desktop app for managing git worktrees across projects and run
 - [install](#install)
 - [quickstart](#quickstart)
 - [sessions](#sessions)
-- [CLI and agent delegation](#cli-and-agent-delegation)
 - [keyboard](#keyboard)
 - [supported agents](#supported-agents)
 - [appearance](#appearance)
@@ -116,30 +115,7 @@ grove supports two terminal session backends. these settings do not change the n
 | **tmux** | recommended when `tmux` is installed | sessions survive grove exits and are rediscovered on next launch |
 | **native** | no tmux dependency | sessions end when grove exits |
 
-when you start your first managed project session with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new terminal sessions. with Native Agents (experimental) enabled, new Codex and Claude Code sessions use native conversations; explicitly launching either agent with CLI `--backend tmux` opens a legacy terminal session. existing sessions keep the backend they were started with.
-
-## CLI and agent delegation
-
-`./install.sh` also installs `grove` into `${CARGO_HOME:-$HOME/.cargo}/bin` as a link to the installed desktop executable, replacing legacy Cargo-installed binaries. keep that directory on your `PATH`; updates then update both the desktop and CLI together. existing shells may need `hash -r` (bash) or `rehash` (zsh) after installation.
-
-with the desktop running, the `grove` CLI can discover projects, create worktrees, launch and inspect sessions, and track delegated tasks. control uses a private local Unix socket on linux/macOS; Windows CLI control is not supported yet. it does not start a headless service or open the desktop automatically. bare `grove` still opens the desktop; `grove --help` and `grove --version` work without it.
-
-```sh
-grove projects list --json
-grove worktrees list --project /path/to/project --json
-grove sessions start --project /path/to/project --worktree /path/to/worktree \
-  --agent codex --backend tmux --prompt-file /path/to/prompt.txt \
-  --task-title "Implement the parser" --task-file /path/to/prompt.txt \
-  --request-id parser-worker-1 --json
-grove sessions logs SESSION_ID --lines 100 --json
-grove tasks wait TASK_ID --timeout 60 --json
-```
-
-use the returned session/task IDs and `grove <command> --help` for command details. responses are versioned JSON envelopes with `{version, ok, data, error}` and the executed request ID; `--json` is accepted anywhere. reuse the same request ID and identical inputs when retrying a launch after a lost response. pending requests after a crash require inspecting sessions/tasks before recovery. terminal logs return bounded current-screen text with `scope: live_screen`; native Codex and Claude Code logs return captured conversation text with `scope: transcript`. `sessions input` submits a complete prompt to native Codex or Claude Code and sends raw bytes to terminal sessions. native agent session rows include `native_status` for startup, active-turn, approval, and completion states; the existing `status` field retains its process-level meaning. if you set `GROVE_CONFIG_DIR` for the desktop, use the same value for CLI commands.
-
-task records persist across restarts. workers receive `GROVE_TASK_ID` and `GROVE_CONFIG_DIR`, and explicitly submit a result with `grove tasks complete TASK_ID --result-file /path/to/result.json`; a result is a worker report that the coordinator still needs to verify. terminal activity and sidebar “done” signals do not establish success. direct PTY sessions end on desktop exit; native Codex and Claude Code conversations resume from saved recovery records; tmux sessions keep running and reconnect. check the returned backend because a failed tmux launch can fall back to native. launches honor Grove's existing agent permission settings.
-
-the repository includes a [Grove skill](skills/grove/SKILL.md) for agents coordinating independent tasks in separate worktrees. to install it for Codex, run `grove skills install --agent codex` or use Settings → Skills, then use `$grove`. the user-scope location is `~/.agents/skills/grove`; add `--project /absolute/project` for project scope. installation is optional.
+when you start your first managed project session with `tmux` installed, grove asks which backend to use. use the `native` / `tmux` controls in the app chrome to choose the backend for new terminal sessions. with Native Agents (experimental) enabled, new Codex and Claude Code sessions use native conversations. existing sessions keep the backend they were started with.
 
 ## keyboard
 
@@ -204,7 +180,7 @@ GROVE_HIGHLIGHTS_DEBUG=1 GROVE_HIGHLIGHTS_VERSION=1.0.8 cargo run
 
 The first `1.0.2` slide uses a two-state GIF captured from the native app, with a 1.5-second hold on the expanded and collapsed sidebar. The outlined toggle follows its real position in each state; The loop starts automatically; Pause animation keeps the poster still.
 
-The enabled `1.0.8` entry covers changes since `v1.0.2` in four text-only slides: session navigation, cross-project launching, CLI and agent workflows, and updates. The original `1.0.2` entry and media remain available for explicit debug previews. See [release notes](RELEASE_NOTES.md) for the smaller changes and fixes.
+The enabled `1.0.8` entry covers changes since `v1.0.2` in three text-only slides: session navigation, cross-project launching, and updates. The original `1.0.2` entry and media remain available for explicit debug previews. See [release notes](RELEASE_NOTES.md) for the smaller changes and fixes.
 
 ## requirements
 

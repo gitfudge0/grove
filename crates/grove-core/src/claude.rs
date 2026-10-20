@@ -90,13 +90,13 @@ pub fn launch_options(args: &[String]) -> Result<(Vec<String>, Option<String>), 
     Ok((options, prompt))
 }
 
-pub fn connect(saved: SavedSession, args: Vec<String>, task_id: Option<String>) -> Connection {
+pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
     let (handle, input) = Handle::channel();
     let (updates, output) = crate::latest::channel();
     let pid = handle.1.clone();
     let stopping = handle.2.clone();
     std::thread::spawn(move || {
-        Actor::new(saved, args, task_id, input, updates, pid, stopping).run();
+        Actor::new(saved, args, input, updates, pid, stopping).run();
     });
     Connection {
         handle,
@@ -119,11 +119,7 @@ impl Drop for Process {
         let _ = self.child.wait();
     }
 }
-fn launch_command(
-    args: &[String],
-    saved: &SavedSession,
-    task_id: Option<&str>,
-) -> Result<Command, String> {
+fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, String> {
     let argv = vec![
         "--print".into(),
         "--verbose".into(),
@@ -156,9 +152,6 @@ fn launch_command(
         "GROVE_CONFIG_DIR",
         crate::storage::config_dir().map_err(|e| e.to_string())?,
     );
-    if let Some(task) = task_id {
-        command.env("GROVE_TASK_ID", task);
-    }
     let pending_resume = saved.pending_edit.as_ref().map(|edit| codex::ClaudeResume {
         original_session: saved.claude_resume.as_ref().map_or_else(
             || saved.thread_id.clone(),
@@ -210,8 +203,8 @@ fn launch_command(
     }
     Ok(command)
 }
-fn spawn(args: &[String], saved: &SavedSession, task_id: Option<&str>) -> Result<Process, String> {
-    let mut command = launch_command(args, saved, task_id)?;
+fn spawn(args: &[String], saved: &SavedSession) -> Result<Process, String> {
+    let mut command = launch_command(args, saved)?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -317,7 +310,6 @@ fn user_content(text: &str, images: &[String]) -> Vec<Value> {
 struct Actor {
     state: Snapshot,
     args: Vec<String>,
-    task_id: Option<String>,
     input: mpsc::Receiver<Action>,
     updates: crate::latest::Sender<Snapshot>,
     pid: Arc<AtomicU32>,
@@ -358,7 +350,6 @@ impl Actor {
     fn new(
         mut saved: SavedSession,
         args: Vec<String>,
-        task_id: Option<String>,
         input: mpsc::Receiver<Action>,
         updates: crate::latest::Sender<Snapshot>,
         pid: Arc<AtomicU32>,
@@ -369,9 +360,7 @@ impl Actor {
         } else {
             args
         };
-        let task_id = task_id.or_else(|| saved.task_id.clone());
         saved.config_args = launch_options(&args).map_or_else(|_| args.clone(), |v| v.0);
-        saved.task_id.clone_from(&task_id);
         let mut transcript = crate::claude_transcript::ClaudeTranscriptState::default();
         transcript.restore(&mut saved.items);
         let last_assistant_uuid = saved
@@ -384,7 +373,6 @@ impl Actor {
         Self {
             state,
             args,
-            task_id,
             input,
             updates,
             pid,
@@ -633,7 +621,7 @@ impl Actor {
         {
             self.initial = initial;
         }
-        let process = spawn(&args, &self.state.saved, self.task_id.as_deref())?;
+        let process = spawn(&args, &self.state.saved)?;
         self.pid.store(process.child.id(), Ordering::SeqCst);
         self.process = Some(process);
         // Close the publication race with Handle::stop_completion.
@@ -791,7 +779,7 @@ impl Actor {
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
         let args = launch_options(&self.args)?.0;
-        let process = match spawn(&args, &self.state.saved, self.task_id.as_deref()) {
+        let process = match spawn(&args, &self.state.saved) {
             Ok(process) => process,
             Err(error) => {
                 self.recover_edit()?;
@@ -2182,7 +2170,6 @@ mod tests {
         Actor::new(
             saved,
             Vec::new(),
-            None,
             input,
             updates,
             Arc::new(AtomicU32::new(0)),
@@ -2413,7 +2400,7 @@ mod tests {
             composer_draft: None,
             claude_fork_id: Some("second-fork".into()),
         });
-        let pending_command = launch_command(&[], &actor.state.saved, None).unwrap();
+        let pending_command = launch_command(&[], &actor.state.saved).unwrap();
         let pending_args = pending_command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -2478,7 +2465,7 @@ mod tests {
         });
         let saved: SavedSession =
             serde_json::from_value(serde_json::to_value(&actor.state.saved).unwrap()).unwrap();
-        let command = launch_command(&[], &saved, None).unwrap();
+        let command = launch_command(&[], &saved).unwrap();
         let args = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -2772,7 +2759,7 @@ mod tests {
         assert!(actor.process.is_none());
         assert_eq!(actor.state.cleared_conversations, 1);
         assert_eq!(launch_options(&actor.args).unwrap().1, None);
-        let command = launch_command(&actor.args, &restored, None).unwrap();
+        let command = launch_command(&actor.args, &restored).unwrap();
         let args = command
             .get_args()
             .map(|v| v.to_string_lossy())
@@ -3179,7 +3166,7 @@ mod tests {
     #[test]
     fn launch_advertises_only_rendered_extended_question_schema() {
         let actor = actor();
-        let command = launch_command(&[], &actor.state.saved, None).unwrap();
+        let command = launch_command(&[], &actor.state.saved).unwrap();
         assert_eq!(
             command
                 .get_envs()
@@ -3362,24 +3349,21 @@ mod tests {
         assert_eq!(actor.state.queued_prompts.len(), 1);
     }
     #[test]
-    fn recovery_restores_launch_configuration_and_task_environment() {
+    fn recovery_restores_launch_configuration() {
         let mut original = actor();
         original.state.saved.config_args =
             vec!["--model".into(), "sonnet".into(), "--chrome".into()];
-        original.state.saved.task_id = Some("task".into());
         let (_, input) = mpsc::channel();
         let (updates, _) = crate::latest::channel();
         let restored = Actor::new(
             original.state.saved,
             Vec::new(),
-            None,
             input,
             updates,
             Arc::new(AtomicU32::new(0)),
             Arc::new(AtomicBool::new(false)),
         );
         assert_eq!(restored.args, vec!["--model", "sonnet", "--chrome"]);
-        assert_eq!(restored.task_id.as_deref(), Some("task"));
     }
     #[test]
     fn queue_waits_for_authoritative_idle_after_result() {

@@ -43,7 +43,7 @@
 
 # Grove 1.0.8
 
-Changes since v1.0.2. The text-only launch carousel groups these into four highlights.
+Changes since v1.0.2. The text-only launch carousel groups these into three highlights.
 
 ## Sessions and navigation
 
@@ -61,13 +61,6 @@ Changes since v1.0.2. The text-only launch carousel groups these into four highl
 - Refresh shell environments periodically or on demand so new sessions pick up PATH changes.
 - Allow spaces in worktree names.
 
-## CLI and agent workflows
-
-- CLI management for projects, workspaces, worktrees, sessions, scripts, session input/logs, and asynchronous removal status.
-- Durable delegated task records with parent tasks, explicit results, inspection, and waiting; tmux sessions can reconnect after desktop restarts.
-- Install or refresh the bundled Grove skill globally for Codex, Claude Code, and OpenCode from Settings. The CLI also supports explicit project scope.
-- Install the Grove CLI alongside the desktop and keep it linked to the updated desktop executable. CLI control requires a running desktop on macOS/Linux; Windows CLI control is not supported yet.
-
 ## Updates and packaging
 
 - Check the latest available release again before installing an update.
@@ -78,4 +71,4 @@ Changes since v1.0.2. The text-only launch carousel groups these into four highl
 ## Release preparation
 
 - Bump Grove to 1.0.8 and enable its once-per-version text-only launch highlights. Retain the original 1.0.2 manifest entry and media for debug previews.
-- Refresh release workflows and validation for CLI installation and complete runtime script output.
+- Refresh release workflows and validation for complete runtime script output.

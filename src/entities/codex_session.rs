@@ -8,14 +8,9 @@ pub struct CodexSession {
     _poll: Task<()>,
 }
 impl CodexSession {
-    pub fn new(
-        saved: SavedSession,
-        args: Vec<String>,
-        task_id: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
         let state = Snapshot::new(saved.clone());
-        let connection = codex::connect(saved, args, task_id);
+        let connection = codex::connect(saved, args);
         Self::from_connection(state, connection, cx)
     }
     pub(crate) fn from_connection(

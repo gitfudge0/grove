@@ -40,7 +40,7 @@ fn main() -> Result<(), String> {
         return Err("Extra root must be an existing disposable directory".into());
     }
     grove_core::env_path::ensure_login_path();
-    let key = grove_core::control::random_id()?;
+    let key = grove_core::identity::random_id()?;
     let saved = SavedSession {
         claude_resume: None,
         edit_checkpoints: Vec::new(),
@@ -66,9 +66,8 @@ fn main() -> Result<(), String> {
         draft: String::new(),
         draft_images: Vec::new(),
         config_args: Vec::new(),
-        task_id: None,
     };
-    let connection = codex::connect(saved, Vec::new(), None);
+    let connection = codex::connect(saved, Vec::new());
     let ready = wait(&connection, |s| s.status == Status::Idle)?;
     println!(
         "PASS initialized thread {}",
@@ -123,7 +122,7 @@ fn main() -> Result<(), String> {
     if restored.thread_id != done.saved.thread_id {
         return Err("Persisted thread identity changed".into());
     }
-    let resumed = codex::connect(restored, Vec::new(), None);
+    let resumed = codex::connect(restored, Vec::new());
     wait(&resumed, |s| s.status == Status::Idle)?;
     resumed.handle.send(Action::Prompt("What word did I ask you to remember? Reply only that word. Do not use tools or modify files.".into()))?;
     let done = wait(&resumed, |s| s.status == Status::Done)?;

@@ -178,7 +178,7 @@ mod tests {
         }
         let production = std::env::temp_dir().join(format!(
             "grove-production-config-sentinel-{}",
-            grove_core::control::random_id().unwrap()
+            grove_core::identity::random_id().unwrap()
         ));
         fs_err::create_dir(&production).unwrap();
         let path = production.join("projects.json");

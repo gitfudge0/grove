@@ -17,7 +17,6 @@ use gpui::{
 };
 use grove_core::{
     agent::Agent,
-    skill_install::{self, AgentTarget, InstallScope, InstallStatus},
     storage::{AppearancePreference, SidebarAppearance, Store},
     upgrade::InstallMethod,
 };
@@ -476,92 +475,6 @@ impl SettingsPanel {
             .child(control)
     }
 
-    fn install_skill(&mut self, agent: AgentTarget, cx: &mut Context<Self>) {
-        match skill_install::install(agent, &InstallScope::User, false) {
-            Ok(_) => {
-                self.error = None;
-                self.runtime.read(cx).toast.clone().update(cx, |toast, cx| {
-                    toast.set_toast(format!("Grove skill synced for {}", agent.label()), cx);
-                });
-            }
-            Err(error) => self.error = Some(format!("Could not sync Grove skill: {error}")),
-        }
-        cx.notify();
-    }
-
-    fn skill_body(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .child(Self::section("Grove skill"))
-            .child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Install globally to manage projects, worktrees, and sessions."),
-            );
-        for agent in AgentTarget::ALL {
-            let result = skill_install::status(agent, &InstallScope::User);
-            let (label, detail, full_detail, enabled) = match result {
-                Ok(installation) => {
-                    let (label, enabled) = match installation.status {
-                        InstallStatus::Missing => ("Install", true),
-                        InstallStatus::UpdateAvailable | InstallStatus::Installed => {
-                            ("Refresh", true)
-                        }
-                        InstallStatus::Conflict => ("Existing skill", false),
-                    };
-                    let full_path = installation.path.display().to_string();
-                    let display_path = dirs::home_dir()
-                        .and_then(|home| {
-                            installation
-                                .path
-                                .strip_prefix(home)
-                                .ok()
-                                .map(|path| format!("~/{}", path.display()))
-                        })
-                        .unwrap_or_else(|| full_path.clone());
-                    let (detail, full_detail) = if installation.status == InstallStatus::Conflict {
-                        (
-                            format!("Existing skill preserved at {display_path}"),
-                            format!("Existing skill preserved at {full_path}"),
-                        )
-                    } else {
-                        (display_path, full_path)
-                    };
-                    (label, detail, full_detail, enabled)
-                }
-                Err(error) => ("Unavailable", error.to_string(), error.to_string(), false),
-            };
-            body = body.child(Self::setting_row(
-                agent.label(),
-                detail,
-                self.button(
-                    format!("settings-skill-{agent:?}"),
-                    format!("{label} Grove skill for {}", agent.label()),
-                    false,
-                    enabled,
-                )
-                .aria_description(full_detail.clone())
-                .tooltip(move |window, cx| {
-                    super::components::tooltip(full_detail.clone(), window).build(window, cx)
-                })
-                .child(label)
-                .when(enabled, |button| {
-                    button
-                        .on_click(cx.listener(move |this, _, _, cx| this.install_skill(agent, cx)))
-                }),
-            ));
-        }
-        body.child(
-            div()
-                .pt(rpx(SPACE_LG))
-                .text_size(rpx(TEXT_MICRO))
-                .text_color(c::FG_DIM())
-                .child("Start a new agent session, then ask it to use the grove skill."),
-        )
-    }
-
     fn settings_body(&self, cx: &mut Context<Self>) -> gpui::Div {
         let store = &cx.global::<SettingsState>().store;
         let mode = appearance(store);
@@ -853,7 +766,6 @@ impl SettingsPanel {
                 .child(Self::setting_row("Permission prompts", "Choose how agents run commands.", permissions))
                 .when(skip, |body| body.child(div().id("settings-permission-warning").role(gpui::Role::Alert).text_size(rpx(TEXT_SMALL)).text_color(c::AMBER()).child("Agents can run commands without asking. Use only in projects you trust.")))
                 .child(Self::setting_row("Claude in Chrome", "Let Claude read and control Chrome tabs.", browser))
-                .child(self.skill_body(cx))
         ));
         body = body.when(self.category == Category::Terminal, |body| {
             body.child(terminal_body)

@@ -89,9 +89,6 @@ fn resolve_multi_root_worktree(
 }
 
 pub struct Runtime {
-    pub(crate) control: Option<crate::control_runtime::ControlRuntime>,
-    control_task: Option<gpui::Task<()>>,
-    control_guard: Option<crate::control_server::ServerGuard>,
     pub state: Entity<WorkspaceState>,
     pub registry: Entity<SessionRegistry>,
     pub tree: Entity<ProjectTree>,
@@ -158,9 +155,6 @@ impl Runtime {
         ];
         let dims = cx.global::<crate::zoom::CurrentPtyDims>();
         let mut runtime = Self {
-            control: None,
-            control_task: None,
-            control_guard: None,
             state,
             registry,
             tree,
@@ -176,23 +170,6 @@ impl Runtime {
             native_title_observers: HashMap::new(),
             _observers: observers,
         };
-        if cx.has_global::<crate::control_server::ControlEndpoint>() {
-            let endpoint = cx.global_mut::<crate::control_server::ControlEndpoint>();
-            if let (Some(listener), Some(state)) = (endpoint.listener.take(), endpoint.state.take())
-            {
-                runtime.control = Some(crate::control_runtime::ControlRuntime::new(state));
-                match crate::control_server::start(listener, cx) {
-                    Ok((task, guard)) => {
-                        runtime.control_task = Some(task);
-                        runtime.control_guard = Some(guard);
-                    }
-                    Err(error) => {
-                        tracing::error!(%error, "could not start Grove control server");
-                        std::process::exit(1);
-                    }
-                }
-            }
-        }
         if runtime.restoring_codex {
             runtime.restore_native_codex(cx);
         }
@@ -290,34 +267,6 @@ impl Runtime {
         temp_bundle_path: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.spawn_session_with_options(
-            name,
-            cwd,
-            agent,
-            args,
-            context_roots,
-            temp_bundle_path,
-            true,
-            None,
-            None,
-            cx,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn spawn_session_with_options(
-        &mut self,
-        name: String,
-        cwd: String,
-        agent: Agent,
-        args: Vec<String>,
-        context_roots: Vec<grove_core::session_meta::ContextRoot>,
-        temp_bundle_path: Option<String>,
-        focus: bool,
-        backend: Option<bool>,
-        task_id: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> bool {
         if self.pending_managed_launch.is_some() {
             if let Some(path) = temp_bundle_path.as_deref() {
                 grove_core::multi_root::cleanup_path(std::path::Path::new(path));
@@ -348,7 +297,7 @@ impl Runtime {
             return false;
         }
         if matches!(agent, Agent::Codex | Agent::Claude)
-            && native_codex_enabled(&cx.global::<SettingsState>().store, backend)
+            && native_codex_enabled(&cx.global::<SettingsState>().store, None)
         {
             return self.spawn_native_codex(
                 PendingManagedLaunch {
@@ -360,13 +309,11 @@ impl Runtime {
                     temp_bundle_path,
                     record_recent: false,
                 },
-                focus,
-                task_id,
                 cx,
             );
         }
         if should_choose_backend(
-            backend.or(cx.global::<SettingsState>().store.tmux_enabled),
+            cx.global::<SettingsState>().store.tmux_enabled,
             grove_core::tmux::available,
         ) {
             self.queue_backend_choice(
@@ -383,14 +330,11 @@ impl Runtime {
             );
             return false;
         }
-        if focus {
-            self.state.update(cx, |s, cx| {
-                s.set_open_agent_menu(None);
-                cx.notify();
-            });
-        }
-        let use_tmux =
-            managed_session_uses_tmux(backend.or(cx.global::<SettingsState>().store.tmux_enabled));
+        self.state.update(cx, |s, cx| {
+            s.set_open_agent_menu(None);
+            cx.notify();
+        });
+        let use_tmux = managed_session_uses_tmux(cx.global::<SettingsState>().store.tmux_enabled);
         let (id, extra_args, state_file, target) = self.registry.update(cx, |r, cx| {
             let id = r.insert_meta_with_context(
                 name.clone(),
@@ -408,7 +352,6 @@ impl Runtime {
                 extra_args,
                 state_file,
                 crate::entities::session_registry::SpawnTarget {
-                    task_id,
                     cwd,
                     agent,
                     project: name,
@@ -465,15 +408,13 @@ impl Runtime {
                 ],
             );
         }
-        if focus {
-            let snap = self.snapshot(cx);
-            let old = self.state.read(cx).proj_idx();
-            ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
-            self.state.update(cx, |s, cx| {
-                s.select_session(id, &snap);
-                cx.notify();
-            });
-        }
+        let snap = self.snapshot(cx);
+        let old = self.state.read(cx).proj_idx();
+        ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
+        self.state.update(cx, |s, cx| {
+            s.select_session(id, &snap);
+            cx.notify();
+        });
         spawn_error.is_none()
     }
 
@@ -481,7 +422,6 @@ impl Runtime {
         &mut self,
         saved: grove_core::codex::SavedSession,
         args: Vec<String>,
-        task_id: Option<String>,
         cx: &mut Context<Self>,
     ) -> SessionId {
         let id = self.registry.update(cx, |registry, _| {
@@ -493,8 +433,8 @@ impl Runtime {
                 None,
             )
         });
-        let session = cx
-            .new(|cx| crate::entities::codex_session::CodexSession::new(saved, args, task_id, cx));
+        let session =
+            cx.new(|cx| crate::entities::codex_session::CodexSession::new(saved, args, cx));
         let handle = session.read(cx).handle.clone();
         self.registry.update(cx, |registry, cx| {
             registry.take_attention_args(id);
@@ -526,13 +466,7 @@ impl Runtime {
         });
         self.native_title_observers.insert(id, observer);
     }
-    fn spawn_native_codex(
-        &mut self,
-        launch: PendingManagedLaunch,
-        focus: bool,
-        task_id: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    fn spawn_native_codex(&mut self, launch: PendingManagedLaunch, cx: &mut Context<Self>) -> bool {
         let PendingManagedLaunch {
             name: project,
             cwd,
@@ -551,7 +485,7 @@ impl Runtime {
                 .update(cx, |toast, cx| toast.set_error(error, cx));
             return false;
         }
-        let key = match grove_core::control::random_id() {
+        let key = match grove_core::identity::random_id() {
             Ok(key) => key,
             Err(error) => {
                 self.toast
@@ -578,18 +512,15 @@ impl Runtime {
             draft: String::new(),
             draft_images: Vec::new(),
             config_args: Vec::new(),
-            task_id: task_id.clone(),
         };
-        let id = self.attach_native_codex(saved, args, task_id, cx);
-        if focus {
-            let snap = self.snapshot(cx);
-            let old = self.state.read(cx).proj_idx();
-            ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
-            self.state.update(cx, |state, cx| {
-                state.select_session(id, &snap);
-                cx.notify();
-            });
-        }
+        let id = self.attach_native_codex(saved, args, cx);
+        let snap = self.snapshot(cx);
+        let old = self.state.read(cx).proj_idx();
+        ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
+        self.state.update(cx, |state, cx| {
+            state.select_session(id, &snap);
+            cx.notify();
+        });
         true
     }
     fn restore_native_codex(&mut self, cx: &mut Context<Self>) {
@@ -615,7 +546,7 @@ impl Runtime {
                             {
                                 if !owner.archived && std::path::Path::new(&saved.cwd).is_dir() {
                                     saved.project.clone_from(&owner.name);
-                                    runtime.attach_native_codex(saved, Vec::new(), None, cx);
+                                    runtime.attach_native_codex(saved, Vec::new(), cx);
                                 }
                             }
                         }
@@ -896,7 +827,6 @@ impl Runtime {
             .registry
             .update(cx, |r, _| (r.next_home_id(), r.next_wt_label()));
         let target = crate::entities::session_registry::SpawnTarget {
-            task_id: None,
             cwd: wt_path.to_string(),
             agent: grove_core::agent::Agent::Terminal,
             project: String::new(),
@@ -1568,7 +1498,6 @@ mod tests {
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),
-                task_id: None,
             };
             let connection = grove_core::codex::Connection {
                 handle: handle.clone(),

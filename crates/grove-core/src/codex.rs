@@ -167,8 +167,6 @@ pub struct SavedSession {
     #[serde(default)]
     pub config_args: Vec<String>,
     #[serde(default)]
-    pub task_id: Option<String>,
-    #[serde(default)]
     pub composer: ComposerSettings,
     /// Last known context-window occupancy, so a reopened session shows its meter.
     #[serde(default)]
@@ -1844,16 +1842,16 @@ pub fn launch_options(args: &[String]) -> Result<(Vec<String>, Option<String>), 
     Ok((configs, prompt))
 }
 
-pub fn connect(saved: SavedSession, args: Vec<String>, task_id: Option<String>) -> Connection {
+pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
     if saved.provider == Provider::Claude {
-        return crate::claude::connect(saved, args, task_id);
+        return crate::claude::connect(saved, args);
     }
     let (handle, receive) = Handle::channel();
     let (updates, output) = crate::latest::channel();
     let actor_pid = handle.1.clone();
     let actor_stopping = handle.2.clone();
     std::thread::spawn(move || {
-        let mut actor = Actor::new(saved, receive, updates, args, task_id);
+        let mut actor = Actor::new(saved, receive, updates, args);
         actor.pid = actor_pid;
         actor.stopping = actor_stopping;
         actor.run();
@@ -1878,7 +1876,7 @@ impl Drop for Process {
         let _ = self.child.wait();
     }
 }
-fn spawn(args: &[String], cwd: &str, task_id: Option<&str>) -> Result<Process, String> {
+fn spawn(args: &[String], cwd: &str) -> Result<Process, String> {
     let mut argv = vec!["app-server".into(), "--stdio".into()];
     argv.extend_from_slice(args);
     let (program, argv) = crate::agent::Agent::Codex.session_invocation(&argv);
@@ -1895,9 +1893,6 @@ fn spawn(args: &[String], cwd: &str, task_id: Option<&str>) -> Result<Process, S
         "GROVE_CONFIG_DIR",
         crate::storage::config_dir().map_err(|e| e.to_string())?,
     );
-    if let Some(task) = task_id {
-        cmd.env("GROVE_TASK_ID", task);
-    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -2010,7 +2005,6 @@ struct Actor {
     pending: HashMap<u64, Request>,
     seq: u64,
     args: Vec<String>,
-    task_id: Option<String>,
     initial: Option<String>,
     interrupt_retry: Option<(Instant, u8, String)>,
     queue_ready: bool,
@@ -2031,7 +2025,6 @@ impl Actor {
         actions: mpsc::Receiver<Action>,
         updates: crate::latest::Sender<Snapshot>,
         args: Vec<String>,
-        task_id: Option<String>,
     ) -> Self {
         let reset_configuration = saved.composer.reset_to_configured;
         Self {
@@ -2042,7 +2035,6 @@ impl Actor {
             pending: HashMap::new(),
             seq: 0,
             args,
-            task_id,
             initial: None,
             interrupt_retry: None,
             queue_ready: false,
@@ -2099,11 +2091,6 @@ impl Actor {
         } else {
             self.state.saved.config_args.clone_from(&args);
         }
-        if self.task_id.is_none() {
-            self.task_id.clone_from(&self.state.saved.task_id);
-        } else {
-            self.state.saved.task_id.clone_from(&self.task_id);
-        }
         if self.state.saved.thread_id.is_none() {
             self.initial = initial;
         }
@@ -2120,11 +2107,7 @@ impl Actor {
         self.state.turn_id = None;
         self.state.status = Status::Starting;
         self.state.error = None;
-        self.process = Some(spawn(
-            &args,
-            &self.state.saved.cwd,
-            self.task_id.as_deref(),
-        )?);
+        self.process = Some(spawn(&args, &self.state.saved.cwd)?);
         if let Some(process) = &self.process {
             self.pid.store(process.child.id(), Ordering::SeqCst);
         }
@@ -3848,7 +3831,6 @@ mod tests {
             draft: String::new(),
             draft_images: Vec::new(),
             config_args: Vec::new(),
-            task_id: Some("task-1".into()),
             composer: ComposerSettings::default(),
             context: None,
         }
@@ -4084,7 +4066,7 @@ mod tests {
     fn actor() -> Actor {
         let (_, actions) = mpsc::channel();
         let (updates, _) = crate::latest::channel();
-        let mut actor = Actor::new(saved(), actions, updates, Vec::new(), None);
+        let mut actor = Actor::new(saved(), actions, updates, Vec::new());
         actor.state = state();
         actor
     }
@@ -5357,7 +5339,6 @@ mod tests {
         fs_err::write(dir.path().join("broken.json"), "{").unwrap();
         let result = load_from_dir(dir.path()).unwrap();
         assert_eq!(result.sessions.len(), 1);
-        assert_eq!(result.sessions[0].task_id.as_deref(), Some("task-1"));
         assert_eq!(result.warnings.len(), 1);
         #[cfg(unix)]
         {
@@ -5382,14 +5363,7 @@ mod tests {
     #[test]
     fn old_recovery_without_new_optional_fields_is_compatible() {
         let mut value = serde_json::to_value(saved()).unwrap();
-        for key in [
-            "draft",
-            "task_id",
-            "config_args",
-            "title",
-            "context",
-            "work_periods",
-        ] {
+        for key in ["draft", "config_args", "title", "context", "work_periods"] {
             value.as_object_mut().unwrap().remove(key);
         }
         let restored: SavedSession = serde_json::from_value(value).unwrap();

@@ -7579,7 +7579,6 @@ mod tests {
             draft: String::new(),
             draft_images: Vec::new(),
             config_args: Vec::new(),
-            task_id: None,
         });
         state.status = Status::Idle;
         state

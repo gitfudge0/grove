@@ -9,9 +9,6 @@ mod activity;
 mod add_project;
 mod app;
 mod assets;
-mod cli;
-mod control_runtime;
-mod control_server;
 // Entity APIs stay compiled and tested for reconnection to the replacement UI.
 #[allow(dead_code)]
 mod entities;
@@ -75,11 +72,7 @@ const WINDOW_MIN_W: f32 = 320.0;
 const WINDOW_MIN_H: f32 = 200.0;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if !args.is_empty() {
-        std::process::exit(cli::run(args));
-    }
-    // Choose one native window system before logging, IPC or GPUI can start
+    // Choose one native window system before logging or GPUI can start
     // background threads. WebKitGTK child views require X11; Wayland desktops
     // provide the same host window through XWayland.
     #[cfg(target_os = "linux")]
@@ -92,22 +85,12 @@ fn main() {
         std::env::set_var("GDK_BACKEND", "x11");
     }
     logging::init();
-    let mut endpoint = match control_server::endpoint() {
-        Ok(endpoint) => endpoint,
-        Err(error) => {
-            eprintln!("grove: {error}");
-            std::process::exit(1);
-        }
-    };
     // Before `app::boot` so a panic inside boot is still reported; only the scrubbed location is sent.
     telemetry::install_panic_hook();
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx: &mut gpui::App| {
             app::boot(cx);
-            if let Some(endpoint) = endpoint.take() {
-                cx.set_global(endpoint);
-            }
             let reduce_motion = cx
                 .global::<settings::SettingsState>()
                 .store

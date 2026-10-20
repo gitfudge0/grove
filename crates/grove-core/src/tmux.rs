@@ -651,7 +651,6 @@ mod tests {
         bundle: Option<&str>,
     ) -> session_meta::SessionMeta {
         session_meta::SessionMeta {
-            control_id: None,
             wt_path: "/worktree".into(),
             project: "project".into(),
             label: "Terminal 1".into(),

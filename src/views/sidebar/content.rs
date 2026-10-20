@@ -2376,7 +2376,6 @@ mod tests {
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),
-                task_id: None,
             };
             let mut state = grove_core::codex::Snapshot::new(saved);
             state.status = grove_core::codex::Status::Idle;
