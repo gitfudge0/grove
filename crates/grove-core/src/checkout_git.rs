@@ -17,21 +17,34 @@ pub struct CheckoutGitState {
     pub ahead: Option<usize>,
     pub behind: Option<usize>,
     pub dirty: bool,
+    pub staged_files: Vec<String>,
+    pub changed_files: Vec<String>,
+    staged_identity: [u8; 32],
+    working_identity: Option<[u8; 32]>,
     configuration_identity: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitAction {
     Fetch,
+    Commit { message: String },
+    CommitAll { message: String },
     Pull,
     Push,
     Publish { remote: String },
 }
 
 fn git(path: &Path, args: &[&str]) -> Result<String, String> {
+    git_with_index(path, args, None)
+}
+
+fn git_with_index(path: &Path, args: &[&str], index: Option<&Path>) -> Result<String, String> {
     let output = tempfile::tempfile().map_err(|_| "Could not prepare Git operation".to_string())?;
     let errors = tempfile::tempfile().map_err(|_| "Could not prepare Git operation".to_string())?;
     let mut command = Command::new("git");
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
     if matches!(args.first(), Some(&"fetch" | &"push" | &"pull")) {
         let configured = std::env::var("GIT_SSH_COMMAND")
             .ok()
@@ -77,7 +90,19 @@ fn git(path: &Path, args: &[&str]) -> Result<String, String> {
                     let mut detail = String::new();
                     let _ = errors.take(65536).read_to_string(&mut detail);
                     let detail = detail.to_ascii_lowercase();
-                    let message = if detail.contains("authentication")
+                    let message = if detail.contains("author identity unknown")
+                        || detail.contains("unable to auto-detect email")
+                    {
+                        "Configure your Git user.name and user.email before committing"
+                    } else if detail.contains("gpg failed")
+                        || detail.contains("failed to sign")
+                        || detail.contains("signing failed")
+                    {
+                        "Commit signing failed. Check your Git signing configuration and retry"
+                    } else if args.first() == Some(&"commit") && !detail.contains("authentication")
+                    {
+                        "Commit failed. Check your commit hooks, signing setup, and staged changes, then retry"
+                    } else if detail.contains("authentication")
                         || detail.contains("permission denied")
                         || detail.contains("could not read username")
                         || detail.contains("repository not found")
@@ -125,7 +150,193 @@ fn git(path: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
+fn digest(bytes: &[u8]) -> [u8; 32] {
+    let mut result = [0; 32];
+    result.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref());
+    result
+}
+
+fn nul_files(output: &str) -> Vec<String> {
+    output
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn changed_files(path: &Path) -> Result<Vec<String>, String> {
+    let mut files = nul_files(&git(
+        path,
+        &[
+            "ls-files",
+            "--modified",
+            "--deleted",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+    )?);
+    files.extend(nul_files(&git(
+        path,
+        &["diff", "--cached", "--name-only", "--no-renames", "-z"],
+    )?));
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn working_snapshot(path: &Path) -> Result<[u8; 32], String> {
+    let files = changed_files(path)?;
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    for name in files {
+        context.update(name.as_bytes());
+        context.update(&[0]);
+        let file = path.join(&name);
+        match fs_err::symlink_metadata(&file) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                context.update(b"symlink");
+                context.update(
+                    fs_err::read_link(&file)
+                        .map_err(|_| "Could not inspect changed file")?
+                        .as_os_str()
+                        .as_encoded_bytes(),
+                );
+            }
+            Ok(metadata) if metadata.is_file() => {
+                context.update(b"file");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    context.update(&metadata.permissions().mode().to_be_bytes());
+                }
+                // Git streams the file rather than loading large untracked files into memory.
+                context.update(git(path, &["hash-object", "--", &name])?.as_bytes());
+            }
+            Ok(_) => {
+                return Err(
+                    "A changed path is not a regular file. Review the checkout before committing"
+                        .into(),
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                context.update(b"deleted");
+            }
+            Err(_) => return Err("Could not inspect changed file".into()),
+        }
+        context.update(&[0]);
+    }
+    let mut result = [0; 32];
+    result.copy_from_slice(context.finish().as_ref());
+    Ok(result)
+}
+
+/// Capture commit scope only when the commit editor opens; routine polling stays lightweight.
+pub fn prepare_commit(path: &Path) -> Result<CheckoutGitState, String> {
+    let root = git(path, &["rev-parse", "--show-toplevel"])?;
+    let path = Path::new(&root);
+    let mut state = inspect(path)?;
+    state.working_identity = Some(working_snapshot(path)?);
+    let checked = inspect(path)?;
+    if state.head != checked.head
+        || state.branch != checked.branch
+        || state.staged_identity != checked.staged_identity
+        || state.changed_files != checked.changed_files
+    {
+        return Err("Checkout changed while preparing commit. Review it again".into());
+    }
+    Ok(state)
+}
+
+fn validate_message(message: &str) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("Enter a commit message".into());
+    }
+    if message.contains('\0') {
+        return Err("Commit message contains an unsupported character".into());
+    }
+    Ok(())
+}
+
+struct IndexLock(std::path::PathBuf);
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        let _ = fs_err::remove_file(&self.0);
+    }
+}
+
+fn commit_snapshot(
+    path: &Path,
+    expected: &CheckoutGitState,
+    message: &str,
+    all: bool,
+) -> Result<(), String> {
+    let index_name = git(path, &["rev-parse", "--git-path", "index"])?;
+    let index = path.join(index_name);
+    let lock_path = index.with_extension("lock");
+    let _lock_file = fs_err::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+        .map_err(|_| "Git index is busy. Finish the other Git operation and retry")?;
+    let _lock = IndexLock(lock_path);
+    let parent = index.parent().ok_or("Could not locate Git index")?;
+    let temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|_| "Could not prepare commit")?;
+    if index.exists() {
+        fs_err::copy(&index, temporary.path()).map_err(|_| "Could not prepare commit index")?;
+    } else {
+        fs_err::remove_file(temporary.path()).map_err(|_| "Could not prepare commit index")?;
+        git_with_index(path, &["read-tree", "--empty"], Some(temporary.path()))?;
+    }
+    // Recheck after acquiring the real-index lock, before preparing reviewed scope.
+    let current = inspect(path)?;
+    if current.head != expected.head
+        || current.branch != expected.branch
+        || current.configuration_identity != expected.configuration_identity
+        || current.staged_identity != expected.staged_identity
+    {
+        return Err("Checkout changed. Review changes before retrying".into());
+    }
+    if all {
+        if Some(working_snapshot(path)?) != expected.working_identity {
+            return Err("Checkout changed. Review changes before retrying".into());
+        }
+        git_with_index(path, &["add", "-A", "--", ":/"], Some(temporary.path()))?;
+        if Some(working_snapshot(path)?) != expected.working_identity {
+            return Err(
+                "Checkout changed while preparing commit. Review changes before retrying".into(),
+            );
+        }
+    }
+    if git(path, &["rev-parse", "--verify", "HEAD"]).ok() != expected.head
+        || git(path, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok() != expected.branch
+    {
+        return Err("Checkout changed before commit. Review changes before retrying".into());
+    }
+    let result = git_with_index(path, &["commit", "-m", message], Some(temporary.path()));
+    if let Err(error) = result {
+        // A post-commit hook can fail or time out after Git has already advanced HEAD.
+        // Reconcile only a commit whose parent and tree match our isolated snapshot.
+        let head = git(path, &["rev-parse", "--verify", "HEAD"]).ok();
+        if head != expected.head {
+            let parent = git(path, &["rev-parse", "--verify", "HEAD^"]).ok();
+            let tree = git(path, &["rev-parse", "HEAD^{tree}"]).ok();
+            let snapshot_tree = git_with_index(path, &["write-tree"], Some(temporary.path())).ok();
+            if parent == expected.head && tree.is_some() && tree == snapshot_tree {
+                temporary.persist(&index).map_err(|_| "Commit created, but Git index could not be updated. Refresh and inspect repository status")?;
+                return Err("Commit was created, but post-commit processing failed. Refresh and check repository hooks before retrying".into());
+            }
+            return Err("Repository HEAD changed during commit. Refresh and inspect the commit history before retrying".into());
+        }
+        return Err(error);
+    }
+    temporary.persist(&index).map_err(|_| "Commit created, but Git index could not be updated. Refresh and inspect repository status")?;
+    Ok(())
+}
+
 pub fn inspect(path: &Path) -> Result<CheckoutGitState, String> {
+    let root = git(path, &["rev-parse", "--show-toplevel"])?;
+    let path = Path::new(&root);
     if git(path, &["rev-parse", "--is-inside-work-tree"])? != "true" {
         return Err("This folder is not a Git checkout".into());
     }
@@ -160,7 +371,19 @@ pub fn inspect(path: &Path) -> Result<CheckoutGitState, String> {
     let mut configuration_identity = [0; 32];
     configuration_identity
         .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, config.as_bytes()).as_ref());
+    let staged_files = nul_files(&git(
+        path,
+        &["diff", "--cached", "--name-only", "--no-renames", "-z"],
+    )?);
+    let staged_identity = digest(git(path, &["ls-files", "--stage", "-z"])?.as_bytes());
+    let status = git(path, &["status", "--porcelain", "--untracked-files=normal"])?;
+    let changed_files = changed_files(path)?;
+    let working_identity = None;
     Ok(CheckoutGitState {
+        staged_files,
+        changed_files,
+        staged_identity,
+        working_identity,
         configuration_identity,
         branch,
         head,
@@ -168,11 +391,13 @@ pub fn inspect(path: &Path) -> Result<CheckoutGitState, String> {
         remotes,
         ahead: counts.map(|v| v.0),
         behind: counts.map(|v| v.1),
-        dirty: !git(path, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty(),
+        dirty: !status.is_empty(),
     })
 }
 
 pub fn execute(path: &Path, expected: &CheckoutGitState, action: GitAction) -> Result<(), String> {
+    let root = git(path, &["rev-parse", "--show-toplevel"])?;
+    let path = Path::new(&root);
     let current = inspect(path)?;
     if current.configuration_identity != expected.configuration_identity
         || current.branch != expected.branch
@@ -181,6 +406,35 @@ pub fn execute(path: &Path, expected: &CheckoutGitState, action: GitAction) -> R
         || current.remotes != expected.remotes
     {
         return Err("Checkout changed. Refresh before retrying".into());
+    }
+    if let GitAction::Commit { ref message } | GitAction::CommitAll { ref message } = action {
+        validate_message(message)?;
+        if expected.working_identity.is_none() {
+            return Err("Review commit changes before committing".into());
+        }
+        if current.branch.is_none() {
+            return Err("Switch to a branch before committing".into());
+        }
+        if matches!(action, GitAction::Commit { .. }) {
+            if current.staged_files.is_empty() {
+                return Err("Stage changes before committing".into());
+            }
+            if current.staged_identity != expected.staged_identity {
+                return Err("Staged changes changed. Review them before retrying".into());
+            }
+            commit_snapshot(path, expected, message, false)?;
+        } else {
+            if current.changed_files.is_empty() {
+                return Err("There are no changes to commit".into());
+            }
+            if Some(working_snapshot(path)?) != expected.working_identity
+                || current.staged_identity != expected.staged_identity
+            {
+                return Err("Checkout changes changed. Review them before retrying".into());
+            }
+            commit_snapshot(path, expected, message, true)?;
+        }
+        return Ok(());
     }
     if action == GitAction::Fetch {
         if current.remotes.is_empty() {
@@ -237,7 +491,7 @@ pub fn execute(path: &Path, expected: &CheckoutGitState, action: GitAction) -> R
             let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
             git(path, &["push", "--set-upstream", "--", &remote, &refspec])?;
         }
-        GitAction::Fetch => unreachable!(),
+        GitAction::Fetch | GitAction::Commit { .. } | GitAction::CommitAll { .. } => unreachable!(),
     }
     Ok(())
 }
@@ -271,6 +525,137 @@ mod tests {
         run(path, &["commit", "--allow-empty", "-m", "test"]);
     }
     #[test]
+    fn commits_staged_only_and_rejects_invalid_or_changed_scope() {
+        let dir = fixture();
+        fs_err::write(dir.path().join("file"), "staged\n").unwrap();
+        run(dir.path(), &["add", "file"]);
+        assert!(inspect(dir.path()).unwrap().working_identity.is_none());
+        let staged = prepare_commit(dir.path()).unwrap();
+        assert!(staged.working_identity.is_some());
+        assert_eq!(staged.staged_files, vec!["file"]);
+        for message in ["", "   ", "bad\0message"] {
+            assert!(
+                execute(
+                    dir.path(),
+                    &staged,
+                    GitAction::Commit {
+                        message: message.into()
+                    }
+                )
+                .is_err()
+            );
+        }
+        fs_err::write(dir.path().join("file"), "unstaged\n").unwrap();
+        execute(
+            dir.path(),
+            &staged,
+            GitAction::Commit {
+                message: "Commit reviewed stage".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(git(dir.path(), &["show", "HEAD:file"]).unwrap(), "staged");
+        assert_eq!(
+            fs_err::read_to_string(dir.path().join("file")).unwrap(),
+            "unstaged\n"
+        );
+        let empty = prepare_commit(dir.path()).unwrap();
+        assert!(
+            execute(
+                dir.path(),
+                &empty,
+                GitAction::Commit {
+                    message: "No stage".into()
+                }
+            )
+            .is_err()
+        );
+        run(dir.path(), &["add", "file"]);
+        let stale = prepare_commit(dir.path()).unwrap();
+        fs_err::write(dir.path().join("file"), "changed stage\n").unwrap();
+        run(dir.path(), &["add", "file"]);
+        assert!(
+            execute(
+                dir.path(),
+                &stale,
+                GitAction::Commit {
+                    message: "Stale scope".into()
+                }
+            )
+            .unwrap_err()
+            .contains("Staged")
+        );
+    }
+
+    #[test]
+    fn commit_all_reviews_scope_and_preserves_real_index_on_hook_error() {
+        let dir = fixture();
+        commit(dir.path());
+        fs_err::write(dir.path().join(".gitignore"), "ignored\n").unwrap();
+        fs_err::write(dir.path().join("ignored"), "secret").unwrap();
+        fs_err::write(dir.path().join("tracked"), "first").unwrap();
+        run(dir.path(), &["add", "tracked"]);
+        fs_err::write(dir.path().join("tracked"), "latest").unwrap();
+        fs_err::write(dir.path().join("untracked"), "included").unwrap();
+        let expected = prepare_commit(dir.path()).unwrap();
+        assert!(!expected.changed_files.contains(&"ignored".into()));
+        fs_err::write(dir.path().join("untracked"), "changed").unwrap();
+        assert!(
+            execute(
+                dir.path(),
+                &expected,
+                GitAction::CommitAll {
+                    message: "Stale".into()
+                }
+            )
+            .is_err()
+        );
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        fs_err::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs_err::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let before = git(dir.path(), &["ls-files", "--stage"]).unwrap();
+        let expected = prepare_commit(dir.path()).unwrap();
+        assert!(
+            execute(
+                dir.path(),
+                &expected,
+                GitAction::CommitAll {
+                    message: "Rejected by hook".into()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(git(dir.path(), &["ls-files", "--stage"]).unwrap(), before);
+        assert_eq!(
+            fs_err::read_to_string(dir.path().join("tracked")).unwrap(),
+            "latest"
+        );
+        fs_err::remove_file(hook).unwrap();
+        let nested = dir.path().join("nested");
+        fs_err::create_dir(&nested).unwrap();
+        execute(
+            &nested,
+            &prepare_commit(&nested).unwrap(),
+            GitAction::CommitAll {
+                message: "Reviewed all changes".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            git(dir.path(), &["show", "HEAD:tracked"]).unwrap(),
+            "latest"
+        );
+        assert_eq!(
+            git(dir.path(), &["show", "HEAD:untracked"]).unwrap(),
+            "changed"
+        );
+        assert!(!prepare_commit(dir.path()).unwrap().dirty);
+    }
+    #[test]
     fn unborn_detached_dirty_and_stale() {
         let dir = fixture();
         let unborn = inspect(dir.path()).unwrap();
@@ -278,9 +663,11 @@ mod tests {
         assert!(unborn.head.is_none());
         assert!(!unborn.dirty);
         commit(dir.path());
-        assert!(execute(dir.path(), &unborn, GitAction::Push)
-            .unwrap_err()
-            .contains("changed"));
+        assert!(
+            execute(dir.path(), &unborn, GitAction::Push)
+                .unwrap_err()
+                .contains("changed")
+        );
         fs_err::write(dir.path().join("file"), "content").unwrap();
         assert!(inspect(dir.path()).unwrap().dirty);
         run(dir.path(), &["checkout", "--detach"]);
@@ -293,9 +680,11 @@ mod tests {
         let dir = fixture();
         commit(dir.path());
         let state = inspect(dir.path()).unwrap();
-        assert!(execute(dir.path(), &state, GitAction::Fetch)
-            .unwrap_err()
-            .contains("remote"));
+        assert!(
+            execute(dir.path(), &state, GitAction::Fetch)
+                .unwrap_err()
+                .contains("remote")
+        );
         let remote = tempfile::tempdir().unwrap();
         run(remote.path(), &["init", "--bare"]);
         run(
@@ -304,15 +693,17 @@ mod tests {
         );
         let state = inspect(dir.path()).unwrap();
         run(dir.path(), &["remote", "set-url", "origin", "/missing"]);
-        assert!(execute(
-            dir.path(),
-            &state,
-            GitAction::Publish {
-                remote: "origin".into()
-            }
-        )
-        .unwrap_err()
-        .contains("changed"));
+        assert!(
+            execute(
+                dir.path(),
+                &state,
+                GitAction::Publish {
+                    remote: "origin".into()
+                }
+            )
+            .unwrap_err()
+            .contains("changed")
+        );
     }
     #[test]
     fn local_publish_fetch_pull_and_push() {
@@ -362,9 +753,11 @@ mod tests {
         let behind = inspect(dir.path()).unwrap();
         assert_eq!(behind.behind, Some(1));
         fs_err::write(dir.path().join("dirty"), "x").unwrap();
-        assert!(execute(dir.path(), &behind, GitAction::Pull)
-            .unwrap_err()
-            .contains("stash"));
+        assert!(
+            execute(dir.path(), &behind, GitAction::Pull)
+                .unwrap_err()
+                .contains("stash")
+        );
         assert_eq!(
             fs_err::read_to_string(dir.path().join("dirty")).unwrap(),
             "x"
