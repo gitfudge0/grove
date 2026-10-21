@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "plan_id": "inline-review-smoke-20261021",
+  "revision_id": "r1",
+  "title": "Inline plan review test",
+  "sources": [
+    {
+      "text": "Do a sample plan to test this here",
+      "attribution": "User request"
+    }
+  ],
+  "changes": {
+    "new": 1,
+    "deleted": 0,
+    "files": 1,
+    "changed": 0
+  },
+  "claims": [
+    {
+      "id": "sample-content",
+      "text": "Choose the sample content for this inline review test. Sending feedback only tests the review flow and authorizes no implementation.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Choose options \u2192 Review response \u2192 Send response \u2192 agent receives feedback"
+      },
+      "decisions": [
+        {
+          "id": "sample-size",
+          "prompt": "Which sample should this test use?",
+          "options": [
+            {
+              "id": "short",
+              "label": "Short example",
+              "description": "Keep this sample compact."
+            },
+            {
+              "id": "detailed",
+              "label": "Detailed example",
+              "description": "Add detail to a later sample revision."
+            }
+          ],
+          "default": "short"
+        }
+      ]
+    },
+    {
+      "id": "response-behavior",
+      "text": "Choose how the agent should handle the submitted review. This response permits only acknowledgement or revision of this sample plan.",
+      "decisions": [
+        {
+          "id": "after-response",
+          "prompt": "What should happen after you send the response?",
+          "options": [
+            {
+              "id": "acknowledge",
+              "label": "Acknowledge the choices",
+              "description": "Confirm which choices arrived."
+            },
+            {
+              "id": "revise",
+              "label": "Revise this sample plan",
+              "description": "Create a new sample revision reflecting the choices."
+            }
+          ],
+          "default": "acknowledge"
+        }
+      ]
+    }
+  ],
+  "scope": [
+    "Test native inline rendering, decision selection, and explicit response delivery in this Codex conversation.",
+    "Sending feedback authorizes no implementation, builds, installation, or product changes."
+  ]
+}
