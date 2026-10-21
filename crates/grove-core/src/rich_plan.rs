@@ -238,8 +238,16 @@ impl PlanRevision {
         let mut unanswered: Vec<_> = decisions
             .iter()
             .filter(|(id, _)| {
-                !self.review.answers.contains_key(**id)
-                    && !self.review.own_answers.contains_key(**id)
+                !self
+                    .review
+                    .answers
+                    .get(**id)
+                    .is_some_and(|v| !v.trim().is_empty())
+                    && !self
+                        .review
+                        .own_answers
+                        .get(**id)
+                        .is_some_and(|v| !v.trim().is_empty())
             })
             .collect();
         unanswered.sort_by_key(|(id, _)| **id);
@@ -708,6 +716,11 @@ impl PlanStore {
             review.own_answers = r.review.own_answers.clone();
             review.comments = r.review.comments.clone();
         }
+        review.answers.retain(|_, value| !value.trim().is_empty());
+        review
+            .own_answers
+            .retain(|_, value| !value.trim().is_empty());
+        review.comments.retain(|_, value| !value.trim().is_empty());
         let value = serde_json::to_value(&review).map_err(|e| e.to_string())?;
         validate_strings(&value, 0)?;
         if serde_json::to_vec(&value).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
