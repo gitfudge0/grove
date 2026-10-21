@@ -1,3 +1,4 @@
+#[cfg(any(unix, test))]
 use fs_err as fs;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;

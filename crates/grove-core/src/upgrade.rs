@@ -223,21 +223,26 @@ pub fn update_available(current: &str, release: &Release, skipped: Option<&str>)
 
 /// Blocks the calling thread — call from a background thread, never the UI thread.
 pub fn latest() -> Result<Release> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(30))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_recv_body(Some(Duration::from_secs(30)))
+        .build()
+        .into();
     let body = agent
         .get("https://api.github.com/repos/gitfudge0/grove/releases/latest")
-        .set("User-Agent", "grove")
-        .set("Accept", "application/vnd.github+json")
+        .header("User-Agent", "grove")
+        .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| {
             tracing::warn!(error = %e, "upgrade: github releases request failed");
             UpgradeError::ReleasesRequest(Box::new(e))
         })?
-        .into_string()
-        .map_err(UpgradeError::ReadReleaseBody)?;
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| UpgradeError::ReadReleaseBody(e.into_io()))?;
     let release = parse_release(&body);
     match &release {
         Ok(r) => {
@@ -365,33 +370,46 @@ fn check_asset_url(url: &str) -> Result<()> {
 
 const MAX_REDIRECTS: usize = 5;
 
-/// Follows redirects manually so every hop is re-checked against the host allowlist (`ureq`'s own follower doesn't).
+fn download_agent(timeout_read: Duration) -> ureq::Agent {
+    // ureq 3 bounds each receive stage, rather than resetting a socket timeout
+    // after each read. Downloads therefore have this total body budget.
+    ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(timeout_read))
+        .timeout_recv_body(Some(timeout_read))
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .build()
+        .into()
+}
+
+/// Follows redirects manually so every hop is re-checked against the host allowlist.
 fn download_checked(url: &str, timeout_read: Duration) -> Result<Vec<u8>> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(timeout_read)
-        .redirects(0)
-        .build();
+    let agent = download_agent(timeout_read);
     let mut url = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
         check_asset_url(&url)?;
         let resp = agent
             .get(&url)
-            .set("User-Agent", "grove")
+            .header("User-Agent", "grove")
             .call()
             .map_err(|e| {
                 tracing::warn!(error = %e, "upgrade: asset download failed");
                 UpgradeError::DownloadAsset(Box::new(e))
             })?;
-        if (300..400).contains(&resp.status()) {
+        if resp.status().is_redirection() {
             let location = resp
-                .header("Location")
+                .headers()
+                .get("Location")
+                .and_then(|value| value.to_str().ok())
                 .ok_or(UpgradeError::RedirectWithoutLocation)?;
             url = resolve_location(&url, location);
             continue;
         }
         let mut buf = Vec::new();
-        std::io::copy(&mut resp.into_reader(), &mut buf).map_err(UpgradeError::ReadAssetBody)?;
+        std::io::copy(&mut resp.into_body().into_reader(), &mut buf)
+            .map_err(UpgradeError::ReadAssetBody)?;
         return Ok(buf);
     }
     Err(UpgradeError::TooManyRedirects)
@@ -573,19 +591,24 @@ fn parse_releases(json: &str, limit: usize) -> Result<Vec<ReleaseNote>> {
 
 /// Blocks the calling thread — call from a background thread, never the UI thread.
 pub fn releases(limit: usize) -> Result<Vec<ReleaseNote>> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_read(Duration::from_secs(30))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_recv_body(Some(Duration::from_secs(30)))
+        .build()
+        .into();
     let url = format!("https://api.github.com/repos/gitfudge0/grove/releases?per_page={limit}");
     let body = agent
         .get(&url)
-        .set("User-Agent", "grove")
-        .set("Accept", "application/vnd.github+json")
+        .header("User-Agent", "grove")
+        .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| UpgradeError::ReleasesListRequest(Box::new(e)))?
-        .into_string()
-        .map_err(UpgradeError::ReadReleasesListBody)?;
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| UpgradeError::ReadReleasesListBody(e.into_io()))?;
     parse_releases(&body, limit)
 }
 
@@ -676,6 +699,53 @@ mod tests {
 
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn download_agent_preserves_redirects_errors_and_streaming() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        // This local server exercises the production agent without reaching GitHub.
+        // The second redirect target is closed: following it would fail this test.
+        for (status, extra_headers, payload_len) in [
+            ("302 Found", "Location: http://127.0.0.1:1/forbidden\r\n", 0),
+            ("404 Not Found", "", 0),
+            ("200 OK", "", 10 * 1024 * 1024 + 1),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/asset", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                write!(stream, "HTTP/1.1 {status}\r\n{extra_headers}Content-Length: {payload_len}\r\nConnection: close\r\n\r\n").unwrap();
+                stream.write_all(&vec![b'x'; payload_len]).unwrap();
+            });
+            let response = download_agent(Duration::from_secs(5)).get(&url).call();
+            match status {
+                "302 Found" => assert_eq!(response.unwrap().status(), 302),
+                "404 Not Found" => assert!(matches!(response, Err(ureq::Error::StatusCode(404)))),
+                _ => {
+                    let mut payload = Vec::new();
+                    std::io::copy(
+                        &mut response.unwrap().into_body().into_reader(),
+                        &mut payload,
+                    )
+                    .unwrap();
+                    assert_eq!(payload.len(), payload_len);
+                    assert!(payload.iter().all(|byte| *byte == b'x'));
+                }
+            }
+            server.join().unwrap();
+        }
+    }
 
     fn release(tag: &str) -> Release {
         Release {

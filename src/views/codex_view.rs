@@ -3112,10 +3112,10 @@ impl Render for CodexView {
                 let html_extensions = self
                     .html
                     .update(cx, |html, cx| html.extensions(&html_message, cx));
-                if self.message_editor.as_ref().is_some_and(|editor| {
+                if let Some(editor) = self.message_editor.as_ref().filter(|editor| {
                     editor.index == index && editor.message_id == item["id"].as_str().unwrap_or("")
                 }) {
-                    row = row.child(self.render_inline_editor(window, cx));
+                    row = row.child(self.render_inline_editor(editor, window, cx));
                 } else {
                     row = row.child(
                         div()
@@ -3291,16 +3291,16 @@ impl Render for CodexView {
                     .child(row),
             );
         }
-        if self
+        if let Some(editor) = self
             .message_editor
             .as_ref()
-            .is_some_and(|editor| editor.restored)
+            .filter(|editor| editor.restored)
         {
             messages = messages.child(
                 div()
                     .w_full()
                     .max_w(rpx(CHAT_MAX_W))
-                    .child(self.render_inline_editor(window, cx)),
+                    .child(self.render_inline_editor(editor, window, cx)),
             );
         }
         messages =
@@ -3956,10 +3956,10 @@ impl CodexView {
     }
     fn render_inline_editor(
         &self,
+        editor: &MessageEditor,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let editor = self.message_editor.as_ref().unwrap();
         let disabled = self.edit_request_pending || editor.accepted_prompts.is_some();
         let send_disabled = disabled
             || (editor.input.read(cx).value().trim().is_empty() && editor.images.is_empty());
@@ -8281,7 +8281,7 @@ mod tests {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.input.update(cx, |input, cx| {
-                    input.set_value("While connecting", window, cx)
+                    input.set_value("While connecting", window, cx);
                 });
                 view.images = vec!["data:image/png;base64,aGVsbG8=".into()];
                 view.session.update(cx, |session, cx| {
@@ -9095,7 +9095,7 @@ mod tests {
                 view.input
                     .update(cx, |input, cx| input.set_value("/compact", window, cx));
                 view.submit(window, cx);
-            })
+            });
         });
         assert!(actions
             .try_iter()

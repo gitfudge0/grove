@@ -3,6 +3,11 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 ignore = [
+    # proc-macro-error 1.0.4 is unmaintained, build-time only via
+    # glib-macros 0.18 / gtk3-macros 0.18 in Wry's Linux GTK stack.
+    # No safe in-place upgrade exists. Remove when Wry's GTK dependencies
+    # migrate away from proc-macro-error 1.x.
+    "RUSTSEC-2024-0370",
     # paste 1.0.15 is unmaintained (transitive proc-macro dependency). No
     # maintained drop-in replacement exists, and it only runs at build time
     # (never ships in the binary). Revisit when the dependent upgrades away
@@ -101,7 +106,7 @@ allow = [
     # option-ext: via dirs. Weak, file-level copyleft; using it unmodified
     # as a library imposes nothing on Grove.
     "MPL-2.0",
-    # webpki-roots 0.26.11 and 1.0.8: via ureq. Permissive data license
+    # webpki-roots 1.x: via ureq. Permissive data license
     # covering a root-certificate dataset.
     "CDLA-Permissive-2.0",
 ]
