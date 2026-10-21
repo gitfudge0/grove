@@ -53,6 +53,7 @@ pub struct DiffViewerState {
     pub wt_path: String,
     pub branch: Option<String>,
     pub files: Vec<FileChange>,
+    pub group: Option<diff::ChangeGroup>,
     /// Follows the *path*, not an index, so a file that stops changing shows "No longer changed" in place instead of the selection snapping elsewhere.
     pub selected_path: Option<String>,
     pub mode: DiffMode,
@@ -84,6 +85,7 @@ impl DiffViewerState {
             wt_path,
             branch: None,
             files: Vec::new(),
+            group: None,
             selected_path: None,
             mode,
             list_style: FileListStyle::Flat,
@@ -99,6 +101,18 @@ impl DiffViewerState {
         };
         this.load_files(cx);
         this
+    }
+
+    pub fn set_group(&mut self, group: diff::ChangeGroup, cx: &mut Context<Self>) {
+        self.group = Some(group);
+        self.files
+            .retain(|f| diff::ChangeGroup::of(&f.path) == group);
+        self.selected_path = None;
+        if !self.loading {
+            self.load_files(cx);
+        } else {
+            cx.notify();
+        }
     }
 
     /// Kick off `changed_files` on the background executor; on completion,
@@ -117,7 +131,13 @@ impl DiffViewerState {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
-                this.files = files;
+                this.files = files
+                    .into_iter()
+                    .filter(|f| {
+                        this.group
+                            .is_none_or(|g| diff::ChangeGroup::of(&f.path) == g)
+                    })
+                    .collect();
                 this.branch = Some(branch).filter(|b| !b.is_empty());
                 if this.selected_path.is_none() {
                     this.selected_path = this.files.first().map(|f| f.path.clone());
@@ -173,6 +193,13 @@ impl DiffViewerState {
         fresh_mtime: Option<SystemTime>,
         cx: &mut Context<Self>,
     ) {
+        let new_files = new_files
+            .into_iter()
+            .filter(|f| {
+                self.group
+                    .is_none_or(|g| diff::ChangeGroup::of(&f.path) == g)
+            })
+            .collect::<Vec<_>>();
         let prev_selected = self.selected_path.clone();
         let reconciled = diff::reconcile(&self.files, &new_files, prev_selected.as_deref());
         for path in &reconciled.evicted {

@@ -24,6 +24,18 @@ pub struct CheckoutGitState {
     configuration_identity: [u8; 32],
 }
 
+impl CheckoutGitState {
+    /// Identifies the branch, commit and remote configuration without exposing remote URLs.
+    pub fn target_identity(&self) -> [u8; 32] {
+        let mut bytes = self.configuration_identity.to_vec();
+        for value in [&self.branch, &self.head, &self.upstream] {
+            bytes.extend_from_slice(value.as_deref().unwrap_or_default().as_bytes());
+            bytes.push(0);
+        }
+        digest(&bytes)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitAction {
     Fetch,
@@ -34,7 +46,7 @@ pub enum GitAction {
     Publish { remote: String },
 }
 
-fn git(path: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(path: &Path, args: &[&str]) -> Result<String, String> {
     git_with_index(path, args, None)
 }
 
