@@ -139,15 +139,19 @@ fn send(event: &str, props: Vec<(&'static str, serde_json::Value)>) {
         "distinct_id": distinct_id(),
         "properties": properties,
     });
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(3))
-        .timeout_read(Duration::from_secs(5))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .max_redirects(5)
+        .timeout_connect(Some(Duration::from_secs(3)))
+        .timeout_recv_response(Some(Duration::from_secs(5)))
+        .timeout_recv_body(Some(Duration::from_secs(5)))
+        .build()
+        .into();
     let _ = agent
         .post(POSTHOG_ENDPOINT)
-        .set("User-Agent", "grove")
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string());
+        .header("User-Agent", "grove")
+        .header("Content-Type", "application/json")
+        .send(body.to_string());
 }
 
 // Hourly ping; PostHog dedupes into DAU, so no day-boundary logic needed.

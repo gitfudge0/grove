@@ -156,6 +156,7 @@ pub fn prepare(agent: Agent, session_id: u64) -> Option<(Vec<String>, AttentionF
     }
 }
 
+#[cfg(any(not(windows), test))]
 fn state_file_path(session_id: u64) -> Result<PathBuf> {
     let run = std::process::id();
     let path = attention_dir()?.join(format!("{run}-{session_id}.state"));
@@ -165,6 +166,7 @@ fn state_file_path(session_id: u64) -> Result<PathBuf> {
 }
 
 /// Best-effort create-if-absent with 0600 on unix. No-op off unix.
+#[cfg(any(not(windows), test))]
 fn create_private(path: &Path) {
     #[cfg(unix)]
     {
@@ -183,6 +185,7 @@ fn create_private(path: &Path) {
 }
 
 /// Best-effort 0600 on an existing file. No-op off unix.
+#[cfg(not(windows))]
 fn restrict_file(path: &Path) {
     #[cfg(unix)]
     {
@@ -195,6 +198,7 @@ fn restrict_file(path: &Path) {
     let _ = path;
 }
 
+#[cfg(not(windows))]
 fn settings_file_path(session_id: u64) -> Result<PathBuf> {
     let run = std::process::id();
     Ok(attention_dir()?.join(format!("{run}-{session_id}.claude-settings.json")))

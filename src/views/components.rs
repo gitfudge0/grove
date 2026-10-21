@@ -601,7 +601,12 @@ mod tests {
                 let run = style.to_run(label.len());
                 let width = truncation_safe_label_width(label, size, &run, &window_text_system);
                 let original_width = window_text_system
-                    .shape_line(label.to_owned().into(), size, &[run.clone()], None)
+                    .shape_line(
+                        label.to_owned().into(),
+                        size,
+                        std::slice::from_ref(&run),
+                        None,
+                    )
                     .width();
                 let mut wrapper = text_system.line_wrapper(run.font, size);
                 if label == "Waiting…"
