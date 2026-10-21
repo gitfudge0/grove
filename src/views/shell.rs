@@ -1358,6 +1358,8 @@ impl Render for Shell {
         let html_blocked = self.shortcut_blocked(cx) || self.sidebar.read(cx).html_overlay_open();
         super::inline_html::set_context(html_owner, html_blocked, cx);
         let html_expanded = super::inline_html::render_expanded(window, cx);
+        super::native_plan::set_context(html_owner, html_blocked, cx);
+        let plan_expanded = super::native_plan::render_expanded(cx);
         let project_hover_blocked = self.shortcut_blocked(cx);
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_project_hover_blocked(project_hover_blocked, cx);
@@ -1658,6 +1660,9 @@ impl Render for Shell {
             })
             .when_some(self.highlights.clone(), |root, carousel| {
                 root.child(gpui::deferred(carousel))
+            })
+            .when_some(plan_expanded, |root, overlay| {
+                root.child(gpui::deferred(overlay))
             })
             .when_some(html_expanded, |root, overlay| {
                 root.child(gpui::deferred(overlay))

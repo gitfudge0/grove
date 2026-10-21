@@ -11,7 +11,7 @@ use gpui::{
 };
 use gpui_component::{
     text::{markdown_ast, MarkdownExtensions, MarkdownNode, MarkdownParseContext, TextView},
-    Selectable,
+    Disableable, Selectable,
 };
 use std::{
     cell::Cell,
@@ -255,6 +255,7 @@ pub(super) fn render_expanded(_window: &mut Window, cx: &mut App) -> Option<AnyE
 
 pub(super) struct HtmlSession {
     artifacts: HashMap<String, Entity<HtmlArtifact>>,
+    native_plans: HashMap<(String, String), WeakEntity<super::native_plan::NativePlan>>,
     extensions: HashMap<String, MarkdownExtensions>,
     opened: HashMap<String, Vec<String>>,
     cwd: PathBuf,
@@ -321,6 +322,7 @@ impl HtmlSession {
     pub(super) fn new(cwd: PathBuf, scroll: ScrollHandle) -> Self {
         Self {
             artifacts: HashMap::new(),
+            native_plans: HashMap::new(),
             extensions: HashMap::new(),
             opened: HashMap::new(),
             cwd,
@@ -394,6 +396,13 @@ impl HtmlSession {
             }
         }
     }
+    pub(super) fn bind_native_plans(
+        &mut self,
+        plans: HashMap<(String, String), WeakEntity<super::native_plan::NativePlan>>,
+    ) {
+        self.native_plans = plans;
+    }
+
     pub(super) fn extensions(
         &mut self,
         message: &str,
@@ -448,6 +457,29 @@ impl HtmlSession {
             .link_renderer(move |target, label, window, cx| {
                 links
                     .update(cx, |session, cx| {
+                        if target.ends_with(".grove-plan.json") {
+                            let plan = session
+                                .native_plans
+                                .get(&(link_owner.clone(), target.to_owned()))
+                                .cloned();
+                            return Some(
+                                transcript_action(
+                                    SharedString::from(format!("native-link-{target}")),
+                                    label.to_owned(),
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .disabled(plan.is_none())
+                                .on_click(move |_, window, cx| {
+                                    if let Some(plan) = &plan {
+                                        let _ = plan.update(cx, |plan, cx| plan.reveal(window, cx));
+                                    }
+                                    cx.stop_propagation();
+                                })
+                                .into_any_element(),
+                            );
+                        }
                         let path = local_html_path(target, &session.cwd)?;
                         let open = cx.entity().downgrade();
                         let message = link_owner.clone();
@@ -520,6 +552,40 @@ impl HtmlSession {
         self.extensions
             .insert(message.to_owned(), extensions.clone());
         extensions
+    }
+
+    /// Open an explicitly selected immutable plan asset in the existing sandbox.
+    pub(super) fn open_snapshot(
+        &mut self,
+        key: String,
+        source: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let artifact = self
+            .artifacts
+            .entry(key)
+            .or_insert_with(|| {
+                cx.new(|cx| {
+                    HtmlArtifact::new(
+                        source,
+                        String::new(),
+                        None,
+                        owner,
+                        self.paused.clone(),
+                        self.scroll.clone(),
+                        cx,
+                    )
+                })
+            })
+            .clone();
+        artifact.update(cx, |artifact, cx| {
+            if !expanded(&cx.entity(), cx) {
+                artifact.toggle_expand(window, cx);
+            }
+        });
+        cx.notify();
     }
 
     fn open_link(

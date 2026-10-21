@@ -23,6 +23,7 @@ mod codex_view;
 pub mod components;
 mod inline_html;
 mod mermaid;
+mod native_plan;
 
 mod workspace_manager;
 

@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "plan_id": "native-review-example",
+  "revision_id": "r1",
+  "title": "Reviewing Plans Natively in Grove",
+  "sources": [
+    {
+      "attribution": "User request",
+      "text": "Native constrained layout with static images and links to HTML."
+    }
+  ],
+  "changes": {
+    "files": 3,
+    "changed": 2
+  },
+  "claims": [
+    {
+      "id": "session",
+      "text": "Plans remain in their originating session.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "mock-card",
+            "kind": "surface",
+            "text": "",
+            "children": [
+              {
+                "id": "mock-title",
+                "kind": "text",
+                "text": "Native plan review"
+              },
+              {
+                "id": "mock-row",
+                "kind": "row",
+                "text": "",
+                "children": [
+                  {
+                    "id": "mock-state",
+                    "kind": "text",
+                    "text": "Proposed \u00b7 Revision 1"
+                  },
+                  {
+                    "id": "mock-control",
+                    "kind": "control",
+                    "text": "Review response"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "snapshot",
+          "text": "Each revision persists its own immutable snapshot.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "PlanRevision\n  document: PlanDocument\n  assets: AssetSnapshot[]\n  review: ReviewState"
+          }
+        },
+        {
+          "id": "code",
+          "text": "Code remains selectable and read-only.",
+          "exhibit": {
+            "kind": "code",
+            "language": "rust",
+            "text": "let plan = saved.rich_plans.revision(plan_id, revision_id);",
+            "source": "crates/grove-core/src/rich_plan.rs"
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "id": "placement",
+          "prompt": "Where should native plans open?",
+          "options": [
+            {
+              "id": "inline",
+              "label": "Inline card with session expansion",
+              "description": "Keep the review in this conversation."
+            },
+            {
+              "id": "separate",
+              "label": "Separate panel",
+              "description": "Use another native surface."
+            }
+          ],
+          "default": "inline"
+        }
+      ]
+    },
+    {
+      "id": "feedback",
+      "text": "Explicit Send response preserves the composer draft.",
+      "exhibit": {
+        "kind": "state_machine",
+        "initial": "draft",
+        "states": [
+          {
+            "id": "draft",
+            "label": "Draft",
+            "screen": {
+              "kind": "schema",
+              "text": "Review feedback before sending."
+            }
+          },
+          {
+            "id": "queued",
+            "label": "Queued",
+            "screen": {
+              "kind": "schema",
+              "text": "The active turn continues; review waits in the normal queue."
+            }
+          },
+          {
+            "id": "sent",
+            "label": "Sent",
+            "screen": {
+              "kind": "schema",
+              "text": "One response is confirmed. Repeated Send has no effect."
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "from": "draft",
+            "to": "queued",
+            "label": "Send response"
+          },
+          {
+            "from": "queued",
+            "to": "sent",
+            "label": "Provider confirms"
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "calls",
+          "text": "Both providers receive the same review contract.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "provider-codex",
+                "title": "Codex actor",
+                "detail": "Queue the review payload without reading or clearing the composer.",
+                "source": "crates/grove-core/src/codex.rs"
+              },
+              {
+                "id": "provider-claude",
+                "title": "Claude actor",
+                "detail": "Use the shared saved plan and normal prompt queue.",
+                "source": "crates/grove-core/src/claude.rs"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "visual",
+      "text": "Visual exhibits use static images and explicit HTML links.",
+      "exhibit": {
+        "kind": "image",
+        "path": "example.png",
+        "alt": "A small blue square representing a static raster exhibit."
+      },
+      "html_links": [
+        {
+          "path": "example.html",
+          "label": "Open linked HTML example"
+        }
+      ]
+    }
+  ],
+  "scope": [
+    "Legacy HTML reports remain supported.",
+    "Review feedback does not authorize implementation."
+  ]
+}
