@@ -519,7 +519,7 @@ pub struct CodexView {
     composer_motion_finished: Rc<Cell<bool>>,
     tasks_expanded: bool,
     task_cache: Option<Rc<TaskCache>>,
-    _subscriptions: Vec<Subscription>,
+    subscriptions: Vec<Subscription>,
 }
 impl CodexView {
     pub fn new(session: Entity<CodexSession>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -663,7 +663,7 @@ impl CodexView {
             tasks_expanded: true,
             task_cache: None,
             checkout_context: None,
-            _subscriptions: subscriptions,
+            subscriptions,
         }
     }
     pub(crate) fn set_checkout_context(
@@ -2499,6 +2499,15 @@ impl Render for CodexView {
                 )
                 .into_any_element();
         }
+        let response_groups = response_groups(&state.saved.items, state.saved.thread_id.as_deref());
+        let mut response_ends = vec![None; state.saved.items.len() + 1];
+        let mut response_prose = vec![None; state.saved.items.len()];
+        for (group_index, group) in response_groups.iter().enumerate() {
+            response_ends[group.end] = Some(group_index);
+            for index in &group.prose {
+                response_prose[*index] = Some(group_index);
+            }
+        }
         let minimap_entries = message_minimap_entries(&state.saved.items);
         let mut minimap_anchors = Vec::new();
         // The first rendered child at or after each item, for jump-to-start.
@@ -2542,6 +2551,13 @@ impl Render for CodexView {
             .chain(std::iter::once(&serde_json::Value::Null))
             .enumerate()
         {
+            // Flush before inspecting the next source item: the previous final item
+            // may be hidden commentary, a checklist, or a collapsed tool.
+            if let Some(group_index) = response_ends[index] {
+                messages =
+                    messages.child(self.response_footer(&response_groups[group_index], window, cx));
+                message_child += 1;
+            }
             if index < state.saved.items.len() {
                 item_children.push(message_child);
                 let blocks = self.question_blocks_at(index, &state, window, cx);
@@ -3259,26 +3275,50 @@ impl Render for CodexView {
                         ),
                 );
             }
-            if matches!(kind, "userMessage" | "agentMessage") {
-                if kind == "userMessage" {
-                    row = div()
-                        .id(("codex-message-block", index))
-                        .flex()
-                        .flex_col()
-                        .w_full()
-                        .max_w(rpx(USER_BUBBLE_MAX_W))
-                        .gap(rpx(SPACE_SM))
-                        .child(row);
+            if kind == "agentMessage" {
+                if let Some(group_index) = response_prose[index] {
+                    let group = &response_groups[group_index];
+                    let key = group.key.clone();
+                    let source_key = format!("{}:source:{id}", group.key);
+                    if !self.message_focus.contains_key(&source_key) {
+                        let focus = cx.focus_handle();
+                        self.subscriptions
+                            .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
+                        self.subscriptions
+                            .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+                        self.message_focus.insert(source_key.clone(), focus);
+                    }
+                    let focus = self.message_focus[&source_key].clone();
+                    row = row.track_focus(&focus).tab_index(0).on_hover(cx.listener(
+                        move |this, hovered: &bool, _, cx| {
+                            if *hovered {
+                                this.message_hover.insert(key.clone());
+                            } else {
+                                this.message_hover.remove(&key);
+                            }
+                            cx.notify();
+                        },
+                    ));
                 }
+            }
+            if kind == "userMessage" {
+                row = div()
+                    .id(("codex-message-block", index))
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .max_w(rpx(USER_BUBBLE_MAX_W))
+                    .gap(rpx(SPACE_SM))
+                    .child(row);
                 let key = format!(
                     "{}:{id}",
                     state.saved.thread_id.as_deref().unwrap_or_default()
                 );
                 if !self.message_focus.contains_key(&key) {
                     let focus = cx.focus_handle();
-                    self._subscriptions
+                    self.subscriptions
                         .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
-                    self._subscriptions
+                    self.subscriptions
                         .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
                     self.message_focus.insert(key.clone(), focus);
                 }
@@ -3306,7 +3346,7 @@ impl Render for CodexView {
                     .items_center()
                     .gap(rpx(SPACE_MD))
                     .h(rpx(CHROME_CONTROL_H))
-                    .when(kind == "userMessage", |el| el.justify_end());
+                    .justify_end();
                 if let Some(timestamp) = item["groveReceivedAt"].as_u64() {
                     actions = actions.child(
                         div()
@@ -3315,33 +3355,30 @@ impl Render for CodexView {
                             .child(relative_message_time(timestamp)),
                     );
                 }
-                if kind == "userMessage" {
-                    let unavailable = state.editable_message(index).err();
-                    actions = actions.child(
-                        header_control("codex-edit-message", "Edit sent message")
-                            .aria_description(
-                                unavailable
-                                    .unwrap_or_else(|| "Edit message and restore workspace".into()),
-                            )
-                            .debug_selector(move || format!("codex-edit-message-{index}"))
-                            .tab_index(0)
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                    if action_key(event) {
-                                        this.request_edit(index, window, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.request_edit(index, window, cx)
-                            })),
-                    );
-                }
+                let unavailable = state.editable_message(index).err();
+                actions = actions.child(
+                    header_control("codex-edit-message", "Edit sent message")
+                        .aria_description(
+                            unavailable
+                                .unwrap_or_else(|| "Edit message and restore workspace".into()),
+                        )
+                        .debug_selector(move || format!("codex-edit-message-{index}"))
+                        .tab_index(0)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if action_key(event) {
+                                    this.request_edit(index, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.request_edit(index, window, cx);
+                        })),
+                );
                 let keyboard_key = key.clone();
-                let agent_message = kind == "agentMessage";
                 let keyboard_text = copy.clone();
                 let icon =
                     crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM());
@@ -3351,13 +3388,7 @@ impl Render for CodexView {
                     header_control("codex-message-copy", "Copy message")
                 }
                 .relative()
-                .debug_selector(move || {
-                    if agent_message {
-                        "codex-copy-response".into()
-                    } else {
-                        "codex-copy".into()
-                    }
-                })
+                .debug_selector(|| "codex-copy".into())
                 .tab_index(0)
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
                 .child(if copied {
@@ -3372,7 +3403,7 @@ impl Render for CodexView {
                     }
                 }))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.copy_message(key.clone(), copy.clone(), cx)
+                    this.copy_message(key.clone(), copy.clone(), cx);
                 }));
                 if copied {
                     copy_button = copy_button.child(
@@ -3431,6 +3462,9 @@ impl Render for CodexView {
                     .max_w(rpx(CHAT_MAX_W))
                     .flex()
                     .when(kind == "userMessage", gpui::Styled::justify_end)
+                    // Only assistant prose gives back the old per-item footer gap;
+                    // tool groups and user-message boundaries retain their spacing.
+                    .when(kind == "agentMessage", |anchor| anchor.mb(rpx(-SPACE_LG)))
                     .child(row),
             );
         }
@@ -4236,6 +4270,104 @@ impl CodexView {
                 )
             })
     }
+    fn response_footer(
+        &mut self,
+        group: &ResponseGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let key = group.key.clone();
+        if !self.message_focus.contains_key(&key) {
+            let focus = cx.focus_handle();
+            self.subscriptions
+                .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
+            self.subscriptions
+                .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+            self.message_focus.insert(key.clone(), focus);
+        }
+        let focus = self.message_focus[&key].clone();
+        let visible = self.message_hover.contains(&key)
+            || focus.contains_focused(window, cx)
+            || group.source_keys.iter().any(|source| {
+                self.message_focus
+                    .get(source)
+                    .is_some_and(|focus| focus.contains_focused(window, cx))
+            });
+        let copied = self
+            .copied_message
+            .as_ref()
+            .is_some_and(|(message, _)| message == &key);
+        let mut actions = div()
+            .id(gpui::SharedString::from(format!("{}:actions", group.key)))
+            .debug_selector(move || "codex-response-footer".into())
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_MD))
+            .h(rpx(CHROME_CONTROL_H));
+        if let Some(timestamp) = group.received_at {
+            actions = actions.child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_MUTE())
+                    .child(relative_message_time(timestamp)),
+            );
+        }
+        let keyboard_key = key.clone();
+        let text = group.copy_text.clone();
+        let keyboard_text = text.clone();
+        let mut button = if copied {
+            header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
+        } else {
+            header_control("codex-message-copy", "Copy entire response")
+        }
+        .relative()
+        .debug_selector(|| "codex-copy-response".into())
+        .tab_index(0)
+        .focus_visible(|style| style.bg(c::BG_HOVER()))
+        .child(crate::icons::icon(
+            if copied { "check" } else { "copy" },
+            ICON_MD,
+            c::FG_DIM(),
+        ))
+        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+            if action_key(event) {
+                this.copy_message(keyboard_key.clone(), keyboard_text.clone(), cx);
+                cx.stop_propagation();
+            }
+        }))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.copy_message(key.clone(), text.clone(), cx);
+        }));
+        if copied {
+            button = button.child(
+                div()
+                    .absolute()
+                    .bottom(rpx(CHROME_CONTROL_H + SPACE_SM))
+                    .right_0()
+                    .child(tooltip("Copied", window).build(window, cx)),
+            );
+        }
+        actions = actions.child(button);
+        let hover_key = group.key.clone();
+        div()
+            .id(gpui::SharedString::from(group.key.clone()))
+            .w_full()
+            .max_w(rpx(CHAT_MAX_W))
+            .mt(rpx(-SPACE_LG))
+            .track_focus(&focus)
+            .tab_index(0)
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.message_hover.insert(hover_key.clone());
+                } else {
+                    this.message_hover.remove(&hover_key);
+                }
+                cx.notify();
+            }))
+            .child(actions.when(!visible && !copied, |actions| actions.opacity(0.0)))
+            .into_any_element()
+    }
+
     fn copy_message(&mut self, key: String, text: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
         self.copy_generation = self.copy_generation.wrapping_add(1);
@@ -5370,6 +5502,64 @@ fn active_work_start(state: &codex::Snapshot) -> usize {
             },
             |period| period.start_item,
         )
+}
+
+/// Presentation-only response boundaries; provider work periods never split a response.
+#[derive(Debug)]
+struct ResponseGroup {
+    key: String,
+    end: usize,
+    prose: Vec<usize>,
+    source_keys: Vec<String>,
+    copy_text: String,
+    received_at: Option<u64>,
+}
+
+fn response_groups(items: &[serde_json::Value], thread_id: Option<&str>) -> Vec<ResponseGroup> {
+    let mut groups = Vec::new();
+    let mut start = 0;
+    for end in (0..=items.len())
+        .filter(|index| *index == items.len() || items[*index]["type"] == "userMessage")
+    {
+        let prose = (start..end)
+            .filter(|index| {
+                items[*index]["type"] == "agentMessage"
+                    && !codex::item_text(&items[*index]).trim().is_empty()
+            })
+            .collect::<Vec<_>>();
+        if let Some(last) = prose.last() {
+            let first = (start..end)
+                .find(|index| items[*index]["type"] == "agentMessage")
+                .unwrap_or(*last);
+            let source_id = |index: usize| {
+                items[index]["id"]
+                    .as_str()
+                    .map_or_else(|| index.to_string(), str::to_owned)
+            };
+            let key = format!(
+                "{}:response:{}",
+                thread_id.unwrap_or_default(),
+                source_id(first)
+            );
+            groups.push(ResponseGroup {
+                source_keys: prose
+                    .iter()
+                    .map(|index| format!("{key}:source:{}", source_id(*index)))
+                    .collect(),
+                copy_text: prose
+                    .iter()
+                    .map(|index| codex::item_text(&items[*index]))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+                received_at: items[*last]["groveReceivedAt"].as_u64(),
+                key,
+                end,
+                prose,
+            });
+        }
+        start = end + 1;
+    }
+    groups
 }
 
 /// Explicit message phases win; older providers keep their last response outside work.
@@ -12866,16 +13056,16 @@ mod tests {
         let (view, cx, _, _) = fixture(cx);
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
-                view.copy_message("first".into(), "first text".into(), cx)
-            })
+                view.copy_message("first".into(), "first text".into(), cx);
+            });
         });
         cx.run_until_parked();
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 3));
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
-                view.copy_message("second".into(), "second text".into(), cx)
-            })
+                view.copy_message("second".into(), "second text".into(), cx);
+            });
         });
         cx.run_until_parked();
         cx.executor()
@@ -12885,7 +13075,7 @@ mod tests {
             assert_eq!(
                 view.copied_message.as_ref().map(|(key, _)| key.as_str()),
                 Some("second")
-            )
+            );
         });
         assert_eq!(
             cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text())),
@@ -12895,6 +13085,96 @@ mod tests {
             .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 3));
         cx.run_until_parked();
         view.read_with(cx, |view, _| assert!(view.copied_message.is_none()));
+    }
+
+    #[test]
+    fn response_groups_split_only_at_users_and_copy_all_prose() {
+        let items = vec![
+            serde_json::json!({"type":"userMessage", "id":"u", "text":"exclude"}),
+            serde_json::json!({"type":"agentMessage", "id":"first", "phase":"commentary", "text":"First", "groveReceivedAt":10}),
+            serde_json::json!({"type":"commandExecution", "text":"exclude"}),
+            serde_json::json!({"type":"reasoning", "text":"exclude"}),
+            serde_json::json!({"type":"agentMessage", "id":"last", "phase":"final_answer", "text":"Last", "groveReceivedAt":20}),
+            serde_json::json!({"type":"agentMessage", "id":"empty", "text":"  ", "groveReceivedAt":30}),
+            serde_json::json!({"type":"userMessage", "id":"interrupt"}),
+            serde_json::json!({"type":"agentMessage", "id":"next", "text":"Next"}),
+            serde_json::json!({"type":"plan", "text":"exclude"}),
+        ];
+        let groups = response_groups(&items, Some("thread"));
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].key, "thread:response:first");
+        assert_eq!(groups[0].copy_text, "First\n\nLast");
+        assert_eq!(groups[0].received_at, Some(20));
+        assert_eq!(groups[0].end, 6);
+        assert_eq!(groups[1].end, items.len());
+        assert_eq!(groups[1].received_at, None);
+        assert!(response_groups(&items[2..4], None).is_empty());
+        assert!(response_groups(&items[5..6], None).is_empty());
+        let mut streaming = items[..5].to_vec();
+        let key = response_groups(&streaming, Some("thread"))[0].key.clone();
+        streaming
+            .push(serde_json::json!({"type":"agentMessage", "id":"resumed", "text":"Resumed"}));
+        let continued = response_groups(&streaming, Some("thread"));
+        assert_eq!(continued[0].key, key);
+        assert_eq!(
+            continued[0].received_at, None,
+            "Never borrow an earlier timestamp"
+        );
+        streaming.truncate(2);
+        assert_eq!(
+            response_groups(&streaming, Some("thread"))[0].copy_text,
+            "First"
+        );
+    }
+
+    #[gpui::test]
+    fn response_footer_copies_collapsed_prose_and_survives_streaming(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, updates) = fixture(cx);
+        let mut state = snapshot();
+        state.saved.items = vec![
+            serde_json::json!({"type":"agentMessage", "id":"first", "phase":"commentary", "text":"Hidden commentary"}),
+            serde_json::json!({"type":"agentMessage", "id":"answer", "phase":"final_answer", "text":"Visible answer"}),
+            serde_json::json!({"type":"commandExecution", "id":"tail", "status":"completed", "command":"true"}),
+        ];
+        updates.send(state.clone()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-row-0").is_none());
+        let footer = cx.debug_bounds("codex-response-footer").unwrap();
+        let body = cx.debug_bounds("codex-message-row-1").unwrap();
+        assert!(footer.origin.y >= body.bottom());
+        let copy = cx.debug_bounds("codex-copy-response").unwrap().center();
+        cx.simulate_click(copy, gpui::Modifiers::default());
+        let key = view.read_with(cx, |view, _| {
+            view.copied_message.as_ref().unwrap().0.clone()
+        });
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text())),
+            Some("Hidden commentary\n\nVisible answer".into())
+        );
+        state.saved.items.push(serde_json::json!({"type":"agentMessage", "id":"resumed", "phase":"final_answer", "text":"Resumed answer"}));
+        updates.send(state).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert_eq!(
+            view.read_with(cx, |view, _| view
+                .copied_message
+                .as_ref()
+                .unwrap()
+                .0
+                .clone()),
+            key
+        );
+        let copy = cx.debug_bounds("codex-copy-response").unwrap().center();
+        cx.simulate_click(copy, gpui::Modifiers::default());
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text())),
+            Some("Hidden commentary\n\nVisible answer\n\nResumed answer".into())
+        );
     }
 
     #[gpui::test]
