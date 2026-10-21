@@ -1,9 +1,38 @@
 //! UI observable projection of the background Codex actor.
 use gpui::{Context, Task};
 use grove_core::codex::{self, Action, Handle, SavedSession, Snapshot};
-use std::time::Duration;
+use std::{
+    ops::{Deref, DerefMut},
+    rc::Rc,
+    time::Duration,
+};
+
+/// UI readers share a stable snapshot. Any local mutation forks it immediately,
+/// including writes made before GPUI delivers observer notifications.
+pub struct SessionSnapshot(Rc<Snapshot>);
+impl SessionSnapshot {
+    pub fn shared(&self) -> Rc<Snapshot> {
+        self.0.clone()
+    }
+}
+impl From<Snapshot> for SessionSnapshot {
+    fn from(state: Snapshot) -> Self {
+        Self(Rc::new(state))
+    }
+}
+impl Deref for SessionSnapshot {
+    type Target = Snapshot;
+    fn deref(&self) -> &Snapshot {
+        &self.0
+    }
+}
+impl DerefMut for SessionSnapshot {
+    fn deref_mut(&mut self) -> &mut Snapshot {
+        Rc::make_mut(&mut self.0)
+    }
+}
 pub struct CodexSession {
-    pub state: Snapshot,
+    pub state: SessionSnapshot,
     pub handle: Handle,
     _poll: Task<()>,
 }
@@ -30,7 +59,7 @@ impl CodexSession {
             if let Some(state) = latest {
                 if this
                     .update(cx, |this, cx| {
-                        this.state = state;
+                        this.state = state.into();
                         cx.notify();
                     })
                     .is_err()
@@ -40,7 +69,7 @@ impl CodexSession {
             }
         });
         Self {
-            state,
+            state: state.into(),
             handle,
             _poll: poll,
         }

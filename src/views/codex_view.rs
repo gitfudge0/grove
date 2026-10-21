@@ -78,6 +78,75 @@ fn hash_transcript_value(value: &serde_json::Value, hasher: &mut impl Hasher) {
     }
 }
 
+/// Immutable preparation shared by scroll/animation frames. Session notifications
+/// replace the source snapshot; local mutations fork it synchronously.
+/// Optimistic bubbles are a separate cache input.
+struct TranscriptRenderCache {
+    source: Rc<codex::Snapshot>,
+    optimistic: Vec<serde_json::Value>,
+    state: Rc<codex::Snapshot>,
+    content: [u64; 2],
+    task_key: u64,
+    stream_keys: HashSet<String>,
+    has_timestamp: bool,
+    response_groups: Vec<ResponseGroup>,
+    response_ends: Vec<Option<usize>>,
+    response_prose: Vec<Option<usize>>,
+    minimap_entries: Vec<MessageMinimapEntry>,
+}
+
+impl TranscriptRenderCache {
+    fn matches(&self, source: &Rc<codex::Snapshot>, optimistic: &[serde_json::Value]) -> bool {
+        Rc::ptr_eq(&self.source, source) && self.optimistic == optimistic
+    }
+
+    fn new(source: Rc<codex::Snapshot>, optimistic: Vec<serde_json::Value>) -> Self {
+        let mut state = source.clone();
+        if !optimistic.is_empty() {
+            Rc::make_mut(&mut state)
+                .saved
+                .items
+                .extend(optimistic.iter().cloned());
+        }
+        let items = &state.saved.items;
+        let content = transcript_content_signature(items, state.saved.thread_id.as_deref());
+        let task_key = task_cache_key(items);
+        let stream_keys = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                item["id"]
+                    .as_str()
+                    .map_or_else(|| format!("message-{index}"), str::to_owned)
+            })
+            .collect();
+        let has_timestamp = items.iter().any(|item| item["groveReceivedAt"].is_u64());
+        let response_groups = response_groups(items, state.saved.thread_id.as_deref());
+        let mut response_ends = vec![None; items.len() + 1];
+        let mut response_prose = vec![None; items.len()];
+        for (group_index, group) in response_groups.iter().enumerate() {
+            response_ends[group.end] = Some(group_index);
+            for index in &group.prose {
+                response_prose[*index] = Some(group_index);
+            }
+        }
+        let minimap_entries = message_minimap_entries(items);
+        Self {
+            source,
+            optimistic,
+            state,
+            content,
+            task_key,
+            stream_keys,
+            has_timestamp,
+            response_groups,
+            response_ends,
+            response_prose,
+            minimap_entries,
+        }
+    }
+}
+
 const STOP_HOVER_OPACITY: f32 = 0.8;
 const CHAT_MAX_W: f32 = 760.0;
 const SUBAGENT_NAME_W: f32 = 120.0;
@@ -625,6 +694,7 @@ pub struct CodexView {
     composer_motion_finished: Rc<Cell<bool>>,
     tasks_expanded: bool,
     task_cache: Option<Rc<TaskCache>>,
+    transcript_cache: Option<Rc<TranscriptRenderCache>>,
     subscriptions: Vec<Subscription>,
 }
 impl CodexView {
@@ -784,6 +854,7 @@ impl CodexView {
             composer_motion_finished: Rc::new(Cell::new(true)),
             tasks_expanded: true,
             task_cache: None,
+            transcript_cache: None,
             checkout_context: None,
             subscriptions,
         }
@@ -2318,7 +2389,7 @@ impl Focusable for CodexView {
 impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.restore_image_tokens(window, cx);
-        let mut state = self.session.read(cx).state.clone();
+        let state = self.session.read(cx).state.shared();
         if self
             .composer_menu_scope
             .as_ref()
@@ -2507,14 +2578,16 @@ impl Render for CodexView {
                     .any(|saved| saved["id"] == item["id"])
             })
             .collect();
-        state.saved.items.extend(optimistic_items);
-        if state
-            .saved
-            .items
-            .iter()
-            .any(|item| item["groveReceivedAt"].is_u64())
-            && !self.timestamp_tick_pending.replace(true)
-        {
+        let transcript = match &self.transcript_cache {
+            Some(cache) if cache.matches(&state, &optimistic_items) => cache.clone(),
+            _ => {
+                let cache = Rc::new(TranscriptRenderCache::new(state, optimistic_items));
+                self.transcript_cache = Some(cache.clone());
+                cache
+            }
+        };
+        let state = transcript.state.clone();
+        if transcript.has_timestamp && !self.timestamp_tick_pending.replace(true) {
             let pending = self.timestamp_tick_pending.clone();
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
@@ -2527,10 +2600,7 @@ impl Render for CodexView {
         }
 
         // Tool output/status and same-length streaming replacements also change layout.
-        let content = Some(transcript_content_signature(
-            &state.saved.items,
-            state.saved.thread_id.as_deref(),
-        ));
+        let content = Some(transcript.content);
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
             <= rpx(SPACE_20).to_pixels(window.rem_size());
         if let Some(toward_bottom) = self.pending_composer_scroll.take() {
@@ -2561,18 +2631,8 @@ impl Render for CodexView {
             }
         }
         let initial_transcript = self.last_content.is_none() || changed_thread;
-        let stream_keys: HashSet<_> = state
-            .saved
-            .items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                item["id"]
-                    .as_str()
-                    .map_or_else(|| format!("message-{index}"), str::to_owned)
-            })
-            .collect();
-        self.stream_text.retain(|key, _| stream_keys.contains(key));
+        self.stream_text
+            .retain(|key, _| transcript.stream_keys.contains(key));
         if self.follow_after_submit {
             self.last_follow_offset = None;
         }
@@ -2615,19 +2675,15 @@ impl Render for CodexView {
                 let owner = cx.entity().downgrade();
                 let pending = self.motion_frame_pending.clone();
                 if !pending.replace(true) {
-                    cx.spawn(async move |_, cx| {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(16))
-                            .await;
+                    window.on_next_frame(move |_, cx| {
                         pending.set(false);
                         let _ = owner.update(cx, |_, cx| cx.notify());
-                    })
-                    .detach();
+                    });
                 }
             }
         }
         self.last_content = content;
-        let task_key = task_cache_key(&state.saved.items);
+        let task_key = transcript.task_key;
         let task_cache = match &self.task_cache {
             Some(cache) if cache.key == task_key => cache.clone(),
             _ => {
@@ -2672,16 +2728,10 @@ impl Render for CodexView {
                 )
                 .into_any_element();
         }
-        let response_groups = response_groups(&state.saved.items, state.saved.thread_id.as_deref());
-        let mut response_ends = vec![None; state.saved.items.len() + 1];
-        let mut response_prose = vec![None; state.saved.items.len()];
-        for (group_index, group) in response_groups.iter().enumerate() {
-            response_ends[group.end] = Some(group_index);
-            for index in &group.prose {
-                response_prose[*index] = Some(group_index);
-            }
-        }
-        let minimap_entries = message_minimap_entries(&state.saved.items);
+        let response_groups = &transcript.response_groups;
+        let response_ends = &transcript.response_ends;
+        let response_prose = &transcript.response_prose;
+        let minimap_entries = &transcript.minimap_entries;
         let mut minimap_anchors = Vec::new();
         // The first rendered child at or after each item, for jump-to-start.
         let mut item_children = Vec::with_capacity(state.saved.items.len());
@@ -3221,14 +3271,10 @@ impl Render for CodexView {
                     let owner = cx.entity().downgrade();
                     let pending = self.motion_frame_pending.clone();
                     if !pending.replace(true) {
-                        cx.spawn(async move |_, cx| {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(16))
-                                .await;
+                        window.on_next_frame(move |_, cx| {
                             pending.set(false);
                             let _ = owner.update(cx, |_, cx| cx.notify());
-                        })
-                        .detach();
+                        });
                     }
                 }
                 text[..entry.1].to_owned()
@@ -3721,7 +3767,7 @@ impl Render for CodexView {
         }
         messages =
             messages.children(self.question_blocks_at(state.saved.items.len(), &state, window, cx));
-        let minimap = self.render_message_minimap(&minimap_entries, &minimap_anchors, window, cx);
+        let minimap = self.render_message_minimap(minimap_entries, &minimap_anchors, window, cx);
         let transcript = div()
             .id("codex-transcript")
             .flex_1()
@@ -9280,6 +9326,235 @@ mod tests {
         });
     }
     #[gpui::test]
+    fn transcript_cache_reuses_frames_and_refreshes_notified_session_edits(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.saved.items =
+                            vec![json!({"id":"answer", "type":"agentMessage", "text":"one"})];
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            let before = view.read_with(cx, |view, _| view.transcript_cache.clone().unwrap());
+            cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert!(Rc::ptr_eq(&before, view.transcript_cache.as_ref().unwrap()));
+            });
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.items[0]["text"] = json!("two");
+                        session.state.error = Some("new error".into());
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                let after = view.transcript_cache.as_ref().unwrap();
+                assert_ne!(before.content, after.content);
+                assert_eq!(after.state.saved.items[0]["text"], "two");
+                assert_eq!(after.state.error.as_deref(), Some("new error"));
+                assert_eq!(after.response_groups[0].copy_text, "two");
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn transcript_cache_sees_local_error_clear_before_observer_delivery(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _actions, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, _| {
+                    session.state.error = Some("old error".into());
+                });
+                let _ = view.render(window, cx);
+                let before = view.transcript_cache.as_ref().unwrap().source.clone();
+                assert_eq!(before.error.as_deref(), Some("old error"));
+                view.session.update(cx, |session, cx| {
+                    // Successful sends do not notify the entity; this mirrors local
+                    // error clearing before a provider has published a new snapshot.
+                    session.state.error = None;
+                    let forked = session.state.shared();
+                    assert!(!Rc::ptr_eq(&before, &forked));
+                    let forked_address = Rc::as_ptr(&forked);
+                    drop(forked);
+                    session.state.saved.draft = "local draft".into();
+                    assert_eq!(forked_address, Rc::as_ptr(&session.state.shared()));
+                    session.send(Action::Draft("local draft".into()), cx);
+                });
+                let _ = view.render(window, cx);
+                let after = view.transcript_cache.as_ref().unwrap();
+                assert!(after.state.error.is_none());
+                assert_eq!(after.state.saved.draft, "local draft");
+                assert_eq!(before.error.as_deref(), Some("old error"));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn transcript_motion_coalesces_display_frames_and_stops_with_reduced_motion(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    session.state.saved.items =
+                        vec![json!({"id":"answer", "type":"agentMessage", "text":"old"})];
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        cx.update(gpui::Window::simulate_next_frame);
+        draw(cx);
+        let notifications = Rc::new(Cell::new(0));
+        let observed = notifications.clone();
+        let watch = cx.update(|_, cx| {
+            cx.observe(&view, move |_, _| {
+                observed.set(observed.get() + 1);
+            })
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, _| {
+                    session.state.saved.items[0]["text"] = json!(format!("old{}", "界".repeat(80)));
+                });
+                // Follow and reveal both need a frame. Repeated renders must share it.
+                let _ = view.render(window, cx);
+                let _ = view.render(window, cx);
+                assert!(view.smooth_follow);
+                assert!(view.stream_text["answer"].1 < view.stream_text["answer"].0.len());
+                assert!(view.motion_frame_pending.get());
+            });
+        });
+        notifications.set(0);
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            assert!(!view.read(cx).motion_frame_pending.get());
+        });
+        // Observe this one display callback before pumping the executor, which
+        // deliberately drains every subsequent animation frame in GPUI tests.
+        assert_eq!(
+            notifications.get(),
+            1,
+            "follow and reveal share one notification"
+        );
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        draw(cx);
+        // Any already queued final follow frame settles with reduced motion.
+        cx.update(gpui::Window::simulate_next_frame);
+        draw(cx);
+        notifications.set(0);
+        for _ in 0..3 {
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
+        assert_eq!(notifications.get(), 0);
+        view.read_with(cx, |view, _| {
+            assert!(!view.motion_frame_pending.get());
+            assert_eq!(
+                view.stream_text["answer"].1,
+                view.stream_text["answer"].0.len()
+            );
+        });
+        drop(watch);
+    }
+
+    #[test]
+    fn transcript_cache_tracks_optimistic_acknowledgement_and_thread_changes() {
+        let source = Rc::new(snapshot());
+        let optimistic = vec![json!({"id":"pending", "type":"userMessage", "text":"next"})];
+        let cache = TranscriptRenderCache::new(source.clone(), optimistic.clone());
+        assert!(cache.matches(&source, &optimistic));
+        assert!(!cache.matches(&source, &[])); // rejected or removed bubble
+        assert!(source.saved.items.is_empty());
+        assert_eq!(cache.state.saved.items.len(), 1);
+        let mut acknowledged = source.as_ref().clone();
+        acknowledged.saved.items = optimistic.clone();
+        let acknowledged = Rc::new(acknowledged);
+        assert!(!cache.matches(&acknowledged, &optimistic));
+        let acknowledged_cache = TranscriptRenderCache::new(acknowledged.clone(), vec![]);
+        assert_eq!(acknowledged_cache.state.saved.items.len(), 1);
+        assert_eq!(cache.content, acknowledged_cache.content);
+        let mut changed_thread = acknowledged.as_ref().clone();
+        changed_thread.saved.thread_id = Some("other-thread".into());
+        let changed_thread = TranscriptRenderCache::new(Rc::new(changed_thread), vec![]);
+        assert_ne!(acknowledged_cache.content, changed_thread.content);
+    }
+
+    /// Measures preparation only, excluding GPUI element construction/layout/paint.
+    /// Run explicitly with --ignored --nocapture; timings are not FPS evidence.
+    #[test]
+    #[ignore = "manual transcript preparation benchmark"]
+    fn transcript_preparation_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let mut state = snapshot();
+        state.saved.items = (0..2000)
+            .map(|index| {
+                json!({
+                    "id":format!("message-{index}"),
+                    "type":if index % 2 == 0 { "userMessage" } else { "agentMessage" },
+                    "text":"Representative transcript content with code and prose. ".repeat(20)
+                })
+            })
+            .collect();
+        let source = Rc::new(state);
+        let cache = Rc::new(TranscriptRenderCache::new(source.clone(), vec![]));
+        // Warm up both paths, then alternate their order across nine samples.
+        for _ in 0..3 {
+            black_box(TranscriptRenderCache::new(
+                Rc::new(source.as_ref().clone()),
+                vec![],
+            ));
+            black_box(cache.matches(&source, &[]));
+        }
+        for sample in 0..9 {
+            let baseline = || {
+                let start = Instant::now();
+                for _ in 0..100 {
+                    let prepared =
+                        TranscriptRenderCache::new(Rc::new(source.as_ref().clone()), vec![]);
+                    assert_eq!(prepared.content, cache.content);
+                    assert_eq!(prepared.task_key, cache.task_key);
+                    assert_eq!(prepared.minimap_entries, cache.minimap_entries);
+                    assert_eq!(prepared.state.saved.items.len(), 2000);
+                    black_box(prepared);
+                }
+                start.elapsed().as_secs_f64() * 1000.0 / 100.0
+            };
+            let cached = || {
+                let start = Instant::now();
+                for _ in 0..100 {
+                    let source = black_box(source.clone());
+                    assert!(black_box(cache.matches(&source, &[])));
+                    black_box(cache.clone());
+                }
+                start.elapsed().as_secs_f64() * 1000.0 / 100.0
+            };
+            let (old, new) = if sample % 2 == 0 {
+                (baseline(), cached())
+            } else {
+                let new = cached();
+                (baseline(), new)
+            };
+            println!("sample={sample} preparation_ms={old:.6} cached_ms={new:.6}");
+        }
+    }
+
+    #[gpui::test]
     fn sent_message_editor_and_confirmation_stay_in_transcript_and_preserve_composer(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -12645,13 +12920,14 @@ mod tests {
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
+                    let thread_id = session.state.saved.thread_id.clone();
                     session
                         .state
                         .question_answer_acks
                         .push(codex::QuestionAnswerAck {
                             sequence: 1,
                             id: json!("async-ui"),
-                            thread_id: session.state.saved.thread_id.clone(),
+                            thread_id,
                             turn_id: None,
                         });
                     session.state.questions.clear();
@@ -12895,14 +13171,16 @@ mod tests {
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
+                    let thread_id = session.state.saved.thread_id.clone();
+                    let turn_id = session.state.turn_id.clone();
                     session
                         .state
                         .question_answer_acks
                         .push(codex::QuestionAnswerAck {
                             sequence: 1,
                             id: request.id.clone(),
-                            thread_id: session.state.saved.thread_id.clone(),
-                            turn_id: session.state.turn_id.clone(),
+                            thread_id,
+                            turn_id,
                         });
                     session.state.questions.clear();
                     session.state.turn_id = Some("next-turn".into());
