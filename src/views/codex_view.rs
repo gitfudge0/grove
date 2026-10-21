@@ -1,10 +1,10 @@
 //! Native conversation surface for a structured Codex session.
 use super::{
     components::{
-        form_action, header_control, header_control_with_hover, header_control_with_tooltip,
-        project_field_well, question_choice, question_disclosure, shimmer_label, task_mark,
-        task_meter, tooltip, tooltip_content, transcript_action, truncation_safe_label_width,
-        TaskPhase,
+        form_action, header_control, header_control_frame, header_control_with_hover,
+        header_control_with_tooltip, project_field_well, question_choice, question_disclosure,
+        shimmer_label, task_mark, task_meter, tooltip, tooltip_content, transcript_action,
+        truncation_safe_label_width, TaskPhase,
     },
     rpx,
     tokens::*,
@@ -172,6 +172,20 @@ fn minimap_excerpt(text: &str) -> String {
         characters.push('…');
     }
     characters.into_iter().collect()
+}
+
+fn relative_message_time(timestamp: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let seconds = now.saturating_sub(timestamp) / 1000;
+    match seconds {
+        0..60 => "just now".into(),
+        60..3600 => format!("{}m ago", seconds / 60),
+        3600..86400 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86400),
+    }
 }
 
 fn action_key(event: &gpui::KeyDownEvent) -> bool {
@@ -487,6 +501,11 @@ pub struct CodexView {
     motion_frame: Option<std::time::Instant>,
     motion_frame_pending: Rc<Cell<bool>>,
     stream_text: HashMap<String, (String, usize)>,
+    message_hover: HashSet<String>,
+    message_focus: HashMap<String, FocusHandle>,
+    copied_message: Option<(String, u64)>,
+    copy_generation: u64,
+    timestamp_tick_pending: Rc<Cell<bool>>,
     stream_thread: Option<String>,
     follow_after_submit: bool,
     composer_collapsed: bool,
@@ -625,6 +644,11 @@ impl CodexView {
             motion_frame: None,
             motion_frame_pending: Rc::default(),
             stream_text: HashMap::new(),
+            message_hover: HashSet::new(),
+            message_focus: HashMap::new(),
+            copied_message: None,
+            copy_generation: 0,
+            timestamp_tick_pending: Rc::new(Cell::new(false)),
             stream_thread,
             follow_after_submit: true,
             composer_collapsed: false,
@@ -952,7 +976,7 @@ impl CodexView {
             existing: state.saved.items.iter().filter_map(|item| item["id"].as_str().map(str::to_owned)).collect(),
             thread: state.saved.thread_id.clone(),
             text,
-            optimistic: Some(serde_json::json!({"id":id, "type":"userMessage", "content":content, "localSteering":steering, "localQueuedSteering":queued_steering})),
+            optimistic: Some(serde_json::json!({"id":id, "type":"userMessage", "content":content, "localSteering":steering, "localQueuedSteering":queued_steering, "groveReceivedAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64})),
         });
         self.follow_after_submit = true;
     }
@@ -2311,6 +2335,24 @@ impl Render for CodexView {
             })
             .collect();
         state.saved.items.extend(optimistic_items);
+        if state
+            .saved
+            .items
+            .iter()
+            .any(|item| item["groveReceivedAt"].is_u64())
+            && !self.timestamp_tick_pending.replace(true)
+        {
+            let pending = self.timestamp_tick_pending.clone();
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(30))
+                    .await;
+                pending.set(false);
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
+
         // Tool output/status and same-length streaming replacements also change layout.
         let content = Some(transcript_content_signature(
             &state.saved.items,
@@ -3079,30 +3121,9 @@ impl Render for CodexView {
                                 )),
                             )
                         })
-                        .when(kind == "userMessage", |row| {
-                            let unavailable = state.editable_message(index).err();
-                            row.child(
-                                header_control("codex-edit-message", "Edit sent message")
-                                    .aria_description(unavailable.clone().unwrap_or_else(|| {
-                                        "Edit message and restore workspace".into()
-                                    }))
-                                    .debug_selector(move || format!("codex-edit-message-{index}"))
-                                    .aria_label("Edit sent message")
-                                    .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
-                                    .on_key_down(cx.listener(
-                                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                            if action_key(event) {
-                                                this.request_edit(index, window, cx);
-                                                cx.stop_propagation();
-                                            }
-                                        },
-                                    ))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.request_edit(index, window, cx);
-                                    })),
-                            )
-                        })
-                        .child(copy_control("codex-copy", "Copy message", copy.clone())),
+                        .when(kind != "userMessage", |row| {
+                            row.child(copy_control("codex-copy", "Copy message", copy.clone()))
+                        }),
                 );
             }
             if !tool {
@@ -3139,16 +3160,6 @@ impl Render for CodexView {
                                 }
                             }),
                     );
-                    // A response is copyable once it stops streaming.
-                    if kind == "agentMessage"
-                        && !(state.status.busy() && index + 1 == state.saved.items.len())
-                    {
-                        row = row.child(div().flex().child(copy_control(
-                            "codex-copy-response",
-                            "Copy response",
-                            copy,
-                        )));
-                    }
                 }
                 let html_entity = self.html.clone();
                 let linked =
@@ -3247,6 +3258,138 @@ impl Render for CodexView {
                             .selectable(true),
                         ),
                 );
+            }
+            if matches!(kind, "userMessage" | "agentMessage") {
+                if kind == "userMessage" {
+                    row = div()
+                        .id(("codex-message-block", index))
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .max_w(rpx(USER_BUBBLE_MAX_W))
+                        .gap(rpx(SPACE_SM))
+                        .child(row);
+                }
+                let key = format!(
+                    "{}:{id}",
+                    state.saved.thread_id.as_deref().unwrap_or_default()
+                );
+                if !self.message_focus.contains_key(&key) {
+                    let focus = cx.focus_handle();
+                    self._subscriptions
+                        .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
+                    self._subscriptions
+                        .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+                    self.message_focus.insert(key.clone(), focus);
+                }
+                let focus = self.message_focus[&key].clone();
+                let visible =
+                    self.message_hover.contains(&key) || focus.contains_focused(window, cx);
+                let copied = self
+                    .copied_message
+                    .as_ref()
+                    .is_some_and(|(message, _)| message == &key);
+                let hover_key = key.clone();
+                row = row.track_focus(&focus).tab_index(0).on_hover(cx.listener(
+                    move |this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            this.message_hover.insert(hover_key.clone());
+                        } else {
+                            this.message_hover.remove(&hover_key);
+                        }
+                        cx.notify();
+                    },
+                ));
+                let mut actions = div()
+                    .id(("message-actions", index))
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_MD))
+                    .h(rpx(CHROME_CONTROL_H))
+                    .when(kind == "userMessage", |el| el.justify_end());
+                if let Some(timestamp) = item["groveReceivedAt"].as_u64() {
+                    actions = actions.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_MUTE())
+                            .child(relative_message_time(timestamp)),
+                    );
+                }
+                if kind == "userMessage" {
+                    let unavailable = state.editable_message(index).err();
+                    actions = actions.child(
+                        header_control("codex-edit-message", "Edit sent message")
+                            .aria_description(
+                                unavailable
+                                    .unwrap_or_else(|| "Edit message and restore workspace".into()),
+                            )
+                            .debug_selector(move || format!("codex-edit-message-{index}"))
+                            .tab_index(0)
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if action_key(event) {
+                                        this.request_edit(index, window, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.request_edit(index, window, cx)
+                            })),
+                    );
+                }
+                let keyboard_key = key.clone();
+                let agent_message = kind == "agentMessage";
+                let keyboard_text = copy.clone();
+                let icon =
+                    crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM());
+                let mut copy_button = if copied {
+                    header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
+                } else {
+                    header_control("codex-message-copy", "Copy message")
+                }
+                .relative()
+                .debug_selector(move || {
+                    if agent_message {
+                        "codex-copy-response".into()
+                    } else {
+                        "codex-copy".into()
+                    }
+                })
+                .tab_index(0)
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .child(if copied {
+                    super::motion::fast(icon, ("message-copy-check", index), cx)
+                } else {
+                    icon.into_any_element()
+                })
+                .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                    if action_key(event) {
+                        this.copy_message(keyboard_key.clone(), keyboard_text.clone(), cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_message(key.clone(), copy.clone(), cx)
+                }));
+                if copied {
+                    copy_button = copy_button.child(
+                        div()
+                            .absolute()
+                            .bottom(rpx(CHROME_CONTROL_H + SPACE_SM))
+                            .right_0()
+                            .child(tooltip("Copied", window).build(window, cx)),
+                    );
+                }
+                actions = actions.child(copy_button);
+                // Keep the footer geometry and keyboard targets mounted while hidden.
+                row = row.child(if visible || copied {
+                    super::motion::fast(actions, ("message-actions-show", index), cx)
+                } else {
+                    actions.opacity(0.0).into_any_element()
+                });
             }
             let row = if let Some((started, finished)) = self.animating_bubbles.get(&id) {
                 let started = *started;
@@ -4093,6 +4236,30 @@ impl CodexView {
                 )
             })
     }
+    fn copy_message(&mut self, key: String, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.copy_generation = self.copy_generation.wrapping_add(1);
+        let generation = self.copy_generation;
+        self.copied_message = Some((key, generation));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(MOTION_SLOW_MS * 6))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this
+                    .copied_message
+                    .as_ref()
+                    .is_some_and(|(_, current)| *current == generation)
+                {
+                    this.copied_message = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn request_edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let state = &self.session.read(cx).state;
         match state.editable_message(index) {
@@ -12692,6 +12859,44 @@ mod tests {
             .update(gpui_component::WindowExt::selected_text)
             .is_empty());
     }
+    #[gpui::test]
+    fn repeated_message_copy_extends_feedback_and_resets_after_delay(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.copy_message("first".into(), "first text".into(), cx)
+            })
+        });
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 3));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.copy_message("second".into(), "second text".into(), cx)
+            })
+        });
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 3));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.copied_message.as_ref().map(|(key, _)| key.as_str()),
+                Some("second")
+            )
+        });
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text())),
+            Some("second text".into())
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_SLOW_MS * 3));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.copied_message.is_none()));
+    }
+
     #[gpui::test]
     fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestAppContext) {
         let (_view, cx, _actions, updates) = fixture(cx);

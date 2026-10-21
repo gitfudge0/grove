@@ -1283,6 +1283,13 @@ impl Snapshot {
                         self.record_collab(&item, period);
                     }
                 }
+                stamp_message_received(
+                    &mut item,
+                    self.saved
+                        .items
+                        .iter()
+                        .find(|old| old["id"] == p["item"]["id"]),
+                );
                 if let Some(old) = self.saved.items.iter().find(|old| old["id"] == item["id"]) {
                     for marker in ["groveQuestionResolved", "groveQuestionPending"] {
                         if old[marker] == true {
@@ -1399,7 +1406,7 @@ impl Snapshot {
             "item/agentMessage/delta" | "item/commandExecution/outputDelta" | "item/plan/delta" => {
                 let method = message["method"].as_str().unwrap_or_default();
                 let output = method.contains("outputDelta");
-                let at=self.saved.items.iter().position(|old|old["id"]==p["itemId"]).unwrap_or_else(|| {self.saved.items.push(json!({"id":p["itemId"],"type":if output{"commandExecution"}else if method.contains("plan"){"plan"}else{"agentMessage"}}));self.saved.items.len()-1});
+                let at=self.saved.items.iter().position(|old|old["id"]==p["itemId"]).unwrap_or_else(|| {let mut item = json!({"id":p["itemId"],"type":if output{"commandExecution"}else if method.contains("plan"){"plan"}else{"agentMessage"}});stamp_message_received(&mut item, None);self.saved.items.push(item);self.saved.items.len()-1});
                 let key = if output { "aggregatedOutput" } else { "text" };
                 let item = &mut self.saved.items[at];
                 let text = format!(
@@ -1417,9 +1424,9 @@ impl Snapshot {
         if let Some(at) = self.saved.items.iter().position(|item| item["id"] == *id) {
             return at;
         }
-        self.saved
-            .items
-            .push(json!({"id":id,"type":kind,"status":"inProgress"}));
+        let mut item = json!({"id":id,"type":kind,"status":"inProgress"});
+        stamp_message_received(&mut item, None);
+        self.saved.items.push(item);
         self.saved.items.len() - 1
     }
     /// Record the provider's latest context occupancy. A known `used` also completes the
@@ -1526,6 +1533,25 @@ fn first_prompt_title(items: &[Value]) -> Option<String> {
         .filter(|item| item["type"] == "userMessage")
         .find_map(|item| prompt_title(&item_text(item)))
 }
+/// Local receipt time, recorded only at the live provider boundary, never on history load.
+pub(crate) fn stamp_message_received(item: &mut Value, previous: Option<&Value>) {
+    if !matches!(item["type"].as_str(), Some("userMessage" | "agentMessage")) {
+        return;
+    }
+    if let Some(previous) = previous {
+        if let Some(timestamp) = previous.get("groveReceivedAt") {
+            item["groveReceivedAt"] = timestamp.clone();
+        }
+        return;
+    }
+    if item.get("groveReceivedAt").is_none() {
+        item["groveReceivedAt"] = json!(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64);
+    }
+}
+
 pub fn item_text(item: &Value) -> String {
     match item["type"].as_str().unwrap_or_default() {
         "userMessage" => item["content"]
@@ -3502,6 +3528,7 @@ impl Actor {
                                     .iter()
                                     .find(|old| old["id"] == item["id"])
                                 {
+                                    stamp_message_received(&mut item, Some(old));
                                     for marker in ["groveQuestionResolved", "groveQuestionPending"]
                                     {
                                         if old[marker] == true {
@@ -5633,6 +5660,26 @@ mod tests {
         assert!(actor.state.error.is_some());
     }
     #[test]
+    fn resumed_history_retains_known_receipt_time_and_leaves_unknown_time_absent() {
+        let mut actor = actor();
+        actor.state.saved.items =
+            vec![json!({"id":"known", "type":"userMessage", "groveReceivedAt":123})];
+        actor.pending.insert(
+            1,
+            Request {
+                kind: Pending::Thread,
+                deadline: Instant::now(),
+            },
+        );
+        actor.message(json!({"id":1,"result":{"thread":{"id":"thread-1","turns":[{"id":"old-turn","status":"completed","items":[
+            {"id":"known","type":"userMessage","content":[]},
+            {"id":"unknown","type":"agentMessage","text":"historical response"}
+        ]}]}}})).unwrap();
+        assert_eq!(actor.state.saved.items[0]["groveReceivedAt"], 123);
+        assert!(actor.state.saved.items[1].get("groveReceivedAt").is_none());
+    }
+
+    #[test]
     fn historical_unfinished_turn_is_not_a_live_process_after_resume() {
         let mut actor = actor();
         actor.pending.insert(
@@ -6540,5 +6587,25 @@ mod tests {
                 assert!(error.contains("rewind support"), "{error}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod received_time_tests {
+    use super::*;
+
+    #[test]
+    fn receipt_time_survives_streaming_without_backfilling_history() {
+        let mut item = json!({"id":"reply", "type":"agentMessage", "text":"first"});
+        stamp_message_received(&mut item, None);
+        let timestamp = item["groveReceivedAt"].as_u64().unwrap();
+        assert!(timestamp > 0);
+        let mut replacement = json!({"id":"reply", "type":"agentMessage", "text":"complete"});
+        stamp_message_received(&mut replacement, Some(&item));
+        assert_eq!(replacement["groveReceivedAt"], timestamp);
+        let historical = json!({"id":"old", "type":"userMessage"});
+        let mut replacement = historical.clone();
+        stamp_message_received(&mut replacement, Some(&historical));
+        assert!(replacement.get("groveReceivedAt").is_none());
     }
 }

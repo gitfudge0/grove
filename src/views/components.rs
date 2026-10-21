@@ -99,7 +99,11 @@ pub fn header_control_with_tooltip(
     header_control_frame(id, label, c::BG_HOVER()).tooltip(preview)
 }
 
-fn header_control_frame(id: &'static str, label: &'static str, hover: gpui::Hsla) -> Stateful<Div> {
+pub(super) fn header_control_frame(
+    id: &'static str,
+    label: &'static str,
+    hover: gpui::Hsla,
+) -> Stateful<Div> {
     div()
         .id(id)
         .role(gpui::Role::Button)

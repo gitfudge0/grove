@@ -1017,10 +1017,7 @@ impl Actor {
                 .iter()
                 .map(|url| json!({"type":"image","url":url})),
         );
-        self.state
-            .saved
-            .items
-            .push(json!({"id":uuid,"type":"userMessage","content":parts,"claudeHumanUuid":uuid,"claudePreviousAssistantUuid":self.last_assistant_uuid}));
+        self.upsert(json!({"id":uuid,"type":"userMessage","content":parts,"claudeHumanUuid":uuid,"claudePreviousAssistantUuid":self.last_assistant_uuid}));
         if self.state.saved.title.is_none() {
             self.state.saved.title = Some(prompt.text.chars().take(80).collect());
         }
@@ -1436,7 +1433,14 @@ impl Actor {
     fn respond(&mut self, id: Value, response: Value) -> Result<(), String> {
         self.write(json!({"type":"control_response","response":{"subtype":"success","request_id":id,"response":response}}))
     }
-    fn upsert(&mut self, item: Value) {
+    fn upsert(&mut self, mut item: Value) {
+        let previous = self
+            .state
+            .saved
+            .items
+            .iter()
+            .find(|old| old["id"] == item["id"]);
+        codex::stamp_message_received(&mut item, previous);
         if let Some(existing) = self
             .state
             .saved
