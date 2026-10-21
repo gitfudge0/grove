@@ -14,6 +14,15 @@ pub struct PlanStore {
     pub revisions: Vec<PlanRevision>,
     #[serde(default)]
     pub errors: Vec<ImportError>,
+    #[serde(default)]
+    pub references: Vec<PlanReference>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanReference {
+    pub message_id: String,
+    pub source: String,
+    pub plan_id: String,
+    pub revision_id: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlanRevision {
@@ -279,6 +288,27 @@ impl PlanRevision {
     }
 }
 impl PlanStore {
+    fn remember_reference(
+        &mut self,
+        message_id: &str,
+        source: &str,
+        plan_id: &str,
+        revision_id: &str,
+    ) {
+        self.references
+            .retain(|r| r.message_id != message_id || r.source != source);
+        self.references.push(PlanReference {
+            message_id: message_id.into(),
+            source: source.into(),
+            plan_id: plan_id.into(),
+            revision_id: revision_id.into(),
+        });
+    }
+    pub fn reference(&self, message_id: &str, source: &str) -> Option<&PlanReference> {
+        self.references
+            .iter()
+            .find(|r| r.message_id == message_id && r.source == source)
+    }
     pub fn revision(&self, plan: &str, revision: &str) -> Option<&PlanRevision> {
         self.revisions
             .iter()
@@ -297,6 +327,14 @@ impl PlanStore {
         roots: &[PathBuf],
     ) -> Result<(), String> {
         let result: Result<(), String> = (|| {
+            if self.references.len() >= 1000
+                && !self
+                    .references
+                    .iter()
+                    .any(|r| r.message_id == message_id && r.source == source)
+            {
+                return Err("Session plan reference limit reached".into());
+            }
             let path = safe_path(Path::new(cwd), source, roots)?;
             if !source.ends_with(".grove-plan.json") {
                 return Err("Expected .grove-plan.json".into());
@@ -340,11 +378,13 @@ impl PlanStore {
                 if old.document != doc || old.assets != assets {
                     return Err("Conflicting immutable plan revision".into());
                 }
+                self.remember_reference(message_id, source, &doc.plan_id, &doc.revision_id);
                 return Ok(());
             }
             if self.revisions.len() >= 100 {
                 return Err("Session plan revision limit reached".into());
             }
+            self.remember_reference(message_id, source, &doc.plan_id, &doc.revision_id);
             self.revisions.push(PlanRevision {
                 message_id: message_id.into(),
                 source: source.into(),
@@ -788,10 +828,19 @@ impl PlanStore {
         }
     }
     pub fn retain_messages(&mut self, items: &[serde_json::Value]) {
+        self.references.retain(|r| {
+            items
+                .iter()
+                .any(|item| item["id"].as_str() == Some(&r.message_id))
+        });
         self.revisions.retain(|r| {
             items
                 .iter()
                 .any(|item| item["id"].as_str() == Some(&r.message_id))
+                || self.references.iter().any(|reference| {
+                    reference.plan_id == r.document.plan_id
+                        && reference.revision_id == r.document.revision_id
+                })
         });
         self.errors.retain(|e| {
             items
@@ -800,6 +849,19 @@ impl PlanStore {
         });
     }
     pub fn recover_delivery(&mut self) {
+        // Older recovery records stored only the canonical message association.
+        if self.references.is_empty() {
+            self.references = self
+                .revisions
+                .iter()
+                .map(|revision| PlanReference {
+                    message_id: revision.message_id.clone(),
+                    source: revision.source.clone(),
+                    plan_id: revision.document.plan_id.clone(),
+                    revision_id: revision.document.revision_id.clone(),
+                })
+                .collect();
+        }
         for r in &mut self.revisions {
             if let ResponseDelivery::Queued { id } = r.review.delivery {
                 r.review.delivery = ResponseDelivery::Uncertain { id }
@@ -1057,6 +1119,64 @@ mod tests {
         assert_eq!(saved.rich_plans.revisions.len(), 1);
         saved.items.retain(|i| i["id"] != "m1");
         saved.rich_plans.retain_messages(&saved.items);
-        assert!(saved.rich_plans.revisions.is_empty());
+        assert_eq!(saved.rich_plans.revisions.len(), 1);
+        assert_eq!(saved.rich_plans.references.len(), 1);
+        assert_eq!(saved.rich_plans.references[0].message_id, "m2");
+    }
+    #[test]
+    fn repeated_old_revision_links_resolve_exact_snapshot_after_source_deletion_and_restart() {
+        let (dir, mut store) = fixture();
+        let root = dir.path().to_str().unwrap();
+        let roots = [dir.path().to_owned()];
+        store
+            .import("m1", "plan.grove-plan.json", root, &roots)
+            .unwrap();
+        let mut r2 = document();
+        r2.revision_id = "r2".into();
+        r2.title = "New revision".into();
+        std::fs::write(
+            dir.path().join("plan.grove-plan.json"),
+            serde_json::to_vec(&r2).unwrap(),
+        )
+        .unwrap();
+        store
+            .import("m2", "plan.grove-plan.json", root, &roots)
+            .unwrap();
+        std::fs::write(
+            dir.path().join("plan.grove-plan.json"),
+            serde_json::to_vec(&document()).unwrap(),
+        )
+        .unwrap();
+        store
+            .import("m3", "plan.grove-plan.json", root, &roots)
+            .unwrap();
+        std::fs::remove_file(dir.path().join("plan.grove-plan.json")).unwrap();
+        let mut restored: PlanStore =
+            serde_json::from_slice(&serde_json::to_vec(&store).unwrap()).unwrap();
+        restored.recover_delivery();
+        assert_eq!(restored.revisions.len(), 2);
+        assert_eq!(restored.references.len(), 3);
+        for (message, revision, title) in [
+            ("m1", "r1", "Review me"),
+            ("m2", "r2", "New revision"),
+            ("m3", "r1", "Review me"),
+        ] {
+            let reference = restored.reference(message, "plan.grove-plan.json").unwrap();
+            assert_eq!(reference.revision_id, revision);
+            assert_eq!(
+                restored
+                    .revision(&reference.plan_id, &reference.revision_id)
+                    .unwrap()
+                    .document
+                    .title,
+                title
+            );
+        }
+        restored.retain_messages(&[serde_json::json!({"id":"m3"})]);
+        assert_eq!(restored.references.len(), 1);
+        assert_eq!(restored.revisions.len(), 1);
+        assert_eq!(restored.revisions[0].document.revision_id, "r1");
+        restored.recover_delivery();
+        assert_eq!(restored.references.len(), 1);
     }
 }
