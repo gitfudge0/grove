@@ -71,7 +71,7 @@ fn snapshot(path: PathBuf) -> Result<Root, String> {
             .trim_end(),
     );
     if real.exists() {
-        std::fs::copy(real, &index).map_err(|e| e.to_string())?;
+        fs_err::copy(real, &index).map_err(|e| e.to_string())?;
     } else {
         git(&path, Some(&index), &["read-tree", "--empty"])?;
     }
@@ -272,8 +272,8 @@ mod tests {
     fn repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), None, &["init", "-q"]).unwrap();
-        std::fs::write(dir.path().join("tracked"), "initial").unwrap();
-        std::fs::write(dir.path().join(".gitignore"), "ignored\n").unwrap();
+        fs_err::write(dir.path().join("tracked"), "initial").unwrap();
+        fs_err::write(dir.path().join(".gitignore"), "ignored\n").unwrap();
         git(dir.path(), None, &["add", "."]).unwrap();
         git(
             dir.path(),
@@ -296,50 +296,50 @@ mod tests {
     fn restores_files_and_preserves_git_and_ignored_state() {
         let dir = repo();
         let root = dir.path();
-        std::fs::write(root.join("untracked"), "saved").unwrap();
-        std::fs::write(root.join("tracked"), "saved tracked").unwrap();
+        fs_err::write(root.join("untracked"), "saved").unwrap();
+        fs_err::write(root.join("tracked"), "saved tracked").unwrap();
         let saved = capture(&[root.to_owned()]).unwrap();
         let saved: Checkpoint =
             serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
-        let index = std::fs::read(root.join(".git/index")).unwrap();
+        let index = fs_err::read(root.join(".git/index")).unwrap();
         let head = git(root, None, &["rev-parse", "HEAD"]).unwrap();
-        std::fs::remove_file(root.join("untracked")).unwrap();
-        std::fs::write(root.join("tracked"), "changed").unwrap();
-        std::fs::write(root.join("extra"), "remove me").unwrap();
-        std::fs::write(root.join("ignored"), "keep me").unwrap();
+        fs_err::remove_file(root.join("untracked")).unwrap();
+        fs_err::write(root.join("tracked"), "changed").unwrap();
+        fs_err::write(root.join("extra"), "remove me").unwrap();
+        fs_err::write(root.join("ignored"), "keep me").unwrap();
         saved.restore().unwrap();
         assert_eq!(
-            std::fs::read_to_string(root.join("tracked")).unwrap(),
+            fs_err::read_to_string(root.join("tracked")).unwrap(),
             "saved tracked"
         );
         assert_eq!(
-            std::fs::read_to_string(root.join("untracked")).unwrap(),
+            fs_err::read_to_string(root.join("untracked")).unwrap(),
             "saved"
         );
         assert!(!root.join("extra").exists());
         assert_eq!(
-            std::fs::read_to_string(root.join("ignored")).unwrap(),
+            fs_err::read_to_string(root.join("ignored")).unwrap(),
             "keep me"
         );
-        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), index);
+        assert_eq!(fs_err::read(root.join(".git/index")).unwrap(), index);
         assert_eq!(git(root, None, &["rev-parse", "HEAD"]).unwrap(), head);
     }
     #[test]
     fn refuses_ignored_collisions_without_changing_files() {
         let dir = repo();
         let root = dir.path();
-        std::fs::write(root.join("future"), "old").unwrap();
+        fs_err::write(root.join("future"), "old").unwrap();
         let saved = capture(&[root.to_owned()]).unwrap();
-        std::fs::write(root.join(".gitignore"), "ignored\nfuture\n").unwrap();
-        std::fs::write(root.join("future"), "precious ignored").unwrap();
-        std::fs::write(root.join("tracked"), "current").unwrap();
+        fs_err::write(root.join(".gitignore"), "ignored\nfuture\n").unwrap();
+        fs_err::write(root.join("future"), "precious ignored").unwrap();
+        fs_err::write(root.join("tracked"), "current").unwrap();
         assert!(saved.restore().is_err());
         assert_eq!(
-            std::fs::read_to_string(root.join("future")).unwrap(),
+            fs_err::read_to_string(root.join("future")).unwrap(),
             "precious ignored"
         );
         assert_eq!(
-            std::fs::read_to_string(root.join("tracked")).unwrap(),
+            fs_err::read_to_string(root.join("tracked")).unwrap(),
             "current"
         );
     }
@@ -347,18 +347,18 @@ mod tests {
     fn rolls_back_earlier_root_when_later_root_refuses_restore() {
         let first = repo();
         let second = repo();
-        std::fs::write(second.path().join("future"), "old").unwrap();
+        fs_err::write(second.path().join("future"), "old").unwrap();
         let saved = capture(&[first.path().to_owned(), second.path().to_owned()]).unwrap();
-        std::fs::write(first.path().join("tracked"), "current first").unwrap();
-        std::fs::write(second.path().join(".gitignore"), "future\n").unwrap();
-        std::fs::write(second.path().join("future"), "precious ignored").unwrap();
+        fs_err::write(first.path().join("tracked"), "current first").unwrap();
+        fs_err::write(second.path().join(".gitignore"), "future\n").unwrap();
+        fs_err::write(second.path().join("future"), "precious ignored").unwrap();
         assert!(saved.restore().is_err());
         assert_eq!(
-            std::fs::read_to_string(first.path().join("tracked")).unwrap(),
+            fs_err::read_to_string(first.path().join("tracked")).unwrap(),
             "current first"
         );
         assert_eq!(
-            std::fs::read_to_string(second.path().join("future")).unwrap(),
+            fs_err::read_to_string(second.path().join("future")).unwrap(),
             "precious ignored"
         );
     }
@@ -369,16 +369,16 @@ mod tests {
         let root = dir.path();
         std::os::unix::fs::symlink("tracked", root.join("link")).unwrap();
         let saved = capture(&[root.to_owned()]).unwrap();
-        std::fs::remove_file(root.join("tracked")).unwrap();
-        std::fs::remove_file(root.join("link")).unwrap();
-        std::fs::write(root.join("link"), "regular").unwrap();
+        fs_err::remove_file(root.join("tracked")).unwrap();
+        fs_err::remove_file(root.join("link")).unwrap();
+        fs_err::write(root.join("link"), "regular").unwrap();
         saved.restore().unwrap();
         assert_eq!(
             std::fs::read_link(root.join("link")).unwrap(),
             PathBuf::from("tracked")
         );
         assert_eq!(
-            std::fs::read_to_string(root.join("tracked")).unwrap(),
+            fs_err::read_to_string(root.join("tracked")).unwrap(),
             "initial"
         );
     }
@@ -387,32 +387,32 @@ mod tests {
     fn restoring_directory_over_symlink_does_not_follow_it() {
         let dir = repo();
         let outside = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("folder")).unwrap();
-        std::fs::write(dir.path().join("folder/file"), "saved").unwrap();
-        std::fs::write(outside.path().join("file"), "outside").unwrap();
+        fs_err::create_dir(dir.path().join("folder")).unwrap();
+        fs_err::write(dir.path().join("folder/file"), "saved").unwrap();
+        fs_err::write(outside.path().join("file"), "outside").unwrap();
         let saved = capture(&[dir.path().to_owned()]).unwrap();
-        std::fs::remove_dir_all(dir.path().join("folder")).unwrap();
+        fs_err::remove_dir_all(dir.path().join("folder")).unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("folder")).unwrap();
         saved.restore().unwrap();
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("folder/file")).unwrap(),
+            fs_err::read_to_string(dir.path().join("folder/file")).unwrap(),
             "saved"
         );
         assert_eq!(
-            std::fs::read_to_string(outside.path().join("file")).unwrap(),
+            fs_err::read_to_string(outside.path().join("file")).unwrap(),
             "outside"
         );
     }
     #[test]
     fn checkpoint_survives_git_gc() {
         let dir = repo();
-        std::fs::write(dir.path().join("untracked"), "durable").unwrap();
+        fs_err::write(dir.path().join("untracked"), "durable").unwrap();
         let saved = capture(&[dir.path().to_owned()]).unwrap();
-        std::fs::remove_file(dir.path().join("untracked")).unwrap();
+        fs_err::remove_file(dir.path().join("untracked")).unwrap();
         git(dir.path(), None, &["gc", "--prune=now"]).unwrap();
         saved.restore().unwrap();
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("untracked")).unwrap(),
+            fs_err::read_to_string(dir.path().join("untracked")).unwrap(),
             "durable"
         );
     }
@@ -420,7 +420,7 @@ mod tests {
     fn rejects_unsafe_roots() {
         let dir = repo();
         assert!(capture(&[dir.path().to_owned(), dir.path().to_owned()]).is_err());
-        std::fs::create_dir(dir.path().join("child")).unwrap();
+        fs_err::create_dir(dir.path().join("child")).unwrap();
         assert!(capture(&[dir.path().join("child")]).is_err());
         assert!(capture(&[tempfile::tempdir().unwrap().path().to_owned()]).is_err());
     }

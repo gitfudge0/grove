@@ -16,6 +16,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 base64.workspace = true
 dirs.workspace = true
 ureq.workspace = true
+url.workspace = true
 ring.workspace = true
 semver.workspace = true
 tracing.workspace = true

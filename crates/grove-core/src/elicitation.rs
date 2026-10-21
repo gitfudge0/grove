@@ -500,10 +500,7 @@ pub fn validate_elicitation_url(s: &str) -> Result<(), String> {
     if s.chars().any(|c| c.is_whitespace() || c.is_control()) || s.contains('\\') {
         return Err("Enter a valid HTTP or HTTPS URL".into());
     }
-    let parsed = ureq::get(s)
-        .request_url()
-        .map_err(|_| "Enter a valid HTTP or HTTPS URL")?;
-    let url = parsed.as_url();
+    let url = url::Url::parse(s).map_err(|_| "Enter a valid HTTP or HTTPS URL")?;
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
         || url.password().is_some()

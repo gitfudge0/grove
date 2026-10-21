@@ -1808,6 +1808,8 @@ impl Handle {
     pub fn stop_completion(&self, forget: bool) -> mpsc::Receiver<()> {
         self.2.store(true, Ordering::SeqCst);
         let pid = self.1.swap(0, Ordering::SeqCst);
+        #[cfg(not(unix))]
+        let _ = pid;
         // Process termination is immediate even if the UI still holds this entity.
         #[cfg(unix)]
         if pid != 0 {
@@ -1907,7 +1909,7 @@ fn persist_in_dir(saved: &SavedSession, dir: &std::path::Path) -> Result<(), Str
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(path).map_err(|e| e.to_string())?;
     #[cfg(unix)]
-    std::fs::File::open(dir)
+    fs_err::File::open(dir)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -3462,10 +3464,10 @@ impl Actor {
                     .collect();
             }
             Pending::Config => {
-                self.developer_instructions = result["config"]["developer_instructions"]
+                result["config"]["developer_instructions"]
                     .as_str()
                     .unwrap_or_default()
-                    .to_owned();
+                    .clone_into(&mut self.developer_instructions);
                 if let Some(model) = result["config"]["model"].as_str() {
                     self.state.resolved_model = Some(model.into());
                 }
@@ -6282,7 +6284,7 @@ mod tests {
     #[cfg(unix)]
     impl Drop for EditFixture {
         fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.journal);
+            let _ = fs_err::remove_file(&self.journal);
         }
     }
     #[cfg(unix)]
@@ -6318,14 +6320,14 @@ mod tests {
             (2, "target-turn", "before target"),
             (4, "later-turn", "after target"),
         ] {
-            std::fs::write(&file, text).unwrap();
+            fs_err::write(&file, text).unwrap();
             actor.state.saved.edit_checkpoints.push(EditCheckpoint {
                 start_item: start,
                 turn_id: Some(turn.into()),
-                files: crate::checkpoint::capture(&[root.clone()]).unwrap(),
+                files: crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap(),
             });
         }
-        std::fs::write(&file, "latest workspace").unwrap();
+        fs_err::write(&file, "latest workspace").unwrap();
         actor.state.saved.items = vec![
             json!({"id":"earlier","type":"userMessage","content":[{"type":"text","text":"earlier prompt"}]}),
             json!({"id":"earlier-answer","type":"agentMessage","text":"earlier answer"}),
@@ -6345,7 +6347,7 @@ mod tests {
     }
     #[cfg(unix)]
     fn edit_disk(fixture: &EditFixture) -> SavedSession {
-        serde_json::from_slice(&std::fs::read(&fixture.journal).unwrap()).unwrap()
+        serde_json::from_slice(&fs_err::read(&fixture.journal).unwrap()).unwrap()
     }
     #[test]
     #[cfg(unix)]
@@ -6354,7 +6356,7 @@ mod tests {
         let earlier = fixture.actor.state.saved.items[..2].to_vec();
         fixture.actor.edit_message(2, "target".into()).unwrap();
         assert_eq!(
-            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
             "before target"
         );
         assert_eq!(fixture.actor.state.saved.items.len(), 5);
@@ -6461,7 +6463,7 @@ mod tests {
         assert_eq!(fixture.actor.state.saved.draft, "Keep composer");
         assert_eq!(fixture.actor.state.saved.items, items);
         assert_eq!(
-            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
             "latest workspace"
         );
     }
@@ -6477,7 +6479,7 @@ mod tests {
             .message(json!({"id":id,"error":{"message":"revert refused"}}))
             .unwrap();
         assert_eq!(
-            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
             "latest workspace"
         );
         assert_eq!(fixture.actor.state.saved.items, items);
@@ -6507,7 +6509,7 @@ mod tests {
         assert!(fixture.actor.pending.is_empty());
         assert!(!fixture.journal.exists());
         assert_eq!(
-            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
             "latest workspace"
         );
     }
@@ -6552,14 +6554,14 @@ mod tests {
             if target_present {
                 assert_eq!(fixture.actor.state.saved.items, original);
                 assert_eq!(
-                    std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+                    fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
                     "latest workspace"
                 );
             } else {
                 assert_eq!(fixture.actor.state.saved.items, original[..2]);
                 assert_eq!(fixture.actor.state.saved.draft, "target prompt");
                 assert_eq!(
-                    std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+                    fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
                     "before target"
                 );
             }
@@ -6586,13 +6588,13 @@ mod tests {
         assert!(durable.pending_edit.is_some());
         assert_eq!(durable.items, items);
         assert_eq!(
-            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
             "before target"
         );
         assert_eq!(fixture.actor.state.edited_messages, 0);
         durable.pending_edit.unwrap().recovery.restore().unwrap();
         assert_eq!(
-            std::fs::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
             "latest workspace"
         );
     }

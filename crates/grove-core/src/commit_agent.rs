@@ -595,7 +595,8 @@ mod tests {
     #[test]
     fn fake_process_drains_output_and_times_out_without_pipe_deadlock() {
         let mut command = Command::new("sh");
-        command.args(["-c", "cat >/dev/null; printf '%s' '{\"subject\":\"Test\",\"body\":\"\"}'; i=0; while [ $i -lt 20000 ]; do echo notice >&2; i=$((i+1)); done"]);
+        // Keep 140 KB of output without timing 20,000 shell redirections under parallel CI.
+        command.args(["-c", "cat >/dev/null; printf '%s' '{\"subject\":\"Test\",\"body\":\"\"}'; i=0; while [ $i -lt 140 ]; do printf '%01000d' 0 >&2; i=$((i+1)); done"]);
         let output = run(
             command,
             &"input".repeat(20000),

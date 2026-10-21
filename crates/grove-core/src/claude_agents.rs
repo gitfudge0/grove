@@ -12,9 +12,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(not(windows))]
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// A snapshot older than this is "no live signal" — better to fall back than trust a stale picture.
 const STALE_AFTER: Duration = Duration::from_secs(5);
+#[cfg(not(windows))]
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 /// Backstop alongside the visited-set cycle guard; no real process tree is this deep.
 const MAX_ANCESTOR_HOPS: usize = 20;
@@ -155,6 +157,7 @@ fn poll_once() -> Result<(Vec<AgentRow>, HashMap<u32, u32>), ()> {
     Ok((rows, pid_parent))
 }
 
+#[cfg(any(not(windows), test))]
 fn parse_agents_json(s: &str) -> Result<Vec<AgentRow>, serde_json::Error> {
     let value: serde_json::Value = serde_json::from_str(s)?;
     let arr = value
@@ -191,6 +194,7 @@ fn parse_agents_json(s: &str) -> Result<Vec<AgentRow>, serde_json::Error> {
 }
 
 /// An unrecognized status drops the row rather than guessing, so upstream changes degrade to fallbacks.
+#[cfg(any(not(windows), test))]
 fn map_status(raw: &str) -> Option<NativeStatus> {
     match raw {
         "busy" => Some(NativeStatus::Busy),
@@ -201,6 +205,7 @@ fn map_status(raw: &str) -> Option<NativeStatus> {
 }
 
 /// Malformed lines are skipped individually rather than failing the whole parse.
+#[cfg(any(not(windows), test))]
 fn parse_ps(s: &str) -> HashMap<u32, u32> {
     let mut map = HashMap::new();
     for line in s.lines() {
