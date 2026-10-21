@@ -119,7 +119,7 @@ fn main() -> Result<(), String> {
         return Err("Codex did not confirm the requested workspace-write sandbox".into());
     }
     let thread = ready.saved.thread_id.clone();
-    let prompt="This is a bounded native-plan review smoke test. Only write the following schema-v1 JSON document atomically to smoke.grove-plan.json in this disposable working directory, then reply with a Markdown link to it. Do not implement anything or access other directories. JSON: {\"schema_version\":1,\"plan_id\":\"smoke\",\"revision_id\":\"r1\",\"title\":\"Native plan smoke\",\"claims\":[{\"id\":\"claim\",\"text\":\"Keep this smoke bounded\",\"decisions\":[{\"id\":\"choice\",\"prompt\":\"Review choice\",\"options\":[{\"id\":\"keep\",\"label\":\"Keep scope\"}],\"default\":\"keep\"}]}]}";
+    let prompt = r#"This is a bounded native-plan review smoke test. Only write the following schema-v1 JSON document atomically to smoke.grove-plan.json in this disposable working directory, then reply with a Markdown link to it. Do not implement anything or access other directories. JSON: {"schema_version":1,"plan_id":"smoke","revision_id":"r1","title":"Native plan smoke","claims":[{"id":"claim","text":"Keep this smoke bounded","decisions":[{"id":"choice","prompt":"Review choice","options":[{"id":"keep","label":"Keep scope"}],"default":"keep"}]}]}"#;
     connection.handle.send(Action::Prompt(prompt.into()))?;
     let imported = wait(&connection, |s| {
         !s.rich_plan_empty() && s.status == Status::Done
