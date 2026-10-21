@@ -58,6 +58,8 @@ try{{new WebSocket('ws://127.0.0.1:{server.server_port}/socket')}}catch{{}}
         result.check_returncode()
         probe = json.loads(next(line.split("=", 1)[1] for line in result.stdout.splitlines() if line.startswith("document-probe=")))
         assert probe == {"width":600,"height":400,"counter":0,"rtc":"undefined","worker":"undefined","immutable":True,"guard":True,"blocked":1}, probe
+        report = json.loads(next(line.split("=", 1)[1] for line in result.stdout.splitlines() if line.startswith("report-probe=")))
+        assert report == {"initial":420,"shorter":180,"taller":1200,"retained_without_messages":True,"forwarded":True,"held":True,"native":True}, report
     try:
         packet, _ = udp.recvfrom(4096)
         raise AssertionError(f"Document sent UDP: {packet!r}")

@@ -4,13 +4,15 @@
 #include <webkit2/webkit2.h>
 #include <X11/Xlib.h>
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <glib/gstdio.h>
 
 typedef struct {
     unsigned refs;
-    gboolean disposed, initial, visible;
-    int status;
+    gboolean disposed, initial, visible, integrated, measuring;
+    int status, origin_x, origin_y;
+    double content_height;
     uint64_t generation;
     Display *display;
     Window parent, clip, inner;
@@ -21,6 +23,10 @@ typedef struct {
     gchar *source, *filter_dir;
 } GroveLinuxHtml;
 static GList *documents;
+/* Wheel input over an integrated report, in parent-window physical pixels and
+   GDK scroll units (+y down); drained into GPUI after each GTK turn. */
+typedef struct { unsigned long parent; double x, y, dx, dy; unsigned modifiers; } GroveLinuxWheel;
+static GArray *wheels;
 static gboolean initialized;
 static const char *document_uri = "grove-html://document/";
 static void release(GroveLinuxHtml *doc) {
@@ -91,6 +97,36 @@ static gboolean context_menu(WebKitWebView *web, WebKitContextMenu *menu,
 static gboolean fullscreen(WebKitWebView *web, gpointer unused) { (void)web; (void)unused; return TRUE; }
 static gboolean printing(WebKitWebView *web, WebKitPrintOperation *operation, gpointer unused) {
     (void)web; (void)operation; (void)unused; return TRUE;
+}
+static gboolean wheel(GtkWidget *web, GdkEventScroll *event, GroveLinuxHtml *doc) {
+    (void)web;
+    if (doc->disposed || !doc->integrated || !doc->visible) return FALSE;
+    double dx = 0, dy = 0, x = event->x, y = event->y;
+    switch (event->direction) {
+    case GDK_SCROLL_UP: dy = -1; break;
+    case GDK_SCROLL_DOWN: dy = 1; break;
+    case GDK_SCROLL_LEFT: dx = -1; break;
+    case GDK_SCROLL_RIGHT: dx = 1; break;
+    case GDK_SCROLL_SMOOTH: gdk_event_get_scroll_deltas((GdkEvent *)event, &dx, &dy); break;
+    default: break;
+    }
+    GdkWindow *top = gtk_widget_get_window(doc->host), *window = event->window;
+    for (; window && window != top; window = gdk_window_get_effective_parent(window))
+        gdk_window_coords_to_parent(window, x, y, &x, &y);
+    if (window != top || !isfinite(dx) || !isfinite(dy) || (dx == 0 && dy == 0)) return TRUE;
+    if (!wheels) wheels = g_array_new(FALSE, FALSE, sizeof(GroveLinuxWheel));
+    if (wheels->len >= 256) return TRUE;
+    int scale = gtk_widget_get_scale_factor(doc->host);
+    GroveLinuxWheel item = { doc->parent, doc->origin_x + x * scale, doc->origin_y + y * scale, dx, dy,
+        ((event->state & GDK_CONTROL_MASK) ? 1u : 0u) | ((event->state & GDK_MOD1_MASK) ? 2u : 0u) |
+        ((event->state & GDK_SHIFT_MASK) ? 4u : 0u) | ((event->state & GDK_MOD4_MASK) ? 8u : 0u) };
+    g_array_append_val(wheels, item);
+    return TRUE;
+}
+bool grove_html_linux_next_wheel(GroveLinuxWheel *out) {
+    if (!wheels || !wheels->len) return false;
+    *out = g_array_index(wheels, GroveLinuxWheel, 0); g_array_remove_index(wheels, 0);
+    return true;
 }
 static void loaded(WebKitWebView *web, WebKitLoadEvent event, GroveLinuxHtml *doc) {
     (void)web; if (!doc->disposed && event == WEBKIT_LOAD_FINISHED && doc->status != 2) doc->status = 1;
@@ -164,6 +200,7 @@ void *grove_html_linux_create(const unsigned char *bytes, size_t length, unsigne
     g_signal_connect(doc->web, "load-changed", G_CALLBACK(loaded), doc);
     g_signal_connect(doc->web, "load-failed", G_CALLBACK(failed), doc);
     g_signal_connect(doc->web, "web-process-terminated", G_CALLBACK(terminated), doc);
+    g_signal_connect(doc->web, "scroll-event", G_CALLBACK(wheel), doc);
     gtk_container_add(GTK_CONTAINER(doc->host), GTK_WIDGET(doc->web));
     gtk_widget_show_all(doc->host);
     XUnmapWindow(doc->display, doc->clip);
@@ -181,6 +218,47 @@ void *grove_html_linux_create(const unsigned char *bytes, size_t length, unsigne
     return doc;
 }
 int grove_html_linux_status(void *handle) { return ((GroveLinuxHtml *)handle)->status; }
+static void run_script(GroveLinuxHtml *doc, const gchar *script, GAsyncReadyCallback done, gpointer data) {
+#if WEBKIT_CHECK_VERSION(2, 40, 0)
+    webkit_web_view_evaluate_javascript(doc->web, script, -1, NULL, NULL, done ? doc->cancel : NULL, done, data);
+#else
+    webkit_web_view_run_javascript(doc->web, script, done ? doc->cancel : NULL, done, data);
+#endif
+}
+static void measured(GObject *web, GAsyncResult *result, gpointer data) {
+    GroveLinuxHtml *doc = data;
+    GError *error = NULL;
+#if WEBKIT_CHECK_VERSION(2, 40, 0)
+    JSCValue *value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(web), result, &error);
+#else
+    WebKitJavascriptResult *js = webkit_web_view_run_javascript_finish(WEBKIT_WEB_VIEW(web), result, &error);
+    JSCValue *value = js ? g_object_ref(webkit_javascript_result_get_js_value(js)) : NULL;
+    if (js) webkit_javascript_result_unref(js);
+#endif
+    if (!doc->disposed) {
+        doc->measuring = FALSE;
+        double height = value && !error && jsc_value_is_number(value) ? jsc_value_to_double(value) : 0;
+        if (isfinite(height) && height > 0) doc->content_height = height;
+    }
+    if (value) g_object_unref(value);
+    g_clear_error(&error); release(doc);
+}
+/* A pull-only, read-only measurement. No arbitrary document payload reaches Rust. */
+double grove_html_linux_report_height(void *handle) {
+    GroveLinuxHtml *doc = handle;
+    if (!doc->disposed && doc->status == 1 && !doc->measuring) {
+        doc->measuring = TRUE; doc->refs++;
+        run_script(doc, "Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0)", measured, doc);
+    }
+    return doc->content_height;
+}
+void grove_html_linux_report_theme(void *handle, const unsigned char *bytes, size_t length, bool integrated) {
+    GroveLinuxHtml *doc = handle;
+    doc->integrated = integrated;
+    if (doc->disposed) return;
+    gchar *script = g_strndup((const gchar *)bytes, length);
+    run_script(doc, script, NULL, NULL); g_free(script);
+}
 static void focus_document(GroveLinuxHtml *doc) {
         if (!doc->visible) return;
         unsigned long parent = doc->parent;
@@ -248,7 +326,8 @@ void grove_html_linux_show(void *handle, unsigned long parent, double x, double 
     webkit_web_view_set_zoom_level(doc->web, scale / gtk_scale);
     gtk_window_resize(GTK_WINDOW(doc->host), MAX(1, (int)ceil(width / gtk_scale)), MAX(1, (int)ceil(height / gtk_scale)));
     XMoveResizeWindow(doc->display, doc->clip, left, top, right-left, bottom-top);
-    XMoveResizeWindow(doc->display, doc->inner, (int)round(x)-left, (int)round(y)-top,
+    doc->origin_x = (int)round(x); doc->origin_y = (int)round(y);
+    XMoveResizeWindow(doc->display, doc->inner, doc->origin_x-left, doc->origin_y-top,
         MAX(1, (int)ceil(width)), MAX(1, (int)ceil(height)));
     XMapWindow(doc->display, doc->inner); XMapRaised(doc->display, doc->clip); XFlush(doc->display);
     doc->visible = TRUE;

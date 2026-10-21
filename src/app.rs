@@ -24,7 +24,7 @@ pub fn boot(cx: &mut gpui::App) {
         cx.background_executor()
             .timer(std::time::Duration::from_millis(16))
             .await;
-        cx.update(|_| crate::platform::inline_html::NativeDocument::pump());
+        cx.update(crate::platform::inline_html::NativeDocument::pump);
     })
     .detach();
 

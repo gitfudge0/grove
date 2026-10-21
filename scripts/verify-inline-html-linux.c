@@ -11,6 +11,12 @@ static void click_at(Display *display, int x, int y) {
     fake_motion(display, -1, x, y, 0);
     fake_button(display, 1, True, 0); fake_button(display, 1, False, 0); XSync(display, False);
 }
+static void scroll_at(Display *display, int x, int y, unsigned button, int notches) {
+    fake_motion(display, -1, x, y, 0); XSync(display, False);
+    for (int notch = 0; notch < notches; notch++) {
+        fake_button(display, button, True, 0); fake_button(display, button, False, 0); XSync(display, False);
+    }
+}
 static gchar *evaluation;
 static gboolean evaluation_done;
 static void evaluated(GObject *web, GAsyncResult *result, gpointer unused) {
@@ -41,6 +47,14 @@ static void wait_painted(GroveLinuxHtml *doc) {
         if (painted) return;
     }
     assert(!"WebKit did not present its document frames");
+}
+static double report_height(GroveLinuxHtml *doc) {
+    grove_html_linux_report_height(doc);
+    for (int i = 0; i < 5000 && doc->measuring; i++) wait_ms(1);
+    assert(!doc->measuring); return grove_html_linux_report_height(doc);
+}
+static void report_theme(GroveLinuxHtml *doc, const char *script, bool integrated) {
+    grove_html_linux_report_theme(doc, (const unsigned char *)script, strlen(script), integrated); wait_ms(100);
 }
 static void geometry(GroveLinuxHtml *doc, int x, int y, int width, int height) {
     XWindowAttributes attrs;
@@ -82,8 +96,12 @@ int main(int argc, char **argv) {
     assert(inner.x == -30 && inner.y == -60 && inner.width == 600 && inner.height == 400);
     gchar *result = evaluate(doc, "JSON.stringify({width:innerWidth,height:innerHeight,counter:window.counter,rtc:typeof RTCPeerConnection,worker:typeof Worker,immutable:!Object.getOwnPropertyDescriptor(globalThis,'RTCPeerConnection').configurable,guard:window.guardOK,blocked:window.blocked})");
     printf("document-probe=%s\n", result); g_free(result);
-    click_at(display, 100, 120); wait_ms(150);
-    result = evaluate(doc, "String(window.counter)");
+    click_at(display, 100, 120);
+    for (int i = 0; i < 100; i++) {
+        wait_ms(20); result = evaluate(doc, "String(window.counter)");
+        if (g_strcmp0(result, "0") != 0) break;
+        g_free(result);
+    }
     assert(g_strcmp0(result, "1") == 0); g_free(result);
     click_at(display, 100, 155); wait_ms(100);
     unsigned int key = XKeysymToKeycode(display, XK_a);
@@ -119,7 +137,41 @@ int main(int argc, char **argv) {
     g_free(result); wait_ms(250);
     assert(g_strcmp0(webkit_web_view_get_uri(doc->web), document_uri) == 0);
     assert(doc->status == 1);
+    /* Integrated report: pull-only height independent of the viewport, including shrink. */
+    grove_html_linux_show(doc, parent, 10, 20, 600, 400, 40, 80, 300, 160, 1);
+    wait_painted(doc);
+    assert(grove_html_linux_report_height(doc) == 0);
+    report_theme(doc, "document.body.style.cssText='margin:0;height:420px';document.body.dataset.retained='yes'", true);
+    double initial = report_height(doc);
+    report_theme(doc, "document.body.style.height='180px'", true);
+    double shorter = report_height(doc);
+    report_theme(doc, "document.body.style.height='1200px'", true);
+    double taller = report_height(doc);
+    result = evaluate(doc, "String(document.body.dataset.retained==='yes' && Object.keys(window.webkit?.messageHandlers||{}).length===0)");
+    gboolean retained = g_strcmp0(result, "true") == 0; g_free(result);
+    /* Integrated wheel input is queued for GPUI instead of scrolling the document. */
+    GroveLinuxWheel queued; while (grove_html_linux_next_wheel(&queued)) {}
+    scroll_at(display, 100, 120, 5, 3); wait_ms(300);
+    double down = 0; int forwarded = 0;
+    while (grove_html_linux_next_wheel(&queued)) {
+        assert(queued.parent == parent && fabs(queued.x - 100) <= 1 && fabs(queued.y - 120) <= 1);
+        down += queued.dy; forwarded++;
+    }
+    result = evaluate(doc, "String(scrollY)");
+    gboolean held = g_strcmp0(result, "0") == 0; g_free(result);
+    report_theme(doc, "void 0", false);
+    scroll_at(display, 100, 120, 5, 3); wait_ms(500);
+    gboolean native = !grove_html_linux_next_wheel(&queued);
+    result = evaluate(doc, "String(scrollY)");
+    native = native && atof(result) > 0; g_free(result);
+    printf("report-probe={\"initial\":%.0f,\"shorter\":%.0f,\"taller\":%.0f,\"retained_without_messages\":%s,\"forwarded\":%s,\"held\":%s,\"native\":%s}\n",
+        initial, shorter, taller, retained ? "true" : "false", forwarded > 0 && down > 0 ? "true" : "false",
+        held ? "true" : "false", native ? "true" : "false");
+    assert(initial == 420 && shorter == 180 && taller == 1200 && retained && forwarded > 0 && down > 0 && held && native);
+    /* Dispose while a measurement is in flight. */
+    grove_html_linux_report_height(doc);
     grove_html_linux_destroy(doc);
+    wait_ms(250);
     /* Dispose while asynchronous filter compilation is still in flight. */
     doc = grove_html_linux_create((unsigned char *)html, strlen(html), parent);
     assert(doc); grove_html_linux_retire(doc); grove_html_linux_destroy(doc); wait_ms(250);
@@ -129,6 +181,6 @@ int main(int argc, char **argv) {
     XDestroyWindow(display, parent); XSync(display, False);
     grove_html_linux_hide(doc); grove_html_linux_destroy(doc); wait_ms(250);
     g_free(html); dlclose(xtest);
-    puts("PASS inline HTML Linux: isolation, clipped layout, interaction, scale, focus, lifetime");
+    puts("PASS inline HTML Linux: isolation, clipped layout, interaction, scale, focus, lifetime, integrated report");
     return 0;
 }

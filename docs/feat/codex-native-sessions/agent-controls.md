@@ -38,6 +38,11 @@ and update their statuses as work progresses, including delegated work, without
 adding trivial steps or inflating the checklist. Simple single-step requests do
 not require a task list.
 
+Both agents also receive the integrated HTML report contract: when a visual
+report communicates better than prose, write a self-contained HTML document with
+the `<!-- grove:integrated-report -->` marker and Grove's `--grove-*` CSS
+variables. See [integrated HTML reports](../integrated-html-report/README.md).
+
 Grove enables Codex's native `update_plan` tool with the per-thread configuration
 `tools.update_plan.enabled = true` on both `thread/start` and `thread/resume`.
 Codex otherwise defaults that tool to disabled; developer instructions asking for

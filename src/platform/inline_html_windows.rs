@@ -10,17 +10,27 @@ use std::{
     sync::Arc,
 };
 use webview2_com::{
-    CallDevToolsProtocolMethodCompletedHandler, Microsoft::Web::WebView2::Win32::*,
-    NavigationCompletedEventHandler, NavigationStartingEventHandler,
-    PermissionRequestedEventHandler, ProcessFailedEventHandler, WebResourceRequestedEventHandler,
+    CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptCompletedHandler,
+    Microsoft::Web::WebView2::Win32::*, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    WebMessageReceivedEventHandler, WebResourceRequestedEventHandler,
 };
 use windows::{
     core::{w, Interface, BOOL},
     Win32::{
-        Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn},
+        Foundation::{LPARAM, POINT, RECT, WPARAM},
+        Graphics::Gdi::{ClientToScreen, CreateRectRgn, DeleteObject, SetWindowRgn},
         UI::{
-            Input::KeyboardAndMouse::GetFocus,
-            WindowsAndMessaging::{GetAncestor, IsChild, KillTimer, SetTimer, GA_ROOT},
+            Input::KeyboardAndMouse::{
+                GetFocus, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+                VK_SHIFT,
+            },
+            WindowsAndMessaging::{
+                GetAncestor, GetClientRect, IsChild, IsWindowVisible, KillTimer, PostMessageW,
+                SetTimer, SystemParametersInfoW, GA_PARENT, GA_ROOT, SPI_GETWHEELSCROLLCHARS,
+                SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WHEEL_DELTA,
+                WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+            },
         },
     },
 };
@@ -28,6 +38,16 @@ use wry::{WebView, WebViewBuilder, WebViewBuilderExtWindows, WebViewExtWindows};
 
 const DOCUMENT_URL: &str = "https://grove-html.document/";
 const GUARD: &str = "for(const name of ['RTCPeerConnection','webkitRTCPeerConnection','RTCIceGatherer','WebTransport','Worker','SharedWorker','ServiceWorker','Notification','showOpenFilePicker','showSaveFilePicker','showDirectoryPicker']){try{Object.defineProperty(globalThis,name,{value:undefined,writable:false,configurable:false});}catch{}}";
+// Integrated reports share the conversation's scroll, but WebView2 never returns
+// wheel input to the host. Only while the host enables it, wheel events become a
+// fixed-shape message; the host validates it and synthesizes a native wheel.
+const WHEEL_BRIDGE: &str = "(()=>{if(window.top!==window)return;const v=globalThis.chrome&&chrome.webview;if(!v)return;const post=v.postMessage.bind(v);let on=false;Object.defineProperty(globalThis,'__groveReportWheel',{value:o=>{on=o===true}});addEventListener('wheel',e=>{if(!on)return;e.preventDefault();post({grove_wheel:[e.deltaX,e.deltaY,e.deltaMode,e.clientX,e.clientY]})},{capture:true,passive:false})})()";
+const MEASURE: &str = "Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0)";
+// Chromium's kScrollbarPixelsPerLine: one notch at three lines is 100 CSS px.
+const PIXELS_PER_LINE: f64 = 100. / 3.;
+const WHEEL_PAGESCROLL: u32 = u32::MAX;
+const MAX_WHEEL_NOTCHES: f64 = 10.;
+const MAX_WHEEL_MESSAGE: usize = 256;
 const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 
 thread_local! {
@@ -43,6 +63,9 @@ struct State {
     generation: Cell<u64>,
     navigation_id: Cell<Option<u64>>,
     initializing: Cell<bool>,
+    integrated: Cell<bool>,
+    report_height: Cell<f64>,
+    measuring: Cell<bool>,
     error: RefCell<Option<String>>,
     // Drop the webview/controller before removing the isolated profile directory.
     profile: RefCell<Option<tempfile::TempDir>>,
@@ -61,6 +84,9 @@ impl Document {
             generation: Cell::new(0),
             navigation_id: Cell::new(None),
             initializing: Cell::new(false),
+            integrated: Cell::new(false),
+            report_height: Cell::new(0.),
+            measuring: Cell::new(false),
             error: RefCell::new(None),
             profile: RefCell::new(None),
         });
@@ -128,6 +154,7 @@ impl Document {
             .with_default_context_menus(false)
             .with_https_scheme(true)
             .with_initialization_script_for_main_only(GUARD, false)
+            .with_initialization_script_for_main_only(WHEEL_BRIDGE, true)
             .with_permission_handler(|_| wry::PermissionResponse::Deny)
             .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
             .with_download_started_handler(|_, _| false)
@@ -173,7 +200,9 @@ impl Document {
         // retained by `view`, and every callback holds only a weak document state.
         unsafe {
             let settings = native.Settings()?;
-            settings.SetIsWebMessageEnabled(false)?;
+            // The sole web message is the integrated-report wheel bridge;
+            // anything else is dropped without a reply. No host objects.
+            settings.SetIsWebMessageEnabled(true)?;
             settings.SetAreHostObjectsAllowed(false)?;
             settings.SetAreDefaultScriptDialogsEnabled(false)?;
             settings.SetAreDevToolsEnabled(false)?;
@@ -278,6 +307,35 @@ impl Document {
                 &mut token,
             )?;
             let state = Rc::downgrade(owner);
+            native.add_WebMessageReceived(
+                &WebMessageReceivedEventHandler::create(Box::new(move |_, args| {
+                    let (Some(state), Some(args)) = (state.upgrade(), args) else {
+                        return Ok(());
+                    };
+                    if !state.integrated.get() {
+                        return Ok(());
+                    }
+                    let mut pointer = windows::core::PWSTR::null();
+                    args.Source(&raw mut pointer)?;
+                    let source = pointer.to_string();
+                    windows::Win32::System::Com::CoTaskMemFree(Some(pointer.0.cast()));
+                    if !source.is_ok_and(|url| {
+                        url == DOCUMENT_URL || url.starts_with(&format!("{DOCUMENT_URL}#"))
+                    }) {
+                        return Ok(());
+                    }
+                    let mut pointer = windows::core::PWSTR::null();
+                    args.WebMessageAsJson(&raw mut pointer)?;
+                    let message = pointer.to_string();
+                    windows::Win32::System::Com::CoTaskMemFree(Some(pointer.0.cast()));
+                    if let Some(wheel) = message.ok().as_deref().and_then(parse_wheel) {
+                        forward_wheel(&state, wheel);
+                    }
+                    Ok(())
+                })),
+                &raw mut token,
+            )?;
+            let state = Rc::downgrade(owner);
             native.add_ProcessFailed(
                 &ProcessFailedEventHandler::create(Box::new(move |_, _| {
                     if let Some(state) = state.upgrade() {
@@ -318,6 +376,45 @@ impl Document {
         owner.source.borrow_mut().take();
         *owner.profile.borrow_mut() = Some(profile);
         Ok(view)
+    }
+
+    /// Last measured body height; each call starts at most one new measurement.
+    pub fn report_height(&self) -> f64 {
+        let state = &self.state;
+        if state.status.get() == LoadStatus::Ready && !state.measuring.get() {
+            if let Some(view) = state.view.borrow().as_ref() {
+                let weak = Rc::downgrade(state);
+                // Wry's callback must be Send; the document state is not.
+                // SAFETY: STA-thread call on a live webview; the handler holds a weak state.
+                let started = unsafe {
+                    view.webview().ExecuteScript(
+                        &windows::core::HSTRING::from(MEASURE),
+                        &ExecuteScriptCompletedHandler::create(Box::new(move |result, value| {
+                            if let Some(state) = weak.upgrade() {
+                                state.measuring.set(false);
+                                let height = value.trim().parse::<f64>().unwrap_or(0.);
+                                if result.is_ok() && height.is_finite() && height > 0. {
+                                    state.report_height.set(height);
+                                }
+                            }
+                            Ok(())
+                        })),
+                    )
+                };
+                state.measuring.set(started.is_ok());
+            }
+        }
+        state.report_height.get()
+    }
+
+    /// Apply host theme CSS. `integrated` forwards wheel input to the host.
+    pub fn report_theme(&self, script: &str, integrated: bool) {
+        self.state.integrated.set(integrated);
+        if let Some(view) = self.state.view.borrow().as_ref() {
+            let _ = view.evaluate_script(&format!(
+                "globalThis.__groveReportWheel?.({integrated});{script}"
+            ));
+        }
     }
 
     pub fn failure_reason(&self) -> Option<String> {
@@ -470,6 +567,155 @@ unsafe extern "system" fn retire_after_paint(
         if let Some(state) = weak.upgrade() {
             if state.generation.get() == generation {
                 hide_state(&state);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Wheel {
+    dx: f64,
+    dy: f64,
+    mode: WheelMode,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, Copy)]
+enum WheelMode {
+    Pixel,
+    Line,
+    Page,
+}
+
+/// Accept only `{"grove_wheel":[dx,dy,mode,x,y]}` with finite numbers.
+fn parse_wheel(json: &str) -> Option<Wheel> {
+    if json.len() > MAX_WHEEL_MESSAGE {
+        return None;
+    }
+    let serde_json::Value::Object(message) = serde_json::from_str(json).ok()? else {
+        return None;
+    };
+    let (Some(serde_json::Value::Array(values)), 1) = (message.get("grove_wheel"), message.len())
+    else {
+        return None;
+    };
+    let [dx, dy, mode, x, y] = values.as_slice() else {
+        return None;
+    };
+    let mode = match mode.as_u64()? {
+        0 => WheelMode::Pixel,
+        1 => WheelMode::Line,
+        2 => WheelMode::Page,
+        _ => return None,
+    };
+    // serde_json numbers are always finite; strings, nulls and arrays fail here.
+    Some(Wheel {
+        dx: dx.as_f64()?,
+        dy: dy.as_f64()?,
+        mode,
+        x: x.as_f64()?,
+        y: y.as_f64()?,
+    })
+}
+
+/// Convert a DOM wheel delta to signed `WHEEL_DELTA` units the way Chromium
+/// derived it: pixels from notches x system lines x 100/3, or lines, or pages.
+fn wheel_units(delta: f64, mode: WheelMode, zoom: f64, lines: u32) -> i16 {
+    let lines = f64::from(if lines == 0 || lines == WHEEL_PAGESCROLL {
+        3
+    } else {
+        lines
+    });
+    let notches = match mode {
+        WheelMode::Pixel => delta * zoom / (PIXELS_PER_LINE * lines),
+        WheelMode::Line => delta / lines,
+        WheelMode::Page => delta,
+    };
+    (notches.clamp(-MAX_WHEEL_NOTCHES, MAX_WHEEL_NOTCHES) * f64::from(WHEEL_DELTA)).round() as i16
+}
+
+fn wheel_setting(
+    action: windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_ACTION,
+) -> u32 {
+    let mut value = 3u32;
+    // SAFETY: both queried actions write one UINT to the supplied pointer.
+    let _ = unsafe {
+        SystemParametersInfoW(
+            action,
+            0,
+            Some((&raw mut value).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    value
+}
+
+fn forward_wheel(state: &State, wheel: Wheel) {
+    let Wheel { dx, dy, mode, x, y } = wheel;
+    let Ok(view) = state.view.try_borrow() else {
+        return;
+    };
+    let Some(view) = view.as_ref() else {
+        return;
+    };
+    let hwnd = view.hwnd();
+    // SAFETY: STA-thread calls on Wry's live child HWND and its controller. Only
+    // wheel messages are posted to the direct GPUI parent; no pointers escape.
+    unsafe {
+        if !state.integrated.get() || !IsWindowVisible(hwnd).as_bool() {
+            return;
+        }
+        let controller = view.controller();
+        let mut zoom = 1.;
+        if controller.ZoomFactor(&raw mut zoom).is_err() || !zoom.is_finite() || zoom <= 0. {
+            zoom = 1.;
+        }
+        let mut raster = 1.;
+        let raster_ok = controller
+            .cast::<ICoreWebView2Controller3>()
+            .and_then(|controller| controller.RasterizationScale(&raw mut raster));
+        if raster_ok.is_err() || !raster.is_finite() || raster <= 0. {
+            raster = 1.;
+        }
+        let mut client = RECT::default();
+        if GetClientRect(hwnd, &raw mut client).is_err() {
+            return;
+        }
+        let scale = zoom * raster;
+        let mut point = POINT {
+            x: (x * scale).clamp(f64::from(client.left), f64::from(client.right - 1).max(0.))
+                as i32,
+            y: (y * scale).clamp(f64::from(client.top), f64::from(client.bottom - 1).max(0.))
+                as i32,
+        };
+        if !ClientToScreen(hwnd, &raw mut point).as_bool() {
+            return;
+        }
+        let host = GetAncestor(hwnd, GA_PARENT);
+        if host.0.is_null() {
+            return;
+        }
+        let pressed = |key: VIRTUAL_KEY| GetKeyState(i32::from(key.0)) < 0;
+        let keys = [
+            (VK_LBUTTON, 0x0001),
+            (VK_RBUTTON, 0x0002),
+            (VK_SHIFT, 0x0004),
+            (VK_CONTROL, 0x0008),
+            (VK_MBUTTON, 0x0010),
+        ]
+        .into_iter()
+        .filter(|(key, _)| pressed(*key))
+        .fold(0usize, |keys, (_, flag)| keys | flag);
+        let lparam =
+            LPARAM(((i32::from(point.y as i16) << 16) | i32::from(point.x as u16)) as isize);
+        // DOM +deltaY scrolls down; WM_MOUSEWHEEL +delta scrolls up. Both use +X as right.
+        let vertical = wheel_units(-dy, mode, zoom, wheel_setting(SPI_GETWHEELSCROLLLINES));
+        let horizontal = wheel_units(dx, mode, zoom, wheel_setting(SPI_GETWHEELSCROLLCHARS));
+        for (message, units) in [(WM_MOUSEWHEEL, vertical), (WM_MOUSEHWHEEL, horizontal)] {
+            if units != 0 {
+                let wparam = WPARAM((usize::from(units as u16) << 16) | keys);
+                let _ = PostMessageW(Some(host), message, wparam, lparam);
             }
         }
     }

@@ -63,6 +63,21 @@ impl raw_window_handle::HasWindowHandle for Window {
 #[path = "inline_html_windows.rs"]
 mod backend;
 
+type Wheel = (u32, usize, isize, windows::Win32::Foundation::HWND);
+thread_local! {
+    // Native wheel messages the backend posted to the host window.
+    static WHEELS: std::cell::RefCell<Vec<Wheel>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn take_wheels() -> Vec<Wheel> {
+    WHEELS.with(|wheels| std::mem::take(&mut *wheels.borrow_mut()))
+}
+
+fn settle(milliseconds: u64) {
+    let start = std::time::Instant::now();
+    pump_until(|| start.elapsed() > std::time::Duration::from_millis(milliseconds));
+}
+
 fn pump_until(mut predicate: impl FnMut() -> bool) {
     use windows::Win32::UI::WindowsAndMessaging::*;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -70,6 +85,16 @@ fn pump_until(mut predicate: impl FnMut() -> bool) {
         let mut message = MSG::default();
         unsafe {
             while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                if message.message == WM_MOUSEWHEEL || message.message == WM_MOUSEHWHEEL {
+                    WHEELS.with(|wheels| {
+                        wheels.borrow_mut().push((
+                            message.message,
+                            message.wParam.0,
+                            message.lParam.0,
+                            message.hwnd,
+                        ));
+                    });
+                }
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -315,8 +340,187 @@ fn main() {
     pump_until(|| large.status() != LoadStatus::Loading);
     assert_eq!(large.status(), LoadStatus::Ready);
     drop(large);
+    verify_integrated_report(&window, parent);
     unsafe {
         DestroyWindow(parent).unwrap();
     }
-    println!("PASS: native loading, 2 MiB source, fresh-realm guards, network denial, full viewport clipping/hit regions, focus and retained frame lifecycle");
+    println!("PASS: native loading, 2 MiB source, fresh-realm guards, network denial, full viewport clipping/hit regions, focus and retained frame lifecycle, report measurement and wheel bridge");
+}
+
+fn screen(parent: windows::Win32::Foundation::HWND, x: i32, y: i32) -> isize {
+    let mut point = windows::Win32::Foundation::POINT { x, y };
+    assert!(unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(parent, &mut point) }.as_bool());
+    ((i32::from(point.y as i16) << 16) | i32::from(point.x as u16)) as isize
+}
+
+fn wheel_lines(
+    action: windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_ACTION,
+) -> f64 {
+    let mut value = 3u32;
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+            action,
+            0,
+            Some((&raw mut value).cast()),
+            Default::default(),
+        )
+        .unwrap();
+    }
+    f64::from(if value == 0 || value == u32::MAX {
+        3
+    } else {
+        value
+    })
+}
+
+fn verify_integrated_report(window: &Window, parent: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    let report = backend::Document::new(
+        "<!doctype html><html><head></head><body><!-- grove:integrated-report --><p>report</p></body></html>",
+    )
+    .unwrap();
+    assert_eq!(
+        report.report_height(),
+        0.,
+        "unloaded report must not measure"
+    );
+    report.report_theme("document.body.dataset.early='yes'", true);
+    report.prepare(window).unwrap();
+    pump_until(|| report.status() != LoadStatus::Loading);
+    assert_eq!(report.status(), LoadStatus::Ready);
+    let viewport = bounds(20., 30., 600., 400.);
+    report.show(viewport, viewport, window);
+
+    // Body geometry is measured independently of the viewport, including shrink.
+    let measure = |script: &str| {
+        report.report_theme(
+            &format!("document.documentElement.style.overflow='hidden';{script}"),
+            true,
+        );
+        settle(200);
+        report.report_height();
+        settle(200);
+        report.report_height()
+    };
+    let initial = measure("document.body.style.cssText='margin:0;height:420px'");
+    let shorter = measure("document.body.style.height='180px'");
+    let taller = measure("document.body.style.height='1200px'");
+    assert_eq!(
+        (initial, shorter, taller),
+        (420., 180., 1200.),
+        "report measurement"
+    );
+    assert_eq!(
+        evaluate(&report, "typeof window.ipc"),
+        "\"undefined\"",
+        "report exposes a host bridge"
+    );
+
+    // A trusted-shape wheel over the integrated report becomes one host notch.
+    let lines = wheel_lines(SPI_GETWHEELSCROLLLINES);
+    let chars = wheel_lines(SPI_GETWHEELSCROLLCHARS);
+    let notch = |delta: f64, lines: f64| (delta / (100. / 3. * lines) * 120.).round() as i16;
+    take_wheels();
+    assert_eq!(
+        evaluate(
+            &report,
+            "dispatchEvent(new WheelEvent('wheel',{deltaX:0,deltaY:100,clientX:10,clientY:20,cancelable:true}))"
+        ),
+        "false",
+        "integrated report must cancel document scrolling"
+    );
+    pump_until(|| WHEELS.with(|wheels| !wheels.borrow().is_empty()));
+    settle(100);
+    assert_eq!(
+        take_wheels(),
+        vec![(
+            WM_MOUSEWHEEL,
+            (usize::from(notch(-100., lines) as u16) << 16),
+            screen(parent, 30, 50),
+            parent
+        )],
+        "vertical wheel forwarding"
+    );
+    evaluate(
+        &report,
+        "dispatchEvent(new WheelEvent('wheel',{deltaX:100,deltaY:0,clientX:10,clientY:20,cancelable:true}))",
+    );
+    pump_until(|| WHEELS.with(|wheels| !wheels.borrow().is_empty()));
+    settle(100);
+    assert_eq!(
+        take_wheels(),
+        vec![(
+            WM_MOUSEHWHEEL,
+            (usize::from(notch(100., chars) as u16) << 16),
+            screen(parent, 30, 50),
+            parent
+        )],
+        "horizontal wheel forwarding"
+    );
+
+    // Author content can reach the channel directly, but only the exact shape
+    // scrolls the conversation, with bounded delta and coordinates.
+    evaluate(
+        &report,
+        r#"for (const message of [
+            '{"grove_wheel":[0,100,0,1,1]}',
+            {grove_wheel:[0,100,0,1]},
+            {grove_wheel:[0,100,0,1,1,1]},
+            {grove_wheel:[0,100,0,1,1],extra:1},
+            {grove_wheel:[0,100,3,1,1]},
+            {grove_wheel:[0,100,0.5,1,1]},
+            {grove_wheel:[0,NaN,0,1,1]},
+            {grove_wheel:['0',100,0,1,1]},
+            {grove_wheel:{0:0,1:100,2:0,3:1,4:1}},
+            {grove_wheel:[0,100,0,1,1],pad:'x'.repeat(512)},
+            {other:[0,100,0,1,1]},
+            [0,100,0,1,1],
+            null,
+        ]) chrome.webview.postMessage(message);
+        chrome.webview.postMessage({grove_wheel:[0,1e9,0,-1e9,1e9]});"#,
+    );
+    pump_until(|| WHEELS.with(|wheels| !wheels.borrow().is_empty()));
+    settle(200);
+    assert_eq!(
+        take_wheels(),
+        vec![(
+            WM_MOUSEWHEEL,
+            (usize::from((-1200i16) as u16) << 16),
+            screen(parent, 20, 30 + 399),
+            parent
+        )],
+        "malformed or spoofed web messages must be ignored; valid ones clamped"
+    );
+
+    // Expanded documents scroll themselves; hidden ones never forward.
+    report.report_theme("", false);
+    assert_eq!(
+        evaluate(
+            &report,
+            "dispatchEvent(new WheelEvent('wheel',{deltaY:100,cancelable:true}))"
+        ),
+        "true",
+        "expanded report must keep document scrolling"
+    );
+    evaluate(
+        &report,
+        "chrome.webview.postMessage({grove_wheel:[0,100,0,1,1]})",
+    );
+    settle(300);
+    assert!(
+        take_wheels().is_empty(),
+        "expanded report forwarded wheel input"
+    );
+    report.report_theme("", true);
+    report.hide();
+    evaluate(
+        &report,
+        "chrome.webview.postMessage({grove_wheel:[0,100,0,1,1]})",
+    );
+    settle(300);
+    assert!(
+        take_wheels().is_empty(),
+        "hidden report forwarded wheel input"
+    );
+    drop(report);
 }
