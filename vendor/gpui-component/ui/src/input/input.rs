@@ -2,22 +2,22 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, px, relative, AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla,
-    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Rems,
-    RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window,
+    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Rems, RenderOnce, Role,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
 };
 
 use crate::button::{Button, ButtonVariants as _};
 use crate::input::clear_button;
 use crate::native_menu::NativeMenu;
 use crate::spinner::Spinner;
-use crate::{h_flex, Selectable, StyledExt};
-use crate::{v_flex, ActiveTheme, Colorize};
+use crate::{ActiveTheme, Colorize, v_flex};
 use crate::{IconName, Size};
+use crate::{Selectable, StyledExt, h_flex};
 use crate::{Sizable, StyleSized};
 
 use super::{
-    content_type::sync_native_content_type, element::EditorScrollbar, InputContentType, InputState,
+    InputContentType, InputState, content_type::sync_native_content_type, element::EditorScrollbar,
 };
 
 /// Returns `(background, foreground)` colors for input-like components.

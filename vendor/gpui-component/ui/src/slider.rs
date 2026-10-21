@@ -454,21 +454,13 @@ impl Slider {
             })
             .on_drag_move(window.listener_for(
                 &self.state,
-                move |view, e: &DragMoveEvent<DragThumb>, window, cx| {
-                    match e.drag(cx) {
-                        DragThumb((id, is_start)) => {
-                            if *id != entity_id {
-                                return;
-                            }
-
-                            view.update_value_by_position(
-                                axis,
-                                e.event.position,
-                                *is_start,
-                                window,
-                                cx,
-                            )
+                move |view, e: &DragMoveEvent<DragThumb>, window, cx| match e.drag(cx) {
+                    DragThumb((id, is_start)) => {
+                        if *id != entity_id {
+                            return;
                         }
+
+                        view.update_value_by_position(axis, e.event.position, *is_start, window, cx)
                     }
                 },
             ))

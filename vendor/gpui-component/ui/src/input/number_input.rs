@@ -354,7 +354,6 @@ impl RenderOnce for NumberInput {
 mod tests {
     use super::{StepAction, step_value};
 
-
     #[test]
     fn test_step_value() {
         fn some(value: &str) -> Option<String> {

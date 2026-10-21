@@ -536,22 +536,18 @@ impl Render for NotificationList {
             .pt(margins.top)
             .pb(margins.bottom)
             .gap_3()
-            .when(
-                matches!(placement, Anchor::TopRight),
-                |this| this.pr(margins.right),
-            )
-            .when(
-                matches!(placement, Anchor::TopLeft),
-                |this| this.pl(margins.left),
-            )
-            .when(
-                matches!(placement, Anchor::BottomLeft),
-                |this| this.flex_col_reverse().pl(margins.left),
-            )
-            .when(
-                matches!(placement, Anchor::BottomRight),
-                |this| this.flex_col_reverse().pr(margins.right),
-            )
+            .when(matches!(placement, Anchor::TopRight), |this| {
+                this.pr(margins.right)
+            })
+            .when(matches!(placement, Anchor::TopLeft), |this| {
+                this.pl(margins.left)
+            })
+            .when(matches!(placement, Anchor::BottomLeft), |this| {
+                this.flex_col_reverse().pl(margins.left)
+            })
+            .when(matches!(placement, Anchor::BottomRight), |this| {
+                this.flex_col_reverse().pr(margins.right)
+            })
             .when(matches!(placement, Anchor::BottomCenter), |this| {
                 this.flex_col_reverse()
             })

@@ -344,6 +344,97 @@ pub fn changed_files(wt: &str) -> Vec<FileChange> {
     result
 }
 
+/// Coarse kind of a changed path, used to break a worktree's diff stat down by purpose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ChangeGroup {
+    Code,
+    Tests,
+    Docs,
+    Config,
+}
+
+impl ChangeGroup {
+    pub const ALL: [Self; 4] = [Self::Code, Self::Tests, Self::Docs, Self::Config];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Code => "Code",
+            Self::Tests => "Tests",
+            Self::Docs => "Docs",
+            Self::Config => "Config",
+        }
+    }
+
+    /// Path-only heuristic: test directories and test-named files first, then docs, then config, else code.
+    pub fn of(path: &str) -> Self {
+        let lower = path.to_ascii_lowercase();
+        let mut parts = lower.split('/');
+        let name = parts.next_back().unwrap_or_default();
+        let dirs: Vec<&str> = parts.collect();
+        let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+        let test_dir = dirs.iter().any(|d| {
+            matches!(
+                *d,
+                "test" | "tests" | "__tests__" | "spec" | "specs" | "testdata" | "fixtures"
+            )
+        });
+        let test_name = stem.starts_with("test_")
+            || matches!(stem, "test" | "tests")
+            || [
+                "_test", "_tests", ".test", "-test", "_spec", ".spec", "-spec",
+            ]
+            .iter()
+            .any(|suffix| stem.ends_with(suffix));
+        if test_dir || test_name {
+            return Self::Tests;
+        }
+        if matches!(ext, "md" | "mdx" | "rst" | "adoc" | "txt")
+            || dirs.iter().any(|d| matches!(*d, "docs" | "doc"))
+            || stem == "license"
+            || stem.starts_with("license-")
+        {
+            return Self::Docs;
+        }
+        if matches!(
+            ext,
+            "toml" | "json" | "yaml" | "yml" | "lock" | "ini" | "cfg" | "conf" | "plist" | "env"
+        ) || name.starts_with('.')
+            || dirs.first().is_some_and(|d| d.starts_with('.'))
+            || matches!(name, "makefile" | "dockerfile" | "justfile")
+        {
+            return Self::Config;
+        }
+        Self::Code
+    }
+}
+
+/// Per-group line totals for one worktree; groups with no changed files are omitted, in [`ChangeGroup::ALL`] order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChangeSummary {
+    pub files: usize,
+    pub groups: Vec<(ChangeGroup, u32, u32)>,
+}
+
+pub fn summarize(files: &[FileChange]) -> ChangeSummary {
+    let groups = ChangeGroup::ALL
+        .into_iter()
+        .filter_map(|group| {
+            let mut members = files
+                .iter()
+                .filter(|f| ChangeGroup::of(&f.path) == group)
+                .peekable();
+            members.peek()?;
+            Some(members.fold((group, 0u32, 0u32), |(g, a, r), f| {
+                (g, a.saturating_add(f.added), r.saturating_add(f.removed))
+            }))
+        })
+        .collect();
+    ChangeSummary {
+        files: files.len(),
+        groups,
+    }
+}
+
 /// Malformed input returns `None` so the caller can skip the hunk rather than panic or fabricate numbers.
 fn parse_hunk_header(rest: &str) -> Option<(u32, u32, String)> {
     let (ranges, header) = match rest.split_once(" @@") {
@@ -756,6 +847,54 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn change_groups_classify_by_path() {
+        for (path, group) in [
+            ("src/views/sidebar.rs", ChangeGroup::Code),
+            ("tests/checkout.rs", ChangeGroup::Tests),
+            ("web/app/__tests__/menu.tsx", ChangeGroup::Tests),
+            ("pkg/parse_test.go", ChangeGroup::Tests),
+            ("ui/button.spec.ts", ChangeGroup::Tests),
+            ("test_utils.py", ChangeGroup::Tests),
+            ("README.md", ChangeGroup::Docs),
+            ("docs/guide.html", ChangeGroup::Docs),
+            ("LICENSE-MIT", ChangeGroup::Docs),
+            ("Cargo.lock", ChangeGroup::Config),
+            (".github/workflows/ci.yml", ChangeGroup::Config),
+            (".gitignore", ChangeGroup::Config),
+            ("src/latest.rs", ChangeGroup::Code),
+            ("src/contest.rs", ChangeGroup::Code),
+            ("src/views/tests.rs", ChangeGroup::Tests),
+        ] {
+            assert_eq!(ChangeGroup::of(path), group, "{path}");
+        }
+    }
+
+    #[test]
+    fn summarize_totals_nonempty_groups_in_order() {
+        let change = |path: &str, added, removed| FileChange {
+            path: path.into(),
+            status: Status::Modified,
+            added,
+            removed,
+        };
+        let summary = summarize(&[
+            change("tests/a.rs", 10, 1),
+            change("src/a.rs", 5, 2),
+            change("src/b.rs", 3, 4),
+            change("Cargo.toml", 1, 1),
+        ]);
+        assert_eq!(summary.files, 4);
+        assert_eq!(
+            summary.groups,
+            vec![
+                (ChangeGroup::Code, 8, 6),
+                (ChangeGroup::Tests, 10, 1),
+                (ChangeGroup::Config, 1, 1),
+            ]
+        );
+    }
 
     #[test]
     fn numstat_common_case() {

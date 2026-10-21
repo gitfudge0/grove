@@ -11,9 +11,9 @@ mod wrap_map;
 pub use self::display_map::DisplayMap;
 pub(crate) use self::text_wrapper::LineLayout;
 
-pub use folding::{FoldRange, extract_fold_ranges};
 #[cfg(not(feature = "tree-sitter"))]
 pub use folding::Tree;
+pub use folding::{FoldRange, extract_fold_ranges};
 
 /// `line`/`col` are 0-based; `col` is a byte offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

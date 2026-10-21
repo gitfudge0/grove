@@ -8,6 +8,7 @@ use gpui_component::{
 use grove_core::{
     checkout_git::{self, CheckoutGitState, GitAction},
     commit_agent::{self, CommitControl, CommitOutcome, CommitPhase},
+    diff::{self, ChangeSummary},
 };
 use std::path::Path;
 
@@ -15,6 +16,8 @@ const CARD_WIDTH: f32 = 280.;
 const WIDE_VIEWPORT: f32 = MODAL_W_XL + MODAL_W_SM;
 const NARROW_HEIGHT_FRACTION: f32 = 0.5;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// Fits a five-digit signed line count so group rows keep their columns aligned.
+const STAT_COL_W: f32 = 48.;
 
 /// Reuse compact shared actions on the card's neutral field surface.
 fn checkout_action(
@@ -33,6 +36,7 @@ fn checkout_action(
 pub(super) struct CheckoutPanel {
     path: Option<String>,
     state: Option<Result<CheckoutGitState, String>>,
+    summary: Option<ChangeSummary>,
     loading: bool,
     busy: bool,
     network_action: Option<(&'static str, &'static str)>,
@@ -132,14 +136,22 @@ impl Sidebar {
         let generation = self.checkout_panel.generation;
         cx.spawn(async move |this, cx| {
             let target = path.clone();
-            let result = cx
+            let (result, summary) = cx
                 .background_executor()
-                .spawn(async move { checkout_git::inspect(Path::new(&target)) })
+                .spawn(async move {
+                    let result = checkout_git::inspect(Path::new(&target));
+                    let summary = result
+                        .as_ref()
+                        .is_ok_and(|state| state.dirty)
+                        .then(|| diff::summarize(&diff::changed_files(&target)));
+                    (result, summary)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.checkout_panel.accepts_result(&path, generation) {
                     this.checkout_panel.checked_at = Some(Instant::now());
                     this.checkout_panel.state = Some(result);
+                    this.checkout_panel.summary = summary;
                     this.checkout_panel.loading = false;
                     cx.notify();
                 }
@@ -525,6 +537,7 @@ impl Sidebar {
                 self.checkout_panel.path = Some(path.clone());
                 self.checkout_panel.checked_at = None;
                 self.checkout_panel.state = None;
+                self.checkout_panel.summary = None;
                 self.checkout_panel.loading = false;
                 self.checkout_panel.message = None;
                 self.checkout_panel.publish = None;
@@ -656,31 +669,40 @@ impl Sidebar {
                     else if publish { this.checkout_menu(true, idx, target.clone(), event.position(), window, cx); }
                     else { this.checkout_run(target.clone(), GitAction::Push, cx); }
                 })));
-            let git = self.runtime.read(cx).tree.read(cx).git_states();
-            let changes = git.get(crate::paths::normalize_wt_path(&path));
+            let summary = self
+                .checkout_panel
+                .summary
+                .clone()
+                .filter(|summary| dirty && summary.files > 0);
+            let totals = match &summary {
+                Some(summary) => Some(summary.groups.iter().fold((0u32, 0u32), |(a, r), g| {
+                    (a.saturating_add(g.1), r.saturating_add(g.2))
+                })),
+                None => {
+                    let git = self.runtime.read(cx).tree.read(cx).git_states();
+                    git.get(crate::paths::normalize_wt_path(&path))
+                        .filter(|changes| changes.dirty || changes.added > 0 || changes.removed > 0)
+                        .map(|changes| (changes.added, changes.removed))
+                }
+            };
+            let changes_label = match &summary {
+                Some(summary) if summary.files == 1 => "1 file".to_owned(),
+                Some(summary) => format!("{} files", summary.files),
+                None => "Changes".to_owned(),
+            };
             let mut changes_row = checkout_loading_row(
                 "checkout-changes",
-                "Changes",
+                changes_label,
                 "unified",
                 initial_loading,
                 window,
                 cx,
             )
             .disabled(state.is_none());
-            if let Some(changes) =
-                changes.filter(|changes| changes.dirty || changes.added > 0 || changes.removed > 0)
-            {
+            if let Some((added, removed)) = totals {
                 changes_row = changes_row
-                    .child(
-                        div()
-                            .text_color(c::GREEN())
-                            .child(format!("+{}", changes.added)),
-                    )
-                    .child(
-                        div()
-                            .text_color(c::RED())
-                            .child(format!("−{}", changes.removed)),
-                    );
+                    .child(div().text_color(c::GREEN()).child(format!("+{added}")))
+                    .child(div().text_color(c::RED()).child(format!("−{removed}")));
             }
             let target = path;
             card = card.child(
@@ -688,6 +710,9 @@ impl Sidebar {
                     this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
                 })),
             );
+            if let Some(summary) = summary.filter(|summary| summary.groups.len() > 1) {
+                card = card.child(change_groups(&summary));
+            }
         } else {
             let target = targets.first().cloned();
             card = card
@@ -969,6 +994,49 @@ fn checkout_loading_row(
                         )),
                 ),
         )
+}
+
+/// Per-group breakdown under the Changes row, inset to the row labels with right-aligned count columns.
+fn change_groups(summary: &ChangeSummary) -> impl IntoElement {
+    div()
+        .id("checkout-change-groups")
+        .debug_selector(|| "checkout-change-groups".into())
+        .flex()
+        .flex_col()
+        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+        .pr(rpx(SPACE_2XL))
+        .pb(rpx(SPACE_SM))
+        .text_size(rpx(TEXT_SMALL))
+        .children(summary.groups.iter().map(|&(group, added, removed)| {
+            div()
+                .flex()
+                .items_center()
+                .h(rpx(CARD_LINE_SM_H))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(c::FG_DIM())
+                        .child(group.label()),
+                )
+                .child(
+                    div()
+                        .w(rpx(STAT_COL_W))
+                        .flex()
+                        .justify_end()
+                        .text_color(c::GREEN())
+                        .child(format!("+{added}")),
+                )
+                .child(
+                    div()
+                        .w(rpx(STAT_COL_W))
+                        .flex()
+                        .justify_end()
+                        .text_color(c::RED())
+                        .child(format!("−{removed}")),
+                )
+        }))
 }
 
 fn commit_row_state(state: Option<&CheckoutGitState>) -> (&'static str, &'static str, bool) {

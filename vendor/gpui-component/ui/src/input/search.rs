@@ -242,17 +242,15 @@ impl SearchPanel {
         let replace_input = cx.new(|cx| InputState::new(window, cx));
 
         cx.new(|cx| {
-            let _subscriptions =
-                vec![
-                    cx.subscribe(&search_input, |this: &mut Self, _, ev: &InputEvent, cx| {
-                        match ev {
-                            InputEvent::Change => {
-                                this.update_search_query(cx);
-                            }
-                            _ => {}
-                        }
-                    }),
-                ];
+            let _subscriptions = vec![cx.subscribe(
+                &search_input,
+                |this: &mut Self, _, ev: &InputEvent, cx| match ev {
+                    InputEvent::Change => {
+                        this.update_search_query(cx);
+                    }
+                    _ => {}
+                },
+            )];
 
             Self {
                 editor,

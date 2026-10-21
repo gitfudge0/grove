@@ -1,9 +1,9 @@
-use instant::Duration;
 use anyhow::Result;
 use gpui::{App, Context, Task, Window};
+use instant::Duration;
 use ropey::Rope;
 
-use crate::input::{popovers::HoverPopover, InputState, RopeExt};
+use crate::input::{InputState, RopeExt, popovers::HoverPopover};
 
 /// `textDocument/hover`: https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_hover
 pub trait HoverProvider {

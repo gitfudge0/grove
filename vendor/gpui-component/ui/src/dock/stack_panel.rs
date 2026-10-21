@@ -57,11 +57,9 @@ impl StackPanel {
     pub fn new(axis: Axis, _: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.new(|_| ResizableState::default());
 
-        let _subscriptions = vec![
-            cx.subscribe(&state, |_, _, _: &ResizablePanelEvent, cx| {
-                cx.emit(PanelEvent::LayoutChanged)
-            }),
-        ];
+        let _subscriptions = vec![cx.subscribe(&state, |_, _, _: &ResizablePanelEvent, cx| {
+            cx.emit(PanelEvent::LayoutChanged)
+        })];
 
         Self {
             axis,

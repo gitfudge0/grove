@@ -1074,39 +1074,35 @@ impl Render for DockArea {
                     this.child(zoom_view)
                 } else {
                     match &self.center {
-                        DockItem::Tiles { view, .. } => {
-                            this.child(view.clone())
-                        }
-                        _ => {
-                            this.child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .h_full()
-                                    .when_some(self.left_dock.clone(), |this, dock| {
-                                        this.child(div().flex().flex_none().child(dock))
-                                    })
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_1()
-                                            .flex_col()
-                                            .overflow_hidden()
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .overflow_hidden()
-                                                    .child(self.render_items(window, cx)),
-                                            )
-                                            .when_some(self.bottom_dock.clone(), |this, dock| {
-                                                this.child(dock)
-                                            }),
-                                    )
-                                    .when_some(self.right_dock.clone(), |this, dock| {
-                                        this.child(div().flex().flex_none().child(dock))
-                                    }),
-                            )
-                        }
+                        DockItem::Tiles { view, .. } => this.child(view.clone()),
+                        _ => this.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .h_full()
+                                .when_some(self.left_dock.clone(), |this, dock| {
+                                    this.child(div().flex().flex_none().child(dock))
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_1()
+                                        .flex_col()
+                                        .overflow_hidden()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .overflow_hidden()
+                                                .child(self.render_items(window, cx)),
+                                        )
+                                        .when_some(self.bottom_dock.clone(), |this, dock| {
+                                            this.child(dock)
+                                        }),
+                                )
+                                .when_some(self.right_dock.clone(), |this, dock| {
+                                    this.child(div().flex().flex_none().child(dock))
+                                }),
+                        ),
                     }
                 }
             })

@@ -1,9 +1,24 @@
 # AGENTS.md
 
 - For Grove UI changes, screenshot/mock implementation, and visual review, load
-  [grove-ui](.Codex/skills/grove-ui/SKILL.md) before editing. It defines the
+  [grove-ui](.agents/skills/grove-ui/SKILL.md) before editing. It defines the
   native inspection and interaction-state checks that prevent layout drift.
-- Run `./install.sh` after finishing any code changes.
+- By default, run `./install.sh` once after the final code changes at the
+  selected delivery endpoint. Run relevant code checks before delivery;
+  documentation/skill-only changes need no build or installation. Release only
+  when explicitly requested. Explicit no-install, stop, cancel, or release
+  deferral instructions override the default immediately: propagate the current
+  delivery endpoint and instructions to every worker, safely stop affected
+  operations owned by this task (not unrelated builds), and do not restart them
+  without later authorization. Native UI QA may use a current build in an
+  isolated QA app before the final installation; no-install does not require
+  changing the user's installed app.
+- For changes to shared agent questions, approvals, tasks, subagents, or
+  transcript features, name both Codex and Claude in the acceptance checks.
+  Report each as verified, unsupported, or untested, with the verification method
+  or reason. Mocked fixtures do not establish live provider-boundary behavior;
+  identify what was actually exercised. Cover affected platforms when changing
+  platform-specific behavior.
 - `DESIGN.md` is normative for all UI work. Every numeric value comes from
   `src/views/tokens.rs` and every colour from `src/theme.rs` — never a bare
   literal. Use the shared components in `src/views/components.rs` rather than

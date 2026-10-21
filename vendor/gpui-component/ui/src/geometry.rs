@@ -54,7 +54,6 @@ impl Placement {
     }
 }
 
-
 /// See also: [`Placement`] for all 4 edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
