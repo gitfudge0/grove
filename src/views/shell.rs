@@ -112,6 +112,11 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        #[cfg(target_os = "macos")]
+        cx.on_release(|_, cx| {
+            crate::app_menus::refresh(crate::app_menus::MenuState::default(), cx);
+        })
+        .detach();
         let runtime = cx.new(Runtime::new);
         #[cfg(not(test))]
         runtime.update(cx, Runtime::discover_tmux_sessions);
@@ -1354,6 +1359,19 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_os = "macos")]
+        {
+            let mut state = self.sidebar.read(cx).menu_state(window, cx);
+            state.navigation &= !self.shortcut_blocked(cx);
+            state.switcher = self.highlights.is_none()
+                && !self.backend_choice_open
+                && !self.launcher.read(cx).is_open()
+                && !self.settings.read(cx).is_open()
+                && !self.workspaces.read(cx).is_open()
+                && !self.switcher_open
+                && self.sidebar.read(cx).navigation_available();
+            crate::app_menus::refresh(state, cx);
+        }
         let html_owner = self.sidebar.read(cx).html_owner(cx);
         let html_blocked = self.shortcut_blocked(cx) || self.sidebar.read(cx).html_overlay_open();
         super::inline_html::set_context(html_owner, html_blocked, cx);
@@ -1477,6 +1495,27 @@ impl Render for Shell {
                     }
                 }),
             )
+            .when(cfg!(target_os = "macos"), |root| {
+                #[cfg(target_os = "macos")]
+                let root =
+                    root.on_action(cx.listener(|_, _: &crate::app_menus::About, window, cx| {
+                        let detail = format!("Version {}", env!("CARGO_PKG_VERSION"));
+                        drop(window.prompt(
+                            gpui::PromptLevel::Info,
+                            "About Grove",
+                            Some(&detail),
+                            &["OK"],
+                            cx,
+                        ));
+                    }))
+                    .on_action(cx.listener(|_, _: &crate::app_menus::Minimize, window, _| {
+                        window.minimize_window();
+                    }))
+                    .on_action(cx.listener(
+                        |_, _: &crate::app_menus::ZoomWindow, window, _| window.zoom_window(),
+                    ));
+                root
+            })
             .on_action(cx.listener(|this, _: &Quit, _, cx| {
                 this.runtime
                     .update(cx, |runtime, cx| runtime.request_exit(false, cx));

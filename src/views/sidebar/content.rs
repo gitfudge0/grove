@@ -693,6 +693,10 @@ impl Sidebar {
                 .entry(id)
                 .or_insert_with(|| cx.new(|cx| TerminalView::new(session, cx)))
                 .clone();
+            #[cfg(target_os = "macos")]
+            if newly_created {
+                cx.observe(&terminal, |_, _, cx| cx.notify()).detach();
+            }
             self.canvas_focus_observers.entry(id).or_insert_with(|| {
                 cx.on_focus_in(&terminal.focus_handle(cx), window, move |this, _, cx| {
                     this.select(

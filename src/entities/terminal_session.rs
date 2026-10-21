@@ -534,6 +534,24 @@ impl TerminalSession {
         }
     }
 
+    /// Entire retained native buffer, including rows outside the viewport.
+    /// Tmux owns its history separately, so it has no local full-buffer range.
+    pub fn selection_all_bounds(&self) -> Option<(AbsCell, AbsCell)> {
+        if !matches!(self.backend, Backend::Native) || self.rows == 0 || self.cols == 0 {
+            return None;
+        }
+        Some((
+            AbsCell {
+                a_row: self.term.history_size() + usize::from(self.rows) - 1,
+                col: 0,
+            },
+            AbsCell {
+                a_row: 0,
+                col: usize::from(self.cols) - 1,
+            },
+        ))
+    }
+
     pub fn dims(&self) -> (u16, u16) {
         (self.rows, self.cols)
     }

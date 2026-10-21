@@ -8,6 +8,8 @@ mod activity;
 #[allow(dead_code)]
 mod add_project;
 mod app;
+#[cfg(target_os = "macos")]
+mod app_menus;
 mod assets;
 // Entity APIs stay compiled and tested for reconnection to the replacement UI.
 #[allow(dead_code)]
@@ -124,6 +126,9 @@ fn main() {
                     None,
                 ),
             ]);
+
+            #[cfg(target_os = "macos")]
+            app_menus::install(cx);
 
             // Fonts are measured before any window exists: a wrong advance must abort, not paint a drifting grid.
             let cell_w = fonts::register_and_assert_or_exit(cx);

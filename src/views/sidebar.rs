@@ -1492,6 +1492,31 @@ impl Sidebar {
         }
         cx.notify();
     }
+    #[cfg(target_os = "macos")]
+    pub(crate) fn menu_state(&self, window: &Window, cx: &App) -> crate::app_menus::MenuState {
+        crate::app_menus::MenuState {
+            window: true,
+            navigation: self.navigation_available(),
+            worktree: self.selected_worktree().is_some(),
+            close_session: matches!(
+                self.selection,
+                Some(Selection::Session(_) | Selection::Home(_))
+            ),
+            sessions: !self.visible_session_order(cx).is_empty(),
+            waiting: self.waiting_session(cx).is_some(),
+            terminal_edit: self
+                .terminal_views
+                .values()
+                .chain(self.home_terminal_views.values())
+                .find_map(|view| view.read(cx).terminal_menu_state(window, cx)),
+            grid: self.is_grid(),
+            zen: self.is_zen(),
+            collapsed: self.is_collapsed(cx),
+            list: self.mode == ViewMode::List,
+            ..Default::default()
+        }
+    }
+
     pub fn is_grid(&self) -> bool {
         self.mode == ViewMode::Grid
     }
@@ -2203,7 +2228,7 @@ impl Sidebar {
         !self.navigation_available()
     }
 
-    fn navigation_available(&self) -> bool {
+    pub(crate) fn navigation_available(&self) -> bool {
         !self.confirmation_open()
             && self.header_tasks.open.is_none()
             && self.diff_viewer.is_none()
@@ -2297,18 +2322,14 @@ impl Sidebar {
         }
     }
 
-    pub(crate) fn select_waiting_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.navigation_available() {
-            return;
-        }
-        self.sync(window, cx);
+    fn waiting_session(&self, cx: &App) -> Option<SessionId> {
         let workspace_ids: HashSet<_> = self
             .snapshot
             .projects
             .iter()
             .flat_map(|project| project.sessions.iter().copied())
             .collect();
-        let target = {
+        {
             let activity = self.runtime.read(cx).activity.read(cx);
             activity
                 .waiting_sessions()
@@ -2324,7 +2345,15 @@ impl Sidebar {
                                 && activity.state_of(*id) == ActivityState::WaitingForInput
                         })
                 })
-        };
+        }
+    }
+
+    pub(crate) fn select_waiting_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.navigation_available() {
+            return;
+        }
+        self.sync(window, cx);
+        let target = self.waiting_session(cx);
         if let Some(id) = target {
             let session = self.runtime.read(cx).registry.read(cx).session(id).cloned();
             if let Some(session) = session {

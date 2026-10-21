@@ -12,6 +12,7 @@ use gpui::{
     div, prelude::*, App, Bounds, Context, Entity, FocusHandle, Focusable, MouseButton, Pixels,
     Subscription, Task, Window,
 };
+use gpui_component::input::{Copy, Paste, SelectAll};
 use std::{cell::Cell, rc::Rc};
 
 pub struct TerminalView {
@@ -26,6 +27,17 @@ pub struct TerminalView {
     _subscription: Subscription,
 }
 impl TerminalView {
+    /// Native Edit menu availability for the terminal that owns keyboard focus.
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn terminal_menu_state(&self, window: &Window, cx: &App) -> Option<(bool, bool)> {
+        self.focus.contains_focused(window, cx).then(|| {
+            (
+                self.selection.is_some(),
+                self.session.read(cx).selection_all_bounds().is_some(),
+            )
+        })
+    }
+
     pub fn new(session: Entity<TerminalSession>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&session, |_, _, cx| cx.notify());
         Self {
@@ -189,6 +201,39 @@ impl Render for TerminalView {
             .min_h_0()
             .overflow_hidden()
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &Copy, _, cx| {
+                let text = this.selection.and_then(|(a, b)| {
+                    this.session.update(cx, |term, _| term.selection_text(a, b))
+                });
+                if let Some(text) = text {
+                    clipboard::copy(&text);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &Paste, _, cx| {
+                let Some(text) = clipboard::paste() else {
+                    cx.propagate();
+                    return;
+                };
+                this.stop_drag();
+                this.selection = None;
+                this.session.update(cx, |term, cx| {
+                    term.snap_to_bottom();
+                    term.send(&clipboard::bracketed_paste(&text));
+                    cx.notify();
+                });
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
+                let Some(bounds) = this.session.read(cx).selection_all_bounds() else {
+                    cx.propagate();
+                    return;
+                };
+                this.stop_drag();
+                this.selection = Some(bounds);
+                cx.notify();
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -475,6 +520,58 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+    }
+
+    #[gpui::test]
+    fn native_select_all_includes_retained_history_without_sending_input(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, total) = history_fixture(cx);
+        let before = view.read_with(cx, |view, cx| view.session.read(cx).last_input_for_test());
+        cx.update(|window, cx| {
+            let focus = view.read(cx).focus.clone();
+            focus.focus(window, cx);
+        });
+        cx.update(|window, cx| {
+            window.dispatch_action(Box::new(SelectAll), cx);
+        });
+        cx.run_until_parked();
+        view.update(cx, |view, cx| {
+            let (anchor, head) = view
+                .selection
+                .expect("Select All must select the native buffer");
+            let text = view
+                .session
+                .update(cx, |term, _| term.selection_text(anchor, head))
+                .unwrap();
+            // Clearing the viewport retains its earlier output in scrollback.
+            let expected = std::iter::once("Claude output".to_string())
+                .chain((0..total).map(|row| format!("row{row:03}")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(text, expected);
+            assert_eq!(view.session.read(cx).last_input_for_test(), before);
+        });
+    }
+
+    #[gpui::test]
+    fn native_edit_actions_preserve_terminal_control_c(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = fixture(cx);
+        cx.update(|window, cx| {
+            let focus = view.read(cx).focus.clone();
+            focus.focus(window, cx);
+            assert_eq!(
+                view.read(cx).terminal_menu_state(window, cx),
+                Some((false, true))
+            );
+            window.dispatch_action(Box::new(Copy), cx);
+        });
+        cx.run_until_parked();
+        let before = view.read_with(cx, |view, cx| view.session.read(cx).last_input_for_test());
+        cx.simulate_keystrokes("ctrl-c");
+        view.read_with(cx, |view, cx| {
+            assert_ne!(view.session.read(cx).last_input_for_test(), before);
         });
     }
 
