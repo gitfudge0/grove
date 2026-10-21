@@ -228,6 +228,10 @@ fn svg_for(name: &str) -> String {
         "git-branch" => {
             r#"<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="3.5" r="1.5"/><path d="M11.5 5v1.5a3 3 0 0 1-3 3H4.5M4.5 5v6"/>"#
         }
+        // Pull request — separate head/base trunks with an incoming branch.
+        "git-pull-request" => {
+            r#"<circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="13" r="1.5"/><path d="M4 4.5v7M8 3h1a3 3 0 0 1 3 3v5.5M8 3l2-2M8 3l2 2"/>"#
+        }
         // Generic git commit — a node on a horizontal line.
         "git" => r#"<circle cx="8" cy="8" r="2.5"/><path d="M1.5 8h4M10.5 8h4"/>"#,
         // Outgoing commits — upload to the upstream bar.
@@ -288,6 +292,7 @@ mod tests {
             "list",
             "rail-tree",
             "git",
+            "git-pull-request",
             "no-git",
             "play",
             "term",

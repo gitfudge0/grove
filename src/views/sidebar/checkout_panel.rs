@@ -7,6 +7,7 @@ use gpui_component::{
 };
 use grove_core::{
     checkout_git::{self, CheckoutGitState, GitAction},
+    checkout_pr::{self, PullRequest},
     commit_agent::{self, CommitControl, CommitOutcome, CommitPhase},
     diff::{self, ChangeSummary},
 };
@@ -38,6 +39,14 @@ pub(super) struct CheckoutPanel {
     state: Option<Result<CheckoutGitState, String>>,
     summary: Option<ChangeSummary>,
     loading: bool,
+    pr_state: Option<Result<Option<PullRequest>, String>>,
+    pr_loading: bool,
+    pr_identity: Option<[u8; 32]>,
+    pr_checked_at: Option<Instant>,
+    pr_expanded: bool,
+    pr_composing: bool,
+    pr_merge: Option<PullRequest>,
+    pr_message: Option<String>,
     busy: bool,
     network_action: Option<(&'static str, &'static str)>,
     network_target: Option<(String, u64)>,
@@ -104,6 +113,26 @@ fn selected_checkout(targets: &[(usize, String)], chosen: Option<&str>) -> Optio
     }
 }
 
+/// A handoff populates a fresh session's composer and never submits a turn.
+fn prepare_resolution_draft(
+    session: &Entity<crate::entities::codex_session::CodexSession>,
+    path: &str,
+    provider: grove_core::codex::Provider,
+    pr: &PullRequest,
+    cx: &mut App,
+) -> Result<(), String> {
+    session.update(cx, |session, cx| {
+        let saved = &session.state.saved;
+        if saved.cwd != path || saved.provider != provider || !saved.draft.is_empty() || !saved.items.is_empty() {
+            return Err("Could not prepare a fresh conflict-resolution session. Existing drafts were preserved".into());
+        }
+        let draft = format!("Help resolve merge conflicts for PR #{}: {}\n{}\n\nWork in this checkout: {}. First inspect the current branch, working tree, PR head and base on GitHub. Preserve all existing work. Explain the conflict-resolution approach before changing files. Do not push or merge the PR without my confirmation.", pr.number, pr.title(), pr.url, path);
+        session.state.saved.draft.clone_from(&draft);
+        session.send(grove_core::codex::Action::Draft(draft), cx);
+        Ok(())
+    })
+}
+
 impl Sidebar {
     fn checkout_targets(&self, cx: &App) -> Vec<(usize, String)> {
         if let Some(Selection::Session(id)) = self.selection {
@@ -150,6 +179,13 @@ impl Sidebar {
             let _ = this.update(cx, |this, cx| {
                 if this.checkout_panel.accepts_result(&path, generation) {
                     this.checkout_panel.checked_at = Some(Instant::now());
+                    let identity = result.as_ref().ok().map(CheckoutGitState::target_identity);
+                    if this.checkout_panel.pr_identity != identity {
+                        this.checkout_panel.pr_identity = identity;
+                        this.checkout_panel.pr_state = None;
+                        this.checkout_panel.pr_checked_at = None;
+                        this.checkout_panel.pr_expanded = false;
+                    }
                     this.checkout_panel.state = Some(result);
                     this.checkout_panel.summary = summary;
                     this.checkout_panel.loading = false;
@@ -163,6 +199,343 @@ impl Sidebar {
                 if this.checkout_panel.accepts_result(&path, generation) {
                     cx.notify();
                 }
+            });
+        })
+        .detach();
+    }
+
+    fn checkout_load_pr(&mut self, path: String, state: CheckoutGitState, cx: &mut Context<Self>) {
+        if self.checkout_panel.pr_loading {
+            return;
+        }
+        self.checkout_panel.pr_loading = true;
+        let generation = self.checkout_panel.generation;
+        cx.spawn(async move |this, cx| {
+            let target = path.clone();
+            let expected = state.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { checkout_pr::inspect(Path::new(&target), &expected) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.checkout_panel.accepts_result(&path, generation) {
+                    this.checkout_panel.pr_loading = false;
+                    let unchanged = this
+                        .checkout_panel
+                        .state
+                        .as_ref()
+                        .and_then(|s| s.as_ref().ok())
+                        .is_some_and(|current| {
+                            current.target_identity() == state.target_identity()
+                        });
+                    if unchanged {
+                        this.checkout_panel.pr_state = Some(result);
+                        this.checkout_panel.pr_checked_at = Some(Instant::now());
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn checkout_compose_pr(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.checkout_panel.pr_composing || self.checkout_panel.busy {
+            return;
+        }
+        let Some(Ok(state)) = self.checkout_panel.state.clone() else {
+            return;
+        };
+        let generation = self.checkout_panel.generation;
+        let identity = state.target_identity();
+        self.checkout_panel.pr_composing = true;
+        cx.spawn(async move |this, cx| {
+            let target = path.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { checkout_pr::compose_url(Path::new(&target), &state) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.checkout_panel.accepts_result(&path, generation) {
+                    this.checkout_panel.pr_composing = false;
+                    if this
+                        .checkout_panel
+                        .state
+                        .as_ref()
+                        .and_then(|s| s.as_ref().ok())
+                        .is_none_or(|s| s.target_identity() != identity)
+                    {
+                        cx.notify();
+                        return;
+                    }
+                    match result {
+                        Ok(url) => cx.open_url(&url),
+                        Err(error) => this.checkout_panel.pr_state = Some(Err(error)),
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn render_checkout_pr(
+        &mut self,
+        path: &str,
+        state: Option<&CheckoutGitState>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut section = div().flex().flex_col().min_w_0();
+        let status = self.checkout_panel.pr_state.clone();
+        match status {
+            Some(Ok(Some(pr))) => {
+                let url = pr.url.clone();
+                section = section.child(
+                    checkout_row("checkout-pr", pr.title(), "git-pull-request", window, cx)
+                        .tooltip("Open pull request in browser")
+                        .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
+                );
+                let mut metadata = div()
+                    .id("checkout-pr-metadata")
+                    .debug_selector(|| "checkout-pr-metadata".into())
+                    .flex()
+                    .items_center()
+                    .min_w_0()
+                    .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                    .pr(rpx(SPACE_2XL))
+                    .gap(rpx(SPACE_MD))
+                    .min_h(rpx(CONTROL_H))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(
+                        div()
+                            .id("checkout-pr-number")
+                            .debug_selector(|| "checkout-pr-number".into())
+                            .flex_shrink_0()
+                            .child(format!("#{}", pr.number)),
+                    )
+                    .child(
+                        checkout_action(
+                            "checkout-pr-details",
+                            pr.compact_status(),
+                            false,
+                            window,
+                            cx,
+                        )
+                        .debug_selector(|| "checkout-pr-details".into())
+                        .flex_1()
+                        .min_w_0()
+                        .px(rpx(SPACE_XS))
+                        .tooltip(if self.checkout_panel.pr_expanded {
+                            "Hide checks and reviews"
+                        } else {
+                            "Show checks and reviews"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.checkout_panel.pr_expanded = !this.checkout_panel.pr_expanded;
+                            cx.notify();
+                        })),
+                    );
+                if pr.state == "OPEN" && pr.mergeable == "CONFLICTING" {
+                    let target = path.to_string();
+                    let request = pr.clone();
+                    metadata = metadata.child(
+                        checkout_action("checkout-pr-resolve", "Resolve", false, window, cx)
+                            .debug_selector(|| "checkout-pr-resolve".into())
+                            .disabled(self.checkout_panel.busy)
+                            .tooltip("Prepare a new agent session with a conflict-resolution draft")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.checkout_resolve_pr(target.clone(), request.clone(), cx);
+                            })),
+                    );
+                } else if state.is_some_and(|state| pr.can_merge(state)) {
+                    let request = pr.clone();
+                    metadata = metadata.child(
+                        checkout_action("checkout-pr-merge", "Merge", false, window, cx)
+                            .debug_selector(|| "checkout-pr-merge".into())
+                            .with_focus_handle(
+                                self.checkout_panel.trigger_focus["pr-merge"].clone(),
+                            )
+                            .disabled(self.checkout_panel.busy)
+                            .tooltip("Review and confirm a merge commit")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.checkout_panel.return_focus =
+                                    this.checkout_panel.trigger_focus.get("pr-merge").cloned();
+                                this.checkout_panel.pr_merge = Some(request.clone());
+                                this.checkout_panel.message = None;
+                                if this.checkout_panel.confirmation_focus.is_none() {
+                                    this.checkout_panel.confirmation_focus =
+                                        Some(cx.focus_handle());
+                                }
+                                if let Some(focus) = &this.checkout_panel.confirmation_focus {
+                                    focus.focus(window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
+                section = section.child(metadata);
+                if self.checkout_panel.pr_expanded {
+                    section = section.child(
+                        div()
+                            .id("checkout-pr-expanded")
+                            .debug_selector(|| "checkout-pr-expanded".into())
+                            .flex()
+                            .flex_col()
+                            .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                            .pr(rpx(SPACE_2XL))
+                            .py(rpx(SPACE_SM))
+                            .gap(rpx(SPACE_SM))
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(
+                                div()
+                                    .id("checkout-pr-checks")
+                                    .debug_selector(|| "checkout-pr-checks".into())
+                                    .child(pr.checks()),
+                            )
+                            .child(pr.review_progress()),
+                    );
+                }
+            }
+            Some(Ok(None)) => {
+                let ready = state.is_some_and(|s| {
+                    s.branch.is_some() && s.upstream.is_some() && s.ahead == Some(0)
+                });
+                let target = path.to_string();
+                section = section.child(checkout_loading_row("checkout-pr", if self.checkout_panel.pr_composing { "Preparing PR…" } else { "Create PR…" }, "plus", self.checkout_panel.pr_composing, window, cx)
+                    .disabled(!ready || self.checkout_panel.busy || self.checkout_panel.pr_composing)
+                    .tooltip(if ready { "Review title, description, base and changes on GitHub before creating the PR" } else { "Publish or push this branch before creating a PR" })
+                    .on_click(cx.listener(move |this, _, _, cx| this.checkout_compose_pr(target.clone(), cx))));
+            }
+            Some(Err(error)) => {
+                section = section.child(
+                    checkout_row("checkout-pr", "PR status unavailable", "git", window, cx)
+                        .tooltip(error.clone())
+                        .disabled(self.checkout_panel.pr_loading)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.checkout_panel.pr_checked_at = None;
+                            this.checkout_panel.pr_state = None;
+                            cx.notify();
+                        })),
+                );
+                section = section.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .px(rpx(SPACE_2XL))
+                        .pb(rpx(SPACE_SM))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(error),
+                );
+            }
+            None => {
+                section = section.child(
+                    checkout_loading_row("checkout-pr", "Checking PR…", "git", true, window, cx)
+                        .disabled(true),
+                );
+            }
+        }
+        if let Some(message) = &self.checkout_panel.pr_message {
+            section = section.child(
+                div()
+                    .px(rpx(SPACE_2XL))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(message.clone()),
+            );
+        }
+        section.into_any_element()
+    }
+
+    fn checkout_resolve_pr(&mut self, path: String, pr: PullRequest, cx: &mut Context<Self>) {
+        if self.checkout_panel.busy
+            || self.checkout_panel.path.as_ref() != Some(&path)
+            || pr.state != "OPEN"
+            || pr.mergeable != "CONFLICTING"
+        {
+            return;
+        }
+        if !crate::runtime::native_codex_enabled(&cx.global::<SettingsState>().store, None) {
+            self.checkout_panel.pr_message =
+                Some("Enable native agent sessions to prepare conflict resolution".into());
+            cx.notify();
+            return;
+        }
+        let provider = match self.checkout_commit_provider(cx) {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.checkout_panel.pr_message = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        let agent = if provider == grove_core::codex::Provider::Claude {
+            Agent::Claude
+        } else {
+            Agent::Codex
+        };
+        let Some((idx, _)) = self
+            .checkout_targets(cx)
+            .into_iter()
+            .find(|(_, target)| target == &path)
+        else {
+            return;
+        };
+
+        if self.launch(idx, path.clone(), agent, cx) {
+            if let Some(Selection::Session(id)) = self.selection {
+                let session = self.runtime.read(cx).registry.read(cx).codex(id).cloned();
+                if let Some(session) = session {
+                    if let Err(error) = prepare_resolution_draft(&session, &path, provider, &pr, cx)
+                    {
+                        self.show_launch_error(error, cx);
+                    }
+                }
+            }
+        }
+    }
+
+    fn checkout_merge_pr(&mut self, path: String, pr: PullRequest, cx: &mut Context<Self>) {
+        if self.checkout_panel.busy || self.checkout_panel.path.as_ref() != Some(&path) {
+            return;
+        }
+        let Some(Ok(expected)) = self.checkout_panel.state.clone() else {
+            return;
+        };
+        let generation = self.checkout_panel.generation;
+        self.checkout_panel.busy = true;
+        self.checkout_panel.message = Some("Validating pull request…".into());
+        cx.spawn(async move |this, cx| {
+            let target = path.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { checkout_pr::merge(Path::new(&target), &expected, &pr) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.checkout_panel.busy = false;
+                if this.checkout_panel.accepts_result(&path, generation) {
+                    this.checkout_panel.pr_checked_at = None;
+                    this.checkout_panel.pr_state = None;
+                    this.checkout_panel.checked_at = None;
+                    match result {
+                        Ok(()) => {
+                            this.checkout_panel.pr_merge = None;
+                            this.checkout_panel.message = None;
+                            this.checkout_panel.pr_message = Some("Pull request merged".into());
+                        }
+                        Err(error) => {
+                            this.checkout_panel.pr_merge = None;
+                            this.checkout_panel.message = None;
+                            this.checkout_panel.pr_message = Some(error);
+                        }
+                    }
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -365,6 +738,7 @@ impl Sidebar {
             return;
         }
         self.checkout_panel.publish = None;
+        self.checkout_panel.pr_merge = None;
         self.checkout_panel.message = None;
         if let Some(focus) = self.checkout_panel.return_focus.take() {
             focus.focus(window, cx);
@@ -437,6 +811,20 @@ impl Sidebar {
                     })),
                 );
         }
+        if let Some(pr) = self.checkout_panel.pr_merge.clone() {
+            let merge_path = path.clone();
+            form = form
+                .child(div().text_size(rpx(TEXT_DISPLAY)).child("Merge pull request?"))
+                .child(format!("Merge PR #{} with a merge commit: {}", pr.number, pr.title()))
+                .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(pr.url.clone()))
+                .child("The exact PR head, checks, reviews and checkout will be revalidated. Repository protections apply.")
+                .child(form_action("checkout-confirm-merge", if busy { "Merging…" } else { "Create merge commit" }, true, window, cx)
+                    .debug_selector(|| "checkout-confirm-merge".into())
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.checkout_merge_pr(merge_path.clone(), pr.clone(), cx);
+                    })));
+        }
         if let Some(message) = &self.checkout_panel.message {
             form = form.child(
                 div()
@@ -483,7 +871,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.checkout_panel.narrow_content = None;
-        for kind in ["checkout", "publish", "summary", "commit"] {
+        for kind in ["checkout", "publish", "summary", "commit", "pr-merge"] {
             self.checkout_panel
                 .trigger_focus
                 .entry(kind)
@@ -537,6 +925,14 @@ impl Sidebar {
                 self.checkout_panel.path = Some(path.clone());
                 self.checkout_panel.checked_at = None;
                 self.checkout_panel.state = None;
+                self.checkout_panel.pr_state = None;
+                self.checkout_panel.pr_identity = None;
+                self.checkout_panel.pr_loading = false;
+                self.checkout_panel.pr_checked_at = None;
+                self.checkout_panel.pr_expanded = false;
+                self.checkout_panel.pr_composing = false;
+                self.checkout_panel.pr_merge = None;
+                self.checkout_panel.pr_message = None;
                 self.checkout_panel.summary = None;
                 self.checkout_panel.loading = false;
                 self.checkout_panel.message = None;
@@ -552,7 +948,7 @@ impl Sidebar {
             {
                 self.checkout_load(path.clone(), cx);
             }
-            if self.checkout_panel.publish.is_some() {
+            if self.checkout_panel.publish.is_some() || self.checkout_panel.pr_merge.is_some() {
                 return self.render_checkout_confirmation(window, cx);
             }
             let project = cx.global::<SettingsState>().store.projects[idx].clone();
@@ -606,6 +1002,24 @@ impl Sidebar {
                         .my(rpx(SPACE_SM)),
                 );
             let state = self.checkout_panel.state.clone().and_then(Result::ok);
+            if let Some(state) = state.as_ref() {
+                let identity = state.target_identity();
+                if self.checkout_panel.pr_identity.as_ref() != Some(&identity) {
+                    self.checkout_panel.pr_identity = Some(identity);
+                    self.checkout_panel.pr_state = None;
+                    self.checkout_panel.pr_checked_at = None;
+                    self.checkout_panel.pr_expanded = false;
+                }
+                if !self.checkout_panel.pr_loading
+                    && self
+                        .checkout_panel
+                        .pr_checked_at
+                        .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+                {
+                    self.checkout_load_pr(path.clone(), state.clone(), cx);
+                }
+            }
+            card = card.child(self.render_checkout_pr(&path, state.as_ref(), window, cx));
             let target = path.clone();
             let busy = self.checkout_panel.busy;
             let same_job = self.checkout_panel.commit_job_path.as_ref() == Some(&path)
@@ -644,6 +1058,19 @@ impl Sidebar {
                     CommitUi::Failed => ("Retry commit", "git", !busy, false),
                     _ => (base_label, base_glyph, base_enabled && !busy, false),
                 }
+            };
+            let label = if !loading && base_label == "Push commits" && label == base_label {
+                format!(
+                    "Push {} commit{}",
+                    state.as_ref().and_then(|s| s.ahead).unwrap_or_default(),
+                    if state.as_ref().and_then(|s| s.ahead) == Some(1) {
+                        ""
+                    } else {
+                        "s"
+                    }
+                )
+            } else {
+                label.to_string()
             };
             let publish = state.as_ref().is_some_and(|state| {
                 !state.dirty
@@ -703,14 +1130,40 @@ impl Sidebar {
             if let Some((added, removed)) = totals {
                 changes_row = changes_row.child(change_stat_counts(added, removed, stat_widths));
             }
-            let target = path;
+            let target = path.clone();
             card = card.child(
                 changes_row.on_click(cx.listener(move |this, _, window, cx| {
                     this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
                 })),
             );
             if let Some(summary) = summary.filter(|summary| summary.groups.len() > 1) {
-                card = card.child(change_groups(&summary, stat_widths));
+                for (group, added, removed) in summary.groups {
+                    let target = path.clone();
+                    card = card.child(
+                        checkout_action(group.label(), group.label(), false, window, cx)
+                            .debug_selector(move || group.label().into())
+                            .icon_only()
+                            .w_full()
+                            .h(rpx(CARD_LINE_SM_H))
+                            .px(rpx(SPACE_2XL))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .pl(rpx(ICON_LG + SPACE_2XL))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child(group.label()),
+                            )
+                            .child(change_stat_counts(added, removed, stat_widths))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
+                                if let Some(viewer) = &this.diff_viewer {
+                                    viewer.update(cx, |viewer, cx| viewer.set_group(group, cx));
+                                }
+                            })),
+                    );
+                }
             }
         } else {
             let target = targets.first().cloned();
@@ -1041,7 +1494,15 @@ fn change_stat_counts(added: u32, removed: u32, widths: [gpui::Pixels; 2]) -> im
         .children(
             [
                 (format!("+{added}"), c::GREEN(), widths[0]),
-                (format!("−{removed}"), c::RED(), widths[1]),
+                (
+                    if removed == 0 {
+                        String::new()
+                    } else {
+                        format!("−{removed}")
+                    },
+                    c::RED(),
+                    widths[1],
+                ),
             ]
             .into_iter()
             .map(|(text, color, width)| {
@@ -1054,34 +1515,6 @@ fn change_stat_counts(added: u32, removed: u32, widths: [gpui::Pixels; 2]) -> im
                     .child(text)
             }),
         )
-}
-
-/// Per-group breakdown under the Changes row, inset to the row labels with right-aligned count columns.
-fn change_groups(summary: &ChangeSummary, widths: [gpui::Pixels; 2]) -> impl IntoElement {
-    div()
-        .id("checkout-change-groups")
-        .debug_selector(|| "checkout-change-groups".into())
-        .flex()
-        .flex_col()
-        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
-        .pr(rpx(SPACE_2XL))
-        .pb(rpx(SPACE_SM))
-        .text_size(rpx(TEXT_SMALL))
-        .children(summary.groups.iter().map(|&(group, added, removed)| {
-            div()
-                .flex()
-                .items_center()
-                .h(rpx(CARD_LINE_SM_H))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(c::FG_DIM())
-                        .child(group.label()),
-                )
-                .child(change_stat_counts(added, removed, widths))
-        }))
 }
 
 fn commit_row_state(state: Option<&CheckoutGitState>) -> (&'static str, &'static str, bool) {
@@ -1144,6 +1577,83 @@ mod tests {
             Some((0, "/one".into()))
         );
     }
+    #[gpui::test]
+    fn codex_and_claude_resolution_handoff_only_drafts_in_fresh_checkout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            let (handle, actions) = grove_core::codex::Handle::channel();
+            let (_updates, receive) = std::sync::mpsc::channel();
+            let saved = grove_core::codex::SavedSession {
+                rich_plans: grove_core::rich_plan::PlanStore::default(),
+                claude_resume: None,
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
+                provider,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+                key: "conflict-fixture".into(),
+                project: "Fixture".into(),
+                cwd: "/fixture/checkout".into(),
+                label: provider.label().into(),
+                title: None,
+                title_generation: None,
+                roots: Vec::new(),
+                thread_id: None,
+                items: Vec::new(),
+                work_periods: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                config_args: Vec::new(),
+            };
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(
+                    grove_core::codex::Snapshot::new(saved),
+                    grove_core::codex::Connection {
+                        handle,
+                        updates: receive.into(),
+                    },
+                    cx,
+                )
+            });
+            let pr: PullRequest = serde_json::from_value(serde_json::json!({"number":142,"title":"Fix checkout","url":"https://github.com/o/r/pull/142","state":"OPEN","isDraft":false,"headRefOid":"head","mergeable":"CONFLICTING"})).unwrap();
+            cx.update(|cx| {
+                assert!(
+                    prepare_resolution_draft(&session, "/wrong/checkout", provider, &pr, cx)
+                        .is_err()
+                );
+                assert!(
+                    prepare_resolution_draft(&session, "/fixture/checkout", provider, &pr, cx)
+                        .is_ok()
+                );
+            });
+            let draft = session.read_with(cx, |session, _| session.state.saved.draft.clone());
+            assert!(
+                draft.contains("PR #142")
+                    && draft.contains("/fixture/checkout")
+                    && draft.contains("Do not push or merge")
+            );
+            assert!(
+                matches!(actions.try_recv().unwrap(), grove_core::codex::Action::Draft(text) if text == draft)
+            );
+            assert!(actions.try_recv().is_err());
+            cx.update(|cx| {
+                assert!(
+                    prepare_resolution_draft(&session, "/fixture/checkout", provider, &pr, cx)
+                        .is_err()
+                );
+            });
+            assert_eq!(
+                session.read_with(cx, |session, _| session.state.saved.draft.clone()),
+                draft
+            );
+            assert!(actions.try_recv().is_err());
+        }
+    }
+
     #[test]
     fn completion_cannot_cross_targets_or_a_return_to_the_same_path() {
         let panel = CheckoutPanel {
@@ -1156,15 +1666,25 @@ mod tests {
         assert!(!panel.accepts_result("/one", 1));
     }
     #[gpui::test]
-    fn four_icon_rows_clear_appbar_and_narrow_disclosure_keeps_header(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn checkout_rows_pr_disclosure_and_filtered_changes_keep_layout(cx: &mut gpui::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(fixture.path())
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs_err::write(fixture.path().join("main.rs"), "fn main() {}\n").unwrap();
+        fs_err::write(fixture.path().join("README.md"), "# Example\n").unwrap();
+        let fixture_path = fixture.path().to_string_lossy().into_owned();
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
                 projects: vec![grove_core::storage::Project {
                     name: "Checkout QA".into(),
-                    path: "/grove-checkout-layout-fixture".into(),
+                    path: fixture_path.clone(),
                     scripts: grove_core::storage::ProjectScripts::default(),
                     archived: false,
                     worktree_dir: None,
@@ -1176,7 +1696,7 @@ mod tests {
         });
         let (sidebar, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(crate::runtime::Runtime::new);
-            let path = "/grove-checkout-layout-fixture".to_owned();
+            let path = fixture_path.clone();
             let id = runtime.read(cx).registry.clone().update(cx, |registry, _| {
                 registry.insert_meta("Checkout QA".into(), path.clone(), Agent::Codex)
             });
@@ -1243,6 +1763,158 @@ mod tests {
                 icon_x = Some(glyph.left());
             }
         }
+        let initial_selection = sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
+        for provider in [Agent::Codex, Agent::Claude] {
+            cx.update(|_, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    let registry = sidebar.runtime.read(cx).registry.clone();
+                    let id = registry.update(cx, |registry, _| registry.insert_meta("Checkout QA".into(), fixture_path.clone(), provider));
+                    sidebar.selection = Some(Selection::Session(id));
+                    sidebar.checkout_panel.root_owner = sidebar.selection.clone();
+                    let state = checkout_git::inspect(fixture.path()).unwrap();
+                    sidebar.checkout_panel.pr_identity = Some(state.target_identity());
+                    sidebar.checkout_panel.state = Some(Ok(state));
+                    sidebar.checkout_panel.checked_at = Some(Instant::now());
+                    sidebar.checkout_panel.pr_checked_at = Some(Instant::now());
+                    sidebar.checkout_panel.pr_state = Some(Ok(Some(serde_json::from_value(serde_json::json!({
+                        "number":142,"url":"https://github.com/example/project/pull/142","state":"OPEN","isDraft":false,"headRefOid":"fixture","reviewDecision":"APPROVED","mergeable":"CONFLICTING",
+                        "latestReviews":[{"state":"APPROVED"}],"reviewRequests":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]
+                    })).unwrap())));
+                    sidebar.checkout_panel.summary = Some(diff::summarize(&diff::changed_files(&fixture_path)));
+                    sidebar.checkout_panel.pr_expanded = false;
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let pr = cx.debug_bounds("checkout-pr").unwrap();
+            let commit = cx.debug_bounds("checkout-commit-publish").unwrap();
+            let changes = cx.debug_bounds("checkout-changes").unwrap();
+            assert!(pr.bottom() <= commit.top() && commit.bottom() <= changes.top());
+            let details = cx.debug_bounds("checkout-pr-details").unwrap();
+            cx.simulate_click(details.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let expanded = cx.debug_bounds("checkout-pr-expanded").unwrap();
+            let disclosure_label = cx.debug_bounds("checkout-pr-label").unwrap();
+            let checks = cx.debug_bounds("checkout-pr-checks").unwrap();
+            assert_eq!(checks.left(), disclosure_label.left());
+            assert_eq!(
+                cx.debug_bounds("checkout-pr-number").unwrap().left(),
+                disclosure_label.left()
+            );
+            let resolve = cx.debug_bounds("checkout-pr-resolve").unwrap();
+            assert!(resolve.right() <= cx.debug_bounds("checkout-card").unwrap().right());
+            let commit = cx.debug_bounds("checkout-commit-publish").unwrap();
+            let changes = cx.debug_bounds("checkout-changes").unwrap();
+            assert!(expanded.bottom() <= commit.top() && commit.bottom() <= changes.top());
+            for group in [diff::ChangeGroup::Code, diff::ChangeGroup::Docs] {
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                let group_row = cx.debug_bounds(group.label()).unwrap();
+                cx.simulate_click(group_row.center(), gpui::Modifiers::default());
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        let viewer = sidebar.diff_viewer.as_ref().unwrap().read(cx);
+                        assert_eq!(viewer.group, Some(group));
+                        assert!(!viewer.files.is_empty());
+                        assert!(viewer
+                            .files
+                            .iter()
+                            .all(|file| diff::ChangeGroup::of(&file.path) == group));
+                        sidebar.act(Action::CloseDiff, window, cx);
+                    });
+                });
+            }
+        }
+        // A server-ready PR exposes merge only with a synchronized, clean checkout.
+        let (saved_state, saved_pr) = sidebar.read_with(cx, |sidebar, _| {
+            (
+                sidebar.checkout_panel.state.clone(),
+                sidebar.checkout_panel.pr_state.clone(),
+            )
+        });
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let state = sidebar
+                    .checkout_panel
+                    .state
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap();
+                state.head = Some("fixture".into());
+                state.dirty = false;
+                state.upstream = Some("origin/main".into());
+                state.ahead = Some(0);
+                state.behind = Some(0);
+                sidebar.checkout_panel.pr_identity = Some(state.target_identity());
+                let pr = sidebar
+                    .checkout_panel
+                    .pr_state
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap();
+                pr.title =
+                    "Improve checkout actions with a deliberately long title for truncation".into();
+                pr.mergeable = "MERGEABLE".into();
+                pr.merge_state_status = "CLEAN".into();
+                pr.status_check_rollup = Some(vec![
+                    serde_json::json!({"status":"COMPLETED","conclusion":"SUCCESS"}),
+                ]);
+                cx.notify();
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let merge = cx.debug_bounds("checkout-pr-merge").unwrap();
+        cx.simulate_click(merge.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("checkout-confirm-merge").is_some());
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert!(sidebar.read(cx).checkout_panel.trigger_focus["pr-merge"].is_focused(window));
+        });
+        assert!(cx.debug_bounds("checkout-confirm-merge").is_none());
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.checkout_panel.state = saved_state;
+                sidebar.checkout_panel.pr_state = saved_pr;
+                sidebar.checkout_panel.pr_identity = sidebar
+                    .checkout_panel
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.as_ref().ok())
+                    .map(CheckoutGitState::target_identity);
+                cx.notify();
+            });
+        });
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.selection.clone_from(&initial_selection);
+                sidebar
+                    .checkout_panel
+                    .root_owner
+                    .clone_from(&initial_selection);
+                cx.notify();
+            });
+        });
         assert!(cx.debug_bounds("checkout-path").is_none());
         assert!(cx.debug_bounds("checkout-branch").is_none());
         cx.simulate_resize(gpui::size(gpui::px(500.), gpui::px(600.)));
@@ -1261,7 +1933,10 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-        assert!(cx.debug_bounds("checkout-card").is_some());
+        let narrow_card = cx.debug_bounds("checkout-card").unwrap();
+        let narrow_pr = cx.debug_bounds("checkout-pr").unwrap();
+        assert!(narrow_pr.left() >= narrow_card.left() && narrow_pr.right() <= narrow_card.right());
+        assert!(cx.debug_bounds("checkout-pr-expanded").is_some());
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -1273,10 +1948,7 @@ mod tests {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
             for selection in [
                 Some(Selection::Project(0)),
-                Some(Selection::Worktree(
-                    0,
-                    "/grove-checkout-layout-fixture".into(),
-                )),
+                Some(Selection::Worktree(0, fixture_path.clone())),
                 Some(Selection::Session(SessionId::from_raw(u64::MAX))),
                 None,
             ] {

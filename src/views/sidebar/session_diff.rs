@@ -31,11 +31,12 @@ impl Sidebar {
         if !viewer.read(cx).loading {
             viewer.update(cx, DiffViewerState::maybe_refresh_live);
         }
-        let (wt_path, branch, changed_files, selected_path, loading, patch, rows) = {
+        let (wt_path, branch, group, changed_files, selected_path, loading, patch, rows) = {
             let viewer = viewer.read(cx);
             (
                 viewer.wt_path.clone(),
                 viewer.branch.clone(),
+                viewer.group,
                 viewer.files.clone(),
                 viewer.selected_path.clone(),
                 viewer.loading,
@@ -170,7 +171,8 @@ impl Sidebar {
                         .border_b_1()
                         .border_color(c::BORDER())
                         .child(div().flex_1().min_w_0().truncate().child(format!(
-                            "Changes · {}",
+                            "{} · {}",
+                            group.map_or("Changes", |g| g.label()),
                             branch.as_deref().unwrap_or(&wt_path)
                         )))
                         .child(

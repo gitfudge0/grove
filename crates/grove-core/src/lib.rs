@@ -4,6 +4,7 @@ pub mod agent;
 mod agent_guidance;
 pub mod attention;
 pub mod checkout_git;
+pub mod checkout_pr;
 pub mod checkpoint;
 pub mod claude;
 pub mod claude_agents;
