@@ -249,7 +249,7 @@ impl SavedSession {
         saved.title = None;
         saved.title_generation = None;
         saved.items.clear();
-        saved.rich_plans = Default::default();
+        saved.rich_plans = crate::rich_plan::PlanStore::default();
         saved.work_periods.clear();
         saved.draft.clear();
         saved.draft_images.clear();
