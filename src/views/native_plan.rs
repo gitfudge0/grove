@@ -120,7 +120,7 @@ fn code_markdown(text: &str, language: &str) -> String {
     let fence = "`".repeat(longest.max(2) + 1);
     let language = language
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .collect::<String>();
     format!("{fence}{language}\n{text}\n{fence}")
 }
@@ -233,7 +233,7 @@ impl NativePlan {
                             review,
                         },
                         cx,
-                    )
+                    );
                 });
             }
             Err(error) => self.error = Some(error.to_string()),
@@ -448,7 +448,7 @@ impl NativePlan {
         .on_click(cx.listener(move |this, _, window, cx| {
             if let Some(source) = source.clone() {
                 this.html.update(cx, |html, cx| {
-                    html.open_snapshot(key.clone(), source, window, cx)
+                    html.open_snapshot(key.clone(), source, window, cx);
                 });
             }
         }))
@@ -699,7 +699,7 @@ impl NativePlan {
                         gpui::img(image.clone())
                             .max_w_full()
                             .max_h(rpx(MODAL_SCROLL_MAX_H))
-                            .when(self.fit_images.contains(&id), |image| image.w_full())
+                            .when(self.fit_images.contains(&id), gpui::Styled::w_full)
                             .object_fit(gpui::ObjectFit::Contain),
                     );
                 }
@@ -1176,7 +1176,7 @@ impl Render for NativePlan {
                             .on_click(move |_, _, cx| {
                                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                     response.clone(),
-                                ))
+                                ));
                             }),
                         )
                         .child(
@@ -1199,7 +1199,7 @@ impl Render for NativePlan {
                                             revision_id: this.revision_id.clone(),
                                         },
                                         cx,
-                                    )
+                                    );
                                 });
                                 cx.notify();
                             })),
@@ -1379,7 +1379,7 @@ mod tests {
                 view.review_open = true;
                 view.reveal(window, cx);
                 assert!(view.expanded(cx));
-            })
+            });
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -1395,7 +1395,7 @@ mod tests {
                 let before = view.snapshot(cx);
                 view.set_feedback("comments", "claim", "Unsafely late edit".into(), cx);
                 assert_eq!(view.snapshot(cx)["review"], before["review"]);
-            })
+            });
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -1418,15 +1418,15 @@ mod tests {
                 | Action::SubmitWithMode { .. }
         )));
         plan.read_with(cx, |view, cx| {
-            assert_eq!(view.session.read(cx).state.saved.draft, "KEEP THIS DRAFT")
+            assert_eq!(view.session.read(cx).state.saved.draft, "KEEP THIS DRAFT");
         });
         cx.update(|_, cx| {
             plan.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
                     session.state.error = Some("Provider unavailable for this review".into());
                     cx.notify();
-                })
-            })
+                });
+            });
         });
         cx.run_until_parked();
         cx.update(|window, cx| {

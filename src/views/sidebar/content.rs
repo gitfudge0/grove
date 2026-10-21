@@ -2413,7 +2413,7 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
-                rich_plans: Default::default(),
+                rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
@@ -2539,7 +2539,7 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
-                rich_plans: Default::default(),
+                rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,

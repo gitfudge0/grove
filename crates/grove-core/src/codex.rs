@@ -4037,7 +4037,7 @@ mod tests {
     use super::*;
     fn saved() -> SavedSession {
         SavedSession {
-            rich_plans: Default::default(),
+            rich_plans: crate::rich_plan::PlanStore::default(),
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,

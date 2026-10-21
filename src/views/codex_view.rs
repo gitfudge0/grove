@@ -501,7 +501,7 @@ pub struct CodexView {
     composer_motion_finished: Rc<Cell<bool>>,
     tasks_expanded: bool,
     task_cache: Option<Rc<TaskCache>>,
-    _subscriptions: Vec<Subscription>,
+    subscriptions: Vec<Subscription>,
 }
 impl CodexView {
     pub fn new(session: Entity<CodexSession>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -641,7 +641,7 @@ impl CodexView {
             tasks_expanded: true,
             task_cache: None,
             checkout_context: None,
-            _subscriptions: subscriptions,
+            subscriptions,
         }
     }
     pub(crate) fn set_checkout_context(
@@ -2191,7 +2191,7 @@ impl Render for CodexView {
                 let view = cx.new(|cx| {
                     super::native_plan::NativePlan::new(session, html, plan_id, revision_id, cx)
                 });
-                self._subscriptions.push(cx.observe(&view, |this, _, cx| {
+                self.subscriptions.push(cx.observe(&view, |this, _, cx| {
                     this.smooth_follow = false;
                     cx.notify();
                 }));
@@ -3257,8 +3257,8 @@ impl Render for CodexView {
                                                             source: source.clone(),
                                                         },
                                                         cx,
-                                                    )
-                                                })
+                                                    );
+                                                });
                                             }),
                                         ),
                                     ),
@@ -8155,7 +8155,7 @@ mod tests {
     }
     fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
-            rich_plans: Default::default(),
+            rich_plans: grove_core::rich_plan::PlanStore::default(),
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,
