@@ -580,11 +580,16 @@ impl HtmlSession {
                 })
             })
             .clone();
-        artifact.update(cx, |artifact, cx| {
-            artifact.external_return_focus = window.focused(cx);
-            if !expanded(&cx.entity(), cx) {
-                artifact.toggle_expand(window, cx);
-            }
+        let return_focus = window.focused(cx);
+        // Expansion notifies sibling artifacts through their owning session.
+        // Release this session update before that callback can borrow it again.
+        window.defer(cx, move |window, cx| {
+            artifact.update(cx, |artifact, cx| {
+                artifact.external_return_focus = return_focus;
+                if !expanded(&cx.entity(), cx) {
+                    artifact.toggle_expand(window, cx);
+                }
+            });
         });
         cx.notify();
     }
@@ -1438,6 +1443,69 @@ mod tests {
             Empty
         });
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn snapshot_open_releases_owner_before_expansion_and_restores_source_focus(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct Source {
+            focus: FocusHandle,
+        }
+        impl Render for Source {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().track_focus(&self.focus).child("Native plan source")
+            }
+        }
+        cx.update(gpui_component::init);
+        let mut owner = None;
+        let mut source_focus = None;
+        let (_, cx) = cx.add_window_view(|_, cx| {
+            let session = cx.new(|_| HtmlSession::new(PathBuf::from("/tmp"), ScrollHandle::new()));
+            set_context(Some(session.entity_id()), false, cx);
+            let focus = cx.focus_handle();
+            source_focus = Some(focus.clone());
+            owner = Some(session);
+            Source { focus }
+        });
+        let owner = owner.unwrap();
+        let source_focus = source_focus.unwrap();
+        let source = "<html><body>Immutable plan exhibit</body></html>";
+        cx.update(|window, cx| {
+            source_focus.focus(window, cx);
+            owner.update(cx, |session, cx| {
+                session.open_snapshot("saved-plan-asset".into(), source.into(), window, cx);
+                assert!(cx.global::<HtmlUi>().expanded.is_none());
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let artifact = owner.read(cx).artifacts["saved-plan-asset"].clone();
+            assert!(expanded(&artifact, cx));
+            assert_eq!(artifact.read(cx).owner, owner.entity_id());
+            assert_eq!(artifact.read(cx).version.active, source);
+            artifact.update(cx, |artifact, cx| artifact.toggle_expand(window, cx));
+            assert!(cx.global::<HtmlUi>().expanded.is_none());
+            assert!(source_focus.is_focused(window));
+            assert_eq!(owner.read(cx).artifacts.len(), 1);
+            owner.update(cx, |session, cx| {
+                session.open_snapshot(
+                    "saved-plan-asset".into(),
+                    "changed source".into(),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let artifact = owner.read(cx).artifacts["saved-plan-asset"].clone();
+            assert!(expanded(&artifact, cx));
+            assert_eq!(artifact.read(cx).version.active, source);
+            assert_eq!(owner.read(cx).artifacts.len(), 1);
+            artifact.update(cx, |artifact, cx| artifact.toggle_expand(window, cx));
+            assert!(source_focus.is_focused(window));
+        });
     }
 
     #[gpui::test]
