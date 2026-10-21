@@ -178,6 +178,25 @@ fn action_key(event: &gpui::KeyDownEvent) -> bool {
     matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held
 }
 
+/// Icon-only control that copies `text` verbatim, by pointer or keyboard.
+fn copy_control(id: &'static str, label: &'static str, text: String) -> gpui::Stateful<gpui::Div> {
+    let keyboard = text.clone();
+    header_control(id, label)
+        .debug_selector(move || id.into())
+        .tab_index(0)
+        .focus_visible(|style| style.bg(c::BG_HOVER()))
+        .child(crate::icons::icon("copy", ICON_MD, c::FG_DIM()))
+        .on_key_down(move |event, _, cx| {
+            if action_key(event) {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(keyboard.clone()));
+                cx.stop_propagation();
+            }
+        })
+        .on_click(move |_, _, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        })
+}
+
 fn composer_icon(
     id: &'static str,
     label: &'static str,
@@ -2863,7 +2882,6 @@ impl Render for CodexView {
                             );
                         if tool_expanded {
                             let copy = tool_detail(tool);
-                            let keyboard_copy = copy.clone();
                             detail_row = detail_row.child(
                                 div()
                                     .id(("codex-tool-detail", detail_index))
@@ -2878,31 +2896,7 @@ impl Render for CodexView {
                                     .flex()
                                     .flex_col()
                                     .gap(rpx(SPACE_SM))
-                                    .child(
-                                        header_control("codex-copy-tool", "Copy tool call")
-                                            .tab_index(0)
-                                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                            .child(crate::icons::icon("copy", ICON_MD, c::FG_DIM()))
-                                            .on_key_down(move |event, _, cx| {
-                                                if matches!(
-                                                    event.keystroke.key.as_str(),
-                                                    "enter" | "space"
-                                                ) && !event.is_held
-                                                {
-                                                    cx.write_to_clipboard(
-                                                        gpui::ClipboardItem::new_string(
-                                                            keyboard_copy.clone(),
-                                                        ),
-                                                    );
-                                                    cx.stop_propagation();
-                                                }
-                                            })
-                                            .on_click(move |_, _, cx| {
-                                                cx.write_to_clipboard(
-                                                    gpui::ClipboardItem::new_string(copy.clone()),
-                                                );
-                                            }),
-                                    )
+                                    .child(copy_control("codex-copy-tool", "Copy tool call", copy))
                                     .child(
                                         TextView::markdown(
                                             ("codex-group-tool-text", detail_index),
@@ -3108,15 +3102,7 @@ impl Render for CodexView {
                                     })),
                             )
                         })
-                        .child(
-                            header_control("codex-copy", "Copy message")
-                                .child(crate::icons::icon("copy", ICON_MD, c::FG_DIM()))
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        copy.clone(),
-                                    ));
-                                }),
-                        ),
+                        .child(copy_control("codex-copy", "Copy message", copy.clone())),
                 );
             }
             if !tool {
@@ -3135,13 +3121,34 @@ impl Render for CodexView {
                         div()
                             .id(format!("codex-message-body-{index}"))
                             .debug_selector(move || format!("codex-message-body-{index}"))
-                            .child(
-                                TextView::markdown(("codex-text", index), text)
+                            .child({
+                                let view = TextView::markdown(("codex-text", index), text)
                                     .markdown_extensions(html_extensions)
                                     .style(markdown_style(window))
-                                    .selectable(true),
-                            ),
+                                    .selectable(true);
+                                if kind == "agentMessage" {
+                                    view.code_block_actions(|block, _, _| {
+                                        copy_control(
+                                            "codex-copy-code",
+                                            "Copy code",
+                                            block.code().to_string(),
+                                        )
+                                    })
+                                } else {
+                                    view
+                                }
+                            }),
                     );
+                    // A response is copyable once it stops streaming.
+                    if kind == "agentMessage"
+                        && !(state.status.busy() && index + 1 == state.saved.items.len())
+                    {
+                        row = row.child(div().flex().child(copy_control(
+                            "codex-copy-response",
+                            "Copy response",
+                            copy,
+                        )));
+                    }
                 }
                 let html_entity = self.html.clone();
                 let linked =
@@ -12684,6 +12691,32 @@ mod tests {
         assert!(cx
             .update(gpui_component::WindowExt::selected_text)
             .is_empty());
+    }
+    #[gpui::test]
+    fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestAppContext) {
+        let (_view, cx, _actions, updates) = fixture(cx);
+        let text = "Run this:\n\n```sh\n  cargo test --workspace\n```";
+        let mut response = snapshot();
+        response
+            .saved
+            .items
+            .push(serde_json::json!({"type":"agentMessage", "id":"answer", "text":text}));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        let clipboard = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
+        };
+        let code = cx.debug_bounds("codex-copy-code").unwrap().center();
+        cx.simulate_click(code, gpui::Modifiers::default());
+        assert_eq!(
+            clipboard(cx).as_deref().map(str::trim_end),
+            Some("  cargo test --workspace")
+        );
+        let response = cx.debug_bounds("codex-copy-response").unwrap().center();
+        cx.simulate_click(response, gpui::Modifiers::default());
+        assert_eq!(clipboard(cx).as_deref(), Some(text));
     }
     #[gpui::test]
     fn image_only_submission_waits_for_explicit_ack_and_retains_rejected_images(
