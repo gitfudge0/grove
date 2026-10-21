@@ -92,6 +92,7 @@ pub(super) struct NativePlan {
     selected_states: HashMap<String, String>,
     expand_focus: FocusHandle,
     return_focus: FocusHandle,
+    source_focus: Option<FocusHandle>,
     error: Option<String>,
 }
 
@@ -100,6 +101,28 @@ fn string(value: &Value, key: &str) -> String {
 }
 fn entries(value: &Value) -> Vec<Value> {
     value.as_array().cloned().unwrap_or_default()
+}
+
+fn target_key(kind: &str, id: &str) -> String {
+    json!([kind, id]).to_string()
+}
+fn code_markdown(text: &str, language: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for ch in text.chars() {
+        if ch == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let fence = "`".repeat(longest.max(2) + 1);
+    let language = language
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>();
+    format!("{fence}{language}\n{text}\n{fence}")
 }
 
 impl NativePlan {
@@ -165,6 +188,7 @@ impl NativePlan {
             selected_states: HashMap::new(),
             expand_focus: cx.focus_handle().tab_stop(true),
             return_focus: cx.focus_handle().tab_stop(true),
+            source_focus: None,
             error: None,
         }
     }
@@ -229,11 +253,6 @@ impl NativePlan {
                 own.remove(target);
             }
         }
-        if bucket == "own_answers" {
-            if let Some(answers) = review["answers"].as_object_mut() {
-                answers.remove(target);
-            }
-        }
         review[bucket][target] = json!(value);
         self.save_review(review, cx);
     }
@@ -260,7 +279,12 @@ impl NativePlan {
                 Vec::new()
             }
             let mut viewed = entries(&review["viewed_decisions"]);
-            for decision in decision_ids(&self.snapshot(cx)["document"]["claims"], id) {
+            let claim_id = serde_json::from_str::<(String, String)>(id)
+                .ok()
+                .filter(|(kind, _)| kind == "claim")
+                .map(|(_, id)| id)
+                .unwrap_or_default();
+            for decision in decision_ids(&self.snapshot(cx)["document"]["claims"], &claim_id) {
                 if !viewed.contains(&json!(decision)) {
                     viewed.push(json!(decision));
                 }
@@ -293,8 +317,12 @@ impl NativePlan {
         ui.expanded = (!expanded).then_some(entity);
         ui.owner = Some(self.html.entity_id());
         if expanded {
-            self.expand_focus.focus(window, cx);
+            self.source_focus
+                .take()
+                .unwrap_or_else(|| self.expand_focus.clone())
+                .focus(window, cx);
         } else {
+            self.source_focus = window.focused(cx);
             self.return_focus.focus(window, cx);
         }
         cx.notify();
@@ -439,27 +467,15 @@ impl NativePlan {
         match exhibit["kind"].as_str().unwrap_or_default() {
             "code" | "schema" => {
                 let text = string(exhibit, "text");
-                let fence = "`".repeat(
-                    text.lines()
-                        .map(|l| l.chars().take_while(|c| *c == '`').count())
-                        .max()
-                        .unwrap_or_default()
-                        .max(2)
-                        + 1,
-                );
-                let language = string(exhibit, "language")
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric())
-                    .collect::<String>();
                 body = body.child(
                     TextView::markdown(
                         format!("plan-code-{target}"),
-                        format!("{fence}{language}\n{text}\n{fence}"),
+                        code_markdown(&text, &string(exhibit, "language")),
                     )
                     .style(super::codex_view::markdown_style(window))
                     .selectable(true),
                 );
-                let lines_target = format!("{target}:lines");
+                let lines_target = target_key("line_picker", target);
                 let show_lines = lines_target.clone();
                 body = body.child(
                     transcript_action(
@@ -486,7 +502,7 @@ impl NativePlan {
                         .skip(page * LINES_PER_PAGE)
                         .take(LINES_PER_PAGE)
                     {
-                        let line_id = format!("{target}:line:{}", index + 1);
+                        let line_id = target_key("line", &json!([target, index + 1]).to_string());
                         let toggle = line_id.clone();
                         body = body.child(
                             div()
@@ -576,7 +592,7 @@ impl NativePlan {
             }
             "calls" => {
                 for row in entries(&exhibit["entries"]) {
-                    let id = format!("call:{}", string(&row, "id"));
+                    let id = target_key("call", &json!([target, string(&row, "id")]).to_string());
                     let toggle = id.clone();
                     body = body.child(
                         transcript_action(id.clone(), string(&row, "title"), false, window, cx)
@@ -627,7 +643,7 @@ impl NativePlan {
                     if !state["screen"].is_null() {
                         body = body.child(self.exhibit(
                             &state["screen"],
-                            &format!("{target}-screen"),
+                            &target_key("screen", &json!([target, selected]).to_string()),
                             snapshot,
                             window,
                             cx,
@@ -752,9 +768,10 @@ impl NativePlan {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = string(claim, "id");
-        let toggle = id.clone();
-        let comment = id.clone();
-        let open = self.open.contains(&id);
+        let claim_key = target_key("claim", &id);
+        let toggle = claim_key.clone();
+        let comment = claim_key.clone();
+        let open = self.open.contains(&claim_key);
         let mut body = div()
             .flex()
             .flex_col()
@@ -787,7 +804,7 @@ impl NativePlan {
                         c::FG_DIM(),
                     ))
                     .on_key_down(cx.listener({
-                        let key = id.clone();
+                        let key = claim_key.clone();
                         move |this, event: &gpui::KeyDownEvent, _, cx| {
                             let selected = match event.keystroke.key.as_str() {
                                 "right" => !this.open.contains(&key),
@@ -827,13 +844,14 @@ impl NativePlan {
                     })),
                 ),
         );
-        if self.comments_open.contains(&id) {
-            body = body.child(self.comment(&id, snapshot, window, cx));
+        if self.comments_open.contains(&claim_key) {
+            body = body.child(self.comment(&claim_key, snapshot, window, cx));
         }
         if open {
             if !claim["exhibit"].is_null() {
-                body = body.child(self.exhibit(&claim["exhibit"], &id, snapshot, window, cx));
-                let target = format!("{id}:exhibit");
+                body =
+                    body.child(self.exhibit(&claim["exhibit"], &claim_key, snapshot, window, cx));
+                let target = target_key("exhibit", &claim_key);
                 let toggle = target.clone();
                 body = body.child(
                     transcript_action(
@@ -859,8 +877,12 @@ impl NativePlan {
             }
             for decision in entries(&claim["decisions"]) {
                 let decision_id = string(&decision, "id");
+                let own_active = snapshot["review"]["own_answers"][&decision_id]
+                    .as_str()
+                    .is_some_and(|s| !s.trim().is_empty());
                 let answer = snapshot["review"]["answers"][&decision_id]
                     .as_str()
+                    .filter(|_| !own_active)
                     .map(str::to_owned);
                 body = body.child(self.text(
                     format!("decision-{decision_id}"),
@@ -951,6 +973,19 @@ impl Render for NativePlan {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot(cx);
         let doc = &snapshot["document"];
+        let extra_counts = format!(
+            "{}{}",
+            if doc["changes"]["new"].as_u64().unwrap_or_default() > 0 {
+                format!(" · {} new", doc["changes"]["new"])
+            } else {
+                String::new()
+            },
+            if doc["changes"]["deleted"].as_u64().unwrap_or_default() > 0 {
+                format!(" · {} deleted", doc["changes"]["deleted"])
+            } else {
+                String::new()
+            }
+        );
         let expanded = self.expanded(cx);
         if !self.restored {
             self.restored = true;
@@ -1007,18 +1042,20 @@ impl Render for NativePlan {
                 .text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG_DIM())
                 .child(format!(
-                    "Proposed · Revision {} · {} files · {} changed",
+                    "Proposed · Revision {} · {} files · {} changed{}",
                     self.revision_id,
                     doc["changes"]["files"].as_u64().unwrap_or_default(),
-                    doc["changes"]["changed"].as_u64().unwrap_or_default()
+                    doc["changes"]["changed"].as_u64().unwrap_or_default(),
+                    extra_counts
                 )),
         );
-        let why = "plan-why";
+        let why = target_key("why", "");
+        let toggle_why = why.clone();
         body = body.child(
-            transcript_action(why, "Why · original requests", false, window, cx)
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle(why, cx))),
+            transcript_action(why.clone(), "Why · original requests", false, window, cx)
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle_why, cx))),
         );
-        if self.open.contains(why) {
+        if self.open.contains(&why) {
             for (index, source) in entries(&doc["sources"]).iter().enumerate() {
                 body = body.child(self.text(
                     format!("quote-{index}"),
@@ -1041,8 +1078,8 @@ impl Render for NativePlan {
                     .child(format!("– {}", scope.as_str().unwrap_or_default())),
             );
         }
-        if self.comments_open.contains("plan") {
-            body = body.child(self.comment("plan", &snapshot, window, cx));
+        if self.comments_open.contains(&target_key("plan", "")) {
+            body = body.child(self.comment(&target_key("plan", ""), &snapshot, window, cx));
         }
         if let Some(error) = &self.error {
             body = body.child(div().text_color(c::RED()).child(error.clone()));
@@ -1056,7 +1093,7 @@ impl Render for NativePlan {
                 .child(
                     transcript_action("plan-comment", "Comment", false, window, cx).on_click(
                         cx.listener(|this, _, _, cx| {
-                            this.comments_open.insert("plan".into());
+                            this.comments_open.insert(target_key("plan", ""));
                             cx.notify();
                         }),
                     ),
@@ -1197,6 +1234,28 @@ mod tests {
         assert!(revision.assets.iter().any(|a| a.mime == "text/html"));
     }
 
+    #[test]
+    fn indented_authored_fences_remain_one_inert_code_block() {
+        let source = "   ```\n[Unexpected](https://example.com)\n   ```";
+        let parsed = markdown::to_mdast(
+            &code_markdown(source, "text"),
+            &markdown::ParseOptions::default(),
+        )
+        .unwrap();
+        let markdown::mdast::Node::Root(root) = parsed else {
+            panic!("expected root")
+        };
+        assert_eq!(
+            root.children.len(),
+            1,
+            "authored content cannot escape the code block"
+        );
+        let markdown::mdast::Node::Code(code) = &root.children[0] else {
+            panic!("expected inert code")
+        };
+        assert_eq!(code.value, source);
+    }
+
     fn exercise_review(provider: Provider, cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let (handle, actions) = Handle::channel();
@@ -1235,9 +1294,13 @@ mod tests {
         });
         let plan = plan.unwrap();
         cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(1000.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
         cx.update(|window, cx| {
             plan.update(cx, |view, cx| {
-                view.toggle("claim", cx);
+                view.toggle(&target_key("claim", "claim"), cx);
                 view.set_feedback("comments", "claim", "First comment".into(), cx);
                 view.set_feedback("own_answers", "decision", "Keep it native".into(), cx);
                 view.set_feedback("comments", "claim:exhibit", "Second comment".into(), cx);
@@ -1265,6 +1328,33 @@ mod tests {
                 let pending = view.snapshot(cx);
                 assert_eq!(pending["review"]["answers"]["decision"], "inline");
                 assert!(pending["review"]["own_answers"]["decision"].is_null());
+                view.set_feedback("own_answers", "decision", "A custom answer".into(), cx);
+                assert_eq!(view.snapshot(cx)["review"]["answers"]["decision"], "inline");
+                view.set_feedback("own_answers", "decision", String::new(), cx);
+                assert_eq!(view.snapshot(cx)["review"]["answers"]["decision"], "inline");
+                let plan_comment = target_key("plan", "");
+                let claim_comment = target_key("claim", "plan");
+                view.set_feedback("comments", &plan_comment, "Whole plan".into(), cx);
+                view.set_feedback(
+                    "comments",
+                    &claim_comment,
+                    "The claim named plan".into(),
+                    cx,
+                );
+                let pending = view.snapshot(cx);
+                assert_eq!(pending["review"]["comments"][&plan_comment], "Whole plan");
+                assert_eq!(
+                    pending["review"]["comments"][&claim_comment],
+                    "The claim named plan"
+                );
+                let reserved_claim = target_key("claim", "plan-why");
+                let why = target_key("why", "");
+                view.toggle(&reserved_claim, cx);
+                view.toggle(&why, cx);
+                view.toggle(&reserved_claim, cx);
+                assert!(view.open.contains(&why));
+                assert!(!view.open.contains(&reserved_claim));
+
                 view.open.clear();
                 view.review_open = true;
                 view.reveal(window, cx);
@@ -1280,6 +1370,13 @@ mod tests {
             .debug_bounds("native-plan-send")
             .expect("explicit Send response is visible");
         cx.simulate_click(send.center(), gpui::Modifiers::default());
+        cx.update(|_, cx| {
+            plan.update(cx, |view, cx| {
+                let before = view.snapshot(cx);
+                view.set_feedback("comments", "claim", "Unsafely late edit".into(), cx);
+                assert_eq!(view.snapshot(cx)["review"], before["review"]);
+            })
+        });
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);

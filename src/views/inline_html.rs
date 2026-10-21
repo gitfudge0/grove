@@ -581,6 +581,7 @@ impl HtmlSession {
             })
             .clone();
         artifact.update(cx, |artifact, cx| {
+            artifact.external_return_focus = window.focused(cx);
             if !expanded(&cx.entity(), cx) {
                 artifact.toggle_expand(window, cx);
             }
@@ -767,6 +768,7 @@ struct HtmlArtifact {
     return_offset: Option<Point<Pixels>>,
     expand_focus: FocusHandle,
     return_focus: FocusHandle,
+    external_return_focus: Option<FocusHandle>,
     anchor: gpui::ScrollAnchor,
     reveal: bool,
     report: bool,
@@ -810,6 +812,7 @@ impl HtmlArtifact {
             return_offset: None,
             expand_focus: cx.focus_handle().tab_stop(true),
             return_focus: cx.focus_handle().tab_stop(true),
+            external_return_focus: None,
         };
         if artifact.path.is_some() {
             artifact.read_file(cx);
@@ -927,7 +930,10 @@ impl HtmlArtifact {
             if let Some(offset) = self.return_offset.take() {
                 self.scroll.set_offset(offset);
             }
-            self.expand_focus.focus(window, cx);
+            self.external_return_focus
+                .take()
+                .unwrap_or_else(|| self.expand_focus.clone())
+                .focus(window, cx);
         } else {
             self.return_offset = Some(self.scroll.offset());
             let entity = cx.entity().downgrade();

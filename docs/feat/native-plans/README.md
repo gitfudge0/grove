@@ -23,7 +23,7 @@ does not change an imported review. Invalid imports show an error and explicit
 Retry while preserving earlier revisions.
 
 The schema has `schema_version: 1`, `plan_id`, `revision_id`, `title`, `sources`
-(`attribution`, `text`), `changes` (`files`, `changed`), `claims` and `scope`.
+(`attribution`, `text`), `changes` (`files`, `new`, `changed`, `deleted`), `claims` and `scope`.
 Each claim has `id`, `text`, optional `exhibit`, `html_links`, `decisions` and
 `children`. Keep claims at most three levels deep and five children per parent.
 Each decision has `id`, `prompt`, `options` (`id`, `label`, `description`) and an

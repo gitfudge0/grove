@@ -11,7 +11,9 @@
   ],
   "changes": {
     "files": 3,
-    "changed": 2
+    "changed": 2,
+    "new": 1,
+    "deleted": 0
   },
   "claims": [
     {

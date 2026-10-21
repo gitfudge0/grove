@@ -55,6 +55,10 @@ pub struct Quote {
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FileCounts {
+    #[serde(default)]
+    pub new: u32,
+    #[serde(default)]
+    pub deleted: u32,
     pub files: u32,
     pub changed: u32,
 }
@@ -214,7 +218,14 @@ impl PlanRevision {
             .review
             .answers
             .iter()
-            .filter(|(_, v)| !v.trim().is_empty())
+            .filter(|(key, v)| {
+                !v.trim().is_empty()
+                    && !self
+                        .review
+                        .own_answers
+                        .get(*key)
+                        .is_some_and(|own| !own.trim().is_empty())
+            })
             .collect();
         answers.sort_by_key(|(k, _)| *k);
         for (target, value) in answers {
@@ -988,6 +999,14 @@ mod tests {
         let text = r.response_text();
         assert!(text.contains("Own answer [choice] Where?:\n> inline"));
         assert!(!text.contains("Inline card"));
+        r.review.answers.insert("choice".into(), "inline".into());
+        let override_text = r.response_text();
+        assert!(override_text.contains("Own answer [choice]"));
+        assert!(!override_text.contains("\nAnswer [choice]"));
+        r.review.own_answers.clear();
+        let restored = r.response_text();
+        assert!(restored.contains("Answer [choice] Where?:\n> Inline card"));
+        assert!(!restored.contains("Own answer [choice]"));
     }
     #[test]
     fn rejects_traversal_symlink_escape_invalid_version_and_duplicate_ids() {
