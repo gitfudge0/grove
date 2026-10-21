@@ -11,6 +11,7 @@ description = "Grove's domain layer — git/tmux/session/storage/theme/upgrade a
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json.workspace = true
+markdown = "1.0.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 base64.workspace = true
 dirs.workspace = true

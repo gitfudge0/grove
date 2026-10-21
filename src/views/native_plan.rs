@@ -135,6 +135,11 @@ impl NativePlan {
     ) -> Self {
         let subscription = cx.observe(&session, |this: &mut Self, session, cx| {
             let state = &session.read(cx).state;
+            if this.send_pending {
+                if let Some(error) = &state.error {
+                    this.error = Some(error.clone());
+                }
+            }
             if state
                 .saved
                 .rich_plans
@@ -150,6 +155,7 @@ impl NativePlan {
             {
                 this.local_review = None;
                 this.inputs.clear();
+                this.error = None;
             }
 
             if state.error.is_some()
@@ -1081,8 +1087,10 @@ impl Render for NativePlan {
         if self.comments_open.contains(&target_key("plan", "")) {
             body = body.child(self.comment(&target_key("plan", ""), &snapshot, window, cx));
         }
-        if let Some(error) = &self.error {
-            body = body.child(div().text_color(c::RED()).child(error.clone()));
+        if !self.review_open {
+            if let Some(error) = &self.error {
+                body = body.child(div().text_color(c::RED()).child(error.clone()));
+            }
         }
         body = body.child(
             div()
@@ -1139,6 +1147,17 @@ impl Render for NativePlan {
                     "{} · Revision {} · {}",
                     self.plan_id, self.revision_id, status
                 )))
+                .when_some(self.error.clone(), |body, error| {
+                    body.child(
+                        div()
+                            .debug_selector(|| "native-plan-send-error".into())
+                            .text_color(c::RED())
+                            .child(error),
+                    )
+                })
+                .when(status == "failed", |body| {
+                    body.child(div().text_color(c::RED()).child(string(delivery, "error")))
+                })
                 .child(self.text("plan-response-text".into(), response.clone(), window))
                 .child(
                     div()
@@ -1171,6 +1190,7 @@ impl Render for NativePlan {
                             .debug_selector(|| "native-plan-send".into())
                             .disabled(locked)
                             .on_click(cx.listener(|this, _, _, cx| {
+                                this.error = None;
                                 this.send_pending = true;
                                 this.session.update(cx, |session, cx| {
                                     session.send(
@@ -1400,6 +1420,26 @@ mod tests {
         plan.read_with(cx, |view, cx| {
             assert_eq!(view.session.read(cx).state.saved.draft, "KEEP THIS DRAFT")
         });
+        cx.update(|_, cx| {
+            plan.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.error = Some("Provider unavailable for this review".into());
+                    cx.notify();
+                })
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        plan.read_with(cx, |view, _| {
+            assert_eq!(
+                view.error.as_deref(),
+                Some("Provider unavailable for this review")
+            );
+            assert!(!view.send_pending);
+        });
+        assert!(cx.debug_bounds("native-plan-send-error").is_some());
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
         plan.read_with(cx, |view, cx| assert!(!view.expanded(cx)));

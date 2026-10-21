@@ -715,32 +715,43 @@ pub fn import_completed(saved: &mut SavedSession) {
     }
 }
 fn markdown_links(text: &str) -> Vec<String> {
+    use markdown::mdast::Node;
+    if !text.contains(".grove-plan.json") {
+        return Vec::new();
+    }
+    let Ok(root) = markdown::to_mdast(text, &markdown::ParseOptions::default()) else {
+        return Vec::new();
+    };
+    // The same Markdown AST rules used by the transcript distinguish real links
+    // from fenced/indented code, inline code, escaped examples and raw HTML.
+    let mut definitions = HashMap::new();
+    let mut stack = vec![&root];
+    while let Some(node) = stack.pop() {
+        if let Node::Definition(definition) = node {
+            definitions
+                .entry(&definition.identifier)
+                .or_insert(&definition.url);
+        }
+        if let Some(children) = node.children() {
+            stack.extend(children.iter().rev());
+        }
+    }
     let mut links = Vec::new();
-    let mut fence: Option<&str> = None;
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            let marker = &trimmed[..3];
-            if fence == Some(marker) {
-                fence = None
-            } else if fence.is_none() {
-                fence = Some(marker)
+    stack.push(&root);
+    while let Some(node) = stack.pop() {
+        let target = match node {
+            Node::Link(link) => Some(&link.url),
+            Node::LinkReference(link) => definitions.get(&link.identifier).copied(),
+            _ => None,
+        };
+        if let Some(target) = target.filter(|target| target.ends_with(".grove-plan.json")) {
+            links.push(target.clone());
+            if links.len() == 20 {
+                break;
             }
-            continue;
         }
-        if fence.is_some() {
-            continue;
-        }
-        for tail in line.split("](").skip(1) {
-            if let Some((path, _)) = tail.split_once(')') {
-                let path = path.trim().trim_start_matches('<').trim_end_matches('>');
-                if path.ends_with(".grove-plan.json") {
-                    links.push(path.to_owned());
-                    if links.len() == 20 {
-                        return links;
-                    }
-                }
-            }
+        if let Some(children) = node.children() {
+            stack.extend(children.iter().rev());
         }
     }
     links
@@ -921,6 +932,41 @@ mod tests {
             &[dir.to_owned()],
         )
     }
+    #[test]
+    fn imports_only_real_markdown_links_with_full_fence_and_path_rules() {
+        let (dir, mut store) = fixture();
+        let nested = dir.path().join("checkout (copy)");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(
+            nested.join("plan.grove-plan.json"),
+            serde_json::to_vec(&document()).unwrap(),
+        )
+        .unwrap();
+        let text="````text\n```\n[Fake](missing.grove-plan.json)\n````\n\n`[Inline code](missing-too.grove-plan.json)`\n\n[Review](<checkout (copy)/plan.grove-plan.json>)";
+        let links = markdown_links(text);
+        assert_eq!(links, ["checkout (copy)/plan.grove-plan.json"]);
+        store
+            .import(
+                "real",
+                &links[0],
+                dir.path().to_str().unwrap(),
+                &[dir.path().to_owned()],
+            )
+            .unwrap();
+        assert_eq!(store.revisions.len(), 1);
+        assert!(store.errors.is_empty());
+        assert_eq!(
+            markdown_links("[Review][plan]\n\n[plan]: <checkout (copy)/plan.grove-plan.json>"),
+            links
+        );
+        let many = (0..30)
+            .map(|index| format!("[Plan{index}](p{index}.grove-plan.json)\n"))
+            .collect::<String>();
+        let bounded = markdown_links(&many);
+        assert_eq!(bounded.len(), 20);
+        assert_eq!(bounded[19], "p19.grove-plan.json");
+    }
+
     #[test]
     fn snapshots_and_reviews_survive_source_removal_and_revision_conflicts() {
         let (dir, mut store) = fixture();
