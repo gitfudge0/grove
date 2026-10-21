@@ -2217,14 +2217,15 @@ impl Actor {
             "tools.update_plan.enabled": true
         }});
         params["developerInstructions"] = json!(format!(
-            "{}{}{}",
+            "{}{}{}\n\n{}",
             self.developer_instructions,
             if self.developer_instructions.is_empty() {
                 ""
             } else {
                 "\n\n"
             },
-            crate::tasks::CODEX_GUIDANCE
+            crate::tasks::CODEX_GUIDANCE,
+            crate::reports::REPORT_GUIDANCE
         ));
         if let Some(roots) = writable_roots {
             params["config"]["sandbox_workspace_write.writable_roots"] = json!(roots);
@@ -5858,6 +5859,7 @@ mod tests {
                 let guidance = request["params"]["developerInstructions"].as_str().unwrap();
                 assert!(guidance.contains("use update_plan"));
                 assert!(guidance.contains("Keep step statuses current"));
+                assert!(guidance.ends_with(crate::reports::REPORT_GUIDANCE));
                 if let Some(custom) = custom {
                     assert!(guidance.starts_with(&format!("{custom}\n\n")));
                 }

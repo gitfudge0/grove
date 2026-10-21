@@ -21,6 +21,7 @@ pub mod latest;
 pub mod multi_root;
 pub mod release_highlights;
 pub mod render_rows;
+mod reports;
 pub mod session_meta;
 pub mod storage;
 pub mod tasks;

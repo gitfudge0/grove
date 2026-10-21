@@ -14,12 +14,16 @@
 }
 @end
 
+// An integrated report shares the conversation's scroll: wheel input goes to
+// the GPUI host view, which hit-tests it into the enclosing scroll container.
 @interface GroveReportWebView : WKWebView
 @property(nonatomic) BOOL integrated;
+@property(nonatomic, weak) NSView *host;
 @end
 @implementation GroveReportWebView
 - (void)scrollWheel:(NSEvent *)event {
-    if (self.integrated) [self.superview.superview scrollWheel:event];
+    NSView *host = self.host;
+    if (self.integrated && host) [host scrollWheel:event];
     else [super scrollWheel:event];
 }
 @end
@@ -197,6 +201,7 @@ void grove_html_show(void *handle, void *parentPointer, double x, double y, doub
     CGFloat nativeY = parent.isFlipped ? clipY : parent.bounds.size.height - clipY - clipHeight;
     doc.clip.frame = NSMakeRect(clipX, nativeY, clipWidth, clipHeight);
     doc.web.frame = NSMakeRect(x - clipX, y - clipY, width, height);
+    ((GroveReportWebView *)doc.web).host = parent;
     doc.clip.hidden = NO;
     if (attaching) NSAccessibilityPostNotification(parent.window.contentView, NSAccessibilityLayoutChangedNotification);
 }

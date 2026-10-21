@@ -26,10 +26,11 @@ pub struct NativeDocument {
 }
 
 impl NativeDocument {
-    /// Drive GTK's native event queue on the same thread as GPUI.
+    /// Drive GTK's native event queue on the same thread as GPUI, then
+    /// deliver wheel input captured over integrated reports to its window.
     #[cfg(all(target_os = "linux", not(test)))]
-    pub fn pump() {
-        backend::pump();
+    pub fn pump(cx: &mut gpui::App) {
+        backend::pump(cx);
     }
 
     /// Attach the system webview to its live host before polling load status.
@@ -135,19 +136,27 @@ impl NativeDocument {
         }
     }
 
-    /// macOS POC only; other platforms retain the framed viewer.
+    /// Last measured body height of an integrated report, in logical pixels.
+    /// Pull-only: each call requests a fresh asynchronous measurement and
+    /// returns the previous result, so no document payload reaches the host.
     pub fn report_height(&self) -> Option<f32> {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        let height = self.backend.report_height();
         #[cfg(all(target_os = "macos", not(test)))]
-        {
-            // SAFETY: retained main-thread native document; only a bounded scalar returns.
-            let height = unsafe { grove_html_report_height(self.handle.as_ptr()) } as f32;
-            return (height.is_finite() && height > 0.).then_some(height);
-        }
-        #[cfg(any(not(target_os = "macos"), test))]
-        None
+        // SAFETY: retained main-thread native document; only a bounded scalar returns.
+        let height = unsafe { grove_html_report_height(self.handle.as_ptr()) };
+        #[cfg(test)]
+        let height = 0.;
+        #[allow(clippy::cast_possible_truncation)]
+        let height = height as f32;
+        (height.is_finite() && height > 0.).then_some(height)
     }
 
+    /// Apply host theme CSS to an integrated report. `integrated` forwards
+    /// wheel input to the surrounding conversation instead of the document.
     pub fn report_theme(&self, script: &str, integrated: bool) {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        self.backend.report_theme(script, integrated);
         #[cfg(all(target_os = "macos", not(test)))]
         // SAFETY: synchronous UTF-8 copy; native code retains no borrowed bytes.
         unsafe {
@@ -158,7 +167,7 @@ impl NativeDocument {
                 integrated,
             );
         }
-        #[cfg(any(not(target_os = "macos"), test))]
+        #[cfg(test)]
         let _ = (script, integrated);
     }
 

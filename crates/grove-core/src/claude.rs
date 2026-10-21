@@ -138,6 +138,8 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
         }
     }
     guidance.push_str(crate::tasks::CLAUDE_GUIDANCE);
+    guidance.push_str("\n\n");
+    guidance.push_str(crate::reports::REPORT_GUIDANCE);
     args.extend(["--append-system-prompt".into(), guidance]);
     let argv = vec![
         "--print".into(),
@@ -2240,6 +2242,7 @@ mod tests {
                 assert!(appended[0][1].contains("TodoWrite or TaskCreate/TaskUpdate"));
                 assert!(appended[0][1].contains("select:TaskCreate,TaskUpdate"));
                 assert!(appended[0][1].contains("Keep task statuses current"));
+                assert!(appended[0][1].contains("<!-- grove:integrated-report -->"));
                 if !custom.is_empty() {
                     assert!(appended[0][1].starts_with("Custom guidance\n\n"));
                 }

@@ -24,15 +24,22 @@ use std::{
 
 const CONTEXT_VEIL_OPACITY: f32 = 0.14;
 const INLINE_HEIGHT: f32 = 360.0;
-// Bound adversarial or viewport-dependent documents; Expand provides recovery.
+// Bound adversarial or viewport-dependent reports; Expand provides recovery.
 const REPORT_MAX_HEIGHT: f32 = INLINE_HEIGHT * 8.;
 const REPORT_MARKER: &str = "<!-- grove:integrated-report -->";
+const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
+const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 
+/// Reports opt in with an exact marker; ordinary HTML keeps the framed viewer.
 fn integrated_report(source: &str) -> bool {
-    cfg!(target_os = "macos") && source.contains(REPORT_MARKER)
+    source.contains(REPORT_MARKER)
 }
 
-fn report_theme_script(window: &Window) -> String {
+/// Host theme as CSS custom properties, replaced in place on every change so
+/// appearance and zoom follow the app without reloading the document.
+fn report_script(window: &Window, expanded: bool) -> String {
     fn color(value: gpui::Hsla) -> String {
         format!(
             "hsl({} {}% {}% / {})",
@@ -42,18 +49,36 @@ fn report_theme_script(window: &Window) -> String {
             value.a
         )
     }
+    let px = |value: f32| f32::from(rpx(value).to_pixels(window.rem_size()));
     let css = format!(
-        ":root{{--grove-bg:{};--grove-fg:{};--grove-muted:{};--grove-surface:{};--grove-border:{};--grove-info:{};--grove-success:{};--grove-warning:{};--grove-body:{}px;--grove-title:{}px;--grove-display:{}px;--grove-gap:{}px;--grove-section:{}px;--grove-radius:{}px;--grove-font:'{}',system-ui,sans-serif}} html{{background:var(--grove-bg);color:var(--grove-fg);font-family:var(--grove-font);font-size:var(--grove-body);overflow:hidden}}body{{margin:0;display:flow-root}}",
-        color(c::BG()), color(c::FG()), color(c::FG_DIM()), color(c::BG_HOVER()),
-        color(c::BORDER()), color(c::BLUE()), color(c::GREEN()), color(c::AMBER()),
-        f32::from(rpx(TEXT_BODY).to_pixels(window.rem_size())), f32::from(rpx(TEXT_DISPLAY).to_pixels(window.rem_size())), f32::from(rpx(TEXT_DISPLAY_LG).to_pixels(window.rem_size())), f32::from(rpx(SPACE_LG).to_pixels(window.rem_size())), f32::from(rpx(SPACE_20).to_pixels(window.rem_size())), f32::from(rpx(RADIUS_GROUP).to_pixels(window.rem_size())), crate::fonts::UI_FAMILY
+        ":root{{--grove-bg:{};--grove-fg:{};--grove-muted:{};--grove-surface:{};\
+         --grove-border:{};--grove-info:{};--grove-success:{};--grove-warning:{};\
+         --grove-body:{}px;--grove-title:{}px;--grove-display:{}px;--grove-gap:{}px;\
+         --grove-section:{}px;--grove-radius:{}px;--grove-font:'{}',system-ui,sans-serif}}\
+         html{{background:var(--grove-bg);color:var(--grove-fg);font-family:var(--grove-font);\
+         font-size:var(--grove-body);overflow:{}}}body{{margin:0;display:flow-root}}",
+        color(c::BG()),
+        color(c::FG()),
+        color(c::FG_DIM()),
+        color(c::BG_HOVER()),
+        color(c::BORDER()),
+        color(c::BLUE()),
+        color(c::GREEN()),
+        color(c::AMBER()),
+        px(TEXT_BODY),
+        px(TEXT_DISPLAY),
+        px(TEXT_DISPLAY_LG),
+        px(SPACE_LG),
+        px(SPACE_20),
+        px(RADIUS_GROUP),
+        crate::fonts::UI_FAMILY,
+        if expanded { "auto" } else { "hidden" },
     );
-    format!("(()=>{{let s=document.getElementById('grove-report-theme');if(!s){{s=document.createElement('style');s.id='grove-report-theme';document.head.append(s)}}s.textContent={};}})()", serde_json::Value::String(css))
+    format!(
+        "(()=>{{let s=document.getElementById('grove-report-theme');if(!s){{s=document.createElement('style');s.id='grove-report-theme';document.head.append(s)}}s.textContent={};}})()",
+        serde_json::Value::String(css)
+    )
 }
-const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
-const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
-const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 
 #[derive(Clone, Debug)]
 struct DocumentBlock {
@@ -182,14 +207,10 @@ pub(super) struct HtmlUi {
     owner: Option<EntityId>,
     selected: Option<EntityId>,
     blocked: bool,
-    demo: Option<Entity<HtmlSession>>,
 }
 impl gpui::Global for HtmlUi {}
 
 pub(super) fn set_context(selected: Option<EntityId>, blocked: bool, cx: &mut App) {
-    if cfg!(debug_assertions) && std::env::var_os("GROVE_HTML_REPORT_POC").is_some() {
-        return; // Isolated POC owns its synthetic context, including expansion.
-    }
     if !cx.has_global::<HtmlUi>() {
         cx.set_global(HtmlUi::default());
     }
@@ -212,73 +233,6 @@ fn expanded(artifact: &Entity<HtmlArtifact>, cx: &App) -> bool {
 }
 
 pub(super) fn render_expanded(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    // Explicit POC launch flag. No provider session, saved messages or user files.
-    if cfg!(debug_assertions)
-        && std::env::var_os("GROVE_HTML_REPORT_POC").is_some()
-        && cx
-            .try_global::<HtmlUi>()
-            .is_none_or(|ui| ui.expanded.is_none())
-    {
-        if !cx.has_global::<HtmlUi>() {
-            cx.set_global(HtmlUi::default());
-        }
-        if cx.global::<HtmlUi>().demo.is_none() {
-            let session = cx.new(|_| HtmlSession::new(PathBuf::new(), ScrollHandle::new()));
-            let owner = session.downgrade();
-            let scroll = session.read(cx).scroll.clone();
-            let artifact = cx.new(|cx| {
-                HtmlArtifact::new(
-                    include_str!("../../examples/integrated-report-poc.html").to_owned(),
-                    format!(
-                        "```html\n{}\n```",
-                        include_str!("../../examples/integrated-report-poc.html")
-                    ),
-                    None,
-                    owner,
-                    Rc::default(),
-                    scroll,
-                    cx,
-                )
-            });
-            session.update(cx, |session, _| {
-                session.artifacts.insert("demo".into(), artifact);
-            });
-            cx.global_mut::<HtmlUi>().demo = Some(session);
-        }
-        let artifact = cx
-            .global::<HtmlUi>()
-            .demo
-            .as_ref()?
-            .read(cx)
-            .artifacts
-            .get("demo")?
-            .clone();
-        return Some(
-            div()
-                .id("html-report-poc-scroll")
-                .absolute()
-                .inset_0()
-                .occlude()
-                .bg(c::BG())
-                .overflow_y_scroll()
-                .track_scroll(&cx.global::<HtmlUi>().demo.as_ref()?.read(cx).scroll)
-                .p(rpx(SPACE_20))
-                .child(
-                    div()
-                        .pb(rpx(SPACE_20))
-                        .text_color(c::FG_DIM())
-                        .child("Synthetic conversation · HTML report POC"),
-                )
-                .child(artifact)
-                .child(
-                    div()
-                        .py(rpx(SPACE_20))
-                        .text_color(c::FG_DIM())
-                        .child("End of report · this text shares the conversation scroll."),
-                )
-                .into_any_element(),
-        );
-    }
     let artifact = cx.try_global::<HtmlUi>()?.expanded.as_ref()?.upgrade()?;
     let blocked = cx.global::<HtmlUi>().blocked;
     if blocked {
@@ -749,6 +703,7 @@ struct HtmlArtifact {
     return_focus: FocusHandle,
     anchor: gpui::ScrollAnchor,
     reveal: bool,
+    report: bool,
     report_height: f32,
     report_theme: String,
 }
@@ -766,6 +721,7 @@ impl HtmlArtifact {
         let mut artifact = Self {
             anchor,
             reveal: false,
+            report: false,
             report_height: INLINE_HEIGHT,
             report_theme: String::new(),
             version: Version {
@@ -831,6 +787,7 @@ impl HtmlArtifact {
     }
     fn load(&mut self, cx: &mut Context<Self>) {
         self.surface = None;
+        self.report = integrated_report(&self.version.active);
         self.report_height = INLINE_HEIGHT;
         self.report_theme.clear();
         self.error = None;
@@ -870,11 +827,10 @@ impl HtmlArtifact {
                     this.error = Some("Preview loading timed out".into());
                     this.surface = None;
                 }
-                if integrated_report(&this.version.active) && status == Some(LoadStatus::Ready) {
+                if this.report && status == Some(LoadStatus::Ready) {
                     if let Some(height) =
                         this.surface.as_ref().and_then(|s| s.native.report_height())
                     {
-                        let height = height.clamp(CONTROL_H, REPORT_MAX_HEIGHT);
                         if (height - this.report_height).abs() >= 1. {
                             this.report_height = height;
                             cx.notify();
@@ -961,13 +917,9 @@ impl Render for HtmlArtifact {
             }
         }
         let expanded = expanded(&cx.entity(), cx);
-        let report = integrated_report(&self.version.active);
+        let report = self.report;
         if report && self.last_status == Some(LoadStatus::Ready) {
-            let theme = report_theme_script(window);
-            let script = format!(
-                "{theme};document.documentElement.style.overflow={};",
-                if expanded { "'auto'" } else { "'hidden'" }
-            );
+            let script = report_script(window, expanded);
             if script != self.report_theme {
                 if let Some(surface) = &self.surface {
                     surface.native.report_theme(&script, !expanded);
@@ -1131,7 +1083,10 @@ impl Render for HtmlArtifact {
             .when(expanded, gpui::Styled::h_full)
             .when(!expanded, |card| {
                 card.h(if report && !self.source && self.error.is_none() {
-                    gpui::px(self.report_height) + rpx(CONTROL_H).to_pixels(window.rem_size())
+                    // Measured CSS pixels are logical pixels; the cap follows UI zoom.
+                    let cap = rpx(REPORT_MAX_HEIGHT).to_pixels(window.rem_size());
+                    gpui::px(self.report_height).min(cap)
+                        + rpx(CONTROL_H).to_pixels(window.rem_size())
                 } else {
                     rpx(INLINE_HEIGHT).to_pixels(window.rem_size())
                 })
@@ -1271,13 +1226,10 @@ impl gpui::Element for NativeElement {
 mod tests {
     use super::*;
     #[test]
-    fn integrated_reports_are_explicit_and_platform_scoped() {
+    fn integrated_reports_require_the_exact_marker() {
         assert!(!integrated_report("<html>ordinary document</html>"));
         assert!(!integrated_report("<html>grove:integrated-report</html>"));
-        assert_eq!(
-            integrated_report(&format!("<html>{REPORT_MARKER}</html>")),
-            cfg!(target_os = "macos")
-        );
+        assert!(integrated_report(&format!("<html>{REPORT_MARKER}</html>")));
     }
 
     #[gpui::test]

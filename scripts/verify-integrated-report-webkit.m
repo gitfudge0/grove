@@ -1,4 +1,4 @@
-// Exploratory macOS POC check; uses the actual native document, no provider mocks.
+// macOS integrated-report check against the real native document, no provider mocks.
 #import "../src/platform/inline_html.m"
 static void pump(double seconds) {
     NSDate *until = [NSDate dateWithTimeIntervalSinceNow:seconds];
