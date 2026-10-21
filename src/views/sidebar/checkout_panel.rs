@@ -16,7 +16,7 @@ const CARD_WIDTH: f32 = 280.;
 const WIDE_VIEWPORT: f32 = MODAL_W_XL + MODAL_W_SM;
 const NARROW_HEIGHT_FRACTION: f32 = 0.5;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-/// Fits a five-digit signed line count so group rows keep their columns aligned.
+/// Minimum count-column width; wider values expand the shared columns together.
 const STAT_COL_W: f32 = 48.;
 
 /// Reuse compact shared actions on the card's neutral field surface.
@@ -685,6 +685,7 @@ impl Sidebar {
                         .map(|changes| (changes.added, changes.removed))
                 }
             };
+            let stat_widths = change_stat_widths(totals, summary.as_ref(), window);
             let changes_label = match &summary {
                 Some(summary) if summary.files == 1 => "1 file".to_owned(),
                 Some(summary) => format!("{} files", summary.files),
@@ -700,9 +701,7 @@ impl Sidebar {
             )
             .disabled(state.is_none());
             if let Some((added, removed)) = totals {
-                changes_row = changes_row
-                    .child(div().text_color(c::GREEN()).child(format!("+{added}")))
-                    .child(div().text_color(c::RED()).child(format!("−{removed}")));
+                changes_row = changes_row.child(change_stat_counts(added, removed, stat_widths));
             }
             let target = path;
             card = card.child(
@@ -711,7 +710,7 @@ impl Sidebar {
                 })),
             );
             if let Some(summary) = summary.filter(|summary| summary.groups.len() > 1) {
-                card = card.child(change_groups(&summary));
+                card = card.child(change_groups(&summary, stat_widths));
             }
         } else {
             let target = targets.first().cloned();
@@ -996,8 +995,69 @@ fn checkout_loading_row(
         )
 }
 
+/// Measure both columns once for the total and every breakdown row.
+fn change_stat_widths(
+    totals: Option<(u32, u32)>,
+    summary: Option<&ChangeSummary>,
+    window: &Window,
+) -> [gpui::Pixels; 2] {
+    let mut widths = [rpx(STAT_COL_W).to_pixels(window.rem_size()); 2];
+    let font_size = rpx(TEXT_SMALL).to_pixels(window.rem_size());
+    for (added, removed) in totals
+        .into_iter()
+        .chain(summary.into_iter().flat_map(|summary| {
+            summary
+                .groups
+                .iter()
+                .map(|&(_, added, removed)| (added, removed))
+        }))
+    {
+        for (column, text) in [format!("+{added}"), format!("−{removed}")]
+            .into_iter()
+            .enumerate()
+        {
+            let mut run = window.text_style().to_run(text.len());
+            run.font.family = crate::fonts::UI_FAMILY.into();
+            run.font.weight = gpui::FontWeight::NORMAL;
+            widths[column] = widths[column].max(
+                window
+                    .text_system()
+                    .shape_line(text.into(), font_size, &[run], None)
+                    .width()
+                    .ceil(),
+            );
+        }
+    }
+    widths
+}
+
+/// Shared borderless numeric cells keep total and group counts on the same edges.
+fn change_stat_counts(added: u32, removed: u32, widths: [gpui::Pixels; 2]) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_shrink_0()
+        .gap(rpx(SPACE_SM))
+        .text_size(rpx(TEXT_SMALL))
+        .children(
+            [
+                (format!("+{added}"), c::GREEN(), widths[0]),
+                (format!("−{removed}"), c::RED(), widths[1]),
+            ]
+            .into_iter()
+            .map(|(text, color, width)| {
+                div()
+                    .w(width)
+                    .flex_shrink_0()
+                    .flex()
+                    .justify_end()
+                    .text_color(color)
+                    .child(text)
+            }),
+        )
+}
+
 /// Per-group breakdown under the Changes row, inset to the row labels with right-aligned count columns.
-fn change_groups(summary: &ChangeSummary) -> impl IntoElement {
+fn change_groups(summary: &ChangeSummary, widths: [gpui::Pixels; 2]) -> impl IntoElement {
     div()
         .id("checkout-change-groups")
         .debug_selector(|| "checkout-change-groups".into())
@@ -1020,22 +1080,7 @@ fn change_groups(summary: &ChangeSummary) -> impl IntoElement {
                         .text_color(c::FG_DIM())
                         .child(group.label()),
                 )
-                .child(
-                    div()
-                        .w(rpx(STAT_COL_W))
-                        .flex()
-                        .justify_end()
-                        .text_color(c::GREEN())
-                        .child(format!("+{added}")),
-                )
-                .child(
-                    div()
-                        .w(rpx(STAT_COL_W))
-                        .flex()
-                        .justify_end()
-                        .text_color(c::RED())
-                        .child(format!("−{removed}")),
-                )
+                .child(change_stat_counts(added, removed, widths))
         }))
 }
 
