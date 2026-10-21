@@ -4,25 +4,78 @@ use grove_core::{
     rich_plan::{ResponseDelivery, ReviewState},
 };
 use std::time::{Duration, Instant};
+fn diagnostic(s: &Snapshot) -> String {
+    let mut approvals = std::collections::BTreeMap::new();
+    for approval in &s.approvals {
+        let kind = match approval["method"].as_str() {
+            Some("item/commandExecution/requestApproval") => "command_execution",
+            Some("item/fileChange/requestApproval") => "file_change",
+            Some("execCommandApproval") => "legacy_command",
+            Some("applyPatchApproval") => "legacy_patch",
+            _ => "other",
+        };
+        *approvals.entry(kind).or_insert(0usize) += 1;
+    }
+    let mut items = std::collections::BTreeMap::new();
+    for item in &s.saved.items {
+        let kind = match item["type"].as_str() {
+            Some("userMessage") => "user",
+            Some("agentMessage") => "assistant",
+            Some("commandExecution") => "command",
+            Some("fileChange") => "file_change",
+            Some("mcpToolCall") => "tool",
+            _ => "other",
+        };
+        let status = match item["status"].as_str() {
+            Some("inProgress") => "in_progress",
+            Some("completed") => "completed",
+            Some("failed") => "failed",
+            _ => "unspecified",
+        };
+        *items.entry((kind, status)).or_insert(0usize) += 1;
+    }
+    format!("status={}, approvals={} {:?}, questions={}, items={:?}, imported_revisions={}, import_errors={}",s.status.label(),s.approvals.len(),approvals,s.questions.len(),items,s.saved.rich_plans.revisions.len(),s.saved.rich_plans.errors.len())
+}
 fn wait(
     connection: &Connection,
     predicate: impl Fn(&Snapshot) -> bool,
 ) -> Result<Snapshot, String> {
     let deadline = Instant::now() + Duration::from_secs(180);
+    let mut last = "no snapshot received".to_owned();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err("Provider smoke timed out".into());
+            return Err(format!("Provider smoke timed out: {last}"));
         }
         let s = connection
             .updates
             .recv_timeout(remaining)
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| format!("Provider smoke receive ended ({error}): {last}"))?;
+        last = diagnostic(&s);
+        if !s.approvals.is_empty() {
+            return Err(format!(
+                "Provider smoke is waiting for approval; no approval was submitted: {last}"
+            ));
+        }
         if matches!(s.status, Status::Failed | Status::Disconnected) {
-            return Err(s.error.unwrap_or_else(|| s.status.label().into()));
+            return Err(format!("Provider smoke failed: {last}"));
         }
         if predicate(&s) {
             return Ok(s);
+        }
+    }
+}
+/// Ensure every early error stops this smoke's own actor/process and flushes recovery.
+struct StopOnDrop(Option<codex::Handle>);
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            if let Err(error) = handle
+                .stop_completion(false)
+                .recv_timeout(Duration::from_secs(10))
+            {
+                eprintln!("Smoke cleanup did not confirm actor stop: {error}");
+            }
         }
     }
 }
@@ -48,9 +101,23 @@ fn main() -> Result<(), String> {
     }
     grove_core::env_path::ensure_login_path();
     let key = grove_core::identity::random_id()?;
-    let saved:SavedSession=serde_json::from_value(serde_json::json!({"provider":provider,"key":key,"project":"Native plan smoke","cwd":cwd,"label":"Smoke","roots":[],"thread_id":null,"items":[]})).map_err(|e|e.to_string())?;
+    let mut saved:SavedSession=serde_json::from_value(serde_json::json!({"provider":provider,"key":key,"project":"Native plan smoke","cwd":cwd,"label":"Smoke","roots":[],"thread_id":null,"items":[]})).map_err(|e|e.to_string())?;
+    if provider == Provider::Codex {
+        // Explicitly authorize sandboxed writes only in this disposable session's cwd.
+        // Retain the CLI's approval policy; the harness never approves requests.
+        saved.config_args = vec!["-c".into(), "sandbox_mode=\"workspace-write\"".into()];
+    }
     let connection = codex::connect(saved, Vec::new());
+    let mut cleanup = StopOnDrop(Some(connection.handle.clone()));
     let ready = wait(&connection, |s| s.status == Status::Idle)?;
+    if provider == Provider::Codex
+        && ready
+            .sandbox
+            .as_ref()
+            .is_none_or(|sandbox| sandbox["type"] != "workspaceWrite")
+    {
+        return Err("Codex did not confirm the requested workspace-write sandbox".into());
+    }
     let thread = ready.saved.thread_id.clone();
     let prompt="This is a bounded native-plan review smoke test. Only write the following schema-v1 JSON document atomically to smoke.grove-plan.json in this disposable working directory, then reply with a Markdown link to it. Do not implement anything or access other directories. JSON: {\"schema_version\":1,\"plan_id\":\"smoke\",\"revision_id\":\"r1\",\"title\":\"Native plan smoke\",\"claims\":[{\"id\":\"claim\",\"text\":\"Keep this smoke bounded\",\"decisions\":[{\"id\":\"choice\",\"prompt\":\"Review choice\",\"options\":[{\"id\":\"keep\",\"label\":\"Keep scope\"}],\"default\":\"keep\"}]}]}";
     connection.handle.send(Action::Prompt(prompt.into()))?;
@@ -131,6 +198,7 @@ fn main() -> Result<(), String> {
         .stop_completion(false)
         .recv_timeout(Duration::from_secs(10))
         .map_err(|e| e.to_string())?;
+    cleanup.0 = None;
     let recovered = codex::load_sessions()?
         .sessions
         .into_iter()
