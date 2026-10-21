@@ -24,7 +24,7 @@ use std::{
 
 const CONTEXT_VEIL_OPACITY: f32 = 0.14;
 const INLINE_HEIGHT: f32 = 360.0;
-// Bound adversarial or viewport-dependent reports; Expand provides recovery.
+// Bound adversarial or viewport-dependent reports within the transcript.
 const REPORT_MAX_HEIGHT: f32 = INLINE_HEIGHT * 8.;
 const REPORT_MARKER: &str = "<!-- grove:integrated-report -->";
 const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
@@ -32,7 +32,7 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CSP: &str = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
 
-/// Reports opt in with an exact marker; ordinary HTML keeps the framed viewer.
+/// Reports opt in with an exact marker; ordinary HTML keeps its own styling.
 fn integrated_report(source: &str) -> bool {
     source.contains(REPORT_MARKER)
 }
@@ -480,18 +480,49 @@ impl HtmlSession {
                                 .into_any_element(),
                             );
                         }
-                        let path = local_html_path(target, &session.cwd)?;
+                        local_html_path(target, &session.cwd)?;
                         let open = cx.entity().downgrade();
                         let message = link_owner.clone();
                         let target = target.to_owned();
                         let browser = local_html_url(&target, &session.cwd)?.to_string();
                         let browser_session = cx.entity().downgrade();
                         let browser_message = message.clone();
-                        let _ = path;
+                        if browser_link_label(label) {
+                            return Some(
+                                div()
+                                    .debug_selector(|| "html-browser-link-only".into())
+                                    .child(
+                                        transcript_action(
+                                            SharedString::from(format!(
+                                                "html-browser-{message}-{target}"
+                                            )),
+                                            label.to_owned(),
+                                            false,
+                                            window,
+                                            cx,
+                                        )
+                                        .on_click(
+                                            move |_, _, cx| {
+                                                cx.stop_propagation();
+                                                let _ =
+                                                    browser_session.update(cx, |session, cx| {
+                                                        session.open_browser(
+                                                            browser_message.clone(),
+                                                            browser.clone(),
+                                                            cx,
+                                                        );
+                                                    });
+                                            },
+                                        ),
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
                         let key = format!("html-link-{message}-{target}");
                         Some(
                             div()
                                 .id(SharedString::from(key.clone()))
+                                .debug_selector(|| "html-preview-link".into())
                                 .flex()
                                 .items_center()
                                 .gap(rpx(SPACE_XS))
@@ -604,8 +635,9 @@ impl HtmlSession {
         let Some(path) = local_html_path(target, &self.cwd) else {
             return;
         };
-        let key = format!("link:{}", path.display());
-        let existing = self.artifacts.contains_key(&key);
+        // A reference in a later reply owns a new source snapshot and native view.
+        // Reopening this reply must never reread a successfully captured file.
+        let key = format!("link:{message}:{}", path.display());
         let owner = cx.entity().downgrade();
         self.artifacts.entry(key.clone()).or_insert_with(|| {
             cx.new(|cx| {
@@ -623,14 +655,12 @@ impl HtmlSession {
         if let Some(artifact) = self.artifacts.get(&key) {
             artifact.update(cx, |artifact, cx| {
                 artifact.reveal = true;
-                if existing {
-                    artifact.read_file(cx);
-                }
                 cx.notify();
             });
         }
-        if !self.opened.values().any(|list| list.contains(&key)) {
-            self.opened.entry(message.to_owned()).or_default().push(key);
+        let opened = self.opened.entry(message.to_owned()).or_default();
+        if !opened.contains(&key) {
+            opened.push(key);
         }
         cx.notify();
     }
@@ -675,10 +705,19 @@ impl HtmlSession {
     }
 }
 
+fn browser_link_label(label: &str) -> bool {
+    label.trim().eq_ignore_ascii_case("Open in browser")
+}
+
 fn output_html_link(text: &str, cwd: &Path) -> Option<String> {
     fn find(node: &markdown_ast::Node, cwd: &Path, links: &mut Vec<String>) {
         if let markdown_ast::Node::Link(link) = node {
-            if local_html_path(&link.url, cwd).is_some() {
+            let label = link
+                .children
+                .iter()
+                .map(markdown_ast::Node::to_string)
+                .collect::<String>();
+            if !browser_link_label(&label) && local_html_path(&link.url, cwd).is_some() {
                 links.push(link.url.clone());
             }
         }
@@ -1016,6 +1055,7 @@ impl Render for HtmlArtifact {
             .unwrap_or("HTML document")
             .to_owned();
         let mut header = div()
+            .debug_selector(|| "html-document-toolbar".into())
             .flex()
             .items_center()
             .gap(rpx(SPACE_SM))
@@ -1163,7 +1203,6 @@ impl Render for HtmlArtifact {
                     // Measured CSS pixels are logical pixels; the cap follows UI zoom.
                     let cap = rpx(REPORT_MAX_HEIGHT).to_pixels(window.rem_size());
                     gpui::px(self.report_height).min(cap)
-                        + rpx(CONTROL_H).to_pixels(window.rem_size())
                 } else {
                     rpx(INLINE_HEIGHT).to_pixels(window.rem_size())
                 })
@@ -1182,8 +1221,10 @@ impl Render for HtmlArtifact {
             })
             .overflow_hidden()
             .anchor_scroll((!expanded).then(|| self.anchor.clone()))
-            .child(header)
-            .when_some(version_notice, gpui::ParentElement::child)
+            .when(expanded, |card| {
+                card.child(header)
+                    .when_some(version_notice, gpui::ParentElement::child)
+            })
             .child(body)
     }
 }
@@ -1509,7 +1550,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn repeated_file_links_reveal_one_retained_artifact(cx: &mut gpui::TestAppContext) {
+    fn file_references_in_later_replies_capture_independent_source(cx: &mut gpui::TestAppContext) {
         struct Empty;
         impl Render for Empty {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -1517,23 +1558,102 @@ mod tests {
             }
         }
         cx.update(gpui_component::init);
+        let checkout = tempfile::tempdir().unwrap();
+        let path = checkout.path().join("same.html");
+        fs_err::write(&path, "<html>First version</html>").unwrap();
+        let mut session = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let session = cx.new(|_| HtmlSession::new(PathBuf::from("/tmp"), ScrollHandle::new()));
-            session.update(cx, |session, cx| {
+            let owner = cx.new(|_| HtmlSession::new(checkout.path().into(), ScrollHandle::new()));
+            owner.update(cx, |session, cx| {
                 session.open_link("first", "same.html", window, cx);
-                let initial = session.artifact_ids();
-                session.open_link("second", "same.html", window, cx);
-                assert_eq!(session.artifact_ids(), initial);
-                assert_eq!(
-                    session.opened_count(),
-                    1,
-                    "one retained native view cannot be mounted in two message rows"
-                );
-                assert!(!session.opened.contains_key("second"));
             });
+            session = Some(owner);
             Empty
         });
+        let session = session.unwrap();
         cx.run_until_parked();
+        cx.update(|_, cx| {
+            let first = session.read(cx).opened["first"][0].clone();
+            assert_eq!(
+                session.read(cx).artifacts[&first].read(cx).version.active,
+                "<html>First version</html>"
+            );
+        });
+        fs_err::write(&path, "<html>Updated version</html>").unwrap();
+        cx.update(|window, cx| {
+            session.update(cx, |session, cx| {
+                session.open_link("second", "same.html", window, cx);
+                session.open_link("first", "same.html", window, cx);
+                session.open_link("second", "same.html", window, cx);
+                assert_eq!(session.opened_count(), 2);
+                assert_eq!(session.artifact_ids().len(), 2);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let session = session.read(cx);
+            let first = &session.artifacts[&session.opened["first"][0]];
+            let second = &session.artifacts[&session.opened["second"][0]];
+            assert_ne!(first.entity_id(), second.entity_id());
+            assert_eq!(first.read(cx).version.active, "<html>First version</html>");
+            assert!(first.read(cx).version.pending.is_none());
+            assert_eq!(
+                second.read(cx).version.active,
+                "<html>Updated version</html>"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn inline_documents_omit_toolbar_and_expanded_documents_retain_controls(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let mut owner = None;
+        let (artifact, cx) = cx.add_window_view(|_, cx| {
+            let session = cx.new(|_| HtmlSession::new(PathBuf::from("/tmp"), ScrollHandle::new()));
+            owner = Some(session.clone());
+            HtmlArtifact::new(
+                "<html>Ordinary</html>".into(),
+                String::new(),
+                None,
+                session.downgrade(),
+                Rc::default(),
+                ScrollHandle::new(),
+                cx,
+            )
+        });
+        cx.update(|window, cx| window.draw(cx).clear());
+        assert!(cx.debug_bounds("html-document-toolbar").is_none());
+        cx.update(|window, cx| {
+            artifact.update(cx, |artifact, cx| {
+                artifact.report = true;
+                cx.notify();
+            });
+            window.draw(cx).clear();
+        });
+        assert!(cx.debug_bounds("html-document-toolbar").is_none());
+        cx.update(|window, cx| {
+            artifact.update(cx, |artifact, cx| artifact.toggle_expand(window, cx));
+            window.draw(cx).clear();
+        });
+        assert!(cx.debug_bounds("html-document-toolbar").is_some());
+        drop(owner);
+    }
+
+    #[test]
+    fn explicit_browser_links_are_not_auto_previewed() {
+        let cwd = Path::new("/tmp/project");
+        assert!(output_html_link("[Open in browser](large.html)", cwd).is_none());
+        assert!(output_html_link("[**Open in browser**](large.html)", cwd).is_none());
+        assert!(output_html_link("[  OPEN IN BROWSER  ](large.html)", cwd).is_none());
+        assert_eq!(
+            output_html_link(
+                "[Small mock](small.html) [Open in browser](large.html)",
+                cwd
+            ),
+            Some("small.html".into())
+        );
     }
 
     #[cfg(unix)]

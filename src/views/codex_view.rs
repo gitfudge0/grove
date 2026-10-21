@@ -13791,6 +13791,55 @@ mod tests {
     }
 
     #[gpui::test]
+    fn codex_inline_html_has_no_document_toolbar(cx: &mut gpui::TestAppContext) {
+        inline_html_toolbar_fixture(cx, codex::Provider::Codex);
+    }
+
+    #[gpui::test]
+    fn claude_inline_html_has_no_document_toolbar(cx: &mut gpui::TestAppContext) {
+        inline_html_toolbar_fixture(cx, codex::Provider::Claude);
+    }
+
+    fn inline_html_toolbar_fixture(cx: &mut gpui::TestAppContext, provider: codex::Provider) {
+        let (_, cx, _, updates) = fixture(cx);
+        let mut response = snapshot();
+        response.saved.provider = provider;
+        response.saved.items.push(serde_json::json!({
+            "type":"agentMessage", "id":"inline-report",
+            "text":"```html\n<!doctype html><html><body><!-- grove:integrated-report -->Small mock</body></html>\n```"
+        }));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("html-artifact").is_some());
+        assert!(cx.debug_bounds("html-document-toolbar").is_none());
+    }
+
+    #[gpui::test]
+    fn explicit_browser_html_link_omits_inline_preview_action(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, updates) = fixture(cx);
+        let mut response = snapshot();
+        response.status = codex::Status::Done;
+        response.saved.items.push(serde_json::json!({
+            "type":"agentMessage", "id":"browser-document",
+            "text":"[Open in browser](large.html)"
+        }));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("html-browser-link-only").is_some());
+        assert!(cx.debug_bounds("html-preview-link").is_none());
+        assert!(cx.debug_bounds("html-artifact").is_none());
+        assert_eq!(
+            view.read_with(cx, |view, cx| view.html.read(cx).opened_count()),
+            0
+        );
+        assert!(cx.opened_url().is_none());
+    }
+
+    #[gpui::test]
     fn native_html_link_click_reveals_preview_without_external_open(cx: &mut gpui::TestAppContext) {
         let (view, cx, _, updates) = fixture(cx);
         let checkout = tempfile::tempdir().unwrap();
