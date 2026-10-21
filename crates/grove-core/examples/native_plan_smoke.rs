@@ -40,7 +40,7 @@ fn wait(
     connection: &Connection,
     predicate: impl Fn(&Snapshot) -> bool,
 ) -> Result<Snapshot, String> {
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = Instant::now() + Duration::from_mins(3);
     let mut last = "no snapshot received".to_owned();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -126,8 +126,7 @@ fn main() -> Result<(), String> {
     })?;
     let thread = thread.or(imported.saved.thread_id.clone());
     println!(
-        "PASS {:?} generated and linked plan imported by production actor in {:?}",
-        provider, thread
+        "PASS {provider:?} generated and linked plan imported by production actor in {thread:?}"
     );
     connection.handle.send(Action::Prompt("Make the same plan revision r2, preserving all claim/decision IDs. Atomically rewrite smoke.grove-plan.json and link it. Do not implement anything.".into()))?;
     let revised = wait(&connection, |s| {
@@ -138,10 +137,7 @@ fn main() -> Result<(), String> {
     {
         return Err("Revision snapshots lost".into());
     }
-    println!(
-        "PASS {:?} immutable r1 retained while r2 imported",
-        provider
-    );
+    println!("PASS {provider:?} immutable r1 retained while r2 imported");
     let mut review = ReviewState::default();
     review.answers.insert("choice".into(), "keep".into());
     review.comments.insert(
@@ -192,7 +188,7 @@ fn main() -> Result<(), String> {
             "Expected exactly one delivered response, saw {count}"
         ));
     }
-    println!("PASS {:?} explicit same-session feedback, duplicate click suppression, preserved composer draft",provider);
+    println!("PASS {provider:?} explicit same-session feedback, duplicate click suppression, preserved composer draft");
     connection
         .handle
         .stop_completion(false)
