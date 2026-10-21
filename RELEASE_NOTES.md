@@ -1,3 +1,20 @@
+# Grove 1.1.1
+
+## Native conversations
+
+- Read agent reports inside the conversation. HTML reports marked for Grove adopt the app theme, size themselves to their content, and scroll with the conversation on macOS, Linux, and Windows. Codex and Claude Code learn the report format automatically.
+- Copy code blocks and finished agent responses with a copy button.
+- Start typing in Claude Code sessions while they connect, and queue messages and images without losing history.
+- Get durable session titles generated from the conversation.
+
+## Checkout tools
+
+- See changes grouped by area in the checkout card, with added and removed counts aligned across the total and every group.
+
+## Agent guidance
+
+- Agents break long-running work into clearer, outcome-named tasks and keep their status current.
+
 # Grove 1.1.0
 
 Grove 1.1.0 brings native agent conversations, richer previews, editable messages, task tracking, and checkout tools together. This release summary covers all major changes introduced from 1.0.11 through 1.1.0, including 1.0.11 and 1.0.12.
