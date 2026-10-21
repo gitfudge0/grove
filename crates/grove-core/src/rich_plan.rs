@@ -918,7 +918,7 @@ mod tests {
     }
     fn fixture() -> (tempfile::TempDir, PlanStore) {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&document()).unwrap(),
         )
@@ -937,8 +937,8 @@ mod tests {
     fn imports_only_real_markdown_links_with_full_fence_and_path_rules() {
         let (dir, mut store) = fixture();
         let nested = dir.path().join("checkout (copy)");
-        std::fs::create_dir(&nested).unwrap();
-        std::fs::write(
+        fs_err::create_dir(&nested).unwrap();
+        fs_err::write(
             nested.join("plan.grove-plan.json"),
             serde_json::to_vec(&document()).unwrap(),
         )
@@ -960,9 +960,10 @@ mod tests {
             markdown_links("[Review][plan]\n\n[plan]: <checkout (copy)/plan.grove-plan.json>"),
             links
         );
-        let many = (0..30)
-            .map(|index| format!("[Plan{index}](p{index}.grove-plan.json)\n"))
-            .collect::<String>();
+        let mut many = String::new();
+        for index in 0..30 {
+            writeln!(many, "[Plan{index}](p{index}.grove-plan.json)").unwrap();
+        }
         let bounded = markdown_links(&many);
         assert_eq!(bounded.len(), 20);
         assert_eq!(bounded[19], "p19.grove-plan.json");
@@ -977,7 +978,7 @@ mod tests {
         store.update_review("plan", "r1", review).unwrap();
         let mut conflicting = document();
         conflicting.title = "Changed same identity".into();
-        std::fs::write(
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&conflicting).unwrap(),
         )
@@ -987,13 +988,13 @@ mod tests {
         assert_eq!(store.revisions[0].document.title, "Review me");
         assert_eq!(store.errors.len(), 1);
         conflicting.revision_id = "r2".into();
-        std::fs::write(
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&conflicting).unwrap(),
         )
         .unwrap();
         import(&mut store, dir.path()).unwrap();
-        std::fs::remove_file(dir.path().join("plan.grove-plan.json")).unwrap();
+        fs_err::remove_file(dir.path().join("plan.grove-plan.json")).unwrap();
         let restored: PlanStore =
             serde_json::from_slice(&serde_json::to_vec(&store).unwrap()).unwrap();
         assert_eq!(restored.revisions[0].review.comments["claim"], "Keep this");
@@ -1068,7 +1069,7 @@ mod tests {
             .is_err());
         let mut doc = document();
         doc.schema_version = 2;
-        std::fs::write(
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&doc).unwrap(),
         )
@@ -1076,7 +1077,7 @@ mod tests {
         assert!(import(&mut store, dir.path()).is_err());
         doc.schema_version = 1;
         doc.claims.push(doc.claims[0].clone());
-        std::fs::write(
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&doc).unwrap(),
         )
@@ -1086,7 +1087,7 @@ mod tests {
         #[cfg(unix)]
         {
             let outside = tempfile::tempdir().unwrap();
-            std::fs::write(
+            fs_err::write(
                 outside.path().join("outside.grove-plan.json"),
                 serde_json::to_vec(&document()).unwrap(),
             )
@@ -1114,8 +1115,8 @@ mod tests {
             path: "bad.png".into(),
             alt: "bad".into(),
         });
-        std::fs::write(dir.path().join("bad.png"), b"\x89PNG\r\n\x1a\n").unwrap();
-        std::fs::write(
+        fs_err::write(dir.path().join("bad.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&doc).unwrap(),
         )
@@ -1126,14 +1127,14 @@ mod tests {
             path: "exhibit.html".into(),
             label: "Open".into(),
         });
-        std::fs::write(dir.path().join("exhibit.html"), b"<p>saved</p>").unwrap();
-        std::fs::write(
+        fs_err::write(dir.path().join("exhibit.html"), b"<p>saved</p>").unwrap();
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&doc).unwrap(),
         )
         .unwrap();
         import(&mut store, dir.path()).unwrap();
-        std::fs::write(dir.path().join("exhibit.html"), b"<p>changed</p>").unwrap();
+        fs_err::write(dir.path().join("exhibit.html"), b"<p>changed</p>").unwrap();
         assert!(import(&mut store, dir.path()).is_err());
         assert_eq!(
             store.revisions[0].assets[0].bytes.as_slice(),
@@ -1179,7 +1180,7 @@ mod tests {
         assert!(saved.rich_plans.errors.is_empty());
         saved.items.push(serde_json::json!({"id":"m2","type":"agentMessage","text":"[same](plan.grove-plan.json)"}));
         import_completed(&mut saved);
-        std::fs::remove_file(dir.path().join("plan.grove-plan.json")).unwrap();
+        fs_err::remove_file(dir.path().join("plan.grove-plan.json")).unwrap();
         import_completed(&mut saved);
         assert!(saved.rich_plans.errors.is_empty());
         assert_eq!(saved.rich_plans.revisions.len(), 1);
@@ -1200,7 +1201,7 @@ mod tests {
         let mut r2 = document();
         r2.revision_id = "r2".into();
         r2.title = "New revision".into();
-        std::fs::write(
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&r2).unwrap(),
         )
@@ -1208,7 +1209,7 @@ mod tests {
         store
             .import("m2", "plan.grove-plan.json", root, &roots)
             .unwrap();
-        std::fs::write(
+        fs_err::write(
             dir.path().join("plan.grove-plan.json"),
             serde_json::to_vec(&document()).unwrap(),
         )
@@ -1216,7 +1217,7 @@ mod tests {
         store
             .import("m3", "plan.grove-plan.json", root, &roots)
             .unwrap();
-        std::fs::remove_file(dir.path().join("plan.grove-plan.json")).unwrap();
+        fs_err::remove_file(dir.path().join("plan.grove-plan.json")).unwrap();
         let mut restored: PlanStore =
             serde_json::from_slice(&serde_json::to_vec(&store).unwrap()).unwrap();
         restored.recover_delivery();

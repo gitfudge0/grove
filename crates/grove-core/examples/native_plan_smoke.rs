@@ -92,7 +92,7 @@ fn main() -> Result<(), String> {
     let cwd = std::path::PathBuf::from(args.get(2).ok_or("Missing disposable cwd")?)
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    if std::fs::read_dir(&cwd)
+    if fs_err::read_dir(&cwd)
         .map_err(|e| e.to_string())?
         .next()
         .is_some()
