@@ -189,6 +189,8 @@ pub struct SavedSession {
     pub label: String,
     #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
+    pub title_generation: Option<crate::session_title::Generation>,
     pub roots: Vec<crate::session_meta::ContextRoot>,
     pub thread_id: Option<String>,
     pub items: Vec<Value>,
@@ -243,6 +245,7 @@ impl SavedSession {
         saved.edit_checkpoints.clear();
         saved.pending_edit = None;
         saved.title = None;
+        saved.title_generation = None;
         saved.items.clear();
         saved.work_periods.clear();
         saved.draft.clear();
@@ -1480,6 +1483,14 @@ impl Snapshot {
         }
     }
     pub(crate) fn set_provider_title(&mut self, name: Option<&str>) {
+        if self
+            .saved
+            .title_generation
+            .as_ref()
+            .is_some_and(|generation| generation.generated)
+        {
+            return;
+        }
         self.saved.title = name
             .filter(|name| !name.trim().is_empty())
             .map(|name| name.trim().to_owned())
@@ -2109,6 +2120,7 @@ struct Actor {
     last_child_poll: Instant,
     child_read_failures: HashMap<String, u8>,
     needs_save: bool,
+    title_generator: crate::session_title::Generator,
 }
 impl Actor {
     fn new(
@@ -2140,6 +2152,7 @@ impl Actor {
             last_child_poll: Instant::now(),
             child_read_failures: HashMap::new(),
             needs_save: false,
+            title_generator: crate::session_title::Generator::default(),
         }
     }
     fn save(&mut self) {
@@ -3845,6 +3858,13 @@ impl Actor {
                 }
                 self.dirty = true;
             }
+            if self.title_generator.tick(
+                &mut self.state.saved,
+                self.state.status,
+                self.stopping.load(Ordering::SeqCst),
+            ) {
+                self.dirty = true;
+            }
             self.expire_subagent_reads();
             self.poll_subagents();
             if let Some((when, attempt, turn)) = self.interrupt_retry.clone() {
@@ -3935,6 +3955,7 @@ mod tests {
             cwd: "/unused".into(),
             label: "Codex".into(),
             title: None,
+            title_generation: None,
             roots: Vec::new(),
             thread_id: Some("thread-1".into()),
             items: Vec::new(),

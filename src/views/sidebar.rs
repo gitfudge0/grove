@@ -8732,6 +8732,7 @@ for line in sys.stdin:
                 cwd: "/grove-spacing-main".into(),
                 label: "Codex".into(),
                 title: Some("Let's show Image 1 the diff stats too\nImage 1\nWhen running something via Claude".into()),
+                title_generation: None,
                 roots: Vec::new(),
                 thread_id: Some("fixture-thread".into()),
                 items: vec![serde_json::json!({

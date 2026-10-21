@@ -1586,10 +1586,9 @@ impl CodexView {
         let state = &self.session.read(cx).state;
         self.submitted.is_some()
             || self.pending_image_pastes > 0
-            || matches!(
-                state.status,
-                codex::Status::Starting | codex::Status::Disconnected
-            )
+            || state.status == codex::Status::Disconnected
+            || (state.status == codex::Status::Starting
+                && state.saved.provider != codex::Provider::Claude)
             || (state.status.busy()
                 && state.turn_id.is_some()
                 && self.interrupt_requested_for_turn.as_ref() == state.turn_id.as_ref())
@@ -2403,9 +2402,11 @@ impl Render for CodexView {
                 cache
             }
         };
-        // Only the empty bootstrap gets a connection interstitial. Existing work,
+        // Codex keeps its empty bootstrap interstitial. Claude starts in the composer.
+        // Existing work,
         // actionable requests, and failures keep their transcript and recovery UI.
-        if state.status == codex::Status::Starting
+        if state.saved.provider != codex::Provider::Claude
+            && state.status == codex::Status::Starting
             && state.saved.items.is_empty()
             && state.questions.is_empty()
             && self.question_receipts.is_empty()
@@ -2470,7 +2471,9 @@ impl Render for CodexView {
             && self.question_receipts.is_empty()
             && state.approvals.is_empty()
             && state.elicitations.is_empty()
-            && !state.status.busy();
+            && (!state.status.busy()
+                || (state.status == codex::Status::Starting
+                    && state.saved.provider == codex::Provider::Claude));
         for (index, item) in state
             .saved
             .items
@@ -3568,10 +3571,9 @@ impl Render for CodexView {
             || self.edit_confirmation.is_some()
             || self.edit_request_pending
             || state.saved.pending_edit.is_some()
-            || matches!(
-                state.status,
-                codex::Status::Starting | codex::Status::Disconnected
-            )
+            || state.status == codex::Status::Disconnected
+            || (state.status == codex::Status::Starting
+                && state.saved.provider != codex::Provider::Claude)
             || self.submitted.is_some()
             || self.pending_image_pastes > 0
             || stopping
@@ -5543,6 +5545,9 @@ fn compacting(state: &codex::Snapshot) -> bool {
 /// The live activity line's text, or `None` when the session is not working.
 fn live_activity(state: &codex::Snapshot) -> Option<String> {
     let provider = state.saved.provider.label();
+    if state.status == codex::Status::Starting && state.saved.provider == codex::Provider::Claude {
+        return Some(format!("Connecting to {provider}…"));
+    }
     if compacting(state) {
         return Some("Compacting context…".into());
     }
@@ -8043,6 +8048,7 @@ mod tests {
             cwd: "/unused".into(),
             label: "Codex".into(),
             title: None,
+            title_generation: None,
             roots: Vec::new(),
             thread_id: Some("thread-ui".into()),
             items: Vec::new(),
@@ -8257,6 +8263,47 @@ mod tests {
         });
         draw(cx);
         assert!(cx.debug_bounds("codex-provider-connection").is_none());
+        assert!(cx.debug_bounds("codex-composer").is_some());
+    }
+
+    #[gpui::test]
+    fn claude_starting_shows_composer_and_queues_images_without_hiding_history(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input.update(cx, |input, cx| {
+                    input.set_value("While connecting", window, cx)
+                });
+                view.images = vec!["data:image/png;base64,aGVsbG8=".into()];
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = codex::Provider::Claude;
+                    session.state.saved.thread_id = None;
+                    session.state.status = Status::Starting;
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-provider-connection").is_none());
+        assert!(cx.debug_bounds("codex-composer").is_some());
+        assert!(cx.debug_bounds("codex-empty").is_some());
+        view.read_with(cx, |view, cx| {
+            assert!(!view.draft_action_pending(cx));
+            assert_eq!(
+                live_activity(&view.session.read(cx).state).as_deref(),
+                Some("Connecting to Claude Code…")
+            );
+        });
+        cx.update(|window, cx| view.update(cx, |view, cx| view.submit(window, cx)));
+        assert!(actions.try_iter().any(|action| matches!(action, Action::SubmitWithMode { text, images, mode: SubmissionMode::Queue, .. } if text == "While connecting" && images == vec!["data:image/png;base64,aGVsbG8="])));
+        view.update(cx, |view, cx| view.session.update(cx, |session, cx| {
+            session.state.saved.items.push(json!({"type":"userMessage", "id":"earlier", "content":[{"type":"text","text":"Earlier request"}]}));
+            cx.notify();
+        }));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-message-body-0").is_some());
         assert!(cx.debug_bounds("codex-composer").is_some());
     }
 

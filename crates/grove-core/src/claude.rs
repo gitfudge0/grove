@@ -338,6 +338,7 @@ struct Actor {
     process: Option<Process>,
     initialized: bool,
     started: Instant,
+    first_output: bool,
     reconfigure: bool,
     reset_configuration: bool,
     configuring: bool,
@@ -364,6 +365,7 @@ struct Actor {
     blocks: HashMap<u64, String>,
     subagent_tasks: HashMap<String, String>,
     message_id: String,
+    title_generator: crate::session_title::Generator,
     last_persist: Instant,
     dirty: bool,
 }
@@ -401,6 +403,7 @@ impl Actor {
             process: None,
             initialized: false,
             started: Instant::now(),
+            first_output: false,
             reconfigure: false,
             reset_configuration: false,
             configuring: false,
@@ -425,6 +428,7 @@ impl Actor {
             blocks: HashMap::new(),
             subagent_tasks: HashMap::new(),
             message_id: String::new(),
+            title_generator: crate::session_title::Generator::default(),
             last_persist: Instant::now(),
             dirty: false,
         }
@@ -475,12 +479,20 @@ impl Actor {
             // stop_completion kills the process immediately; do not recreate it or
             // write recovery while its Stop action is still in flight.
             if self.stopping.load(Ordering::SeqCst) {
+                self.title_generator.cancel();
                 continue;
             }
             // The UI consumes complete state, so intermediate protocol deltas
             // need not each clone the accumulated conversation. A bounded batch
             // also lets actions and publication run during continuous output.
             if self.receive_batch() {
+                self.publish();
+            }
+            if self
+                .title_generator
+                .tick(&mut self.state.saved, self.state.status, false)
+            {
+                self.dirty = true;
                 self.publish();
             }
             if self.dirty && self.last_persist.elapsed() >= Duration::from_millis(250) {
@@ -493,46 +505,52 @@ impl Actor {
                 self.fail("Claude Code initialization timed out".into());
                 self.publish();
             }
-            if self.initialized
-                && self.state.queue_uncertain.is_empty()
-                && !self.state.status.busy()
-                && (self.queue_ready || self.deferred.is_some() || self.initial.is_some())
-            {
-                let next = self
-                    .deferred
-                    .take()
-                    .or_else(|| {
-                        self.initial.take().map(|text| QueuedPrompt {
-                            id: 0,
-                            text,
-                            images: Vec::new(),
-                        })
-                    })
-                    .or_else(|| {
-                        if !self.queue_ready
-                            || self.state.queued_prompts.is_empty()
-                            || self.state.queued_prompts.first().is_some_and(|p| {
-                                self.state.queue_edit == Some(p.id)
-                                    || self.state.queue_sending.contains(&p.id)
-                            })
-                        {
-                            None
-                        } else {
-                            self.state.queued_prompts.first().cloned()
-                        }
-                    });
-                if let Some(prompt) = next {
-                    if let Err(error) = self.submit(prompt.id, prompt.text, prompt.images) {
-                        self.state.error = Some(error);
-                        self.queue_ready = false;
-                    }
-                    self.save();
-                    self.publish();
-                }
+            if self.drain_queue() {
+                self.save();
+                self.publish();
             }
         }
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
+    }
+    fn drain_queue(&mut self) -> bool {
+        if self.initialized
+            && self.state.queue_uncertain.is_empty()
+            && !self.state.status.busy()
+            && (self.queue_ready || self.deferred.is_some() || self.initial.is_some())
+        {
+            let next = self
+                .deferred
+                .take()
+                .or_else(|| {
+                    self.initial.take().map(|text| QueuedPrompt {
+                        id: 0,
+                        text,
+                        images: Vec::new(),
+                    })
+                })
+                .or_else(|| {
+                    if !self.queue_ready
+                        || self.state.queued_prompts.is_empty()
+                        || self.state.queued_prompts.first().is_some_and(|p| {
+                            self.state.queue_edit == Some(p.id)
+                                || self.state.queue_sending.contains(&p.id)
+                        })
+                    {
+                        None
+                    } else {
+                        self.state.queued_prompts.first().cloned()
+                    }
+                });
+            if let Some(prompt) = next {
+                if let Err(error) = self.submit(prompt.id, prompt.text, prompt.images) {
+                    self.state.error = Some(error);
+                    self.queue_ready = false;
+                }
+                return true;
+            }
+        }
+        false
     }
     fn save(&mut self) {
         self.last_persist = Instant::now();
@@ -549,6 +567,14 @@ impl Actor {
             let Some(message) = message else { break };
             match message {
                 Ok(value) => {
+                    if !self.first_output {
+                        self.first_output = true;
+                        tracing::info!(
+                            stage = "first_protocol_output",
+                            elapsed_ms = self.started.elapsed().as_millis() as u64,
+                            "Claude Code startup"
+                        );
+                    }
                     if let Err(error) = self.message(value) {
                         self.fail(error);
                     }
@@ -576,6 +602,15 @@ impl Actor {
         let _ = self.updates.send(snapshot);
     }
     fn fail(&mut self, error: String) {
+        if !self.initialized {
+            // Deliberately omit provider payloads, prompts, paths and raw errors.
+            tracing::warn!(
+                stage = "initialization_failed",
+                elapsed_ms = self.started.elapsed().as_millis() as u64,
+                first_output = self.first_output,
+                "Claude Code startup"
+            );
+        }
         self.redirect_pending = false;
         self.deferred_inline = false;
         self.state.finish_work();
@@ -623,6 +658,10 @@ impl Actor {
         self.write(json!({"type":"control_request","request_id":id,"request":request}))
     }
     fn start(&mut self) -> Result<(), String> {
+        self.started = Instant::now();
+        self.first_output = false;
+        self.initialized = false;
+        tracing::info!(stage = "launch_started", "Claude Code startup");
         self.redirect_pending = false;
         if self.in_flight.is_some() {
             self.state.mark_queue_uncertain();
@@ -643,6 +682,11 @@ impl Actor {
             self.initial = initial;
         }
         let process = spawn(&args, &self.state.saved)?;
+        tracing::info!(
+            stage = "process_spawned",
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            "Claude Code startup"
+        );
         self.pid.store(process.child.id(), Ordering::SeqCst);
         self.process = Some(process);
         // Close the publication race with Handle::stop_completion.
@@ -659,7 +703,6 @@ impl Actor {
         self.compact_pending = false;
         self.state.compacting = false;
         self.initialized = false;
-        self.started = Instant::now();
         self.reconfigure = false;
         self.reset_configuration = false;
         self.configuring = false;
@@ -673,7 +716,13 @@ impl Actor {
         self.state.questions.clear();
         self.state.elicitations.clear();
         self.state.turn_id = None;
-        self.control(json!({"subtype":"initialize","hooks":null}))
+        self.control(json!({"subtype":"initialize","hooks":null}))?;
+        tracing::info!(
+            stage = "initialize_sent",
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            "Claude Code startup"
+        );
+        Ok(())
     }
     fn configure_live(&mut self) -> Result<(), String> {
         self.configuring = true;
@@ -1640,6 +1689,11 @@ impl Actor {
                 if pending.as_deref() == Some("initialize") {
                     self.finish_edit()?;
                     self.initialized = true;
+                    tracing::info!(
+                        stage = "initialized",
+                        elapsed_ms = self.started.elapsed().as_millis() as u64,
+                        "Claude Code startup"
+                    );
                     self.state.status = Status::Idle;
                     let data = &response["response"];
                     self.tracks_session_state = data.get("session_state").is_some();
@@ -3138,6 +3192,91 @@ mod tests {
         });
         output
     }
+    #[test]
+    fn startup_queue_waits_for_handshake_and_sends_images_once_in_order() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.state.status = Status::Starting;
+        let image = "data:image/png;base64,aGVsbG8=".to_string();
+        for (id, text, images) in [(41, "first", vec![image.clone()]), (42, "second", vec![])] {
+            actor
+                .action(Action::SubmitWithMode {
+                    id,
+                    text: text.into(),
+                    images,
+                    mode: SubmissionMode::Queue,
+                })
+                .unwrap();
+        }
+        // Multiple actor ticks during a delayed handshake cannot write a prompt.
+        for _ in 0..3 {
+            assert!(!actor.drain_queue());
+        }
+        assert!(actor.in_flight.is_none());
+        assert_eq!(actor.state.queued_prompts.len(), 2);
+        actor.pending.insert("init".into(), "initialize".into());
+        actor.message(json!({"type":"control_response","response":{"request_id":"init","subtype":"success","response":{}}})).unwrap();
+        assert!(actor.drain_queue());
+        let first = read(&mut reader);
+        assert_eq!(
+            first["message"]["content"],
+            json!(user_content("first", &[image]))
+        );
+        assert!(!actor.drain_queue());
+        actor.acknowledge_input(&first["uuid"]);
+        actor
+            .message(json!({"type":"result","is_error":false}))
+            .unwrap();
+        assert!(actor.drain_queue());
+        let second = read(&mut reader);
+        assert_eq!(
+            second["message"]["content"],
+            json!(user_content("second", &[]))
+        );
+        assert!(!actor.drain_queue());
+        actor.acknowledge_input(&second["uuid"]);
+        actor
+            .message(json!({"type":"result","is_error":false}))
+            .unwrap();
+        assert!(actor.state.queued_prompts.is_empty());
+        assert!(!actor.drain_queue());
+    }
+
+    #[test]
+    fn startup_failure_retains_unsent_queue_for_explicit_resume_after_reconnect() {
+        let mut actor = actor();
+        let _reader = transport(&mut actor);
+        actor.state.status = Status::Starting;
+        let images = vec!["data:image/png;base64,aGVsbG8=".into()];
+        actor
+            .action(Action::SubmitWithMode {
+                id: 51,
+                text: "retain".into(),
+                images: images.clone(),
+                mode: SubmissionMode::Queue,
+            })
+            .unwrap();
+        actor.fail("Claude Code initialization timed out".into());
+        assert_eq!(actor.state.queued_prompts[0].text, "retain");
+        assert_eq!(actor.state.queued_prompts[0].images, images);
+        assert!(actor.state.queue_uncertain.is_empty());
+        assert!(!actor.drain_queue());
+        let mut reader = transport(&mut actor);
+        actor.pending.insert("retry".into(), "initialize".into());
+        actor.message(json!({"type":"control_response","response":{"request_id":"retry","subtype":"success","response":{}}})).unwrap();
+        assert!(!actor.drain_queue());
+        actor.action(Action::ResumeQueue).unwrap();
+        assert!(actor.drain_queue());
+        let sent = read(&mut reader);
+        assert_eq!(
+            sent["message"]["content"],
+            json!(user_content("retain", &images))
+        );
+        assert!(!actor.drain_queue());
+        actor.acknowledge_input(&sent["uuid"]);
+        assert!(actor.state.queued_prompts.is_empty());
+    }
+
     #[test]
     fn protocol_batches_yield_with_backlog_and_preserve_pending_order() {
         let mut actor = actor();

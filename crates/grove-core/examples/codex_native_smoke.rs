@@ -53,6 +53,7 @@ fn main() -> Result<(), String> {
         cwd,
         label: "Smoke".into(),
         title: None,
+        title_generation: None,
         roots: extra_root
             .iter()
             .map(|path| grove_core::session_meta::ContextRoot {

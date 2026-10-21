@@ -75,10 +75,10 @@ impl CodexSession {
         codex::validate_prompt(&text, &images)?;
         if (self.state.saved.provider == codex::Provider::Codex
             && self.state.saved.thread_id.is_none())
-            || matches!(
-                self.state.status,
-                codex::Status::Starting | codex::Status::Disconnected
-            )
+            || self.state.status == codex::Status::Disconnected
+            || (self.state.status == codex::Status::Starting
+                && !(self.state.saved.provider == codex::Provider::Claude
+                    && mode == codex::SubmissionMode::Queue))
         {
             return Err("Reconnect before sending a prompt".into());
         }

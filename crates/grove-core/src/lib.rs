@@ -23,6 +23,7 @@ pub mod release_highlights;
 pub mod render_rows;
 mod reports;
 pub mod session_meta;
+pub mod session_title;
 pub mod storage;
 pub mod tasks;
 pub mod theme;

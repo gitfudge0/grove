@@ -32,7 +32,10 @@ fn main() -> Result<(), String> {
         return Err("Smoke directory does not exist".into());
     }
     let image_test = std::env::args().any(|arg| arg == "--image");
-    let extra_root = std::env::args().skip(2).find(|arg| arg != "--image");
+    let startup_queue = std::env::args().any(|arg| arg == "--startup-queue");
+    let extra_root = std::env::args()
+        .skip(2)
+        .find(|arg| arg != "--image" && arg != "--startup-queue");
     if extra_root
         .as_ref()
         .is_some_and(|path| !std::path::Path::new(path).is_dir())
@@ -53,6 +56,7 @@ fn main() -> Result<(), String> {
         cwd,
         label: "Smoke".into(),
         title: None,
+        title_generation: None,
         roots: extra_root
             .iter()
             .map(|path| grove_core::session_meta::ContextRoot {
@@ -68,7 +72,41 @@ fn main() -> Result<(), String> {
         config_args: Vec::new(),
     };
     let connection = codex::connect(saved, Vec::new());
-    let ready = wait(&connection, |s| s.status == Status::Idle)?;
+    let ready = if startup_queue {
+        // Submit immediately, before waiting for any initialize snapshot. This
+        // exercises the production actor and installed CLI, without a UI fixture.
+        connection.handle.submit_with_mode(
+            "Reply only STARTUP_FIRST. Do not use tools.".into(),
+            vec![],
+            codex::SubmissionMode::Queue,
+        )?;
+        connection.handle.submit_with_mode(
+            "Reply only STARTUP_SECOND. Do not use tools.".into(),
+            vec![],
+            codex::SubmissionMode::Queue,
+        )?;
+        let ready = wait(&connection, |s| {
+            s.status == Status::Done && s.accepted_prompts >= 2
+        })?;
+        let requests = ready
+            .saved
+            .items
+            .iter()
+            .filter(|item| item["type"] == "userMessage")
+            .map(codex::item_text)
+            .collect::<Vec<_>>();
+        if requests.len() != 2
+            || !requests[0].contains("STARTUP_FIRST")
+            || !requests[1].contains("STARTUP_SECOND")
+            || !ready.queued_prompts.is_empty()
+        {
+            return Err("Startup queue was lost, duplicated, reordered, or not drained".into());
+        }
+        println!("PASS production startup queue: two inputs delivered exactly once in FIFO order");
+        ready
+    } else {
+        wait(&connection, |s| s.status == Status::Idle)?
+    };
     println!(
         "PASS initialized thread {}",
         ready.saved.thread_id.as_deref().unwrap_or_default()
