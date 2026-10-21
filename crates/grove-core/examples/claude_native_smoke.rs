@@ -45,6 +45,7 @@ fn main() -> Result<(), String> {
     grove_core::env_path::ensure_login_path();
     let key = grove_core::identity::random_id()?;
     let saved = SavedSession {
+        rich_plans: Default::default(),
         claude_resume: None,
         edit_checkpoints: Vec::new(),
         pending_edit: None,

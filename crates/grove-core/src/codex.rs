@@ -176,6 +176,8 @@ fn record_subagent(
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
     #[serde(default)]
+    pub rich_plans: crate::rich_plan::PlanStore,
+    #[serde(default)]
     pub claude_resume: Option<ClaudeResume>,
     #[serde(default)]
     pub edit_checkpoints: Vec<EditCheckpoint>,
@@ -247,6 +249,7 @@ impl SavedSession {
         saved.title = None;
         saved.title_generation = None;
         saved.items.clear();
+        saved.rich_plans = Default::default();
         saved.work_periods.clear();
         saved.draft.clear();
         saved.draft_images.clear();
@@ -702,6 +705,7 @@ impl Snapshot {
 
     pub(crate) fn mark_queue_uncertain(&mut self) {
         for id in &self.queue_sending {
+            self.saved.rich_plans.uncertain_delivery(*id);
             if !self.queue_uncertain.contains(id) {
                 self.queue_uncertain.push(*id);
             }
@@ -763,6 +767,7 @@ impl Snapshot {
     }
     pub fn queue_editable(&self, id: u64) -> bool {
         self.queued_prompts.iter().any(|p| p.id == id)
+            && !self.saved.rich_plans.is_delivery(id)
             && !self.queue_sending.contains(&id)
             && !self.queue_uncertain.contains(&id)
     }
@@ -798,6 +803,7 @@ impl Snapshot {
             return Err("This queued input is already being sent".into());
         }
         self.queued_prompts.retain(|p| p.id != id);
+        self.saved.rich_plans.cancel_delivery(id);
         if self.queue_edit == Some(id) {
             self.queue_edit = None;
         }
@@ -820,6 +826,7 @@ impl Snapshot {
                 }
             }
         }
+        saved.rich_plans.recover_delivery();
         let composer = saved.composer.clone();
         let context_tokens = saved.context.map(|usage| usage.used);
         Self {
@@ -1660,6 +1667,19 @@ fn prompt_input(text: &str, images: Vec<String>) -> Vec<Value> {
     input
 }
 pub enum Action {
+    UpdatePlanReview {
+        plan_id: String,
+        revision_id: String,
+        review: crate::rich_plan::ReviewState,
+    },
+    SendPlanResponse {
+        plan_id: String,
+        revision_id: String,
+    },
+    RetryPlanImport {
+        message_id: String,
+        source: String,
+    },
     /// Start a fresh provider conversation while retaining the Grove session.
     ClearConversation,
     EditMessage {
@@ -2230,7 +2250,7 @@ impl Actor {
             "tools.update_plan.enabled": true
         }});
         params["developerInstructions"] = json!(format!(
-            "{}{}{}\n\n{}",
+            "{}{}{}\n\n{}\n\n{}",
             self.developer_instructions,
             if self.developer_instructions.is_empty() {
                 ""
@@ -2238,7 +2258,8 @@ impl Actor {
                 "\n\n"
             },
             crate::tasks::CODEX_GUIDANCE,
-            crate::reports::REPORT_GUIDANCE
+            crate::reports::REPORT_GUIDANCE,
+            crate::rich_plan::GUIDANCE
         ));
         if let Some(roots) = writable_roots {
             params["config"]["sandbox_workspace_write.writable_roots"] = json!(roots);
@@ -2445,6 +2466,7 @@ impl Actor {
         saved
             .work_periods
             .retain(|period| period.start_item < edit.target);
+        saved.rich_plans.retain_messages(&saved.items);
         let (text, images) = edit.composer_draft.unwrap_or((edit.text, edit.images));
         saved.draft = text;
         saved.draft_images = images;
@@ -2694,6 +2716,57 @@ impl Actor {
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
         }
         match action {
+            Action::UpdatePlanReview {
+                plan_id,
+                revision_id,
+                review,
+            } => {
+                self.state
+                    .saved
+                    .rich_plans
+                    .update_review(&plan_id, &revision_id, review)?;
+                persist(&self.state.saved)?;
+            }
+            Action::RetryPlanImport { message_id, source } => {
+                crate::rich_plan::retry_import(&mut self.state.saved, &message_id, &source)?;
+                persist(&self.state.saved)?;
+            }
+            Action::SendPlanResponse {
+                plan_id,
+                revision_id,
+            } => {
+                if self.process.is_none() || self.state.saved.thread_id.is_none() {
+                    return Err("Reconnect before sending plan feedback".into());
+                }
+                if let Some((id, text)) = self
+                    .state
+                    .saved
+                    .rich_plans
+                    .prepare_delivery(&plan_id, &revision_id)?
+                {
+                    // Journal before any provider write. Recovery never replays an ambiguous send.
+                    if let Err(error) = persist(&self.state.saved) {
+                        self.state.saved.rich_plans.fail_delivery(id, &error);
+                        return Err(error);
+                    }
+                    self.state.queued_prompts.push(QueuedPrompt {
+                        id,
+                        text,
+                        images: Vec::new(),
+                    });
+                    if !self.state.status.busy()
+                        && self.state.turn_id.is_none()
+                        && !self.queue_paused
+                    {
+                        self.queue_ready = true;
+                        if let Err(error) = self.dispatch_queue() {
+                            self.state.saved.rich_plans.uncertain_delivery(id);
+                            persist(&self.state.saved)?;
+                            return Err(error);
+                        }
+                    }
+                }
+            }
             Action::EditMessage { index, message_id } => self.edit_message(index, message_id)?,
             Action::EditMessageInline { index, message_id } => {
                 let draft = (
@@ -3201,6 +3274,9 @@ impl Actor {
                     && m["params"]["turn"]["id"].as_str() == active.as_deref()
                     && m["params"]["threadId"].as_str() == self.state.saved.thread_id.as_deref();
                 self.state.apply(&m);
+                if completed && m["params"]["turn"]["status"] == "completed" {
+                    crate::rich_plan::import_completed(&mut self.state.saved);
+                }
                 if completed {
                     self.queue_ready = m["params"]["turn"]["status"] == "completed";
                     if !self.queue_ready {
@@ -3262,6 +3338,16 @@ impl Actor {
                 return Ok(());
             }
             if let Pending::QueuedTurn { id } = &request.kind {
+                let rich = self.state.saved.rich_plans.revisions.iter().any(|r|matches!(r.review.delivery, crate::rich_plan::ResponseDelivery::Queued{id:held} if held==*id));
+                if rich {
+                    self.state.saved.rich_plans.fail_delivery(
+                        *id,
+                        error["message"]
+                            .as_str()
+                            .unwrap_or("Provider rejected plan feedback"),
+                    );
+                    self.state.queued_prompts.retain(|p| p.id != *id);
+                }
                 self.state.queue_sending.retain(|sending| sending != id);
             }
             if let Pending::Steer {
@@ -3714,6 +3800,7 @@ impl Actor {
                         Some("Codex returned an unexpected queued turn identity".into());
                     return Ok(());
                 }
+                self.state.saved.rich_plans.confirm_delivery(id);
                 self.state.queued_prompts.retain(|p| p.id != id);
                 self.state.queue_sending.retain(|sending| *sending != id);
                 self.state.queue_uncertain.retain(|sending| *sending != id);
@@ -3946,6 +4033,7 @@ mod tests {
     use super::*;
     fn saved() -> SavedSession {
         SavedSession {
+            rich_plans: Default::default(),
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,

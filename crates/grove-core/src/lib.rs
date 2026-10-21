@@ -22,6 +22,7 @@ pub mod multi_root;
 pub mod release_highlights;
 pub mod render_rows;
 mod reports;
+pub mod rich_plan;
 pub mod session_meta;
 pub mod session_title;
 pub mod storage;

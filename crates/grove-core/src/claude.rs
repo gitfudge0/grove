@@ -140,6 +140,8 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
     guidance.push_str(crate::tasks::CLAUDE_GUIDANCE);
     guidance.push_str("\n\n");
     guidance.push_str(crate::reports::REPORT_GUIDANCE);
+    guidance.push_str("\n\n");
+    guidance.push_str(crate::rich_plan::GUIDANCE);
     args.extend(["--append-system-prompt".into(), guidance]);
     let argv = vec![
         "--print".into(),
@@ -907,6 +909,7 @@ impl Actor {
         });
         saved.thread_id.clone_from(&edit.claude_fork_id);
         saved.items.truncate(edit.target);
+        saved.rich_plans.retain_messages(&saved.items);
         saved
             .edit_checkpoints
             .retain(|checkpoint| checkpoint.start_item < edit.target);
@@ -1035,6 +1038,7 @@ impl Actor {
         self.state.queue_sending.retain(|id| *id != prompt.id);
         self.state.queue_steering.retain(|id| *id != prompt.id);
         self.state.queue_uncertain.retain(|id| *id != prompt.id);
+        self.state.saved.rich_plans.confirm_delivery(prompt.id);
         self.state.accepted_prompts += 1;
         self.state.accepted_submission = Some(prompt.id);
         self.state.rejected_submission = None;
@@ -1094,6 +1098,48 @@ impl Actor {
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
         }
         match action {
+            Action::UpdatePlanReview {
+                plan_id,
+                revision_id,
+                review,
+            } => {
+                self.state
+                    .saved
+                    .rich_plans
+                    .update_review(&plan_id, &revision_id, review)?;
+                codex::persist(&self.state.saved)?;
+            }
+            Action::RetryPlanImport { message_id, source } => {
+                crate::rich_plan::retry_import(&mut self.state.saved, &message_id, &source)?;
+                codex::persist(&self.state.saved)?;
+            }
+            Action::SendPlanResponse {
+                plan_id,
+                revision_id,
+            } => {
+                if self.process.is_none() || !self.initialized {
+                    return Err("Reconnect before sending plan feedback".into());
+                }
+                if let Some((id, text)) = self
+                    .state
+                    .saved
+                    .rich_plans
+                    .prepare_delivery(&plan_id, &revision_id)?
+                {
+                    if let Err(error) = codex::persist(&self.state.saved) {
+                        self.state.saved.rich_plans.fail_delivery(id, &error);
+                        return Err(error);
+                    }
+                    self.state.queued_prompts.push(QueuedPrompt {
+                        id,
+                        text,
+                        images: Vec::new(),
+                    });
+                    if !self.state.status.busy() {
+                        self.queue_ready = true;
+                    }
+                }
+            }
             Action::EditMessage { index, message_id } => {
                 self.edit_message(index, message_id, None)?;
             }
@@ -2053,6 +2099,9 @@ impl Actor {
                             "completed"
                         });
                     }
+                }
+                if value["is_error"] != true && !self.interrupting {
+                    crate::rich_plan::import_completed(&mut self.state.saved);
                 }
                 if self.tracks_session_state && !self.session_idle {
                     self.pending_completion = Some(self.state.status);

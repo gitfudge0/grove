@@ -3172,6 +3172,7 @@ dependencies = [
  "base64",
  "dirs 5.0.1",
  "fs-err",
+ "image",
  "libc",
  "ring",
  "semver",
