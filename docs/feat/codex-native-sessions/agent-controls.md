@@ -30,6 +30,14 @@ Policy choices are constructed from the original provider request inside the cor
 
 ## Structured task lists
 
+Both Codex and Claude receive guidance to break long-running work into concrete,
+independently completable tasks named for their outcomes. Broad implementation
+work is split by deliverable, with distinct checks, installation, and inspection
+tracked separately when applicable. Agents refine tasks as scope becomes clear
+and update their statuses as work progresses, including delegated work, without
+adding trivial steps or inflating the checklist. Simple single-step requests do
+not require a task list.
+
 Grove enables Codex's native `update_plan` tool with the per-thread configuration
 `tools.update_plan.enabled = true` on both `thread/start` and `thread/resume`.
 Codex otherwise defaults that tool to disabled; developer instructions asking for

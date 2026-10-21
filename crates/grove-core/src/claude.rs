@@ -2238,6 +2238,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 assert_eq!(appended.len(), 1);
                 assert!(appended[0][1].contains("TodoWrite or TaskCreate/TaskUpdate"));
+                assert!(appended[0][1].contains("select:TaskCreate,TaskUpdate"));
                 assert!(appended[0][1].contains("Keep task statuses current"));
                 if !custom.is_empty() {
                     assert!(appended[0][1].starts_with("Custom guidance\n\n"));
