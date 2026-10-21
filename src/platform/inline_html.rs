@@ -135,6 +135,33 @@ impl NativeDocument {
         }
     }
 
+    /// macOS POC only; other platforms retain the framed viewer.
+    pub fn report_height(&self) -> Option<f32> {
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            // SAFETY: retained main-thread native document; only a bounded scalar returns.
+            let height = unsafe { grove_html_report_height(self.handle.as_ptr()) } as f32;
+            return (height.is_finite() && height > 0.).then_some(height);
+        }
+        #[cfg(any(not(target_os = "macos"), test))]
+        None
+    }
+
+    pub fn report_theme(&self, script: &str, integrated: bool) {
+        #[cfg(all(target_os = "macos", not(test)))]
+        // SAFETY: synchronous UTF-8 copy; native code retains no borrowed bytes.
+        unsafe {
+            grove_html_report_theme(
+                self.handle.as_ptr(),
+                script.as_ptr(),
+                script.len(),
+                integrated,
+            );
+        }
+        #[cfg(any(not(target_os = "macos"), test))]
+        let _ = (script, integrated);
+    }
+
     pub fn failure_reason(&self) -> Option<String> {
         #[cfg(all(target_os = "windows", not(test)))]
         {
@@ -225,6 +252,13 @@ impl Drop for NativeDocument {
 #[cfg(all(target_os = "macos", not(test)))]
 extern "C" {
     fn grove_html_create(bytes: *const u8, length: usize) -> *mut std::ffi::c_void;
+    fn grove_html_report_height(handle: *mut std::ffi::c_void) -> f64;
+    fn grove_html_report_theme(
+        handle: *mut std::ffi::c_void,
+        bytes: *const u8,
+        length: usize,
+        integrated: bool,
+    );
     fn grove_html_status(handle: *mut std::ffi::c_void) -> i32;
     fn grove_html_hide_all();
     fn grove_html_hide_after_paint(handle: *mut std::ffi::c_void);

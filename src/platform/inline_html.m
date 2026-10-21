@@ -1,4 +1,4 @@
-// Public WebKit APIs only. No script-message handlers, file URL grants or host bridge.
+// Public WebKit APIs only. Host pulls bounded layout measurements; no document messages or file grants.
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -14,9 +14,21 @@
 }
 @end
 
+@interface GroveReportWebView : WKWebView
+@property(nonatomic) BOOL integrated;
+@end
+@implementation GroveReportWebView
+- (void)scrollWheel:(NSEvent *)event {
+    if (self.integrated) [self.superview.superview scrollWheel:event];
+    else [super scrollWheel:event];
+}
+@end
+
 @interface GroveHTMLDocument : NSObject <WKNavigationDelegate, WKUIDelegate>
 @property(nonatomic, strong) GroveHTMLClip *clip;
 @property(nonatomic, strong) WKWebView *web;
+@property(nonatomic) double contentHeight;
+@property(nonatomic) BOOL measuring;
 @property(nonatomic) int status; // 0 loading, 1 ready, 2 failed
 @property(nonatomic) BOOL initialNavigation;
 @property(nonatomic) BOOL disposed;
@@ -108,7 +120,7 @@ void *grove_html_create(const char *bytes, size_t length) {
     // frame. Nonconfigurable own properties cannot be restored by author JS.
     NSString *guard = @"for(const name of ['RTCPeerConnection','webkitRTCPeerConnection','RTCIceGatherer','WebTransport','Worker','SharedWorker','ServiceWorker','Notification']){try{Object.defineProperty(globalThis,name,{value:undefined,writable:false,configurable:false});}catch{}}";
     [config.userContentController addUserScript:[[WKUserScript alloc] initWithSource:guard injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO]];
-    document.web = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:config];
+    document.web = [[GroveReportWebView alloc] initWithFrame:NSZeroRect configuration:config];
     document.web.navigationDelegate = document;
     document.web.UIDelegate = document;
     document.web.allowsLinkPreview = NO;
@@ -126,6 +138,29 @@ void *grove_html_create(const char *bytes, size_t length) {
         [doc.web loadHTMLString:html baseURL:[NSURL URLWithString:@"grove-html://document/"]];
     }];
     return (__bridge_retained void *)document;
+}
+// A pull-only, read-only measurement. No arbitrary document payload reaches Rust.
+// Measure body geometry rather than scrollHeight (which is at least viewport height).
+double grove_html_report_height(void *handle) {
+    GroveHTMLDocument *doc = (__bridge GroveHTMLDocument *)handle;
+    if (!doc.disposed && doc.status == 1 && !doc.measuring) {
+        doc.measuring = YES;
+        __weak GroveHTMLDocument *weak = doc;
+        [doc.web evaluateJavaScript:@"Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0)" completionHandler:^(id value, NSError *error) {
+            GroveHTMLDocument *current = weak;
+            if (!current || current.disposed) return;
+            current.measuring = NO;
+            double height = [value isKindOfClass:NSNumber.class] ? [value doubleValue] : 0;
+            if (!error && isfinite(height) && height > 0) current.contentHeight = height;
+        }];
+    }
+    return doc.contentHeight;
+}
+void grove_html_report_theme(void *handle, const char *bytes, size_t length, bool integrated) {
+    GroveHTMLDocument *doc = (__bridge GroveHTMLDocument *)handle;
+    ((GroveReportWebView *)doc.web).integrated = integrated;
+    NSString *script = [[NSString alloc] initWithBytes:bytes length:length encoding:NSUTF8StringEncoding];
+    if (script && !doc.disposed) [doc.web evaluateJavaScript:script completionHandler:nil];
 }
 int grove_html_status(void *handle) { return ((__bridge GroveHTMLDocument *)handle).status; }
 void grove_html_hide(void *handle) {

@@ -24,6 +24,32 @@ use std::{
 
 const CONTEXT_VEIL_OPACITY: f32 = 0.14;
 const INLINE_HEIGHT: f32 = 360.0;
+// Bound adversarial or viewport-dependent documents; Expand provides recovery.
+const REPORT_MAX_HEIGHT: f32 = INLINE_HEIGHT * 8.;
+const REPORT_MARKER: &str = "<!-- grove:integrated-report -->";
+
+fn integrated_report(source: &str) -> bool {
+    cfg!(target_os = "macos") && source.contains(REPORT_MARKER)
+}
+
+fn report_theme_script(window: &Window) -> String {
+    fn color(value: gpui::Hsla) -> String {
+        format!(
+            "hsl({} {}% {}% / {})",
+            value.h * 360.,
+            value.s * 100.,
+            value.l * 100.,
+            value.a
+        )
+    }
+    let css = format!(
+        ":root{{--grove-bg:{};--grove-fg:{};--grove-muted:{};--grove-surface:{};--grove-border:{};--grove-info:{};--grove-success:{};--grove-warning:{};--grove-body:{}px;--grove-title:{}px;--grove-display:{}px;--grove-gap:{}px;--grove-section:{}px;--grove-radius:{}px;--grove-font:'{}',system-ui,sans-serif}} html{{background:var(--grove-bg);color:var(--grove-fg);font-family:var(--grove-font);font-size:var(--grove-body);overflow:hidden}}body{{margin:0;display:flow-root}}",
+        color(c::BG()), color(c::FG()), color(c::FG_DIM()), color(c::BG_HOVER()),
+        color(c::BORDER()), color(c::BLUE()), color(c::GREEN()), color(c::AMBER()),
+        f32::from(rpx(TEXT_BODY).to_pixels(window.rem_size())), f32::from(rpx(TEXT_DISPLAY).to_pixels(window.rem_size())), f32::from(rpx(TEXT_DISPLAY_LG).to_pixels(window.rem_size())), f32::from(rpx(SPACE_LG).to_pixels(window.rem_size())), f32::from(rpx(SPACE_20).to_pixels(window.rem_size())), f32::from(rpx(RADIUS_GROUP).to_pixels(window.rem_size())), crate::fonts::UI_FAMILY
+    );
+    format!("(()=>{{let s=document.getElementById('grove-report-theme');if(!s){{s=document.createElement('style');s.id='grove-report-theme';document.head.append(s)}}s.textContent={};}})()", serde_json::Value::String(css))
+}
 const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -156,10 +182,14 @@ pub(super) struct HtmlUi {
     owner: Option<EntityId>,
     selected: Option<EntityId>,
     blocked: bool,
+    demo: Option<Entity<HtmlSession>>,
 }
 impl gpui::Global for HtmlUi {}
 
 pub(super) fn set_context(selected: Option<EntityId>, blocked: bool, cx: &mut App) {
+    if cfg!(debug_assertions) && std::env::var_os("GROVE_HTML_REPORT_POC").is_some() {
+        return; // Isolated POC owns its synthetic context, including expansion.
+    }
     if !cx.has_global::<HtmlUi>() {
         cx.set_global(HtmlUi::default());
     }
@@ -182,6 +212,73 @@ fn expanded(artifact: &Entity<HtmlArtifact>, cx: &App) -> bool {
 }
 
 pub(super) fn render_expanded(_window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    // Explicit POC launch flag. No provider session, saved messages or user files.
+    if cfg!(debug_assertions)
+        && std::env::var_os("GROVE_HTML_REPORT_POC").is_some()
+        && cx
+            .try_global::<HtmlUi>()
+            .is_none_or(|ui| ui.expanded.is_none())
+    {
+        if !cx.has_global::<HtmlUi>() {
+            cx.set_global(HtmlUi::default());
+        }
+        if cx.global::<HtmlUi>().demo.is_none() {
+            let session = cx.new(|_| HtmlSession::new(PathBuf::new(), ScrollHandle::new()));
+            let owner = session.downgrade();
+            let scroll = session.read(cx).scroll.clone();
+            let artifact = cx.new(|cx| {
+                HtmlArtifact::new(
+                    include_str!("../../examples/integrated-report-poc.html").to_owned(),
+                    format!(
+                        "```html\n{}\n```",
+                        include_str!("../../examples/integrated-report-poc.html")
+                    ),
+                    None,
+                    owner,
+                    Rc::default(),
+                    scroll,
+                    cx,
+                )
+            });
+            session.update(cx, |session, _| {
+                session.artifacts.insert("demo".into(), artifact);
+            });
+            cx.global_mut::<HtmlUi>().demo = Some(session);
+        }
+        let artifact = cx
+            .global::<HtmlUi>()
+            .demo
+            .as_ref()?
+            .read(cx)
+            .artifacts
+            .get("demo")?
+            .clone();
+        return Some(
+            div()
+                .id("html-report-poc-scroll")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .bg(c::BG())
+                .overflow_y_scroll()
+                .track_scroll(&cx.global::<HtmlUi>().demo.as_ref()?.read(cx).scroll)
+                .p(rpx(SPACE_20))
+                .child(
+                    div()
+                        .pb(rpx(SPACE_20))
+                        .text_color(c::FG_DIM())
+                        .child("Synthetic conversation · HTML report POC"),
+                )
+                .child(artifact)
+                .child(
+                    div()
+                        .py(rpx(SPACE_20))
+                        .text_color(c::FG_DIM())
+                        .child("End of report · this text shares the conversation scroll."),
+                )
+                .into_any_element(),
+        );
+    }
     let artifact = cx.try_global::<HtmlUi>()?.expanded.as_ref()?.upgrade()?;
     let blocked = cx.global::<HtmlUi>().blocked;
     if blocked {
@@ -652,6 +749,8 @@ struct HtmlArtifact {
     return_focus: FocusHandle,
     anchor: gpui::ScrollAnchor,
     reveal: bool,
+    report_height: f32,
+    report_theme: String,
 }
 impl HtmlArtifact {
     fn new(
@@ -667,6 +766,8 @@ impl HtmlArtifact {
         let mut artifact = Self {
             anchor,
             reveal: false,
+            report_height: INLINE_HEIGHT,
+            report_theme: String::new(),
             version: Version {
                 active: source,
                 markdown,
@@ -730,6 +831,8 @@ impl HtmlArtifact {
     }
     fn load(&mut self, cx: &mut Context<Self>) {
         self.surface = None;
+        self.report_height = INLINE_HEIGHT;
+        self.report_theme.clear();
         self.error = None;
         self.poll = None;
         self.last_status = None;
@@ -766,6 +869,17 @@ impl HtmlArtifact {
                 {
                     this.error = Some("Preview loading timed out".into());
                     this.surface = None;
+                }
+                if integrated_report(&this.version.active) && status == Some(LoadStatus::Ready) {
+                    if let Some(height) =
+                        this.surface.as_ref().and_then(|s| s.native.report_height())
+                    {
+                        let height = height.clamp(CONTROL_H, REPORT_MAX_HEIGHT);
+                        if (height - this.report_height).abs() >= 1. {
+                            this.report_height = height;
+                            cx.notify();
+                        }
+                    }
                 }
                 if status != this.last_status {
                     this.last_status = status;
@@ -847,6 +961,20 @@ impl Render for HtmlArtifact {
             }
         }
         let expanded = expanded(&cx.entity(), cx);
+        let report = integrated_report(&self.version.active);
+        if report && self.last_status == Some(LoadStatus::Ready) {
+            let theme = report_theme_script(window);
+            let script = format!(
+                "{theme};document.documentElement.style.overflow={};",
+                if expanded { "'auto'" } else { "'hidden'" }
+            );
+            if script != self.report_theme {
+                if let Some(surface) = &self.surface {
+                    surface.native.report_theme(&script, !expanded);
+                    self.report_theme = script;
+                }
+            }
+        }
         if self.reveal && !expanded {
             self.reveal = false;
             self.anchor.scroll_to(window, cx);
@@ -862,17 +990,20 @@ impl Render for HtmlArtifact {
             .flex()
             .items_center()
             .gap(rpx(SPACE_SM))
-            .p(rpx(SPACE_LG))
+            .when(!report || expanded, |header| {
+                header
+                    .p(rpx(SPACE_LG))
+                    .border_b_1()
+                    .border_color(c::BORDER())
+            })
             .flex_wrap()
-            .border_b_1()
-            .border_color(c::BORDER())
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
                     .text_size(rpx(TEXT_SMALL))
-                    .child(title),
+                    .when(!report || expanded, |label| label.child(title)),
             )
             .child(
                 document_action("html-preview", "Preview", "unified", window, cx)
@@ -917,6 +1048,16 @@ impl Render for HtmlArtifact {
                     cx,
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.read_file(cx))),
+            );
+        }
+        if report && self.path.is_none() {
+            header = header.child(
+                document_action("html-reload", "Reload preview", "restart", window, cx).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.load(cx);
+                        cx.notify();
+                    }),
+                ),
             );
         }
         header = header.child(
@@ -988,13 +1129,25 @@ impl Render for HtmlArtifact {
             .min_w_0()
             .min_h_0()
             .when(expanded, gpui::Styled::h_full)
-            .when(!expanded, |card| card.h(rpx(INLINE_HEIGHT)))
+            .when(!expanded, |card| {
+                card.h(if report && !self.source && self.error.is_none() {
+                    gpui::px(self.report_height) + rpx(CONTROL_H).to_pixels(window.rem_size())
+                } else {
+                    rpx(INLINE_HEIGHT).to_pixels(window.rem_size())
+                })
+            })
             .flex()
             .flex_col()
-            .bg(c::BG_RAIL())
-            .border_1()
-            .border_color(c::BORDER())
-            .rounded(rpx(RADIUS_GROUP))
+            .bg(if report && !expanded {
+                c::BG()
+            } else {
+                c::BG_RAIL()
+            })
+            .when(!report || expanded, |card| {
+                card.border_1()
+                    .border_color(c::BORDER())
+                    .rounded(rpx(RADIUS_GROUP))
+            })
             .overflow_hidden()
             .anchor_scroll((!expanded).then(|| self.anchor.clone()))
             .child(header)
@@ -1117,6 +1270,16 @@ impl gpui::Element for NativeElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn integrated_reports_are_explicit_and_platform_scoped() {
+        assert!(!integrated_report("<html>ordinary document</html>"));
+        assert!(!integrated_report("<html>grove:integrated-report</html>"));
+        assert_eq!(
+            integrated_report(&format!("<html>{REPORT_MARKER}</html>")),
+            cfg!(target_os = "macos")
+        );
+    }
+
     #[gpui::test]
     fn native_html_surface_lease_survives_arena_clear_and_retires_when_omitted(
         cx: &mut gpui::TestAppContext,
