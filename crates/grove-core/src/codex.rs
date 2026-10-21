@@ -2278,13 +2278,14 @@ impl Actor {
             "tools.update_plan.enabled": true
         }});
         params["developerInstructions"] = json!(format!(
-            "{}{}{}\n\n{}\n\n{}",
+            "{}{}{}\n\n{}\n\n{}\n\n{}",
             self.developer_instructions,
             if self.developer_instructions.is_empty() {
                 ""
             } else {
                 "\n\n"
             },
+            crate::agent_guidance::WORKFLOW_GUIDANCE,
             crate::tasks::CODEX_GUIDANCE,
             crate::reports::REPORT_GUIDANCE,
             crate::rich_plan::GUIDANCE
@@ -5997,7 +5998,7 @@ mod tests {
         serde_json::from_str(&line).unwrap()
     }
     #[test]
-    fn native_task_guidance_preserves_config_in_start_and_resume_requests() {
+    fn grove_workflow_guidance_preserves_config_in_start_and_resume_requests() {
         for resume in [false, true] {
             for custom in [None, Some("Follow the team's instructions")] {
                 let (mut actor, mut reader) = idle_actor();
@@ -6019,6 +6020,13 @@ mod tests {
                     }
                 );
                 let guidance = request["params"]["developerInstructions"].as_str().unwrap();
+                assert!(guidance.contains("You are running inside Grove."));
+                assert!(
+                    guidance.contains("even when a skill prescribes a different format or handoff")
+                );
+                assert!(guidance.contains("Markdown link to the .grove-plan.json artifact"));
+                assert!(guidance.contains("Grove's Review response and Send response controls"));
+                assert!(guidance.contains("does not override explicit user preferences"));
                 assert!(guidance.contains("use update_plan"));
                 assert!(guidance.contains("Keep step statuses current"));
                 assert!(guidance.contains(crate::reports::REPORT_GUIDANCE));

@@ -63,9 +63,16 @@ target. Compare and explicitly re-enter feedback on the new revision if needed.
 
 This repository owns the authoring example, validator and provider capability
 instructions. Installed external `fudge:plan` skill copies are not modified.
-Agents running that skill in Grove should select this native contract when the
-capability guidance is present. Outside Grove retain the canonical packed HTML
-workflow. Existing HTML reports and their local feedback are not converted.
+Both providers receive shared workflow guidance on new and resumed sessions:
+Grove controls supported presentation and response delivery even when a skill
+prescribes a different format or handoff. Keep the skill's substantive planning
+method, but deliver interactive plans and decision reviews using this native
+contract, a Markdown artifact link, and **Review response** / **Send response**.
+A bare or backticked path does not import a plan. Ordinary short prose plans need
+no artifact. Explicit user preferences, project domain constraints, safety and
+permission boundaries still apply. Legacy HTML is a fallback for an explicit user
+request or content the native format cannot represent; explain that fallback.
+Outside Grove retain the canonical packed HTML workflow. Existing HTML reports and their local feedback are not converted.
 
 ## Verification
 

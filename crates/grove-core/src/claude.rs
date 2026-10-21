@@ -137,6 +137,8 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
             index += 1;
         }
     }
+    guidance.push_str(crate::agent_guidance::WORKFLOW_GUIDANCE);
+    guidance.push_str("\n\n");
     guidance.push_str(crate::tasks::CLAUDE_GUIDANCE);
     guidance.push_str("\n\n");
     guidance.push_str(crate::reports::REPORT_GUIDANCE);
@@ -2329,7 +2331,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_task_guidance_preserves_custom_prompts_on_start_and_resume() {
+    fn grove_workflow_guidance_preserves_custom_prompts_on_start_and_resume() {
         for resume in [false, true] {
             for custom in [
                 vec!["--append-system-prompt".into(), "Custom guidance".into()],
@@ -2353,6 +2355,14 @@ mod tests {
                     .filter(|pair| pair[0] == "--append-system-prompt")
                     .collect::<Vec<_>>();
                 assert_eq!(appended.len(), 1);
+                assert!(appended[0][1].contains("You are running inside Grove."));
+                assert!(appended[0][1]
+                    .contains("even when a skill prescribes a different format or handoff"));
+                assert!(appended[0][1].contains("Markdown link to the .grove-plan.json artifact"));
+                assert!(
+                    appended[0][1].contains("Grove's Review response and Send response controls")
+                );
+                assert!(appended[0][1].contains("does not override explicit user preferences"));
                 assert!(appended[0][1].contains("TodoWrite or TaskCreate/TaskUpdate"));
                 assert!(appended[0][1].contains("select:TaskCreate,TaskUpdate"));
                 assert!(appended[0][1].contains("Keep task statuses current"));
