@@ -2899,8 +2899,10 @@ impl Actor {
                     }
                 }
                 if let Some(value) = &effort {
-                    if !["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-                        .contains(&value.as_str())
+                    if ![
+                        "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+                    ]
+                    .contains(&value.as_str())
                     {
                         return Err("Unknown reasoning effort".into());
                     }
@@ -4650,6 +4652,42 @@ mod tests {
                 access: Some("invalid".into())
             })
             .is_err());
+    }
+    #[test]
+    fn live_catalog_ultra_effort_is_sent_and_persisted() {
+        let mut actor = actor();
+        // Codex CLI 0.163.0 model/list advertises these stops for GPT-6.1 Sol.
+        actor.state.models = vec![json!({
+            "id":"gpt-6.1-sol", "model":"gpt-6.1-sol",
+            "defaultReasoningEffort":"medium",
+            "supportedReasoningEfforts":[
+                {"reasoningEffort":"low"}, {"reasoningEffort":"medium"},
+                {"reasoningEffort":"high"}, {"reasoningEffort":"xhigh"},
+                {"reasoningEffort":"max"}, {"reasoningEffort":"ultra"}
+            ]
+        })];
+        actor
+            .action(Action::Configure {
+                model: Some("gpt-6.1-sol".into()),
+                effort: Some("ultra".into()),
+                access: None,
+            })
+            .unwrap();
+        assert_eq!(actor.turn_params(vec![])["effort"], "ultra");
+        let recovered =
+            serde_json::from_value(serde_json::to_value(&actor.state.saved).unwrap()).unwrap();
+        let (_, input) = mpsc::channel();
+        let (updates, _) = crate::latest::channel();
+        let mut restored = Actor::new(recovered, input, updates, Vec::new());
+        assert_eq!(restored.turn_params(vec![])["effort"], "ultra");
+        assert!(restored
+            .action(Action::Configure {
+                model: None,
+                effort: Some("bogus".into()),
+                access: None,
+            })
+            .is_err());
+        assert_eq!(restored.turn_params(vec![])["effort"], "ultra");
     }
     #[test]
     fn changing_models_explicitly_replaces_previous_effort_with_catalog_default() {

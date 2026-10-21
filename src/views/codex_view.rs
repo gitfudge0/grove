@@ -274,6 +274,45 @@ struct EffortDrag {
     index: usize,
 }
 
+/// Presentation can move between stops without inventing a provider effort.
+struct EffortVisual {
+    scope: String,
+    model: String,
+    choices: Vec<String>,
+    from: f32,
+    target: f32,
+    started: Option<std::time::Instant>,
+    duration: std::time::Duration,
+}
+
+impl EffortVisual {
+    fn position(&self, now: std::time::Instant) -> f32 {
+        let Some(started) = self.started else {
+            return self.target;
+        };
+        let elapsed = now.saturating_duration_since(started);
+        if elapsed >= self.duration {
+            return self.target;
+        }
+        let progress =
+            super::motion::ease_standard(elapsed.as_secs_f32() / self.duration.as_secs_f32());
+        self.from + (self.target - self.from) * progress
+    }
+
+    fn active(&self, now: std::time::Instant) -> bool {
+        self.started
+            .is_some_and(|started| now.saturating_duration_since(started) < self.duration)
+    }
+}
+
+fn effort_fraction(index: usize, count: usize) -> f32 {
+    if count == 1 {
+        0.5
+    } else {
+        index as f32 / count.saturating_sub(1).max(1) as f32
+    }
+}
+
 fn composer_scope(state: &codex::Snapshot) -> String {
     format!(
         "{:?}:{}:{:?}",
@@ -527,6 +566,7 @@ pub struct CodexView {
     composer_menu_scope: Option<String>,
     model_from_card: bool,
     effort_drag: Option<EffortDrag>,
+    effort_visual: Option<EffortVisual>,
     effort_pending: Option<(String, String)>,
     effort_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
     card_model_focus: FocusHandle,
@@ -685,6 +725,7 @@ impl CodexView {
             composer_menu_scope: None,
             model_from_card: false,
             effort_drag: None,
+            effort_visual: None,
             effort_pending: None,
             effort_bounds: Rc::default(),
             card_model_focus: cx.focus_handle(),
@@ -3776,23 +3817,6 @@ impl Render for CodexView {
                     cx.stop_propagation();
                 }
             }))
-            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
-                if this.effort_drag.is_some() {
-                    this.preview_effort_at(event.position, cx);
-                }
-            }))
-            .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
-                    this.finish_effort_drag(event.position, cx);
-                }),
-            )
-            .on_mouse_up_out(
-                gpui::MouseButton::Left,
-                cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
-                    this.finish_effort_drag(event.position, cx);
-                }),
-            )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && this.menu == Some(ComposerMenu::Settings) {
                     this.close_menu(cx);
@@ -4693,6 +4717,7 @@ impl CodexView {
         self.composer_menu_scope = None;
         self.model_from_card = false;
         self.effort_drag = None;
+        self.effort_visual = None;
         self.effort_pending = None;
         cx.notify();
     }
@@ -4700,6 +4725,7 @@ impl CodexView {
         let state = self.session.read(cx).state.clone();
         self.composer_menu_scope = Some(composer_scope(&state));
         self.effort_drag = None;
+        self.effort_visual = None;
         if matches!(menu, ComposerMenu::Settings | ComposerMenu::Effort) {
             self.popup = None;
             self.popup_subscription = None;
@@ -4803,6 +4829,73 @@ impl CodexView {
             .or_else(|| (choices.len() == 1).then_some(0))
     }
 
+    fn sync_effort_visual(&mut self, state: &codex::Snapshot, choices: &[String], cx: &App) {
+        let scope = composer_scope(state);
+        let model = Self::effort_model(state);
+        // Retain a newer local choice until its matching snapshot arrives, then
+        // allow subsequent same-model configuration changes to become visible.
+        let effective_effort = state.effort.as_deref().or(state.resolved_effort.as_deref());
+        if self
+            .effort_pending
+            .as_ref()
+            .is_some_and(|(pending_model, effort)| {
+                *pending_model != model
+                    || !choices.contains(effort)
+                    || effective_effort == Some(effort.as_str())
+            })
+        {
+            self.effort_pending = None;
+        }
+        let valid = self.effort_visual.as_ref().is_some_and(|visual| {
+            visual.scope == scope && visual.model == model && visual.choices == choices
+        });
+        if !valid {
+            self.effort_drag = None;
+            let fraction = self
+                .effort_index(state, choices)
+                .map_or(0.0, |index| effort_fraction(index, choices.len()));
+            self.effort_visual = Some(EffortVisual {
+                scope,
+                model,
+                choices: choices.to_vec(),
+                from: fraction,
+                target: fraction,
+                started: None,
+                duration: std::time::Duration::from_millis(MOTION_BASE_MS),
+            });
+        } else if self.effort_drag.is_none() {
+            // Provider acknowledgments can change effort with the same catalog.
+            // Never replace an active drag's continuous pointer target.
+            if let Some(index) = self.effort_index(state, choices) {
+                self.move_effort_visual(effort_fraction(index, choices.len()), MOTION_BASE_MS, cx);
+            }
+        }
+        if cx.reduce_motion() {
+            if let Some(visual) = &mut self.effort_visual {
+                visual.from = visual.target;
+                visual.started = None;
+            }
+        }
+    }
+
+    fn move_effort_visual(&mut self, fraction: f32, duration: u64, cx: &App) {
+        let now = cx.background_executor().now();
+        if let Some(visual) = &mut self.effort_visual {
+            let target = fraction.clamp(0.0, 1.0);
+            if cx.reduce_motion() {
+                visual.from = target;
+                visual.target = target;
+                visual.started = None;
+            } else if visual.target != target {
+                // Retarget from the clock-sampled position, never from the old stop.
+                visual.from = visual.position(now);
+                visual.target = target;
+                visual.started = Some(now);
+                visual.duration = std::time::Duration::from_millis(duration);
+            }
+        }
+    }
+
     fn send_effort(&mut self, value: &str, cx: &mut Context<Self>) {
         if !self.composer_menu_valid(cx) {
             self.close_menu(cx);
@@ -4815,7 +4908,12 @@ impl CodexView {
         {
             return;
         }
-        self.effort_pending = Some((Self::effort_model(state), value.to_owned()));
+        let choices = Self::effort_choices(state);
+        let model = Self::effort_model(state);
+        if let Some(index) = choices.iter().position(|choice| choice == value) {
+            self.move_effort_visual(effort_fraction(index, choices.len()), MOTION_BASE_MS, cx);
+        }
+        self.effort_pending = Some((model, value.to_owned()));
         self.session.update(cx, |session, cx| {
             session.send(
                 Action::Configure {
@@ -4829,31 +4927,53 @@ impl CodexView {
         cx.notify();
     }
 
-    fn preview_effort_at(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+    fn preview_effort_at(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        moving: bool,
+        cx: &mut Context<Self>,
+    ) {
         let bounds = self.effort_bounds.get();
         if bounds.size.width <= gpui::px(0.) {
             return;
         }
-        if let Some(drag) = &mut self.effort_drag {
-            drag.index = effort_stop(
-                f32::from(position.x - bounds.left()) / f32::from(bounds.size.width),
-                drag.choices.len(),
-            );
+        let state = &self.session.read(cx).state;
+        let valid = self.effort_drag.as_ref().is_some_and(|drag| {
+            drag.scope == composer_scope(state)
+                && drag.model == Self::effort_model(state)
+                && drag.choices == Self::effort_choices(state)
+        });
+        if !valid {
+            self.effort_drag = None;
+            self.effort_visual = None;
             cx.notify();
+            return;
         }
+        let fraction =
+            (f32::from(position.x - bounds.left()) / f32::from(bounds.size.width)).clamp(0.0, 1.0);
+        if let Some(drag) = &mut self.effort_drag {
+            drag.index = effort_stop(fraction, drag.choices.len());
+        }
+        self.move_effort_visual(
+            fraction,
+            if moving {
+                MOTION_FAST_MS
+            } else {
+                MOTION_BASE_MS
+            },
+            cx,
+        );
+        cx.notify();
     }
 
     fn finish_effort_drag(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
-        self.preview_effort_at(position, cx);
+        if self.effort_drag.is_none() {
+            return;
+        }
+        self.preview_effort_at(position, true, cx);
         if let Some(drag) = self.effort_drag.take() {
-            let state = &self.session.read(cx).state;
-            if drag.scope == composer_scope(state)
-                && drag.model == Self::effort_model(state)
-                && drag.choices == Self::effort_choices(state)
-            {
-                if let Some(value) = drag.choices.get(drag.index) {
-                    self.send_effort(value, cx);
-                }
+            if let Some(value) = drag.choices.get(drag.index) {
+                self.send_effort(value, cx);
             }
             cx.notify();
         }
@@ -4865,6 +4985,7 @@ impl CodexView {
             return;
         }
         self.effort_drag = None;
+        self.effort_visual = None;
         self.effort_pending = None;
         self.session
             .update(cx, |session, cx| session.send(Action::ResetModelEffort, cx));
@@ -4872,12 +4993,13 @@ impl CodexView {
     }
 
     fn model_effort_card(
-        &self,
+        &mut self,
         state: &codex::Snapshot,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let choices = Self::effort_choices(state);
+        self.sync_effort_visual(state, &choices, cx);
         let selected = self.effort_index(state, &choices);
         let effort = selected.and_then(|index| choices.get(index)).map_or_else(
             || {
@@ -4907,28 +5029,42 @@ impl CodexView {
             window.text_system(),
         )
         .min(model_budget.max(gpui::px(0.)));
-        let fraction = selected.map_or(0.0, |index| {
-            index as f32 / choices.len().saturating_sub(1).max(1) as f32
-        });
+        let now = cx.background_executor().now();
+        let fraction = self
+            .effort_visual
+            .as_ref()
+            .map_or(0.0, |visual| visual.position(now));
+        if !cx.reduce_motion()
+            && self
+                .effort_visual
+                .as_ref()
+                .is_some_and(|visual| visual.active(now))
+        {
+            window.request_animation_frame();
+        }
         let track_bounds = self.effort_bounds.clone();
+        let pointer_move = cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+            if this.effort_drag.is_some() {
+                if event.pressed_button == Some(gpui::MouseButton::Left) {
+                    this.preview_effort_at(event.position, true, cx);
+                } else {
+                    this.effort_drag = None;
+                    this.effort_visual = None;
+                    cx.notify();
+                }
+            }
+        });
+        let pointer_up = cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+            if event.button == gpui::MouseButton::Left {
+                this.finish_effort_drag(event.position, cx);
+            }
+        });
         let track = div()
             .relative()
             .w_full()
             .h(rpx(CONTROL_H))
             .rounded(rpx(RADIUS_FULL))
             .bg(c::BG_HOVER())
-            .when(selected.is_some(), |track| {
-                track.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .h_full()
-                        .w(gpui::relative(fraction))
-                        .rounded(rpx(RADIUS_FULL))
-                        .bg(c::BLUE()),
-                )
-            })
             .child(
                 div()
                     .absolute()
@@ -4938,35 +5074,65 @@ impl CodexView {
                     .child(
                         gpui::canvas(
                             move |bounds, _, _| track_bounds.set(bounds),
-                            |_, (), _, _| {},
+                            move |_, (), window, _| {
+                                // Capture an owned drag even over other controls or outside the track.
+                                window.on_mouse_event(
+                                    move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+                                        if phase == gpui::DispatchPhase::Capture {
+                                            pointer_move(event, window, cx);
+                                        }
+                                    },
+                                );
+                                window.on_mouse_event(
+                                    move |event: &gpui::MouseUpEvent, phase, window, cx| {
+                                        if phase == gpui::DispatchPhase::Capture {
+                                            pointer_up(event, window, cx);
+                                        }
+                                    },
+                                );
+                            },
                         )
                         .absolute()
                         .size_full(),
                     )
+                    .when(selected.is_some(), |path| {
+                        path.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .h_full()
+                                .w(gpui::relative(fraction))
+                                .child(
+                                    div()
+                                        .id("codex-effort-fill")
+                                        .debug_selector(|| "codex-effort-fill".into())
+                                        .absolute()
+                                        .left(-rpx(ICON_MD))
+                                        .right_0()
+                                        .h_full()
+                                        .rounded_l(rpx(RADIUS_FULL))
+                                        .bg(c::BLUE()),
+                                ),
+                        )
+                    })
                     .children(choices.iter().enumerate().map(|(index, _)| {
-                        let at = if choices.len() == 1 {
-                            0.5
-                        } else {
-                            index as f32 / (choices.len() - 1) as f32
-                        };
                         div()
                             .absolute()
-                            .left(gpui::relative(at))
+                            .left(gpui::relative(effort_fraction(index, choices.len())))
                             .top(rpx(SPACE_XL))
                             .ml(-rpx(SPACE_XS))
                             .size(rpx(SPACE_SM))
                             .rounded(rpx(RADIUS_FULL))
                             .bg(c::FG_MUTE())
                     }))
-                    .when_some(selected, |track, _| {
-                        track.child(
+                    .when_some(selected, |path, _| {
+                        path.child(
                             div()
+                                .id("codex-effort-thumb")
+                                .debug_selector(|| "codex-effort-thumb".into())
                                 .absolute()
-                                .left(gpui::relative(if choices.len() == 1 {
-                                    0.5
-                                } else {
-                                    fraction
-                                }))
+                                .left(gpui::relative(fraction))
                                 .top(-rpx(SPACE_XS))
                                 .ml(-rpx(ICON_MD))
                                 .size(rpx(ICON_BTN_W))
@@ -5014,7 +5180,7 @@ impl CodexView {
                             choices,
                             index: 0,
                         });
-                        this.preview_effort_at(event.position, cx);
+                        this.preview_effort_at(event.position, false, cx);
                         this.option_focus[1].focus(window, cx);
                     }
                     window.prevent_default();
@@ -11941,6 +12107,336 @@ mod tests {
     }
 
     #[gpui::test]
+    fn composer_effort_motion_tracks_pointer_and_settles(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        let advance = |cx: &mut gpui::VisualTestContext, millis| {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(millis));
+            draw(cx);
+        };
+        let aligned = |cx: &mut gpui::VisualTestContext| {
+            let thumb = cx.debug_bounds("codex-effort-thumb").unwrap();
+            let fill = cx.debug_bounds("codex-effort-fill").unwrap();
+            assert!(
+                (fill.right() - thumb.center().x).abs() < gpui::px(1.0),
+                "fill must end at the moving thumb center"
+            );
+            thumb.center().x
+        };
+        for (provider, supported) in [
+            (codex::Provider::Codex, vec!["low", "medium", "high"]),
+            (codex::Provider::Claude, vec!["low", "max"]),
+        ] {
+            cx.update(|window, cx| {
+                cx.set_reduce_motion(false);
+                view.update(cx, |view, cx| {
+                    view.close_menu(cx);
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.model = Some("motion-model".into());
+                        session.state.effort = Some("low".into());
+                        session.state.models = vec![
+                            json!({"model":"motion-model", "supportedReasoningEfforts":supported.iter().map(|effort| json!({"reasoningEffort":effort})).collect::<Vec<_>>()}),
+                            json!({"model":"fixed-model", "supportedReasoningEfforts":[{"reasoningEffort":"high"}]}),
+                        ];
+                        cx.notify();
+                    });
+                    view.open_menu(ComposerMenu::Settings, window, cx);
+                });
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    CodexView::effort_choices(&view.session.read(cx).state),
+                    supported
+                );
+            });
+            let path = view.read_with(cx, |view, _| view.effort_bounds.get());
+            let start = gpui::point(path.left(), path.center().y);
+            let end = gpui::point(path.right(), path.center().y);
+            let before = aligned(cx);
+            let _ = actions.try_iter().collect::<Vec<_>>();
+            cx.simulate_click(end, gpui::Modifiers::default());
+            draw(cx);
+            advance(cx, 16);
+            let intermediate = aligned(cx);
+            assert!(
+                intermediate > before && intermediate < path.right(),
+                "click must render motion between supported stops instead of jumping"
+            );
+            assert_eq!(actions.try_iter().filter(|action| matches!(action, Action::Configure { effort: Some(effort), model: None, access: None } if effort == supported.last().unwrap())).count(), 1);
+            // Reverse a moving click: its first frame must start where it was displayed.
+            cx.simulate_click(start, gpui::Modifiers::default());
+            draw(cx);
+            assert!(
+                (aligned(cx) - intermediate).abs() < gpui::px(1.0),
+                "retargeting must not jump to the old semantic stop"
+            );
+            advance(cx, 16);
+            assert!(aligned(cx) < intermediate && aligned(cx) > path.left());
+            advance(cx, MOTION_BASE_MS);
+            assert!((aligned(cx) - path.left()).abs() < gpui::px(1.0));
+            let _ = actions.try_iter().collect::<Vec<_>>();
+            // Move between stops, not onto a dot. Capture must work despite the card's occlusion.
+            let between = gpui::point(path.left() + path.size.width * 0.35, path.center().y);
+            cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.simulate_mouse_move(
+                between,
+                Some(gpui::MouseButton::Left),
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            advance(cx, 16);
+            assert!(
+                aligned(cx) > path.left() && aligned(cx) < between.x,
+                "dragging must move responsively toward the continuous pointer position"
+            );
+            advance(cx, MOTION_FAST_MS);
+            assert!(
+                (aligned(cx) - between.x).abs() < gpui::px(1.0),
+                "thumb must follow the pointer between discrete stops"
+            );
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::Configure { .. })));
+            cx.simulate_mouse_up(between, gpui::MouseButton::Left, gpui::Modifiers::default());
+            draw(cx);
+            let index = effort_stop(0.35, supported.len());
+            let writes: Vec<_> = actions
+                .try_iter()
+                .filter_map(|action| match action {
+                    Action::Configure { effort, .. } => effort,
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(writes, [supported[index]]);
+            advance(cx, MOTION_BASE_MS);
+            let stop_x = path.left() + path.size.width * effort_fraction(index, supported.len());
+            assert!(
+                (aligned(cx) - stop_x).abs() < gpui::px(1.0),
+                "release must settle onto the committed supported stop"
+            );
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::Configure { .. })));
+            // Capture continues outside both the track and the card.
+            let outside = gpui::point(
+                path.right() + gpui::px(ICON_BTN_W),
+                path.top() - gpui::px(ICON_BTN_W),
+            );
+            cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.simulate_mouse_move(
+                outside,
+                Some(gpui::MouseButton::Left),
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            advance(cx, MOTION_FAST_MS);
+            assert!((aligned(cx) - path.right()).abs() < gpui::px(1.0));
+            cx.simulate_mouse_up(outside, gpui::MouseButton::Left, gpui::Modifiers::default());
+            draw(cx);
+            assert_eq!(actions.try_iter().filter(|action| matches!(action, Action::Configure { effort: Some(effort), .. } if effort == supported.last().unwrap())).count(), 1);
+            // Enabling Reduce motion midway snaps to the target and stops scheduling frames.
+            cx.simulate_click(start, gpui::Modifiers::default());
+            draw(cx);
+            advance(cx, 16);
+            assert!(aligned(cx) > path.left());
+            cx.update(|_, cx| cx.set_reduce_motion(true));
+            draw(cx);
+            assert!((aligned(cx) - path.left()).abs() < gpui::px(1.0));
+            cx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            draw(cx);
+            // Other component callbacks can remain queued. The slider schedules
+            // its frames by notifying this view; observe that boundary directly.
+            let frame_notifications = Rc::new(Cell::new(0));
+            let observed = frame_notifications.clone();
+            let frame_watch = cx.update(|_, cx| {
+                cx.observe(&view, move |_, _| {
+                    observed.set(observed.get() + 1);
+                })
+            });
+            for _ in 0..3 {
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                });
+                draw(cx);
+            }
+            assert_eq!(
+                frame_notifications.get(),
+                0,
+                "reduced slider motion must not request view animation frames"
+            );
+            drop(frame_watch);
+            view.read_with(cx, |view, _| {
+                let visual = view.effort_visual.as_ref().unwrap();
+                assert!(visual.started.is_none());
+                assert_eq!(visual.from, visual.target);
+            });
+            let _ = actions.try_iter().collect::<Vec<_>>();
+            cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.simulate_mouse_move(
+                between,
+                Some(gpui::MouseButton::Left),
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            assert!((aligned(cx) - between.x).abs() < gpui::px(1.0));
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::Configure { .. })));
+            cx.simulate_mouse_up(between, gpui::MouseButton::Left, gpui::Modifiers::default());
+            draw(cx);
+            assert!((aligned(cx) - stop_x).abs() < gpui::px(1.0));
+            assert_eq!(
+                actions
+                    .try_iter()
+                    .filter(|action| matches!(action, Action::Configure { .. }))
+                    .count(),
+                1
+            );
+            // Changing selected models must replace the range, including fixed and absent catalogs.
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.model = Some("fixed-model".into());
+                        session.state.effort = Some("high".into());
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            assert!((aligned(cx) - path.center().x).abs() < gpui::px(1.0));
+            cx.simulate_click(end, gpui::Modifiers::default());
+            draw(cx);
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::Configure { .. })));
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.model = Some("unknown-model".into());
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("codex-effort-thumb").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn composer_effort_motion_reconciles_async_reset_and_acknowledged_updates(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.model = Some("same-model".into());
+                session.state.effort = Some("high".into());
+                session.state.resolved_effort = Some("low".into());
+                session.state.models = vec![json!({"model":"same-model", "defaultReasoningEffort":"low", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]})];
+                cx.notify();
+            });
+            view.open_menu(ComposerMenu::Settings, window, cx);
+        }));
+        draw(cx);
+        let path = view.read_with(cx, |view, _| view.effort_bounds.get());
+        let assert_stop = |cx: &mut gpui::VisualTestContext, expected| {
+            let thumb = cx.debug_bounds("codex-effort-thumb").unwrap();
+            let fill = cx.debug_bounds("codex-effort-fill").unwrap();
+            assert!(
+                (thumb.center().x - expected).abs() < gpui::px(1.0),
+                "thumb must match the effective effort after asynchronous updates"
+            );
+            assert!((fill.right() - thumb.center().x).abs() < gpui::px(1.0));
+        };
+        assert_stop(cx, path.right());
+        let _ = actions.try_iter().collect::<Vec<_>>();
+        let reset = cx.debug_bounds("codex-model-effort-reset").unwrap();
+        cx.simulate_click(reset.center(), gpui::Modifiers::default());
+        // send() queues the action; this redraw still sees the pre-reset High snapshot.
+        draw(cx);
+        assert_stop(cx, path.right());
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::ResetModelEffort)));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.model = None;
+                    session.state.resolved_model = Some("same-model".into());
+                    session.state.effort = None;
+                    session.state.resolved_effort = Some("low".into());
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_BASE_MS));
+        draw(cx);
+        assert_stop(cx, path.left());
+        view.read_with(cx, |view, cx| {
+            let state = &view.session.read(cx).state;
+            let choices = CodexView::effort_choices(state);
+            assert_eq!(view.effort_index(state, &choices), Some(0));
+            assert_eq!(effort_label(&choices[0]), "Low");
+        });
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Configure { .. })));
+        // An unsolicited effort change for the same model must also move the thumb.
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.effort = Some("high".into());
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_BASE_MS));
+        draw(cx);
+        assert_stop(cx, path.right());
+        // Once a local choice is acknowledged, it must not mask later provider updates.
+        cx.simulate_click(
+            gpui::point(path.left(), path.center().y),
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert_eq!(actions.try_iter().filter(|action| matches!(action, Action::Configure { effort: Some(effort), .. } if effort == "low")).count(), 1);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.effort = Some("low".into());
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        view.read_with(cx, |view, _| assert!(view.effort_pending.is_none()));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.effort = Some("high".into());
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(MOTION_BASE_MS));
+        draw(cx);
+        assert_stop(cx, path.right());
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Configure { .. })));
+    }
+
+    #[gpui::test]
     fn composer_effort_drag_cancels_on_escape_and_catalog_or_session_change(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -11963,6 +12459,10 @@ mod tests {
         );
         draw(cx);
         cx.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| {
+            assert!(view.effort_visual.is_none());
+            assert!(view.effort_drag.is_none());
+        });
         cx.simulate_mouse_up(
             position,
             gpui::MouseButton::Left,
