@@ -5972,7 +5972,8 @@ mod tests {
                 let guidance = request["params"]["developerInstructions"].as_str().unwrap();
                 assert!(guidance.contains("use update_plan"));
                 assert!(guidance.contains("Keep step statuses current"));
-                assert!(guidance.ends_with(crate::reports::REPORT_GUIDANCE));
+                assert!(guidance.contains(crate::reports::REPORT_GUIDANCE));
+                assert!(guidance.ends_with(crate::rich_plan::GUIDANCE));
                 if let Some(custom) = custom {
                     assert!(guidance.starts_with(&format!("{custom}\n\n")));
                 }

@@ -2353,6 +2353,8 @@ mod tests {
                 assert!(appended[0][1].contains("select:TaskCreate,TaskUpdate"));
                 assert!(appended[0][1].contains("Keep task statuses current"));
                 assert!(appended[0][1].contains("<!-- grove:integrated-report -->"));
+                assert!(appended[0][1].contains(crate::reports::REPORT_GUIDANCE));
+                assert!(appended[0][1].ends_with(crate::rich_plan::GUIDANCE));
                 if !custom.is_empty() {
                     assert!(appended[0][1].starts_with("Custom guidance\n\n"));
                 }
