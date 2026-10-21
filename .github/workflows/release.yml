@@ -1,9 +1,20 @@
 name: Release bundles
 
 # Draft releases do not trigger release events. Run this workflow from a draft's
-# tag to attach bundles while keeping it draft; published releases run normally.
+# tag, or provide source_tag from main, to attach bundles while keeping it draft.
+# Published releases run normally.
 on:
   workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Existing release tag to bundle (leave empty when running from its tag)
+        type: string
+        default: ''
+      platform:
+        description: Platforms to bundle
+        type: choice
+        options: [all, macos-x86_64]
+        default: all
   release:
     types: [published]
 
@@ -18,34 +29,34 @@ env:
 jobs:
   bundle:
     # Assets on publication mean the draft was already bundled from its tag.
-    if: github.ref_type == 'tag' && (github.event_name == 'workflow_dispatch' || github.event.release.assets[0] == null)
+    if: (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.source_tag != '')) && (github.event_name == 'workflow_dispatch' || github.event.release.assets[0] == null)
     name: Bundle (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macOS Apple Silicon (arm64) — macos-latest is an arm64 runner.
-          - os: macos
-            arch: arm64
-            runner: macos-latest
-            format: osx
-          # macOS Intel (x86_64) — macos-13 (last Intel runner) is retired;
-          # cross-compile from the arm64 runner instead.
-          - os: macos
-            arch: x86_64
-            runner: macos-latest
-            format: osx
-            target: x86_64-apple-darwin
-          - os: linux
-            arch: amd64
-            runner: ubuntu-latest
-            format: deb
-          - os: windows
-            arch: x86_64
-            runner: windows-latest
+        # Recovery runs reuse the tagged sources and leave completed bundles alone.
+        include: ${{ fromJSON(inputs.platform == 'macos-x86_64' && '[{"os":"macos","arch":"x86_64","runner":"macos-latest","format":"osx","target":"x86_64-apple-darwin"}]' || '[{"os":"macos","arch":"arm64","runner":"macos-latest","format":"osx"},{"os":"macos","arch":"x86_64","runner":"macos-latest","format":"osx","target":"x86_64-apple-darwin"},{"os":"linux","arch":"amd64","runner":"ubuntu-latest","format":"deb"},{"os":"windows","arch":"x86_64","runner":"windows-latest"}]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_tag || github.ref }}
+
+      - name: Validate release tag
+        id: release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.source_tag || github.ref_name }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected an existing version tag" >&2; exit 1; }
+          [ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)" ] || { echo "Checkout does not match release tag" >&2; exit 1; }
+          if [ "$MANUAL" = true ]; then
+            [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ] || { echo "Manual bundles require an existing draft release" >&2; exit 1; }
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -143,10 +154,16 @@ jobs:
             codesign --force --deep -s - "$APP"
             # Wrap the .app in a .dmg for distribution.
             DMG="$OUT/Grove-${VERSION}-macos-${{ matrix.arch }}.dmg"
+            # Size from apparent bytes, not allocated blocks: compressed/sparse
+            # binaries can otherwise leave hdiutil's inferred volume too small.
+            APP_KIB="$(du -A -sk "$APP" | awk '{print $1}')"
+            IMAGE_MIB=$(( (APP_KIB + 1023) / 1024 * 2 + 32 ))
+            echo "App apparent size: $APP_KIB KiB; image capacity: $IMAGE_MIB MiB"
+            df -h "$OUT"
             # hdiutil intermittently fails with "Resource busy" on GitHub
             # runners (Spotlight/quarantine racing on the fresh .app) — retry.
             for i in 1 2 3 4 5; do
-              hdiutil create -volname "Grove" -srcfolder "$APP" -ov -format UDZO -imagekey zlib-level=9 "$DMG" && break
+              hdiutil create -volname "Grove" -srcfolder "$APP" -size "${IMAGE_MIB}m" -fs HFS+ -ov -format UDZO -imagekey zlib-level=9 "$DMG" && break
               [ "$i" = 5 ] && exit 1
               sleep 10
             done
@@ -178,7 +195,7 @@ jobs:
       - name: Upload bundles to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.release.outputs.tag }}
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           fail_on_unmatched_files: true
           files: dist/*
