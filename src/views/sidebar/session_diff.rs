@@ -163,6 +163,7 @@ impl Sidebar {
                 .child(
                     div()
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
                         .gap(rpx(SPACE_LG))
                         .p(rpx(SPACE_LG))
@@ -179,10 +180,16 @@ impl Sidebar {
                                 Action::RefreshDiff,
                                 cx,
                             )
+                            .w_auto()
+                            .px(rpx(SPACE_LG))
+                            .text_size(rpx(TEXT_SMALL))
                             .child("Refresh"),
                         )
                         .child(
                             self.control("diff-close", "Close changes", Action::CloseDiff, cx)
+                                .w_auto()
+                                .px(rpx(SPACE_LG))
+                                .text_size(rpx(TEXT_SMALL))
                                 .child("Close"),
                         ),
                 )
