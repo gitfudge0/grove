@@ -1,3 +1,23 @@
+# Grove 1.1.2
+
+## Native plan review
+
+- Review versioned agent plans directly in Codex and Claude Code conversations, with structured claims, supporting exhibits, and decisions.
+- Keep plan revisions attached to the original assistant message, restore persisted plans, and send explicit review responses back to the agent.
+- Open linked HTML exhibits on demand and keep code examples inert during plan interactions.
+
+## Conversations and desktop controls
+
+- See message timestamps and inline copy controls, with assistant prose grouped under one response footer.
+- Use native macOS application menus for common app, session, and terminal actions.
+- Fix overlapping buttons in the diff viewer header.
+
+## Packaging and maintenance
+
+- Restore Linux and macOS release packaging with corrected bundle metadata and a pinned packaging tool.
+- Build only the intended macOS app and Linux Debian bundle, using the repository's pinned Rust toolchain.
+- Include Windows compilation, CI lint, and TLS dependency fixes.
+
 # Grove 1.1.1
 
 ## Native conversations

@@ -24,7 +24,7 @@ sum_tree = { path = "vendor/sum_tree" }
 ignored = ["log"]
 
 [workspace.package]
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
@@ -159,8 +159,7 @@ category = "Developer Tool"
 short_description = "A worktree launchpad for AI coding agents"
 copyright = "Copyright (c) 2026 Grove"
 
-[package.metadata.bundle.deb]
-depends = ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libx11-6", "xwayland"]
+deb_depends = ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libx11-6", "xwayland"]
 
 [dependencies]
 grove-core = { path = "crates/grove-core" }

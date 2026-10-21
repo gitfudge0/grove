@@ -32,9 +32,10 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! cargo bundle --help >/dev/null 2>&1; then
-  echo "Installing cargo-bundle..."
-  cargo install cargo-bundle
+BUNDLE_VERSION="0.12.0"
+if [ "$(cargo bundle --version 2>/dev/null || true)" != "cargo-bundle v$BUNDLE_VERSION" ]; then
+  echo "Installing cargo-bundle $BUNDLE_VERSION..."
+  cargo install cargo-bundle --version "$BUNDLE_VERSION" --locked
 fi
 
 # Remove only the obsolete command link created by older Grove installers.
@@ -83,7 +84,7 @@ if [ "$OS" = "Darwin" ]; then
 fi
 
 echo "Building release bundle..."
-CARGO_BUNDLE_ARGS=(--release)
+CARGO_BUNDLE_ARGS=(-p grove --release)
 [ -n "$BUNDLE_FORMAT" ] && CARGO_BUNDLE_ARGS+=(--format "$BUNDLE_FORMAT")
 [ -n "$TARGET" ] && CARGO_BUNDLE_ARGS+=(--target "$TARGET")
 cargo bundle "${CARGO_BUNDLE_ARGS[@]}"
