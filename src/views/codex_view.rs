@@ -82,6 +82,8 @@ const STOP_HOVER_OPACITY: f32 = 0.8;
 const CHAT_MAX_W: f32 = 760.0;
 const SUBAGENT_NAME_W: f32 = 120.0;
 const COMPOSER_MENU_W: f32 = 320.0;
+/// Compact reference card, kept local rather than adding a one-use scale tier.
+const MODEL_EFFORT_CARD_W: f32 = 256.0;
 const MINIMAP_PREVIEW_W: f32 = 320.0;
 const COMPOSER_MENU_MAX_H: f32 = 280.0;
 const COMPOSER_MIN_H: f32 = 72.0;
@@ -258,9 +260,64 @@ fn composer_icon(
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerMenu {
+    Settings,
     Model,
     Effort,
     Access,
+}
+
+/// A drag belongs to the catalog and session that were visible at pointer-down.
+struct EffortDrag {
+    scope: String,
+    model: String,
+    choices: Vec<String>,
+    index: usize,
+}
+
+fn composer_scope(state: &codex::Snapshot) -> String {
+    format!(
+        "{:?}:{}:{:?}",
+        state.saved.provider, state.saved.key, state.saved.thread_id
+    )
+}
+
+fn composer_model_name(state: &codex::Snapshot) -> String {
+    effective_model(state)
+        .and_then(|model| model["displayName"].as_str())
+        .or(state.model.as_deref())
+        .or(state.resolved_model.as_deref())
+        .unwrap_or("Configured model")
+        .to_owned()
+}
+
+fn effort_label(value: &str) -> String {
+    match value {
+        "xhigh" => "Extra high".into(),
+        _ => {
+            let mut letters = value.chars();
+            letters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(letters).collect()
+            })
+        }
+    }
+}
+
+fn effort_stop(position: f32, count: usize) -> usize {
+    (position.clamp(0.0, 1.0) * count.saturating_sub(1) as f32).round() as usize
+}
+
+fn effort_key_index(key: &str, index: usize, count: usize) -> Option<usize> {
+    if count < 2 {
+        return None;
+    }
+    let last = count - 1;
+    match key {
+        "left" | "down" => Some(index.saturating_sub(1)),
+        "right" | "up" => Some((index + 1).min(last)),
+        "home" => Some(0),
+        "end" => Some(last),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -467,6 +524,14 @@ pub struct CodexView {
     menu: Option<ComposerMenu>,
     popup: Option<Entity<PopupMenu>>,
     popup_subscription: Option<Subscription>,
+    composer_menu_scope: Option<String>,
+    model_from_card: bool,
+    effort_drag: Option<EffortDrag>,
+    effort_pending: Option<(String, String)>,
+    effort_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    card_model_focus: FocusHandle,
+    card_focus: FocusHandle,
+    card_reset_focus: FocusHandle,
     option_bounds: [Rc<Cell<gpui::Bounds<gpui::Pixels>>>; 3],
     option_focus: [FocusHandle; 3],
     file_suggestions: Vec<String>,
@@ -540,6 +605,7 @@ impl CodexView {
                 .placeholder(placeholder)
                 .default_value(draft)
         });
+        let card_focus = cx.focus_handle();
         let mut subscriptions = vec![
             cx.observe(&session, |_, _, cx| cx.notify()),
             cx.observe(&input, |this, _, cx| {
@@ -594,6 +660,11 @@ impl CodexView {
             this.composer_pin_bottom = false;
             cx.notify();
         }));
+        subscriptions.push(cx.on_focus_out(&card_focus, window, |this, _, _, cx| {
+            if this.menu == Some(ComposerMenu::Settings) {
+                this.close_menu(cx);
+            }
+        }));
         Self {
             session,
             html,
@@ -611,6 +682,14 @@ impl CodexView {
             menu: None,
             popup: None,
             popup_subscription: None,
+            composer_menu_scope: None,
+            model_from_card: false,
+            effort_drag: None,
+            effort_pending: None,
+            effort_bounds: Rc::default(),
+            card_model_focus: cx.focus_handle(),
+            card_focus,
+            card_reset_focus: cx.focus_handle(),
             option_bounds: std::array::from_fn(|_| Rc::default()),
             option_focus: std::array::from_fn(|_| cx.focus_handle()),
             file_suggestions: Vec::new(),
@@ -2199,6 +2278,13 @@ impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.restore_image_tokens(window, cx);
         let mut state = self.session.read(cx).state.clone();
+        if self
+            .composer_menu_scope
+            .as_ref()
+            .is_some_and(|scope| *scope != composer_scope(&state))
+        {
+            self.close_menu(cx);
+        }
         let plan_keys: HashSet<_> = state
             .saved
             .rich_plans
@@ -3673,7 +3759,47 @@ impl Render for CodexView {
                     cx.propagate();
                 }
             }))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.model_from_card {
+                    this.model_from_card = false;
+                    this.open_menu(ComposerMenu::Settings, window, cx);
+                    this.card_model_focus.focus(window, cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "escape" && this.menu.is_some() {
+                    let index = if this.menu == Some(ComposerMenu::Access) {
+                        2
+                    } else {
+                        0
+                    };
+                    this.close_menu(cx);
+                    this.option_focus[index].focus(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, cx| {
+                if this.effort_drag.is_some() {
+                    this.preview_effort_at(event.position, cx);
+                }
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+                    this.finish_effort_drag(event.position, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+                    this.finish_effort_drag(event.position, cx);
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.menu == Some(ComposerMenu::Settings) {
+                    this.close_menu(cx);
+                    this.option_focus[0].focus(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" && this.queue_editor.is_some() {
                     this.cancel_queue_edit(window, cx);
                     cx.stop_propagation();
@@ -4103,7 +4229,7 @@ impl Render for CodexView {
                                     .flex_wrap()
                                     .items_center()
                                     .gap(rpx(SPACE_LG))
-                                    .children(self.option_triggers(&state, cx))
+                                    .children(self.option_triggers(&state, window, cx))
                                     .child(div().flex_1())
                                     .when_some(
                                         state.saved.context.filter(|usage| usage.window > 0),
@@ -4179,32 +4305,34 @@ impl Render for CodexView {
                             .when(focused_launch, |rail| rail.child(self.launch_starters(provider, cx))),
                     ),
             );
-        if let (Some(menu), Some(popup)) = (self.menu, self.popup.clone()) {
-            let index = match menu {
-                ComposerMenu::Model => 0,
-                ComposerMenu::Effort => 1,
-                ComposerMenu::Access => 2,
+        if let Some(menu) = self.menu {
+            let popup = if menu == ComposerMenu::Settings {
+                Some(self.model_effort_card(&state, window, cx))
+            } else {
+                self.popup.clone().map(IntoElement::into_any_element)
             };
-            let bounds = self.option_bounds[index].get();
-            let gap = rpx(SPACE_MD).to_pixels(window.rem_size());
-            surface
-                .child(gpui::deferred(
-                    gpui::anchored()
-                        .position_mode(gpui::AnchoredPositionMode::Window)
-                        .anchor(gpui::Anchor::BottomLeft)
-                        .position(gpui::point(bounds.left(), bounds.top() - gap))
-                        .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
-                        .child(
-                            div()
-                                .id("codex-options-popup")
-                                .debug_selector(|| "codex-options-popup".into())
-                                .child(popup),
-                        ),
-                ))
-                .into_any_element()
-        } else {
-            surface.into_any_element()
+            if let Some(popup) = popup {
+                let index = if menu == ComposerMenu::Access { 2 } else { 0 };
+                let bounds = self.option_bounds[index].get();
+                let gap = rpx(SPACE_LG).to_pixels(window.rem_size());
+                return surface
+                    .child(gpui::deferred(
+                        gpui::anchored()
+                            .position_mode(gpui::AnchoredPositionMode::Window)
+                            .anchor(gpui::Anchor::BottomLeft)
+                            .position(gpui::point(bounds.left(), bounds.top() - gap))
+                            .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
+                            .child(
+                                div()
+                                    .id("codex-options-popup")
+                                    .debug_selector(|| "codex-options-popup".into())
+                                    .child(popup),
+                            ),
+                    ))
+                    .into_any_element();
+            }
         }
+        surface.into_any_element()
     }
 }
 impl CodexView {
@@ -4562,20 +4690,36 @@ impl CodexView {
         self.menu = None;
         self.popup = None;
         self.popup_subscription = None;
+        self.composer_menu_scope = None;
+        self.model_from_card = false;
+        self.effort_drag = None;
+        self.effort_pending = None;
         cx.notify();
     }
     fn open_menu(&mut self, menu: ComposerMenu, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.session.read(cx).state.clone();
+        self.composer_menu_scope = Some(composer_scope(&state));
+        self.effort_drag = None;
+        if matches!(menu, ComposerMenu::Settings | ComposerMenu::Effort) {
+            self.popup = None;
+            self.popup_subscription = None;
+            self.menu = Some(ComposerMenu::Settings);
+            self.option_focus[1].focus(window, cx);
+            cx.notify();
+            return;
+        }
         let (choices, _) = Self::menu_choices(&state, menu);
         let selected = match menu {
             ComposerMenu::Model => state.model.as_deref().or(state.resolved_model.as_deref()),
-            ComposerMenu::Effort => state.effort.as_deref().or(state.resolved_effort.as_deref()),
+            ComposerMenu::Settings | ComposerMenu::Effort => {
+                state.effort.as_deref().or(state.resolved_effort.as_deref())
+            }
             ComposerMenu::Access => state.access.as_deref().or(state.resolved_access.as_deref()),
         }
         .map(str::to_owned);
         let index = match menu {
             ComposerMenu::Model => 0,
-            ComposerMenu::Effort => 1,
+            ComposerMenu::Settings | ComposerMenu::Effort => 1,
             ComposerMenu::Access => 2,
         };
         let context = self.option_focus[index].clone();
@@ -4608,39 +4752,412 @@ impl CodexView {
             window,
             |this, _, _: &gpui::DismissEvent, _, cx| this.close_menu(cx),
         ));
+        self.menu = Some(menu);
         popup.focus_handle(cx).focus(window, cx);
         self.popup = Some(popup);
-        self.menu = Some(menu);
         cx.notify();
     }
+    fn composer_menu_valid(&self, cx: &App) -> bool {
+        self.composer_menu_scope
+            .as_ref()
+            .is_some_and(|scope| *scope == composer_scope(&self.session.read(cx).state))
+    }
+
+    fn effort_choices(state: &codex::Snapshot) -> Vec<String> {
+        effective_model(state)
+            .and_then(|model| model["supportedReasoningEfforts"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry["reasoningEffort"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    fn effort_model(state: &codex::Snapshot) -> String {
+        effective_model(state)
+            .and_then(|model| model["model"].as_str())
+            .or(state.model.as_deref())
+            .or(state.resolved_model.as_deref())
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    fn effort_index(&self, state: &codex::Snapshot, choices: &[String]) -> Option<usize> {
+        if let Some(drag) = &self.effort_drag {
+            if drag.model == Self::effort_model(state) && drag.choices == choices {
+                return Some(drag.index);
+            }
+        }
+        let pending = self
+            .effort_pending
+            .as_ref()
+            .filter(|(model, _)| *model == Self::effort_model(state));
+        let value = pending
+            .map(|(_, effort)| effort.as_str())
+            .or(state.effort.as_deref())
+            .or(state.resolved_effort.as_deref())
+            .or_else(|| {
+                effective_model(state).and_then(|model| model["defaultReasoningEffort"].as_str())
+            });
+        value
+            .and_then(|value| choices.iter().position(|entry| entry == value))
+            .or_else(|| (choices.len() == 1).then_some(0))
+    }
+
+    fn send_effort(&mut self, value: &str, cx: &mut Context<Self>) {
+        if !self.composer_menu_valid(cx) {
+            self.close_menu(cx);
+            return;
+        }
+        let state = &self.session.read(cx).state;
+        if !Self::effort_choices(state)
+            .iter()
+            .any(|choice| choice == value)
+        {
+            return;
+        }
+        self.effort_pending = Some((Self::effort_model(state), value.to_owned()));
+        self.session.update(cx, |session, cx| {
+            session.send(
+                Action::Configure {
+                    model: None,
+                    effort: Some(value.to_owned()),
+                    access: None,
+                },
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    fn preview_effort_at(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        let bounds = self.effort_bounds.get();
+        if bounds.size.width <= gpui::px(0.) {
+            return;
+        }
+        if let Some(drag) = &mut self.effort_drag {
+            drag.index = effort_stop(
+                f32::from(position.x - bounds.left()) / f32::from(bounds.size.width),
+                drag.choices.len(),
+            );
+            cx.notify();
+        }
+    }
+
+    fn finish_effort_drag(&mut self, position: gpui::Point<gpui::Pixels>, cx: &mut Context<Self>) {
+        self.preview_effort_at(position, cx);
+        if let Some(drag) = self.effort_drag.take() {
+            let state = &self.session.read(cx).state;
+            if drag.scope == composer_scope(state)
+                && drag.model == Self::effort_model(state)
+                && drag.choices == Self::effort_choices(state)
+            {
+                if let Some(value) = drag.choices.get(drag.index) {
+                    self.send_effort(value, cx);
+                }
+            }
+            cx.notify();
+        }
+    }
+
+    fn reset_model_effort(&mut self, cx: &mut Context<Self>) {
+        if !self.composer_menu_valid(cx) {
+            self.close_menu(cx);
+            return;
+        }
+        self.effort_drag = None;
+        self.effort_pending = None;
+        self.session
+            .update(cx, |session, cx| session.send(Action::ResetModelEffort, cx));
+        cx.notify();
+    }
+
+    fn model_effort_card(
+        &self,
+        state: &codex::Snapshot,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let choices = Self::effort_choices(state);
+        let selected = self.effort_index(state, &choices);
+        let effort = selected.and_then(|index| choices.get(index)).map_or_else(
+            || {
+                if choices.is_empty() {
+                    "Effort unavailable".into()
+                } else {
+                    "Default effort".into()
+                }
+            },
+            |value| effort_label(value),
+        );
+        let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+        let width =
+            MODEL_EFFORT_CARD_W.min(f32::from(window.viewport_size().width) / scale - SPACE_3XL);
+        let model_name = composer_model_name(state);
+        let mut model_run = window.text_style().to_run(model_name.len());
+        model_run.font.family = crate::fonts::UI_FAMILY.into();
+        // Reserve the card padding, flanking controls, row gaps, chevron and seam.
+        let model_budget =
+            rpx(width - SPACE_2XL * 2.0 - CONTROL_H * 2.0 - SPACE_SM * 2.0 - ICON_XS - SPACE_XS)
+                .to_pixels(window.rem_size())
+                - gpui::px(SPACE_XS);
+        let model_width = truncation_safe_label_width(
+            &model_name,
+            rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+            &model_run,
+            window.text_system(),
+        )
+        .min(model_budget.max(gpui::px(0.)));
+        let fraction = selected.map_or(0.0, |index| {
+            index as f32 / choices.len().saturating_sub(1).max(1) as f32
+        });
+        let track_bounds = self.effort_bounds.clone();
+        let track = div()
+            .relative()
+            .w_full()
+            .h(rpx(CONTROL_H))
+            .rounded(rpx(RADIUS_FULL))
+            .bg(c::BG_HOVER())
+            .when(selected.is_some(), |track| {
+                track.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .h_full()
+                        .w(gpui::relative(fraction))
+                        .rounded(rpx(RADIUS_FULL))
+                        .bg(c::BLUE()),
+                )
+            })
+            .child(
+                div()
+                    .absolute()
+                    .left(rpx(ICON_MD))
+                    .right(rpx(ICON_MD))
+                    .h_full()
+                    .child(
+                        gpui::canvas(
+                            move |bounds, _, _| track_bounds.set(bounds),
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .children(choices.iter().enumerate().map(|(index, _)| {
+                        let at = if choices.len() == 1 {
+                            0.5
+                        } else {
+                            index as f32 / (choices.len() - 1) as f32
+                        };
+                        div()
+                            .absolute()
+                            .left(gpui::relative(at))
+                            .top(rpx(SPACE_XL))
+                            .ml(-rpx(SPACE_XS))
+                            .size(rpx(SPACE_SM))
+                            .rounded(rpx(RADIUS_FULL))
+                            .bg(c::FG_MUTE())
+                    }))
+                    .when_some(selected, |track, _| {
+                        track.child(
+                            div()
+                                .absolute()
+                                .left(gpui::relative(if choices.len() == 1 {
+                                    0.5
+                                } else {
+                                    fraction
+                                }))
+                                .top(-rpx(SPACE_XS))
+                                .ml(-rpx(ICON_MD))
+                                .size(rpx(ICON_BTN_W))
+                                .rounded(rpx(RADIUS_FULL))
+                                .bg(c::FG()),
+                        )
+                    }),
+            );
+        let slider = div()
+            .id("codex-effort-slider")
+            .debug_selector(|| "codex-effort-slider".into())
+            .role(gpui::Role::Slider)
+            .aria_label("Reasoning effort")
+            .aria_value(effort.clone())
+            .aria_description(if choices.len() < 2 {
+                "This model has no adjustable effort range"
+            } else {
+                "Applies to the next turn. Use arrow keys, Home or End"
+            })
+            .aria_min_numeric_value(0.0)
+            .aria_max_numeric_value(choices.len().saturating_sub(1) as f64)
+            .aria_numeric_value(selected.unwrap_or(0) as f64)
+            .aria_numeric_value_step(1.0)
+            .track_focus(&self.option_focus[1])
+            .tab_index(0)
+            .h(rpx(ICON_BTN_W))
+            .w_full()
+            .flex()
+            .items_center()
+            .rounded(rpx(RADIUS_FULL))
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
+            .when(choices.len() < 2, |slider| slider.opacity(OPACITY_DISABLED))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                    if !this.composer_menu_valid(cx) {
+                        return;
+                    }
+                    let state = &this.session.read(cx).state;
+                    let choices = Self::effort_choices(state);
+                    if choices.len() > 1 {
+                        this.effort_drag = Some(EffortDrag {
+                            scope: composer_scope(state),
+                            model: Self::effort_model(state),
+                            choices,
+                            index: 0,
+                        });
+                        this.preview_effort_at(event.position, cx);
+                        this.option_focus[1].focus(window, cx);
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }),
+            )
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                let state = &this.session.read(cx).state;
+                let choices = Self::effort_choices(state);
+                let index = this.effort_index(state, &choices).unwrap_or(0);
+                if let Some(index) = effort_key_index(&event.keystroke.key, index, choices.len()) {
+                    this.effort_drag = None;
+                    this.send_effort(&choices[index], cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(track);
+        div()
+            .id("codex-model-effort-card")
+            .debug_selector(|| "codex-model-effort-card".into())
+            .role(gpui::Role::Group)
+            .track_focus(&self.card_focus)
+            .aria_label("Model and reasoning effort")
+            .w(rpx(width))
+            .p(rpx(SPACE_2XL))
+            .rounded(rpx(RADIUS_PANEL))
+            .border_1()
+            .border_color(c::BORDER())
+            .bg(c::MENU_HOVER())
+            .text_size(rpx(TEXT_SMALL))
+            .text_color(c::FG_DIM())
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_2XL))
+            .occlude()
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                if !this.option_bounds[0].get().contains(&event.position) {
+                    this.close_menu(cx);
+                }
+            }))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(rpx(SPACE_SM))
+                    .child(
+                        div()
+                            .w(rpx(CONTROL_H))
+                            .h(rpx(CONTROL_H))
+                            .flex()
+                            .items_center()
+                            .child(crate::icons::icon("lightning", ICON_MD, c::FG_MUTE())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_size(rpx(TEXT_TITLE))
+                                    .text_color(c::BLUE())
+                                    .child(effort),
+                            )
+                            .child(
+                                header_control_frame(
+                                    "codex-card-model",
+                                    format!("Choose model: {}", composer_model_name(state)),
+                                    c::BG_HOVER(),
+                                )
+                                .track_focus(&self.card_model_focus)
+                                .tab_index(0)
+                                .w_full()
+                                .min_w_0()
+                                .gap(rpx(SPACE_XS))
+                                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                .child(
+                                    div()
+                                        .id("codex-card-model-label")
+                                        .debug_selector(|| "codex-card-model-label".into())
+                                        .w(model_width)
+                                        .flex_shrink_0()
+                                        .truncate()
+                                        .child(model_name),
+                                )
+                                .child(crate::icons::icon("chev-right", ICON_XS, c::FG_MUTE()))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.model_from_card = true;
+                                    this.effort_pending = None;
+                                    this.open_menu(ComposerMenu::Model, window, cx);
+                                }))
+                                .on_key_down(cx.listener(
+                                    |this, event: &gpui::KeyDownEvent, window, cx| {
+                                        if action_key(event) {
+                                            this.model_from_card = true;
+                                            this.effort_pending = None;
+                                            this.open_menu(ComposerMenu::Model, window, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                )),
+                            ),
+                    )
+                    .child(
+                        header_control(
+                            "codex-model-effort-reset",
+                            "Reset model and effort to configured values",
+                        )
+                        .debug_selector(|| "codex-model-effort-reset".into())
+                        .track_focus(&self.card_reset_focus)
+                        .tab_index(0)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(crate::icons::icon("reset", ICON_MD, c::FG_DIM()))
+                        .on_click(cx.listener(|this, _, _, cx| this.reset_model_effort(cx)))
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, _, cx| {
+                                if action_key(event) {
+                                    this.reset_model_effort(cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        )),
+                    ),
+            )
+            .child(slider)
+            .into_any_element()
+    }
+
     fn option_triggers(
         &self,
         state: &codex::Snapshot,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::AnyElement> {
-        let model = state
-            .model
-            .as_ref()
-            .or(state.resolved_model.as_ref())
-            .cloned()
-            .unwrap_or_else(|| "Configured model".into());
-        let model = state
-            .models
-            .iter()
-            .find(|entry| {
-                entry["model"].as_str() == Some(&model)
-                    || (state.saved.provider == codex::Provider::Claude
-                        && entry["resolvedModel"].as_str() == Some(&model))
-            })
-            .and_then(|entry| entry["displayName"].as_str())
-            .unwrap_or(&model)
-            .to_owned();
+        let model = composer_model_name(state);
         let effort = state
             .effort
-            .as_ref()
-            .or(state.resolved_effort.as_ref())
-            .cloned()
-            .unwrap_or_else(|| "Default effort".into());
+            .as_deref()
+            .or(state.resolved_effort.as_deref())
+            .map_or_else(|| "Default effort".into(), effort_label);
         let access_value = state.access.as_deref().or(state.resolved_access.as_deref());
         let access_icon = match access_value {
             Some("full-access" | "bypassPermissions") => "lock-open",
@@ -4660,32 +5177,24 @@ impl CodexView {
             _ => "Configured access",
         };
         let mut controls = Vec::new();
-        for (index, (menu, id, name, icon, label)) in [
+        for (index, menu, id, name, icon, label) in [
             (
-                ComposerMenu::Model,
+                0,
+                ComposerMenu::Settings,
                 "codex-model",
-                "Choose model",
+                "Choose model and reasoning effort",
                 state.saved.provider.agent().icon_name(),
-                model,
+                format!("{model} · {effort}"),
             ),
             (
-                ComposerMenu::Effort,
-                "codex-effort",
-                "Choose reasoning effort",
-                "brain",
-                effort,
-            ),
-            (
+                2,
                 ComposerMenu::Access,
                 "codex-access",
                 "Choose access level",
                 access_icon,
                 access.into(),
             ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        ] {
             if index > 0 {
                 controls.push(
                     div()
@@ -4696,6 +5205,22 @@ impl CodexView {
                 );
             }
             let bounds = self.option_bounds[index].clone();
+            let summary_id = if menu == ComposerMenu::Settings {
+                "codex-model-effort-summary"
+            } else {
+                "codex-access-summary"
+            };
+            // GPUI's intrinsic flex text measurement can undercount glyph advances,
+            // causing an ellipsis even when the toolbar has space for this label.
+            let mut label_run = window.text_style().to_run(label.len());
+            label_run.font.family = crate::fonts::UI_FAMILY.into();
+            let label_width = truncation_safe_label_width(
+                &label,
+                rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                &label_run,
+                window.text_system(),
+            )
+            .min(rpx(MODEL_EFFORT_CARD_W).to_pixels(window.rem_size()));
             controls.push(
                 header_control(id, name)
                     .relative()
@@ -4712,22 +5237,28 @@ impl CodexView {
                     .tab_index(0)
                     .text_color(c::FG_DIM())
                     .text_size(rpx(TEXT_SMALL))
-                    .when(self.menu == Some(menu), |button| button.bg(c::BG_HOVER()))
+                    .when(
+                        self.menu == Some(menu)
+                            || (menu == ComposerMenu::Settings && self.model_from_card),
+                        |button| button.bg(c::BG_HOVER()),
+                    )
                     .focus_visible(|style| style.bg(c::BG_HOVER()))
                     .child(crate::icons::icon(icon, ICON_SM, c::FG_DIM()))
-                    .when(menu == ComposerMenu::Model, |button| {
-                        button
-                            .max_w_full()
-                            .h_auto()
-                            .min_h(rpx(CHROME_CONTROL_H))
-                            .flex_wrap()
+                    .when(menu == ComposerMenu::Settings, |button| {
+                        button.max_w_full().min_h(rpx(CHROME_CONTROL_H))
                     })
                     .child(
                         div()
-                            .when(menu == ComposerMenu::Model, |label| {
-                                label.max_w_full().flex_shrink_0()
+                            .id(summary_id)
+                            .debug_selector(move || summary_id.into())
+                            .when(menu == ComposerMenu::Settings, |label| {
+                                label
+                                    .w(label_width)
+                                    .max_w(rpx(MODEL_EFFORT_CARD_W))
+                                    .flex_shrink_0()
+                                    .truncate()
                             })
-                            .when(menu != ComposerMenu::Model, |label| {
+                            .when(menu != ComposerMenu::Settings, |label| {
                                 label.max_w(rpx(FIELD_LABEL_COL_W)).truncate()
                             })
                             .child(label),
@@ -4780,7 +5311,7 @@ impl CodexView {
                     .collect();
                 "Model · applies to the next turn"
             }
-            ComposerMenu::Effort => {
+            ComposerMenu::Settings | ComposerMenu::Effort => {
                 if let Some(model) = effective_model(state) {
                     choices = model["supportedReasoningEfforts"]
                         .as_array()
@@ -5138,10 +5669,23 @@ impl CodexView {
             .into_any_element()
     }
     fn choose_option(&mut self, value: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.is_some() && !self.composer_menu_valid(cx) {
+            self.close_menu(cx);
+            return;
+        }
+        let return_to_card = self.model_from_card;
+        self.popup_subscription = None;
         if value == "__configured" {
             self.close_menu(cx);
             self.session.update(cx, |session, cx| {
-                session.send(Action::ResetConfiguration, cx);
+                session.send(
+                    if return_to_card {
+                        Action::ResetModelEffort
+                    } else {
+                        Action::ResetConfiguration
+                    },
+                    cx,
+                );
             });
         } else if let Some(menu) = self.menu.take() {
             self.popup = None;
@@ -5155,7 +5699,10 @@ impl CodexView {
         } else {
             self.accept_suggestion(value, true, window, cx);
         }
-        if self.popup.is_none() {
+        if return_to_card {
+            self.model_from_card = false;
+            self.open_menu(ComposerMenu::Settings, window, cx);
+        } else if self.popup.is_none() {
             self.input.focus_handle(cx).focus(window, cx);
         }
         cx.notify();
@@ -9109,7 +9656,7 @@ mod tests {
         let (view, cx, actions, _) = fixture(cx);
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
-                view.menu = Some(ComposerMenu::Model);
+                view.open_menu(ComposerMenu::Model, window, cx);
                 view.choose_option("supported-model", window, cx);
                 view.input
                     .update(cx, |input, cx| input.set_value("/access", window, cx));
@@ -11279,6 +11826,197 @@ mod tests {
             assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
         });
     }
+    #[test]
+    fn composer_effort_stops_use_only_the_effective_catalog() {
+        let mut state = snapshot();
+        assert!(CodexView::effort_choices(&state).is_empty());
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            state.saved.provider = provider;
+            state.model = Some("alias".into());
+            state.resolved_model = Some("resolved".into());
+            state.models = vec![
+                json!({"model":"alias", "resolvedModel":"resolved", "supportedReasoningEfforts":[{"reasoningEffort":"high"}]}),
+            ];
+            assert_eq!(CodexView::effort_choices(&state), vec!["high"]);
+            state.models[0]["supportedReasoningEfforts"] = json!([
+                {"reasoningEffort":"low"}, {"reasoningEffort":"medium"}, {"reasoningEffort":"high"}
+            ]);
+            assert_eq!(
+                CodexView::effort_choices(&state),
+                vec!["low", "medium", "high"]
+            );
+            assert!(!CodexView::effort_choices(&state).contains(&"__configured".into()));
+            state.models[0]["supportedReasoningEfforts"] = json!([]);
+            assert!(CodexView::effort_choices(&state).is_empty());
+        }
+        assert_eq!(effort_stop(-1.0, 3), 0);
+        assert_eq!(effort_stop(0.5, 3), 1);
+        assert_eq!(effort_stop(2.0, 3), 2);
+        assert_eq!(effort_key_index("right", 0, 1), None);
+        assert_eq!(effort_key_index("end", 0, 3), Some(2));
+        assert_eq!(effort_key_index("left", 0, 3), Some(0));
+    }
+
+    #[gpui::test]
+    fn composer_effort_card_commits_on_release_and_preserves_draft(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.models = vec![json!({"model":"test", "displayName":"Test model", "defaultReasoningEffort":"medium", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]})];
+                session.state.model = Some("test".into());
+                session.state.effort = Some("medium".into());
+                cx.notify();
+            });
+            view.input.update(cx, |input, cx| input.set_value("Keep my draft", window, cx));
+            view.open_menu(ComposerMenu::Settings, window, cx);
+        }));
+        draw(cx);
+        let summary = cx.debug_bounds("codex-model-effort-summary").unwrap();
+        let card_model = cx.debug_bounds("codex-card-model-label").unwrap();
+        cx.update(|window, _| {
+            let label = "Test model · Medium";
+            let mut run = window.text_style().to_run(label.len());
+            run.font.family = crate::fonts::UI_FAMILY.into();
+            let required = truncation_safe_label_width(
+                label,
+                rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                &run,
+                window.text_system(),
+            );
+            assert!(
+                summary.size.width >= required,
+                "ordinary model and effort labels must not ellipsize prematurely"
+            );
+            let model = "Test model";
+            let mut run = window.text_style().to_run(model.len());
+            run.font.family = crate::fonts::UI_FAMILY.into();
+            let required = truncation_safe_label_width(
+                model,
+                rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                &run,
+                window.text_system(),
+            );
+            assert!(
+                card_model.size.width >= required,
+                "the card model name must fit before its chevron"
+            );
+        });
+        let trigger = view.read_with(cx, |view, _| view.option_bounds[0].get());
+        let card = cx.debug_bounds("codex-options-popup").unwrap();
+        assert!(card.bottom() <= trigger.top());
+        assert!((trigger.top() - card.bottom() - gpui::px(SPACE_LG)).abs() < gpui::px(1.0));
+        let bounds = view.read_with(cx, |view, _| view.effort_bounds.get());
+        let end = gpui::point(bounds.right(), bounds.center().y);
+        let _ = actions.try_iter().collect::<Vec<_>>();
+        cx.simulate_mouse_down(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Configure { .. })));
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions.try_iter().any(|action| matches!(action, Action::Configure { effort: Some(effort), model: None, access: None } if effort == "high")));
+        cx.simulate_keystrokes("home right");
+        draw(cx);
+        let values: Vec<_> = actions
+            .try_iter()
+            .filter_map(|action| match action {
+                Action::Configure { effort, .. } => effort,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(values, ["low", "medium"]);
+        let reset = cx.debug_bounds("codex-model-effort-reset").unwrap();
+        cx.simulate_click(reset.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::ResetModelEffort)));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(view.menu.is_none());
+            assert_eq!(view.input.read(cx).value().as_ref(), "Keep my draft");
+        });
+    }
+
+    #[gpui::test]
+    fn composer_effort_drag_cancels_on_escape_and_catalog_or_session_change(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.model = Some("test".into());
+                session.state.models = vec![json!({"model":"test", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]})];
+                cx.notify();
+            });
+            view.open_menu(ComposerMenu::Settings, window, cx);
+        }));
+        draw(cx);
+        let position = view.read_with(cx, |view, _| view.effort_bounds.get().center());
+        let _ = actions.try_iter().collect::<Vec<_>>();
+        cx.simulate_mouse_down(
+            position,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        cx.simulate_mouse_up(
+            position,
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Configure { .. })));
+        for change_session in [false, true] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.models[0]["supportedReasoningEfforts"] =
+                            json!([{"reasoningEffort":"low"},{"reasoningEffort":"high"}]);
+                        cx.notify();
+                    });
+                    view.open_menu(ComposerMenu::Settings, window, cx);
+                });
+            });
+            draw(cx);
+            let position = view.read_with(cx, |view, _| view.effort_bounds.get().center());
+            cx.simulate_mouse_down(
+                position,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        if change_session {
+                            session.state.saved.key = "different-session".into();
+                        } else {
+                            session.state.models[0]["supportedReasoningEfforts"] =
+                                json!([{ "reasoningEffort":"low" }]);
+                        }
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            cx.simulate_mouse_up(
+                position,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::Configure { .. })));
+        }
+    }
+
     #[gpui::test]
     fn option_popup_is_anchored_without_resizing_composer_and_handles_keyboard_and_outside_click(
         cx: &mut gpui::TestAppContext,

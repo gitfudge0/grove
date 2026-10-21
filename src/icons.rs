@@ -83,6 +83,8 @@ fn wrap_svg(inner: &str) -> String {
 
 fn svg_for(name: &str) -> String {
     let inner = match name {
+        "lightning" => r#"<path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"/>"#,
+        "reset" => r#"<path d="M2.5 6a5.5 5.5 0 1 1 .5 5M2.5 2.5V6H6"/>"#,
         "plus" => r#"<path d="M8 3v10M3 8h10"/>"#,
         "copy" => r#"<rect x="5" y="5" width="8" height="8" rx="1"/><path d="M10 5V3H3v7h2"/>"#,
         "minus" => r#"<path d="M3 8h10"/>"#,

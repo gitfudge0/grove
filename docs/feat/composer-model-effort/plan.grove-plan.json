@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "plan_id": "composer-model-effort",
+  "revision_id": "r1-20261021",
+  "title": "Model and Effort in Chat",
+  "sources": [
+    {
+      "attribution": "User request",
+      "text": "Plan a change in the chat input where we change the model and effort selection to look like Image 1"
+    },
+    {
+      "attribution": "Image 1 \u00b7 attached reference",
+      "text": "Rounded dark card; lightning glyph; centered blue High above GPT-6.1 Sol and chevron; reset arrow; blue and neutral discrete slider with white thumb and tick dots."
+    },
+    {
+      "attribution": "Inspected implementation",
+      "text": "src/views/codex_view.rs option_triggers, open_menu, menu_choices, effective_model and choose_option; crates/grove-core/src/codex.rs and claude.rs Configure and ResetConfiguration; DESIGN.md and grove-ui skill."
+    }
+  ],
+  "changes": {
+    "files": 4,
+    "changed": 4,
+    "new": 0,
+    "deleted": 0
+  },
+  "claims": [
+    {
+      "id": "combined",
+      "text": "One compact control groups model and effort above the composer.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "preview-card",
+            "kind": "surface",
+            "text": "Reference hierarchy \u00b7 not a pixel rendering",
+            "children": [
+              {
+                "id": "preview-header",
+                "kind": "row",
+                "text": "",
+                "children": [
+                  {
+                    "id": "preview-bolt",
+                    "kind": "text",
+                    "text": "\u03df"
+                  },
+                  {
+                    "id": "preview-labels",
+                    "kind": "column",
+                    "text": "",
+                    "children": [
+                      {
+                        "id": "preview-effort",
+                        "kind": "text",
+                        "text": "High \u00b7 blue"
+                      },
+                      {
+                        "id": "preview-model",
+                        "kind": "control",
+                        "text": "GPT-6.1 Sol \u203a"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "preview-reset",
+                    "kind": "control",
+                    "text": "\u21b6 Reset"
+                  }
+                ]
+              },
+              {
+                "id": "preview-slider",
+                "kind": "control",
+                "text": "\u25cf \u2501\u2501 \u25cf \u2501\u2501 \u25ef \u2500\u2500 \u25cf \u2500\u2500 \u25cf  \u00b7 discrete effort slider"
+              }
+            ]
+          }
+        ]
+      },
+      "html_links": [
+        {
+          "path": "mock.html",
+          "label": "Open reference-style visual sketch"
+        }
+      ],
+      "decisions": [
+        {
+          "id": "placement",
+          "prompt": "How should this card appear in the chat input?",
+          "options": [
+            {
+              "id": "popover",
+              "label": "Combined trigger and popover (Recommended)",
+              "description": "Replace model and effort toolbar controls with one compact summary; open the card above it on click or keyboard activation."
+            },
+            {
+              "id": "persistent",
+              "label": "Always visible card",
+              "description": "Keep the card in the composer toolbar area; consumes more vertical space at narrow widths."
+            }
+          ],
+          "default": "popover"
+        }
+      ],
+      "children": [
+        {
+          "id": "presentation",
+          "text": "The card retains its hierarchy at narrow widths.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Upper row: decorative lightning, centered effort and model, trailing reset.\nLower row: rounded track, blue completed portion, neutral remainder, tick dots, contrasting round thumb.\nLong model names truncate with full accessible label. Keep the card within the window and anchor it above the composer.\nUse token dimensions, theme colors, shared control shells and icon assets. Neutral focus fills keep borders stable; buttons return to rest on release.\nLight appearance follows the fixed app palette. White thumb in dark mode maps to an appropriate contrasting semantic treatment in light mode."
+          }
+        },
+        {
+          "id": "entrypoints",
+          "text": "The combined control preserves the existing access control.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "view-trigger",
+                "title": "Combine toolbar entries",
+                "detail": "Replace model and effort entries; retain access as its existing separate control.",
+                "source": "src/views/codex_view.rs:4616"
+              },
+              {
+                "id": "view-open",
+                "title": "Anchor the card",
+                "detail": "Extend menu state and rendering, keeping current outside-click dismissal behavior.",
+                "source": "src/views/codex_view.rs:4567"
+              },
+              {
+                "id": "view-render",
+                "title": "Place the overlay",
+                "detail": "Reuse the composer overlay path for a reference-shaped card.",
+                "source": "src/views/codex_view.rs:4106"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "selection",
+      "text": "The slider selects only efforts supported by the current model.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "0 supported efforts \u2192 unavailable/default explanation, no invented stops.\n1 supported effort \u2192 fixed labeled value, no draggable illusion.\nN supported efforts \u2192 ordered catalog stops; readable current effort above the track.\nClick snaps to a supported stop. Drag previews locally; pointer release commits once.\nArrow keys change one stop; Home/End choose endpoints. Announce current effort and range through accessible semantics.\nModel row opens the existing model choices within the same anchored surface.\nModel change recomputes stops and reconciles effort through each provider\u2019s existing default behavior. Never carry an unsupported effort into a new model."
+      },
+      "children": [
+        {
+          "id": "catalog",
+          "text": "Effort membership follows the effective model, including resolved Claude models.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "catalog-choice",
+                "title": "Read model capabilities",
+                "detail": "Derive ordered supportedReasoningEfforts from the selected effective catalog entry.",
+                "source": "src/views/codex_view.rs:4759"
+              },
+              {
+                "id": "catalog-resolved",
+                "title": "Resolve provider aliases",
+                "detail": "Preserve existing effective_model handling and Claude resolved-catalog regression coverage.",
+                "source": "src/views/codex_view.rs:6454"
+              },
+              {
+                "id": "catalog-action",
+                "title": "Dispatch supported values",
+                "detail": "Reuse Configure from choose_option; catalog-gate slider values because core enum validation alone does not validate per-model membership.",
+                "source": "src/views/codex_view.rs:5140"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "lifecycle",
+      "text": "Selection changes the next turn without submitting the chat draft.",
+      "exhibit": {
+        "kind": "state_machine",
+        "initial": "closed",
+        "states": [
+          {
+            "id": "closed",
+            "label": "Closed",
+            "screen": {
+              "kind": "schema",
+              "text": "Combined summary and separate access control in the toolbar."
+            }
+          },
+          {
+            "id": "card-open",
+            "label": "Card open",
+            "screen": {
+              "kind": "schema",
+              "text": "Effort, model row, reset, discrete slider. Focus enters the control."
+            }
+          },
+          {
+            "id": "models-open",
+            "label": "Model choices",
+            "screen": {
+              "kind": "schema",
+              "text": "Existing catalog labels and selected model; return to the effort card after selection."
+            }
+          },
+          {
+            "id": "dragging",
+            "label": "Preview effort",
+            "screen": {
+              "kind": "schema",
+              "text": "Thumb and effort label preview a supported stop. No provider write until release."
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "from": "closed",
+            "to": "card-open",
+            "label": "Activate combined trigger"
+          },
+          {
+            "from": "card-open",
+            "to": "models-open",
+            "label": "Activate model row"
+          },
+          {
+            "from": "models-open",
+            "to": "card-open",
+            "label": "Select model and recompute effort"
+          },
+          {
+            "from": "card-open",
+            "to": "dragging",
+            "label": "Begin pointer drag"
+          },
+          {
+            "from": "dragging",
+            "to": "card-open",
+            "label": "Release commits supported effort; cancel discards preview"
+          },
+          {
+            "from": "models-open",
+            "to": "card-open",
+            "label": "Escape returns focus to model row"
+          },
+          {
+            "from": "card-open",
+            "to": "closed",
+            "label": "Escape or outside click dismisses"
+          },
+          {
+            "from": "dragging",
+            "to": "closed",
+            "label": "Session switch cancels pending drag"
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "focus",
+          "text": "Dismissal restores focus without changing another session.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Escape from the card returns focus to the trigger. Outside click keeps the clicked destination\u2019s focus.\nSession/provider switch dismisses both levels and cancels pointer preview; stale callbacks must never configure the new session.\nKeyboard navigation, focus-visible styling and accessible control names remain usable.\nSelection dispatches Configure for the originating session, preserves draft and attachments, and does not send a prompt."
+          }
+        }
+      ]
+    },
+    {
+      "id": "reset",
+      "text": "Reset restores configured model and effort independently of access.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Recommended reset scope: clear model and effort overrides, restore configured/resolved model and effort, preserve access override and persisted access.\nCurrent ResetConfiguration clears all three fields in both actors; it cannot be reused unchanged for this arrow.\nIntroduce a narrowly scoped action or explicit reset scope handled by both providers. Preserve existing all-settings reset behavior elsewhere.\nCodex must reconcile configured-turn state and persistence; Claude must reconfigure without losing saved access.\nDo not implement reset by guessing defaults or sending empty Configure fields."
+      },
+      "decisions": [
+        {
+          "id": "reset-scope",
+          "prompt": "What should the card\u2019s reset arrow reset?",
+          "options": [
+            {
+              "id": "model-effort",
+              "label": "Model and effort only (Recommended)",
+              "description": "Restore their configured values while keeping the separate access setting unchanged."
+            },
+            {
+              "id": "all-settings",
+              "label": "All composer settings",
+              "description": "Reuse the existing reset, including access; the control must clearly disclose this wider effect."
+            }
+          ],
+          "default": "model-effort"
+        }
+      ],
+      "children": [
+        {
+          "id": "actors",
+          "text": "Both providers persist the selected reset scope consistently.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "core-codex",
+                "title": "Codex reset and configure",
+                "detail": "Add scoped clearing beside ResetConfiguration; retain configured-turn resolved values and access override. Model change already selects the new catalog default effort.",
+                "source": "crates/grove-core/src/codex.rs:2839"
+              },
+              {
+                "id": "core-claude",
+                "title": "Claude reset and configure",
+                "detail": "Add equivalent scoped clearing and reconfiguration; preserve saved access. Existing model changes clear effort.",
+                "source": "crates/grove-core/src/claude.rs:1300"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "acceptance",
+      "text": "Both providers must pass interaction, persistence and visual acceptance checks.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Implementation checks: relevant cargo test core/view regression cases and full cargo test conformance. Orchestrator reads raw results independently.\nRegression cases: catalog 0/1/N stops; supported-only writes; aliases/resolved models; model change defaults; drag cancel/commit; session switch; reset plus unchanged access and persistence.\nNative QA: actual build/worktree identified; dark/light, desktop/narrow composer, long model names, resting/hover/focus/open/release states, keyboard and pointer use, model switch, dismissal and reset. Compare against Image 1 and this contract.\nCodex live boundary: currently UNTESTED (plan only). Later verify next-turn effective model/effort and scoped reset/access against real provider state.\nClaude live boundary: currently UNTESTED (plan only). Later verify resolved catalog, next-turn settings and scoped reset/access against real provider state.\nReport Codex and Claude separately as verified, unsupported or untested, naming actual method or blocker. Fixtures establish local logic only, never live provider behavior.\nCover affected supported platforms; explicitly mark native or platform checks not exercised. No build/install occurs during this plan."
+      }
+    }
+  ],
+  "scope": [
+    "Plan only: no application code, builds, tests or installation are performed for this proposal. File counts estimate implementation changes, excluding plan artifacts.",
+    "Apply to the shared Codex and Claude chat composer. Access stays separate. Preserve drafts, attachments, sending and provider catalog discovery.",
+    "The lightning is decorative; do not invent a speed or billing control. Effort stop counts follow each model\u2019s catalog, rather than copying the reference dots literally.",
+    "Blue effort text and slider fill follow the explicit reference. Document this focused exception in DESIGN.md; use existing semantic colors, tokens, shared controls and icons. No arbitrary palette, scale expansion or conformance allow-list.",
+    "Review response resolves proposal decisions. Implementation needs a later explicit request. After authorized implementation: relevant checks and native QA, then ./install.sh once at the selected final delivery endpoint unless subsequently deferred."
+  ]
+}

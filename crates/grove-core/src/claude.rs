@@ -1330,6 +1330,22 @@ impl Actor {
                 self.reconfigure = true;
             }
 
+            Action::ResetModelEffort => {
+                // Restarting is required to remove a live model override. Preserve
+                // inherited permissions explicitly so that restart cannot reset them.
+                if self.state.access.is_none() {
+                    self.state.access = self.state.resolved_access.clone();
+                }
+                self.state.saved.composer.model = None;
+                self.state.saved.composer.effort = None;
+                self.state.saved.composer.access = self.state.access.clone();
+                self.state.model = None;
+                self.state.effort = None;
+                self.state.resolved_model = None;
+                self.state.resolved_effort = None;
+                self.reset_configuration = true;
+                self.reconfigure = true;
+            }
             Action::ResetConfiguration => {
                 self.reset_configuration = true;
                 self.state.saved.composer = codex::ComposerSettings::default();
@@ -3713,6 +3729,53 @@ mod tests {
             .message(json!({"type":"user","uuid":sent["uuid"]}))
             .unwrap();
         assert_eq!(actor.state.saved.items.len(), 1);
+    }
+    #[test]
+    fn scoped_model_effort_reset_restarts_with_preserved_access() {
+        for explicit in [false, true] {
+            let mut actor = actor();
+            actor.state.resolved_access = Some("plan".into());
+            actor
+                .action(Action::Configure {
+                    model: Some("sonnet".into()),
+                    effort: Some("high".into()),
+                    access: explicit.then(|| "plan".into()),
+                })
+                .unwrap();
+            actor.action(Action::ResetModelEffort).unwrap();
+            assert!(actor.reset_configuration);
+            assert!(actor.reconfigure);
+            assert!(actor.state.model.is_none());
+            assert!(actor.state.effort.is_none());
+            assert_eq!(actor.state.resolved_access.as_deref(), Some("plan"));
+            let recovered: SavedSession =
+                serde_json::from_value(serde_json::to_value(&actor.state.saved).unwrap()).unwrap();
+            assert!(recovered.composer.model.is_none());
+            assert!(recovered.composer.effort.is_none());
+            assert_eq!(recovered.composer.access.as_deref(), Some("plan"));
+            let command = launch_command(&[], &recovered).unwrap();
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert!(!args.iter().any(|arg| arg == "--model" || arg == "--effort"));
+            assert!(args
+                .windows(2)
+                .any(|pair| pair == ["--permission-mode", "plan"]));
+            actor
+                .action(Action::Configure {
+                    model: Some("haiku".into()),
+                    effort: Some("low".into()),
+                    access: None,
+                })
+                .unwrap();
+            // A later selection must still restart, rather than configuring the
+            // original process with its stale model/effort override.
+            assert!(actor.reset_configuration);
+            assert_eq!(actor.state.saved.composer.access.as_deref(), Some("plan"));
+            assert_eq!(actor.state.saved.composer.model.as_deref(), Some("haiku"));
+            assert_eq!(actor.state.saved.composer.effort.as_deref(), Some("low"));
+        }
     }
     #[test]
     fn configure_merges_fields_and_applies_native_control_requests() {

@@ -19,6 +19,8 @@ use std::{
 pub struct ComposerSettings {
     #[serde(default)]
     pub reset_to_configured: bool,
+    #[serde(default)]
+    pub reset_model_effort_only: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub access: Option<String>,
@@ -1721,6 +1723,8 @@ pub enum Action {
         images: Vec<String>,
     },
     ResetConfiguration,
+    /// Restore configured model and effort without resetting effective access.
+    ResetModelEffort,
     Configure {
         model: Option<String>,
         effort: Option<String>,
@@ -2324,7 +2328,19 @@ impl Actor {
     }
     fn turn_params(&self, input: Vec<Value>) -> Value {
         let mut params = if self.reset_configuration {
-            self.configured_turn.clone()
+            if self.state.saved.composer.reset_model_effort_only {
+                // Omitted permission fields retain the provider's exact effective
+                // policies, including settings richer than Grove's access modes.
+                let mut configured = json!({});
+                for key in ["model", "effort"] {
+                    if let Some(value) = self.configured_turn.get(key) {
+                        configured[key] = value.clone();
+                    }
+                }
+                configured
+            } else {
+                self.configured_turn.clone()
+            }
         } else {
             json!({})
         };
@@ -2836,6 +2852,21 @@ impl Actor {
                     self.process = None;
                 }
             }
+            Action::ResetModelEffort => {
+                self.state.model = None;
+                self.state.effort = None;
+                self.state.saved.composer = ComposerSettings {
+                    reset_to_configured: true,
+                    reset_model_effort_only: true,
+                    access: self.state.access.clone(),
+                    ..Default::default()
+                };
+                self.state.resolved_model =
+                    self.configured_turn["model"].as_str().map(str::to_owned);
+                self.state.resolved_effort =
+                    self.configured_turn["effort"].as_str().map(str::to_owned);
+                self.reset_configuration = true;
+            }
             Action::ResetConfiguration => {
                 self.state.model = None;
                 self.state.effort = None;
@@ -2897,6 +2928,7 @@ impl Actor {
                 }
                 self.state.saved.composer = ComposerSettings {
                     reset_to_configured: self.reset_configuration,
+                    reset_model_effort_only: self.state.saved.composer.reset_model_effort_only,
                     model: self.state.model.clone(),
                     effort: self.state.effort.clone(),
                     access: self.state.access.clone(),
@@ -4642,6 +4674,76 @@ mod tests {
             })
             .unwrap();
         assert_eq!(actor.turn_params(vec![])["effort"], "medium");
+    }
+    #[test]
+    fn scoped_model_effort_reset_preserves_access_and_survives_recovery() {
+        for explicit in [false, true] {
+            let mut actor = actor();
+            actor.configured_turn = json!({"model":"configured","effort":"medium","sandboxPolicy":{"type":"readOnly"},"approvalPolicy":"on-request"});
+            let effective_access = if explicit {
+                "full-access"
+            } else {
+                "workspace-write"
+            };
+            actor.state.resolved_access = Some(effective_access.into());
+            let inherited_sandbox = json!({"type":"workspaceWrite","writableRoots":["/custom"],"networkAccess":true,"excludeTmpdirEnvVar":true});
+            actor.state.sandbox = Some(inherited_sandbox.clone());
+            actor
+                .action(Action::Configure {
+                    model: Some("selected".into()),
+                    effort: Some("high".into()),
+                    access: explicit.then(|| "full-access".into()),
+                })
+                .unwrap();
+            actor.action(Action::ResetModelEffort).unwrap();
+            assert_eq!(
+                actor.state.resolved_access.as_deref(),
+                Some(effective_access)
+            );
+            assert_eq!(actor.state.sandbox, Some(inherited_sandbox));
+            let params = actor.turn_params(vec![]);
+            assert_eq!(params["model"], "configured");
+            assert_eq!(params["effort"], "medium");
+            if explicit {
+                assert_eq!(params["sandboxPolicy"]["type"], "dangerFullAccess");
+                assert_eq!(params["approvalPolicy"], "never");
+            } else {
+                assert!(params.get("sandboxPolicy").is_none());
+                assert!(params.get("approvalPolicy").is_none());
+                assert!(actor.state.saved.composer.access.is_none());
+            }
+            let recovered =
+                serde_json::from_value(serde_json::to_value(&actor.state.saved).unwrap()).unwrap();
+            let (_, input) = mpsc::channel();
+            let (updates, _) = crate::latest::channel();
+            let mut restored = Actor::new(recovered, input, updates, Vec::new());
+            restored.configured_turn = actor.configured_turn.clone();
+            assert!(restored.state.saved.composer.reset_model_effort_only);
+            assert_eq!(restored.turn_params(vec![]), params);
+            restored
+                .action(Action::Configure {
+                    model: None,
+                    effort: Some("low".into()),
+                    access: None,
+                })
+                .unwrap();
+            let params = restored.turn_params(vec![]);
+            assert!(restored.state.saved.composer.reset_model_effort_only);
+            assert_eq!(params["model"], "configured");
+            assert_eq!(params["effort"], "low");
+            if explicit {
+                assert_eq!(params["sandboxPolicy"]["type"], "dangerFullAccess");
+            } else {
+                assert!(params.get("sandboxPolicy").is_none());
+                assert!(params.get("approvalPolicy").is_none());
+            }
+            restored.action(Action::ResetConfiguration).unwrap();
+            assert!(!restored.state.saved.composer.reset_model_effort_only);
+            assert_eq!(
+                restored.turn_params(vec![])["sandboxPolicy"]["type"],
+                "readOnly"
+            );
+        }
     }
     #[test]
     fn composer_settings_survive_recovery_and_reset_restores_protocol_defaults() {
