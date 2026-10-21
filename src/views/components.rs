@@ -100,8 +100,8 @@ pub fn header_control_with_tooltip(
 }
 
 pub(super) fn header_control_frame(
-    id: &'static str,
-    label: &'static str,
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
     hover: gpui::Hsla,
 ) -> Stateful<Div> {
     div()

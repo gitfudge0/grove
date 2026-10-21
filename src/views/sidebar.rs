@@ -8750,6 +8750,7 @@ for line in sys.stdin:
             let (handle, _actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+            rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,

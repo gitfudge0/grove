@@ -452,6 +452,7 @@ struct MessageEditor {
 pub struct CodexView {
     session: Entity<CodexSession>,
     pub(super) html: Entity<super::inline_html::HtmlSession>,
+    native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     input: Entity<InputState>,
     checkout_context: Option<(String, String)>,
     expanded: HashSet<String>,
@@ -596,6 +597,7 @@ impl CodexView {
         Self {
             session,
             html,
+            native_plans: HashMap::new(),
             input,
             expanded: HashSet::new(),
             work_tick_pending: Rc::new(Cell::new(false)),
@@ -2197,6 +2199,50 @@ impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.restore_image_tokens(window, cx);
         let mut state = self.session.read(cx).state.clone();
+        let plan_keys: HashSet<_> = state
+            .saved
+            .rich_plans
+            .revisions
+            .iter()
+            .map(|p| (p.document.plan_id.clone(), p.document.revision_id.clone()))
+            .collect();
+        self.native_plans.retain(|key, _| plan_keys.contains(key));
+        for (plan_id, revision_id) in plan_keys {
+            let key = (plan_id.clone(), revision_id.clone());
+            if !self.native_plans.contains_key(&key) {
+                let session = self.session.clone();
+                let html = self.html.clone();
+                let view = cx.new(|cx| {
+                    super::native_plan::NativePlan::new(session, html, plan_id, revision_id, cx)
+                });
+                self.subscriptions.push(cx.observe(&view, |this, _, cx| {
+                    this.smooth_follow = false;
+                    cx.notify();
+                }));
+                self.native_plans.insert(key, view);
+            }
+        }
+        // Each completed message points to its exact imported revision, even when
+        // a file path is later reused or a previous revision is linked again.
+        let native_links = state
+            .saved
+            .rich_plans
+            .references
+            .iter()
+            .filter_map(|reference| {
+                self.native_plans
+                    .get(&(reference.plan_id.clone(), reference.revision_id.clone()))
+                    .map(|view| {
+                        (
+                            (reference.message_id.clone(), reference.source.clone()),
+                            view.downgrade(),
+                        )
+                    })
+            })
+            .collect();
+        self.html
+            .update(cx, |html, _| html.bind_native_plans(native_links));
+
         if state.edited_messages != self.edited_messages {
             self.edited_messages = state.edited_messages;
             self.edit_request_pending = false;
@@ -3181,6 +3227,72 @@ impl Render for CodexView {
                 let linked =
                     html_entity.update(cx, |html, cx| html.linked(&html_message, window, cx));
                 row = row.children(linked);
+                if kind == "agentMessage" {
+                    let plans: Vec<_> = self
+                        .session
+                        .read(cx)
+                        .state
+                        .saved
+                        .rich_plans
+                        .revisions
+                        .iter()
+                        .filter(|plan| plan.message_id == html_message)
+                        .map(|plan| {
+                            (
+                                plan.document.plan_id.clone(),
+                                plan.document.revision_id.clone(),
+                            )
+                        })
+                        .collect();
+                    for (plan_id, revision_id) in plans {
+                        let key = (plan_id, revision_id);
+                        row = row.child(super::native_plan::inline(&self.native_plans[&key], cx));
+                    }
+                    let errors = self.session.read(cx).state.saved.rich_plans.errors.clone();
+                    for error in errors
+                        .into_iter()
+                        .filter(|error| error.message_id == html_message)
+                    {
+                        let message_id = error.message_id.clone();
+                        let source = error.source.clone();
+                        row =
+                            row.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(rpx(SPACE_LG))
+                                    .p(rpx(SPACE_2XL))
+                                    .child(div().text_color(c::RED()).child(format!(
+                                        "Couldn’t open native plan: {}",
+                                        error.error
+                                    )))
+                                    .child(div().text_color(c::FG_DIM()).child(error.source))
+                                    .child(
+                                        transcript_action(
+                                            format!("retry-native-plan-{message_id}"),
+                                            "Retry plan import",
+                                            false,
+                                            window,
+                                            cx,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.session.update(cx, |session, cx| {
+                                                    session.send(
+                                                        Action::RetryPlanImport {
+                                                            message_id: message_id.clone(),
+                                                            source: source.clone(),
+                                                        },
+                                                        cx,
+                                                    );
+                                                });
+                                            }),
+                                        ),
+                                    ),
+                            );
+                    }
+                }
+
                 if kind == "userMessage" {
                     if let Some(content) = item["content"].as_array() {
                         let images: Vec<_> = content
@@ -8400,6 +8512,7 @@ mod tests {
     }
     fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
+            rich_plans: grove_core::rich_plan::PlanStore::default(),
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,

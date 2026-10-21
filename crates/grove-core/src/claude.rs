@@ -140,6 +140,8 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
     guidance.push_str(crate::tasks::CLAUDE_GUIDANCE);
     guidance.push_str("\n\n");
     guidance.push_str(crate::reports::REPORT_GUIDANCE);
+    guidance.push_str("\n\n");
+    guidance.push_str(crate::rich_plan::GUIDANCE);
     args.extend(["--append-system-prompt".into(), guidance]);
     let argv = vec![
         "--print".into(),
@@ -907,6 +909,7 @@ impl Actor {
         });
         saved.thread_id.clone_from(&edit.claude_fork_id);
         saved.items.truncate(edit.target);
+        saved.rich_plans.retain_messages(&saved.items);
         saved
             .edit_checkpoints
             .retain(|checkpoint| checkpoint.start_item < edit.target);
@@ -1032,6 +1035,7 @@ impl Actor {
         self.state.queue_sending.retain(|id| *id != prompt.id);
         self.state.queue_steering.retain(|id| *id != prompt.id);
         self.state.queue_uncertain.retain(|id| *id != prompt.id);
+        self.state.saved.rich_plans.confirm_delivery(prompt.id);
         self.state.accepted_prompts += 1;
         self.state.accepted_submission = Some(prompt.id);
         self.state.rejected_submission = None;
@@ -1081,6 +1085,36 @@ impl Actor {
         self.state.cleared_conversations = cleared;
         Ok(())
     }
+    fn send_plan_response(
+        &mut self,
+        plan_id: &str,
+        revision_id: &str,
+        persist_saved: impl Fn(&SavedSession) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.process.is_none() || !self.initialized {
+            return Err("Reconnect before sending plan feedback".into());
+        }
+        if let Some((id, text)) = self
+            .state
+            .saved
+            .rich_plans
+            .prepare_delivery(plan_id, revision_id)?
+        {
+            if let Err(error) = persist_saved(&self.state.saved) {
+                self.state.saved.rich_plans.fail_delivery(id, &error);
+                return Err(error);
+            }
+            self.state.queued_prompts.push(QueuedPrompt {
+                id,
+                text,
+                images: Vec::new(),
+            });
+            if !self.state.status.busy() {
+                self.queue_ready = true;
+            }
+        }
+        Ok(())
+    }
     fn action(&mut self, action: Action) -> Result<(), String> {
         if self.state.saved.pending_edit.is_some()
             && !matches!(
@@ -1091,6 +1125,25 @@ impl Actor {
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
         }
         match action {
+            Action::UpdatePlanReview {
+                plan_id,
+                revision_id,
+                review,
+            } => {
+                self.state
+                    .saved
+                    .rich_plans
+                    .update_review(&plan_id, &revision_id, review)?;
+                codex::persist(&self.state.saved)?;
+            }
+            Action::RetryPlanImport { message_id, source } => {
+                crate::rich_plan::retry_import(&mut self.state.saved, &message_id, &source)?;
+                codex::persist(&self.state.saved)?;
+            }
+            Action::SendPlanResponse {
+                plan_id,
+                revision_id,
+            } => self.send_plan_response(&plan_id, &revision_id, codex::persist)?,
             Action::EditMessage { index, message_id } => {
                 self.edit_message(index, message_id, None)?;
             }
@@ -2058,6 +2111,9 @@ impl Actor {
                         });
                     }
                 }
+                if value["is_error"] != true && !self.interrupting {
+                    crate::rich_plan::import_completed(&mut self.state.saved);
+                }
                 if self.tracks_session_state && !self.session_idle {
                     self.pending_completion = Some(self.state.status);
                     self.state.status = Status::Working;
@@ -2301,6 +2357,8 @@ mod tests {
                 assert!(appended[0][1].contains("select:TaskCreate,TaskUpdate"));
                 assert!(appended[0][1].contains("Keep task statuses current"));
                 assert!(appended[0][1].contains("<!-- grove:integrated-report -->"));
+                assert!(appended[0][1].contains(crate::reports::REPORT_GUIDANCE));
+                assert!(appended[0][1].ends_with(crate::rich_plan::GUIDANCE));
                 if !custom.is_empty() {
                     assert!(appended[0][1].starts_with("Custom guidance\n\n"));
                 }
@@ -4135,5 +4193,65 @@ mod tests {
             .message(json!({"type":"result","is_error":false}))
             .unwrap_err()
             .contains("before acknowledging"));
+    }
+    #[test]
+    fn native_plan_actor_journals_queues_and_confirms_one_review_without_touching_draft() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.saved.rich_plans = serde_json::from_value(json!({"revisions":[{"message_id":"plan-message","source":"plan.grove-plan.json","document":{"schema_version":1,"plan_id":"plan","revision_id":"r1","title":"Native","claims":[{"id":"claim","text":"Bounded"}]},"assets":[]}]})).unwrap();
+        actor.state.saved.draft = "independent composer".into();
+
+        assert!(actor
+            .send_plan_response("plan", "r1", |_| Err("disk full".into()))
+            .is_err());
+        assert!(actor.state.queued_prompts.is_empty());
+        let journal = std::cell::RefCell::new(Vec::new());
+        for _ in 0..2 {
+            actor
+                .send_plan_response("plan", "r1", |saved| {
+                    journal
+                        .borrow_mut()
+                        .push(serde_json::to_vec(saved).unwrap());
+                    Ok(())
+                })
+                .unwrap();
+        }
+        assert_eq!(journal.borrow().len(), 1);
+        assert_eq!(actor.state.queued_prompts.len(), 1);
+        assert!(!actor.drain_queue());
+        let id = actor.state.queued_prompts[0].id;
+        assert!(!actor.state.queue_editable(id));
+        actor.state.status = Status::Idle;
+        actor.queue_ready = true;
+        assert!(actor.drain_queue());
+        let wire = read(&mut reader);
+        assert_eq!(wire["type"], "user");
+        assert!(wire["message"]["content"]
+            .to_string()
+            .contains("Plan review: Native"));
+        actor.acknowledge_input(&wire["uuid"]);
+        assert!(actor.state.queued_prompts.is_empty());
+        assert!(matches!(
+            actor.state.saved.rich_plans.revisions[0].review.delivery,
+            crate::rich_plan::ResponseDelivery::Sent { .. }
+        ));
+        actor
+            .send_plan_response("plan", "r1", |_| {
+                panic!("confirmed feedback must not be journaled again")
+            })
+            .unwrap();
+        assert!(actor.state.queued_prompts.is_empty());
+        assert_eq!(actor.state.saved.draft, "independent composer");
+        let mut restarted = Snapshot::new(
+            serde_json::from_slice(&serde_json::to_vec(&actor.state.saved).unwrap()).unwrap(),
+        );
+        assert!(restarted
+            .saved
+            .rich_plans
+            .prepare_delivery("plan", "r1")
+            .unwrap()
+            .is_none());
     }
 }
