@@ -28,6 +28,7 @@ const HEADER_PREFIX_FRACTION: f32 = 0.4;
 const EMPTY_CARD_W: f32 = 430.;
 const EMPTY_CARD_PAD: f32 = 24.;
 const EMPTY_TITLE_SIZE: f32 = 18.;
+const PROJECT_START_ROW_H: f32 = 50.;
 
 impl Sidebar {
     pub(super) fn render_worktree_removal(
@@ -1240,6 +1241,7 @@ impl Sidebar {
                     })
                     .child(
                         form_action(id, label, false, window, cx)
+                            .h(rpx(PROJECT_START_ROW_H))
                             .icon(
                                 gpui_component::Icon::default()
                                     .path(format!("icons/{}.svg", agent.icon_name()))
