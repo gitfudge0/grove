@@ -8877,7 +8877,7 @@ for line in sys.stdin:
                 projects: vec![grove_core::storage::Project {
                     name: "demo".into(),
                     path: path.into(),
-                    scripts: Default::default(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
                     archived: false,
                     worktree_dir: None,
                 }],
@@ -8902,12 +8902,12 @@ for line in sys.stdin:
                     registry.insert_meta("demo".into(), path.into(), agent)
                 });
                 let saved = grove_core::codex::SavedSession {
-                    rich_plans: Default::default(),
+                    rich_plans: grove_core::rich_plan::PlanStore::default(),
                     claude_resume: None,
                     edit_checkpoints: Vec::new(),
                     pending_edit: None,
                     provider,
-                    composer: Default::default(),
+                    composer: grove_core::codex::ComposerSettings::default(),
                     context: None,
                     key: format!("settings-navigation-{}", id.raw()),
                     project: "demo".into(),

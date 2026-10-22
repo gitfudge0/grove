@@ -54,6 +54,8 @@ pub struct DiffViewerState {
     pub branch: Option<String>,
     pub files: Vec<FileChange>,
     pub group: Option<diff::ChangeGroup>,
+    pub subcategory: Option<String>,
+    classifier: diff::ChangeClassifier,
     /// Follows the *path*, not an index, so a file that stops changing shows "No longer changed" in place instead of the selection snapping elsewhere.
     pub selected_path: Option<String>,
     pub mode: DiffMode,
@@ -86,6 +88,8 @@ impl DiffViewerState {
             branch: None,
             files: Vec::new(),
             group: None,
+            subcategory: None,
+            classifier: diff::ChangeClassifier::default(),
             selected_path: None,
             mode,
             list_style: FileListStyle::Flat,
@@ -103,10 +107,20 @@ impl DiffViewerState {
         this
     }
 
-    pub fn set_group(&mut self, group: diff::ChangeGroup, cx: &mut Context<Self>) {
+    pub fn set_category(
+        &mut self,
+        group: diff::ChangeGroup,
+        subcategory: Option<String>,
+        classifier: diff::ChangeClassifier,
+        cx: &mut Context<Self>,
+    ) {
         self.group = Some(group);
-        self.files
-            .retain(|f| diff::ChangeGroup::of(&f.path) == group);
+        self.subcategory = subcategory;
+        self.classifier = classifier;
+        self.files.retain(|f| {
+            self.classifier
+                .matches(&f.path, group, self.subcategory.as_deref())
+        });
         self.selected_path = None;
         if !self.loading {
             self.load_files(cx);
@@ -122,20 +136,23 @@ impl DiffViewerState {
         cx.notify();
         let wt_path = self.wt_path.clone();
         cx.spawn(async move |this, cx| {
-            let (files, branch) = cx
+            let (files, branch, classifier) = cx
                 .background_spawn(async move {
                     let files = diff::changed_files(&wt_path);
                     let branch = grove_core::git::current_branch(&wt_path);
-                    (files, branch)
+                    (files, branch, diff::ChangeClassifier::load(&wt_path))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
+                this.classifier = classifier;
                 this.files = files
                     .into_iter()
                     .filter(|f| {
-                        this.group
-                            .is_none_or(|g| diff::ChangeGroup::of(&f.path) == g)
+                        this.group.is_none_or(|g| {
+                            this.classifier
+                                .matches(&f.path, g, this.subcategory.as_deref())
+                        })
                     })
                     .collect();
                 this.branch = Some(branch).filter(|b| !b.is_empty());
@@ -167,7 +184,7 @@ impl DiffViewerState {
         // Only the selected file's mtime is worth a fresh `stat`; other cached patches stay valid or get evicted.
         let watched_path = self.selected_path.clone();
         cx.spawn(async move |this, cx| {
-            let (files, fresh_mtime) = cx
+            let (files, fresh_mtime, classifier) = cx
                 .background_spawn(async move {
                     let files = diff::changed_files(&wt_path);
                     let fresh_mtime = watched_path.and_then(|path| {
@@ -175,11 +192,12 @@ impl DiffViewerState {
                             .ok()
                             .and_then(|m| m.modified().ok())
                     });
-                    (files, fresh_mtime)
+                    (files, fresh_mtime, diff::ChangeClassifier::load(&wt_path))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.live_refresh_inflight = false;
+                this.classifier = classifier;
                 this.apply_live_update(files, fresh_mtime, cx);
             });
         })
@@ -196,8 +214,10 @@ impl DiffViewerState {
         let new_files = new_files
             .into_iter()
             .filter(|f| {
-                self.group
-                    .is_none_or(|g| diff::ChangeGroup::of(&f.path) == g)
+                self.group.is_none_or(|g| {
+                    self.classifier
+                        .matches(&f.path, g, self.subcategory.as_deref())
+                })
             })
             .collect::<Vec<_>>();
         let prev_selected = self.selected_path.clone();

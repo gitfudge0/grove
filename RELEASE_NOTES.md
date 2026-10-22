@@ -1,3 +1,24 @@
+# Grove 1.1.3
+
+## Checkout tools
+
+- Expand change categories into subcategories and open filtered diffs for a category or subcategory.
+- Recognize test fixtures, CI workflows, dependency files, deployment files, scripts, and assets more precisely. Add repository-specific mappings in `.grove/change-categories.json`.
+- Create and open GitHub pull requests from the checkout card, with pull request status and actions close to your changes.
+- Keep checkout Git operations scoped to the selected worktree.
+
+## Conversations and controls
+
+- Choose the agent model and reasoning effort directly in the composer, with effort controls that follow the supported choices.
+- Refine project and session navigation, control styling, and inline message edit confirmation.
+- Read native plan response lines separately and use clearer inline HTML report and browser link behavior.
+- Reuse prepared transcript content across render frames to reduce repeated work in long conversations.
+
+## Packaging and maintenance
+
+- Improve macOS release image sizing and support recovering bundles from an existing release tag.
+- Share consistent Grove workflow guidance with Codex and Claude Code sessions, backed by a canonical UI design contract and conformance checks.
+
 # Grove 1.1.2
 
 ## Native plan review

@@ -38,6 +38,7 @@ pub(super) struct CheckoutPanel {
     path: Option<String>,
     state: Option<Result<CheckoutGitState, String>>,
     summary: Option<ChangeSummary>,
+    expanded_categories: std::collections::HashSet<diff::ChangeGroup>,
     loading: bool,
     pr_state: Option<Result<Option<PullRequest>, String>>,
     pr_loading: bool,
@@ -271,7 +272,7 @@ impl Sidebar {
                     let summary = result
                         .as_ref()
                         .is_ok_and(|state| state.dirty)
-                        .then(|| diff::summarize(&diff::changed_files(&target)));
+                        .then(|| diff::summarize_checkout(&target));
                     (result, summary)
                 })
                 .await;
@@ -1043,6 +1044,7 @@ impl Sidebar {
                 self.checkout_panel.pr_composing = false;
                 self.checkout_panel.pr_merge = None;
                 self.checkout_panel.summary = None;
+                self.checkout_panel.expanded_categories.clear();
                 self.checkout_panel.loading = false;
                 self.checkout_panel.publish = None;
             }
@@ -1238,33 +1240,149 @@ impl Sidebar {
                     this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
                 })),
             );
-            if let Some(summary) = summary.filter(|summary| summary.groups.len() > 1) {
-                for (group, added, removed) in summary.groups {
+            if let Some(summary) = summary {
+                for &(group, added, removed) in &summary.groups {
+                    let children: Vec<_> = summary
+                        .subgroups
+                        .iter()
+                        .filter(|(parent, _, _, _)| *parent == group)
+                        .collect();
+                    let expanded = self.checkout_panel.expanded_categories.contains(&group);
                     let target = path.clone();
-                    card = card.child(
-                        checkout_action(group.label(), group.label(), false, window, cx)
-                            .debug_selector(move || group.label().into())
-                            .icon_only()
-                            .w_full()
-                            .h(rpx(CARD_LINE_SM_H))
-                            .px(rpx(SPACE_2XL))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .pl(rpx(ICON_LG + SPACE_2XL))
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
-                                    .child(group.label()),
+                    let classifier = summary.classifier.clone();
+                    let mut row = div().flex().items_center().px(rpx(SPACE_2XL));
+                    if !children.is_empty() {
+                        row = row.child(
+                            checkout_action(
+                                format!("checkout-category-toggle-{}", group.label()),
+                                format!(
+                                    "{} {} subcategories",
+                                    if expanded { "Hide" } else { "Show" },
+                                    group.label()
+                                ),
+                                false,
+                                window,
+                                cx,
                             )
-                            .child(change_stat_counts(added, removed, stat_widths))
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                            .debug_selector(move || {
+                                format!("checkout-category-toggle-{}", group.label())
+                            })
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path(if expanded {
+                                        "icons/chev-down.svg"
+                                    } else {
+                                        "icons/chev-right.svg"
+                                    })
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .icon_only()
+                            .w(rpx(CONTROL_H))
+                            .h(rpx(CARD_LINE_SM_H))
+                            .flex_shrink_0()
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if !this.checkout_panel.expanded_categories.remove(&group) {
+                                        this.checkout_panel.expanded_categories.insert(group);
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                        );
+                    } else {
+                        row = row.child(div().w(rpx(CONTROL_H)).flex_shrink_0());
+                    }
+                    row = row.child(
+                        checkout_action(
+                            format!("checkout-category-{}", group.label()),
+                            format!("Show {} changes", group.label()),
+                            false,
+                            window,
+                            cx,
+                        )
+                        .debug_selector(move || group.label().into())
+                        .icon_only()
+                        .flex_1()
+                        .min_w_0()
+                        .h(rpx(CARD_LINE_SM_H))
+                        .px(rpx(SPACE_XS))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(group.label()),
+                        )
+                        .child(change_stat_counts(added, removed, stat_widths))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
                                 this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
                                 if let Some(viewer) = &this.diff_viewer {
-                                    viewer.update(cx, |viewer, cx| viewer.set_group(group, cx));
+                                    viewer.update(cx, |viewer, cx| {
+                                        viewer.set_category(group, None, classifier.clone(), cx);
+                                    });
                                 }
-                            })),
+                            },
+                        )),
                     );
+                    card = card.child(row);
+                    if expanded {
+                        for (_, child, added, removed) in children {
+                            let target = path.clone();
+                            let child = child.clone();
+                            let label = child.clone();
+                            let selector =
+                                format!("checkout-subcategory-{}-{child}", group.label());
+                            let classifier = summary.classifier.clone();
+                            card = card.child(
+                                checkout_action(
+                                    selector.clone(),
+                                    format!("Show {}: {child} changes", group.label()),
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .debug_selector(move || selector.clone())
+                                .icon_only()
+                                .w_full()
+                                .h(rpx(CARD_LINE_SM_H))
+                                .px(rpx(SPACE_2XL))
+                                .tooltip(label.clone())
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .pl(rpx(CONTROL_H + SPACE_LG))
+                                        .truncate()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM())
+                                        .child(label),
+                                )
+                                .child(change_stat_counts(*added, *removed, stat_widths))
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.act(
+                                            Action::OpenWorktreeDiff(target.clone()),
+                                            window,
+                                            cx,
+                                        );
+                                        if let Some(viewer) = &this.diff_viewer {
+                                            viewer.update(cx, |viewer, cx| {
+                                                viewer.set_category(
+                                                    group,
+                                                    Some(child.clone()),
+                                                    classifier.clone(),
+                                                    cx,
+                                                );
+                                            });
+                                        }
+                                    },
+                                )),
+                            );
+                        }
+                    }
                 }
             }
         } else {
@@ -1565,6 +1683,12 @@ fn change_stat_widths(
                 .groups
                 .iter()
                 .map(|&(_, added, removed)| (added, removed))
+                .chain(
+                    summary
+                        .subgroups
+                        .iter()
+                        .map(|(_, _, added, removed)| (*added, *removed)),
+                )
         }))
     {
         for (column, text) in [format!("+{added}"), format!("−{removed}")]

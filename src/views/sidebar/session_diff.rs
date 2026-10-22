@@ -36,7 +36,10 @@ impl Sidebar {
             (
                 viewer.wt_path.clone(),
                 viewer.branch.clone(),
-                viewer.group,
+                viewer.group.map(|g| match &viewer.subcategory {
+                    Some(child) => format!("{}: {child}", g.label()),
+                    None => g.label().to_owned(),
+                }),
                 viewer.files.clone(),
                 viewer.selected_path.clone(),
                 viewer.loading,
@@ -172,7 +175,7 @@ impl Sidebar {
                         .border_color(c::BORDER())
                         .child(div().flex_1().min_w_0().truncate().child(format!(
                             "{} · {}",
-                            group.map_or("Changes", |g| g.label()),
+                            group.as_deref().unwrap_or("Changes"),
                             branch.as_deref().unwrap_or(&wt_path)
                         )))
                         .child(

@@ -107,7 +107,7 @@ Placeholders show meaningful example values and never repeat the label or title:
 
 - Merge appears only for a clean synchronized checkout at the PR head and GitHub-reported readiness, checks and reviews. It requires explicit confirmation naming the PR and merge-commit method, revalidates the checkout and PR identity/head/base/title/readiness, and requests a direct server merge pinned to the exact head SHA. Server branch protections apply; auto-merge, queues, admin bypass and automatic mutation retries are not enabled. A failed or uncertain outcome forces a refreshed status and a new confirmation. GitHub CLI, authentication and network failures remain distinct from no existing PR.
 
-- Category summaries open the diff filtered using the same path classification, and zero removals are hidden while preserving aligned count columns.
+- Change summaries show populated Code, Tests, Docs, and Config parents, with Uncategorized only when purpose is unknown. Reliable path conventions supply optional subcategories; ambiguous files stay directly in their parent without an Other row. Parent disclosure expands populated children independently of the parent diff action, and expansion is scoped to the checkout. Optional checkout mappings override conventions. Parent and child actions open the diff using the same classifier, and zero removals are hidden while preserving aligned count columns.
 
 - Existing folder, plus/play, git-commit, and unified changes glyphs share a stable leading column. The divider between script and PR spans the entire card, with padding on rows instead of the outer card. There is no project, machine, path, or status header, file-manager submenu, or Fetch/Pull toolbar.
 
