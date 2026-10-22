@@ -1,40 +1,38 @@
 ---
 name: grove-ui
-description: Use for Grove native UI work from a screenshot, HTML mock, design spec, or visual critique, and for changes to sidebar, session/grid views, forms, menus, or modals where layout and interaction states must match the current design.
+description: Implement and review Grove native UI, including navigation, forms, menus, settings, transcript/composer, task docks, native plans, and HTML reports, against the shared design contract and affected interaction states.
 ---
 
 # Grove UI implementation
 
-Grove is a Rust/GPUI app. Read [DESIGN.md](../../../DESIGN.md) for the approved target, then inspect the current view and its shared primitives before changing it. `DESIGN.md` includes pending migration targets and older proposals: use the latest explicit user direction when they differ, and verify the current implementation instead of copying a mock's table or numbers literally.
+Read [DESIGN.md](../../../DESIGN.md) before UI implementation or delegation. It owns approved hierarchy, semantics, interaction states, and exceptions; current tokens/theme/components own exact values. Historical `DESIGN.html` and archived migration tables are provenance, not implementation specifications. Explicit current user direction takes precedence; reconcile it with the contract rather than silently changing product direction.
 
-## Establish the implementation contract
+## Establish the contract
 
-Before UI implementation or delegation, record a short contract in the existing plan or task state: the latest approved reference or direction, placement, included content and exclusions, behavior and visibility conditions, and acceptance checks. Settled decisions need no reconfirmation or separate document. When direction changes, reconcile the contract with completed and unfinished work and propagate the updated contract to every worker brief before dependent work continues.
+Record the approved reference/direction, placement, content/exclusions, behavior/visibility, and acceptance checks in the existing task state. Settled decisions need no reconfirmation or separate artifact. Reconcile changed direction with completed and pending work, and propagate it to every worker before dependent work continues. Preserve the selected delivery endpoint and any no-install/stop instruction.
 
-## Build from the existing system
+Inspect the owning native view plus [tokens](../../../src/views/tokens.rs), [theme](../../../src/theme.rs), [components](../../../src/views/components.rs), and [icons](../../../src/icons.rs). Match a screenshot/mock to these primitives; do not copy CSS values or invent GPUI APIs. Use the contract’s control decision table: complete dense/form action recipes, form/project field wells, question/settings controls, attached validation, selectable readonly values, and shared switches/tooltips/status marks. Do not fork their shape locally. Native vendor inputs inside owned wells require accessible names and the shared reset contract: `.appearance(false)`, `.bordered(false)`, `.focus_bordered(false)`, and `.p_0()`; the well owns fill, border, and validation. Check each helper’s interaction contract: where absent, the owner supplies a stable ID, focus/tab routing, keyboard activation, action handling, and enabled/disabled semantics.
 
-- Work in `src/views/`; use `src/views/tokens.rs` for dimensions, `src/theme.rs` for semantic colors, `src/views/components.rs` for shared controls, and `src/icons.rs` for icons. Add a shared role when a genuine repeated need is missing; avoid one-off visual variants that drift between screens.
-- Use one app-level System/Dark/Light appearance setting with fixed palettes. Workspace and project views do not choose colors.
-- Treat a screenshot or HTML mock as evidence of hierarchy, spacing, and behavior. Map it to GPUI structure and current user decisions; do not port CSS or stale framework code mechanically.
+Use Geist for application labels, forms, metadata, native diffs, and script editors. Preserve the configured terminal/Markdown code fonts and terminal cell metrics; ordinary authored HTML owns its fonts. Keep existing type roles, semantic colors, stable border/focus treatment, and rem scaling. Prefer an existing recipe before adding a token; one-consumer dimensions are module constants. Preserve fixed trailing/header columns, neutral selected/open fills, and transient action press state.
 
-## Preserve visual discipline
+## Choose the relevant checks
 
-- Set clear UI type roles for headings, labels, form values, metadata, status, and supporting copy. Form values and metadata, including paths and branches, use UI sans. Reserve monospace for terminal/code content unless the user approves another role. Check line height, truncation, and contrast at actual display scale.
-- Align sidebar icons, titles, metadata, counts, and trailing actions to stable columns. Keep section labels and nested rows on the intended inset. Size headers to their remaining content after controls move.
-- Give sidebar rows, main content, terminals, forms, and dialogs deliberate internal padding. Related inputs share one field well, label/value spacing, and border treatment.
-- Keep grid tiles flush, with subtle seams including the top edge. Avoid item gaps and heavy tile borders.
-- Distinguish hover, keyboard focus (`focus_visible`), selected rows, open menus, and invalid fields. Action buttons return to their resting appearance after release; they do not retain a clicked highlight. Preserve intentional selected/open fill and visible keyboard focus. Form focus uses a neutral fill and stable border; validation can use its semantic border.
+Inspect the actual native rendering against the selected reference at normal and narrower widths, with long names where applicable. Check spacing, type, contrast, glyphs, clipping, and stable columns. Exercise the states changed by the task rather than every screen on every edit:
 
-## Verify the result
+| Change | Native acceptance checks |
+|---|---|
+| Controls/forms/menus | Rest, hover, keyboard focus, selected/open, invalid, disabled, loading, and release; stable input/dropdown borders, component-owned keyboard focus, and reserved action slots; selectable readonly values; accessible names. |
+| Navigation/checkout/diff | Long titles yield to fixed actions/counts; tree/list/compact treatments remain distinct; narrow Checkout disclosure supports focus/Escape; loading stays in its row; destination and checkout identity remain correct. |
+| Tasks/composer/transcript | Expand/collapse, browse and compaction preserve preferences; minimap stays pane-anchored; session switches retain ownership; response Copy includes collapsed prose; hover/focus controls do not shift layout; inline edits preserve draft/images. |
+| Source-attached confirmation | Actual trigger anchor, pane bounds, blocked background/HTML/scroll, contained Tab, Escape/Cancel focus restoration, incoming-update stability, message/thread identity. |
+| Settings | Scroll and category reset, reachable navigation, nested Back/Escape source focus, contained Tab, correct switch meaning. |
+| Native plans/reports/HTML | Narrow/wide multiline text, inert authored markup, exact Copy/Send payload, explicit response send, inline/expanded/external link behavior, integrated-report theme/zoom, authored HTML styling, and motion-preference updates without lost input/document state. |
+| Motion/keyboard routing | Native reduced-motion static endpoints without scheduled animation frames; HTML CSS/Web Animation suppression and cooperating scripts; type spaces into affected inputs; relevant shortcuts route to the owner. |
 
-Compare the actual native rendering with the contract's selected reference (or approved existing design) for spacing, typography, icons, clipping, alignment, contrast, and affected interaction states. Record the exact build and worktree state inspected, screenshot or interaction evidence, and which acceptance checks passed, failed, or were unobserved. Correct observed drift before calling the UI done. A worker's success claim does not replace the orchestrator's own observed evidence. If native inspection is blocked, describe the blocker and unobserved checks; do not claim visual verification.
+For shared questions, approvals, tasks, subagents, or transcript behavior, name **Codex and Claude** in acceptance checks. Report each as verified, unsupported, or untested with the method or reason. Fixtures do not establish live provider-boundary behavior. Cover affected macOS/Linux/Windows paths when platform behavior changes; do not infer unobserved parity.
 
-Choose interaction checks from the changed behavior and regression risk, rather than inspecting every view and state on every change. For example:
+## Verify and maintain
 
-- For flexible rows or panels, inspect long names at desktop and narrower widths for clipping, spacing, and trailing-action alignment.
-- For expanding tasks or disclosures, expand and collapse while checking surrounding geometry and minimap position.
-- For keyboard routing or embedded HTML, type into the affected input, including spaces, and exercise relevant shortcuts.
-- For session-scoped state, switch sessions and return; for compaction or disclosure changes, compact and check that intended disclosure state survives.
-- For changed controls, inspect applicable resting, hover, keyboard-focus, selected/open, validation, and release states; include affected list/grid, terminal, or dialog contexts only where relevant.
+Run relevant code checks and the conformance suite as required by [AGENTS.md](../../../AGENTS.md). A passing source check or worker claim cannot establish native UI correctness. Record the exact build/worktree observed, screenshot/interaction evidence, and passed, failed, or unobserved checks. Correct observed drift; if native inspection is blocked, state the blocker and unobserved checks without claiming verification. An isolated QA app may be used before the final installation; documentation/skill-only changes require neither build nor installation.
 
-Follow [AGENTS.md](../../../AGENTS.md) for delivery and installation rules and, for shared agent features, Codex/Claude acceptance coverage. Native inspection can use the current build in an isolated QA app; identify the observed build and leave unobserved behavior explicit when installation is deferred or prohibited.
+Update DESIGN.md when an approved change adds or changes an invariant, and update this skill when its procedure or checks need to change. Restoring an already documented rule needs no redundant guidance edit. Keep rules semantic. The [October 20–22 drift audit](references/drift-audit-2026-10-22.md) is optional provenance for tracing a regression or reconciling older layouts, not another design authority.
