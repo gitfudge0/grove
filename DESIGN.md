@@ -142,6 +142,8 @@ Task checklists live in the dock above the composer, expanded by default, and pe
 
 Send and Stop share one composer action position. Stop uses semantic red for interruption; busy text follows the provider’s queue/steering behavior. Steering appears immediately without duplicating a queued message. Keep state hints concise and Shift+Enter discoverable through accessible help. Editing a sent message stays inline and preserves the unrelated composer draft and images.
 
+Questions, approvals, and elicitation requests raised by Codex or Claude subagents retain the owning child identity and turn. Completing the parent turn does not dismiss a live child request; completing that child turn expires only its own requests. Show the child identity on its permission request so the user can distinguish concurrent agents.
+
 An edited-message send that restores workspace state uses a pane-local confirmation attached to the actual inline Send control, aligned to its right edge above or below within the pane. Its source aperture is visual only: background mouse, scroll, and embedded HTML interaction remain blocked. Tab stays within Cancel/Confirm; Escape/Cancel restores the editor. Incoming updates must not dislodge the tray, restart follow scrolling, or retarget it. Validate thread and message identity when targeting editing/confirmation; a row index alone is insufficient. A restored editor that bypasses workspace recovery does not require this confirmation.
 
 ## Reports and native plans

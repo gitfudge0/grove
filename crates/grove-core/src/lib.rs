@@ -19,6 +19,7 @@ pub mod error;
 pub mod git;
 pub mod highlight;
 pub mod identity;
+pub mod interaction;
 pub mod latest;
 pub mod multi_root;
 pub mod release_highlights;

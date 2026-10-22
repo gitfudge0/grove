@@ -13,6 +13,12 @@ fn choice(id: &str, label: &str) -> ApprovalChoice {
     }
 }
 pub fn approval_title(a: &Value) -> String {
+    let title = approval_action_title(a);
+    a["groveAgent"]
+        .as_str()
+        .map_or(title.clone(), |agent| format!("{agent}: {title}"))
+}
+fn approval_action_title(a: &Value) -> String {
     if let Some(name) = a["claudeRequest"]["tool_name"].as_str() {
         if name == "ExitPlanMode" {
             return "Approve plan and continue".into();
@@ -32,6 +38,10 @@ pub fn approval_title(a: &Value) -> String {
 pub fn approval_details(a: &Value) -> String {
     let p = &a["params"];
     let mut lines = Vec::new();
+    if let Some(agent) = a["groveAgent"].as_str() {
+        lines.push(format!("Agent: {agent}"));
+        lines.push(if a.get("claudeInput").is_some() {"Permission updates keep the provider’s destination; session grants also apply to the main conversation."} else {"Turn and session grants apply to the requesting agent’s provider thread."}.into());
+    }
     for key in ["reason", "command", "cwd", "grantRoot"] {
         if let Some(v) = p.get(key).filter(|v| !v.is_null()) {
             lines.push(format!(
@@ -118,7 +128,9 @@ pub fn approval_choices(a: &Value) -> Vec<ApprovalChoice> {
         }
     }
     c.push(choice("deny", "Decline and continue"));
-    c.push(choice("cancel", "Decline and stop"));
+    if !(a["groveAgent"].is_string() && a.get("claudeInput").is_some()) {
+        c.push(choice("cancel", "Decline and stop"));
+    }
     if let Some(available) = a["params"]["availableDecisions"].as_array() {
         c.retain(|choice| {
             let value = codex_decision(&a["params"], &choice.id);

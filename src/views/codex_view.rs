@@ -512,10 +512,23 @@ fn question_answer_summary(question: &codex::Question, answers: &codex::Question
 
 fn question_key(state: &codex::Snapshot, request: &codex::QuestionRequest) -> String {
     format!(
-        "{}:{}:{}",
-        state.saved.thread_id.as_deref().unwrap_or_default(),
+        "{}:{}:{}:{}",
+        state.interaction_epoch,
+        state
+            .interaction_owners
+            .get(&request.id.to_string())
+            .map_or_else(
+                || state.saved.thread_id.as_deref().unwrap_or_default(),
+                |owner| owner.thread.as_str()
+            ),
         if request.turn_bound() {
-            state.turn_id.as_deref().unwrap_or_default()
+            state
+                .interaction_owners
+                .get(&request.id.to_string())
+                .map_or_else(
+                    || state.turn_id.as_deref().unwrap_or_default(),
+                    |owner| owner.turn.as_deref().unwrap_or_default(),
+                )
         } else {
             ""
         },
@@ -632,7 +645,6 @@ pub struct CodexView {
     approval_drafts: HashMap<String, ApprovalDraft>,
     elicitation_drafts: HashMap<String, ElicitationDraft>,
     interaction_scope: String,
-    elicitation_thread: String,
     menu: Option<ComposerMenu>,
     popup: Option<Entity<PopupMenu>>,
     popup_subscription: Option<Subscription>,
@@ -794,7 +806,6 @@ impl CodexView {
             approval_drafts: HashMap::new(),
             elicitation_drafts: HashMap::new(),
             interaction_scope: String::new(),
-            elicitation_thread: String::new(),
             menu: None,
             popup: None,
             popup_subscription: None,
@@ -2542,22 +2553,12 @@ impl Render for CodexView {
             self.follow_after_submit = true;
         }
         let provider = state.saved.provider.label();
-        let scope = format!("{:?}:{:?}", state.saved.thread_id, state.turn_id);
+        let scope = format!("{:?}:{}", state.saved.thread_id, state.interaction_epoch);
         if self.interaction_scope != scope {
             let restore_focus = self.approval_drafts.values().any(|draft| {
                 draft.input.focus_handle(cx).is_focused(window)
                     || draft.feedback.focus_handle(cx).is_focused(window)
-            });
-            self.approval_drafts.clear();
-            self.interaction_scope = scope;
-            if restore_focus {
-                self.input.focus_handle(cx).focus(window, cx);
-            }
-        }
-        // Standalone MCP requests can outlive a turn; retain them while their request remains live.
-        let thread = format!("{:?}", state.saved.thread_id);
-        if self.elicitation_thread != thread {
-            let restore_focus = self.elicitation_drafts.values().any(|draft| {
+            }) || self.elicitation_drafts.values().any(|draft| {
                 draft.fields.iter().any(|field| {
                     field.input.focus_handle(cx).is_focused(window)
                         || field
@@ -2566,8 +2567,11 @@ impl Render for CodexView {
                             .any(|focus| focus.is_focused(window))
                 })
             });
+            self.approval_drafts.clear();
+            self.question_drafts.clear();
+            self.question_receipts.clear();
             self.elicitation_drafts.clear();
-            self.elicitation_thread = thread;
+            self.interaction_scope = scope;
             if restore_focus {
                 self.input.focus_handle(cx).focus(window, cx);
             }
@@ -7698,8 +7702,8 @@ fn file_choices(cwd: &str, query: &str) -> Vec<String> {
 }
 
 impl CodexView {
-    fn elicitation_key(request: &ElicitationRequest) -> String {
-        format!("{request:?}")
+    fn elicitation_key(request: &ElicitationRequest, epoch: u64) -> String {
+        format!("{epoch}:{request:?}")
     }
     fn sync_elicitations(
         &mut self,
@@ -7710,7 +7714,7 @@ impl CodexView {
         let keys: HashSet<_> = state
             .elicitations
             .iter()
-            .map(Self::elicitation_key)
+            .map(|request| Self::elicitation_key(request, state.interaction_epoch))
             .collect();
         let restore_focus = self.elicitation_drafts.iter().any(|(key, draft)| {
             !keys.contains(key)
@@ -7727,7 +7731,7 @@ impl CodexView {
             self.input.focus_handle(cx).focus(window, cx);
         }
         for request in &state.elicitations {
-            let key = Self::elicitation_key(request);
+            let key = Self::elicitation_key(request, state.interaction_epoch);
             if let Some(draft) = self.elicitation_drafts.get_mut(&key) {
                 if state.error.is_some() {
                     draft.submitting = false;
@@ -7924,7 +7928,11 @@ impl CodexView {
             .state
             .elicitations
             .iter()
-            .find(|request| request.id == id && Self::elicitation_key(request) == key)
+            .find(|request| {
+                request.id == id
+                    && Self::elicitation_key(request, self.session.read(cx).state.interaction_epoch)
+                        == key
+            })
         else {
             return;
         };
@@ -7943,12 +7951,16 @@ impl CodexView {
             return;
         }
         draft.submitting = true;
+        let epoch = self.session.read(cx).state.interaction_epoch;
         self.session.update(cx, |session, cx| {
             session.send(
-                Action::RespondElicitation {
-                    id,
-                    action: action.to_owned(),
-                    content,
+                Action::Interaction {
+                    epoch,
+                    action: Box::new(Action::RespondElicitation {
+                        id,
+                        action: action.to_owned(),
+                        content,
+                    }),
                 },
                 cx,
             );
@@ -7969,12 +7981,16 @@ impl CodexView {
             .flex_col()
             .gap(rpx(SPACE_3XL));
         for (request_index, request) in state.elicitations.iter().enumerate() {
-            let key = Self::elicitation_key(request);
+            let key = Self::elicitation_key(request, state.interaction_epoch);
             let draft = &self.elicitation_drafts[&key];
+            let source = state.interaction_agent(&request.id).map_or_else(
+                || request.server_name.clone(),
+                |agent| format!("{agent} · {}", request.server_name),
+            );
             let mut group = div()
                 .id(("agent-elicitation", request_index))
                 .role(gpui::Role::Group)
-                .aria_label(format!("Input requested by {}", request.server_name))
+                .aria_label(format!("Input requested by {source}"))
                 .w_full()
                 .min_w_0()
                 .flex_shrink_0()
@@ -7984,7 +8000,7 @@ impl CodexView {
                 .child(
                     div()
                         .text_color(c::FG())
-                        .child(format!("{} needs your input", request.server_name)),
+                        .child(format!("{source} needs your input")),
                 )
                 .child(div().child(request.message.clone()));
             let valid = self.elicitation_content(&key, request, cx);
@@ -8205,7 +8221,9 @@ impl CodexView {
             .state
             .elicitations
             .iter()
-            .find(|request| Self::elicitation_key(request) == key)
+            .find(|request| {
+                Self::elicitation_key(request, self.session.read(cx).state.interaction_epoch) == key
+            })
         else {
             return;
         };
@@ -8319,7 +8337,11 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let keys: HashSet<_> = state.approvals.iter().map(Self::approval_key).collect();
+        let keys: HashSet<_> = state
+            .approvals
+            .iter()
+            .map(|approval| Self::approval_key(approval, state.interaction_epoch))
+            .collect();
         let restore_focus = self.approval_drafts.iter().any(|(key, draft)| {
             !keys.contains(key)
                 && (draft.input.focus_handle(cx).is_focused(window)
@@ -8330,7 +8352,7 @@ impl CodexView {
             self.input.focus_handle(cx).focus(window, cx);
         }
         for approval in &state.approvals {
-            let key = Self::approval_key(approval);
+            let key = Self::approval_key(approval, state.interaction_epoch);
             if let Some(draft) = self.approval_drafts.get_mut(&key) {
                 if state.error.is_some() {
                     draft.submitting = false;
@@ -8361,8 +8383,8 @@ impl CodexView {
             );
         }
     }
-    fn approval_key(approval: &serde_json::Value) -> String {
-        approval.to_string()
+    fn approval_key(approval: &serde_json::Value, epoch: u64) -> String {
+        format!("{epoch}:{approval}")
     }
     fn respond_approval(
         &mut self,
@@ -8372,11 +8394,9 @@ impl CodexView {
         cx: &mut Context<Self>,
     ) {
         let state = &self.session.read(cx).state;
-        let Some(request) = state
-            .approvals
-            .iter()
-            .find(|request| Self::approval_key(request) == key && request["id"] == id)
-        else {
+        let Some(request) = state.approvals.iter().find(|request| {
+            Self::approval_key(request, state.interaction_epoch) == key && request["id"] == id
+        }) else {
             return;
         };
         if !grove_core::controls::approval_choices(request)
@@ -8404,13 +8424,17 @@ impl CodexView {
             .then(|| draft.feedback.read(cx).value().trim().to_owned())
             .filter(|text| !text.is_empty());
         draft.submitting = true;
+        let epoch = state.interaction_epoch;
         self.session.update(cx, |session, cx| {
             session.send(
-                Action::RespondApproval {
-                    id,
-                    choice,
-                    input,
-                    feedback,
+                Action::Interaction {
+                    epoch,
+                    action: Box::new(Action::RespondApproval {
+                        id,
+                        choice,
+                        input,
+                        feedback,
+                    }),
                 },
                 cx,
             );
@@ -8431,7 +8455,7 @@ impl CodexView {
             .flex_col()
             .gap(rpx(SPACE_3XL));
         for (index, approval) in state.approvals.iter().enumerate() {
-            let key = Self::approval_key(approval);
+            let key = Self::approval_key(approval, state.interaction_epoch);
             let draft = &self.approval_drafts[&key];
             let mut group = div()
                 .id(("codex-approval", index))
@@ -8623,7 +8647,8 @@ impl CodexView {
                 && state.question_answer_acks.iter().any(|ack| {
                     ack.sequence > group.ack_after
                         && format!(
-                            "{}:{}:{}",
+                            "{}:{}:{}:{}",
+                            state.interaction_epoch,
                             ack.thread_id.as_deref().unwrap_or_default(),
                             if group.turn_bound {
                                 ack.turn_id.as_deref().unwrap_or_default()
@@ -8848,9 +8873,16 @@ impl CodexView {
         group.pending_receipt = receipt;
         group.ack_after = ack_after;
         group.submitting = true;
+        let epoch = state.interaction_epoch;
         self.session.update(cx, |session, cx| {
             session.state.error = None;
-            session.send(Action::AnswerQuestions(id, answers), cx);
+            session.send(
+                Action::Interaction {
+                    epoch,
+                    action: Box::new(Action::AnswerQuestions(id, answers)),
+                },
+                cx,
+            );
         });
         cx.notify();
     }
@@ -8992,7 +9024,12 @@ impl CodexView {
         let mut group = div()
             .id(("agent-question-group", request_index))
             .role(gpui::Role::Group)
-            .aria_label(format!("Questions from {}", state.saved.provider.label()))
+            .aria_label(format!(
+                "Questions from {}",
+                state
+                    .interaction_agent(&request.id)
+                    .unwrap_or(state.saved.provider.label())
+            ))
             .flex_shrink_0()
             .w_full()
             .min_w_0()
@@ -9011,7 +9048,9 @@ impl CodexView {
                     .text_color(c::FG())
                     .child(format!(
                         "{} needs your input · {answered} of {} answered · draft",
-                        state.saved.provider.label(),
+                        state
+                            .interaction_agent(&request.id)
+                            .unwrap_or(state.saved.provider.label()),
                         request.questions.len(),
                     )),
             );
@@ -9351,6 +9390,22 @@ mod tests {
     use grove_core::codex::{Connection, Handle, SavedSession, Snapshot, Status};
     use serde_json::json;
     use std::sync::mpsc;
+
+    fn actions_at_epoch(actions: &mpsc::Receiver<Action>, expected_epoch: u64) -> Vec<Action> {
+        actions
+            .try_iter()
+            .map(|action| match action {
+                Action::Interaction { epoch, action } => {
+                    assert_eq!(
+                        epoch, expected_epoch,
+                        "interaction captures its rendered epoch"
+                    );
+                    *action
+                }
+                action => action,
+            })
+            .collect()
+    }
     #[test]
     fn minimap_pairs_inputs_with_final_or_latest_response_without_crossing_next_input() {
         let items = vec![
@@ -10319,7 +10374,7 @@ mod tests {
             );
             assert!(view.submitted.is_none());
         });
-        let sent: Vec<_> = actions.try_iter().collect();
+        let sent = actions.try_iter().collect::<Vec<_>>();
         assert!(!sent.is_empty());
         assert!(sent.iter().all(|action| matches!(action, Action::Draft(_))));
         cx.update(|window, cx| {
@@ -13522,8 +13577,9 @@ mod tests {
         let submit = cx.debug_bounds("questions-submit-0").unwrap();
         cx.simulate_click(submit.center(), gpui::Modifiers::default());
         draw(cx);
-        let answer = actions
-            .try_iter()
+        let epoch = view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+        let answer = actions_at_epoch(&actions, epoch)
+            .into_iter()
             .find_map(|action| match action {
                 Action::AnswerQuestions(id, Some(answers)) => Some((id, answers)),
                 _ => None,
@@ -13647,8 +13703,9 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(actions
-            .try_iter()
+        let epoch = view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+        assert!(actions_at_epoch(&actions, epoch)
+            .into_iter()
             .all(|action| !matches!(action, Action::AnswerQuestions(_, _))));
         assert!(cx.debug_bounds("questions-validation-0").is_some());
         cx.update(|window, cx| {
@@ -13662,7 +13719,9 @@ mod tests {
         let submit = cx.debug_bounds("questions-submit-0").unwrap();
         cx.simulate_click(submit.center(), gpui::Modifiers::default());
         draw(cx);
-        assert!(actions.try_iter().any(|action| matches!(action, Action::AnswerQuestions(_, Some(answers)) if answers["count"] == vec!["12"] && answers["title"] == vec!["Quarterly briefing"])));
+        assert!(actions_at_epoch(&actions, epoch)
+            .into_iter()
+            .any(|action| matches!(action, Action::AnswerQuestions(_, Some(answers)) if answers["count"] == vec!["12"] && answers["title"] == vec!["Quarterly briefing"])));
         // A provider error permits cancelling the same live request without losing the answers.
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
@@ -13676,8 +13735,8 @@ mod tests {
         let cancel = cx.debug_bounds("questions-cancel-0").unwrap();
         cx.simulate_click(cancel.center(), gpui::Modifiers::default());
         draw(cx);
-        assert!(actions
-            .try_iter()
+        assert!(actions_at_epoch(&actions, epoch)
+            .into_iter()
             .any(|action| matches!(action, Action::AnswerQuestions(_, None))));
     }
 
@@ -13921,8 +13980,9 @@ mod tests {
                 view.answer_questions(&key, json!("ask"), false, cx);
             });
         });
-        let sent: Vec<_> = actions
-            .try_iter()
+        let epoch = view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+        let sent: Vec<_> = actions_at_epoch(&actions, epoch)
+            .into_iter()
             .filter_map(|action| {
                 if let Action::AnswerQuestions(id, Some(answers)) = action {
                     Some((id, answers))
@@ -13982,6 +14042,8 @@ mod tests {
                     });
                 });
                 draw(cx);
+                let epoch =
+                    view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
                 let controls = cx.debug_bounds("agent-controls").unwrap();
                 let button = cx
                     .debug_bounds(selector)
@@ -14005,8 +14067,8 @@ mod tests {
                 draw(cx);
                 cx.simulate_click(button.center(), gpui::Modifiers::default());
                 draw(cx);
-                let responses: Vec<_> = actions
-                    .try_iter()
+                let responses: Vec<_> = actions_at_epoch(&actions, epoch)
+                    .into_iter()
                     .filter_map(|action| match action {
                         Action::RespondApproval {
                             id,
@@ -14073,7 +14135,9 @@ mod tests {
         assert!(
             cx.debug_bounds("agent-controls").unwrap().size.height < gpui::px(QUESTION_PANEL_MAX_H)
         );
-        let key = CodexView::elicitation_key(&request);
+        let key = view.read_with(cx, |view, cx| {
+            CodexView::elicitation_key(&request, view.session.read(cx).state.interaction_epoch)
+        });
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 assert!(view.elicitation_content(&key, &request, cx).is_err());
@@ -14126,14 +14190,18 @@ mod tests {
                 view.respond_elicitation(&key, json!("form"), "accept", cx);
                 view.respond_elicitation(&key, json!("form"), "accept", cx);
                 view.respond_approval(
-                    &CodexView::approval_key(&approval),
+                    &CodexView::approval_key(
+                        &approval,
+                        view.session.read(cx).state.interaction_epoch,
+                    ),
                     json!("approval"),
                     "allow_once".into(),
                     cx,
                 );
             });
         });
-        let sent: Vec<_> = actions.try_iter().collect();
+        let epoch = view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+        let sent = actions_at_epoch(&actions, epoch);
         let forms: Vec<_> = sent
             .iter()
             .filter_map(|action| match action {
@@ -14187,7 +14255,9 @@ mod tests {
             actions.try_iter().next().is_none(),
             "rendering must not accept an approval or complete a browser request"
         );
-        let key = CodexView::approval_key(&approval);
+        let key = view.read_with(cx, |view, cx| {
+            CodexView::approval_key(&approval, view.session.read(cx).state.interaction_epoch)
+        });
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 view.toggle_approval_edit(&key, cx);
@@ -14200,16 +14270,89 @@ mod tests {
                 });
                 view.respond_approval(&key, json!("claude-approval"), "allow_once".into(), cx);
                 view.respond_elicitation(
-                    &CodexView::elicitation_key(&request),
+                    &CodexView::elicitation_key(
+                        &request,
+                        view.session.read(cx).state.interaction_epoch,
+                    ),
                     json!("browser"),
                     "decline",
                     cx,
                 );
             });
         });
-        let sent: Vec<_> = actions.try_iter().collect();
+        let epoch = view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+        let sent = actions_at_epoch(&actions, epoch);
         assert!(sent.iter().any(|action| matches!(action, Action::RespondApproval { input: Some(input), .. } if input == &json!({"command":"ls"}))));
         assert!(sent.iter().any(|action| matches!(action, Action::RespondElicitation { action, content: None, .. } if action == "decline")));
+    }
+
+    #[gpui::test]
+    fn child_approval_draft_survives_parent_turn_and_old_control_expires_on_reconnect(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let approval = json!({"id":"reused","method":"item/commandExecution/requestApproval","claudeInput":{"command":"pwd"},"groveAgent":"Reviewer"});
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.turn_id = Some("parent-turn".into());
+                    session.state.status = Status::Waiting;
+                    session.state.approvals.push(approval.clone());
+                    session.state.interaction_owners.insert(
+                        "\"reused\"".into(),
+                        grove_core::interaction::InteractionOwner {
+                            thread: "child".into(),
+                            turn: Some("child-turn".into()),
+                            agent: Some("Reviewer · child".into()),
+                        },
+                    );
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        let old_epoch =
+            view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+        let old_key = CodexView::approval_key(&approval, old_epoch);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                let input = view.approval_drafts[&old_key].input.clone();
+                view.toggle_approval_edit(&old_key, cx);
+                input.update(cx, |input, cx| {
+                    input.set_value("{\"command\":\"cargo test\"}", window, cx);
+                });
+                view.session.update(cx, |session, cx| {
+                    session.state.turn_id = None;
+                    session.state.status = Status::Waiting;
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                view.approval_drafts[&old_key].input.read(cx).value(),
+                "{\"command\":\"cargo test\"}"
+            );
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.interaction_epoch += 1;
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.respond_approval(&old_key, json!("reused"), "allow_once".into(), cx);
+            });
+        });
+        assert!(
+            actions.try_iter().next().is_none(),
+            "a stale approval control must not act on a reused request id"
+        );
     }
 
     #[gpui::test]
@@ -14227,7 +14370,9 @@ mod tests {
             });
         });
         draw(cx);
-        let key = CodexView::elicitation_key(&request);
+        let key = view.read_with(cx, |view, cx| {
+            CodexView::elicitation_key(&request, view.session.read(cx).state.interaction_epoch)
+        });
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 let input = view.elicitation_drafts[&key].fields[0].input.clone();

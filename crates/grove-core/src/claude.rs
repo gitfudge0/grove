@@ -442,6 +442,7 @@ struct Actor {
     pending_access: Option<String>,
     permission_changes: HashMap<String, (String, u64)>,
     permission_mode_revision: u64,
+    interaction_children: crate::interaction::Children,
     tracks_session_state: bool,
     pending_completion: Option<Status>,
     session_idle: bool,
@@ -512,6 +513,7 @@ impl Actor {
             pending_access: None,
             permission_changes: HashMap::new(),
             permission_mode_revision: 0,
+            interaction_children: crate::interaction::Children::default(),
             tracks_session_state: false,
             pending_completion: None,
             session_idle: true,
@@ -825,6 +827,10 @@ impl Actor {
         self.blocks.clear();
         self.state.status = Status::Starting;
         self.state.error = None;
+        self.interaction_children = crate::interaction::Children::default();
+        self.state.interaction_owners.clear();
+        self.state.retired_interactions.clear();
+        self.state.interaction_epoch = codex::next_interaction_epoch();
         self.state.approvals.clear();
         self.state.questions.clear();
         self.state.elicitations.clear();
@@ -1238,6 +1244,12 @@ impl Actor {
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
         }
         match action {
+            Action::Interaction { epoch, action } => {
+                if epoch != self.state.interaction_epoch {
+                    return Err("This interaction belongs to a previous connection".into());
+                }
+                return self.action(*action);
+            }
             Action::UpdatePlanReview {
                 plan_id,
                 revision_id,
@@ -1508,6 +1520,8 @@ impl Actor {
                     let ack = self.state.question_answer_ack(id);
                     self.state.question_answer_acks.push(ack);
                 }
+                let resolved = self.state.questions[at].id.clone();
+                self.state.retire_interaction(&resolved);
                 self.state.questions.remove(at);
                 self.state.status = if self.state.approvals.is_empty()
                     && self.state.questions.is_empty()
@@ -1545,6 +1559,8 @@ impl Actor {
                     feedback,
                 )?;
                 self.respond(id, response)?;
+                let resolved = self.state.approvals[at]["id"].clone();
+                self.state.retire_interaction(&resolved);
                 self.state.approvals.remove(at);
                 if choice == "cancel" {
                     self.interrupting = true;
@@ -1602,6 +1618,8 @@ impl Actor {
                     json!({"action":action})
                 };
                 self.respond(id, response)?;
+                let resolved = self.state.elicitations[at].id.clone();
+                self.state.retire_interaction(&resolved);
                 self.state.elicitations.remove(at);
                 self.state.status = if self.state.approvals.is_empty()
                     && self.state.questions.is_empty()
@@ -1648,12 +1666,34 @@ impl Actor {
         }
     }
     fn register_subagent(&mut self, block: &Value) {
+        self.register_subagent_from(block, None);
+    }
+    fn register_subagent_from(&mut self, block: &Value, parent: Option<&str>) {
         if !matches!(block["name"].as_str(), Some("Agent" | "Task")) {
             return;
         }
         let Some(id) = block["id"].as_str() else {
             return;
         };
+        let root = self
+            .state
+            .saved
+            .thread_id
+            .as_deref()
+            .unwrap_or(&self.state.saved.key);
+        let owner = parent.unwrap_or(root);
+        if owner == root || self.interaction_children.known(owner) {
+            self.interaction_children.register(
+                root,
+                owner,
+                id,
+                block["input"]["name"]
+                    .as_str()
+                    .or(block["input"]["subagent_type"].as_str()),
+                None,
+            );
+            self.interaction_children.start(id, None);
+        }
         let input = &block["input"];
         let name = input["name"]
             .as_str()
@@ -1678,6 +1718,12 @@ impl Actor {
         self.state
             .upsert_subagent(parent, None, None, SubagentStatus::Unknown);
         self.subagent_system_message(value);
+        if value["type"] == "result" {
+            if let Some(expired) = self.interaction_children.finish(parent, None) {
+                self.state.expire_interactions(&expired);
+                self.state.refresh_interaction_status();
+            }
+        }
         match value["type"].as_str() {
             Some("assistant") => {
                 if let Some(blocks) = value["message"]["content"].as_array() {
@@ -1715,7 +1761,7 @@ impl Actor {
     fn subagent_block(&mut self, parent: &str, block: &Value) {
         match block["type"].as_str() {
             Some("tool_use") => {
-                self.register_subagent(block);
+                self.register_subagent_from(block, Some(parent));
                 if let Some(tool) = block["name"].as_str() {
                     self.state.upsert_subagent(
                         parent,
@@ -1759,6 +1805,10 @@ impl Actor {
         {
             return;
         }
+        if let Some(expired) = self.interaction_children.finish(id, None) {
+            self.state.expire_interactions(&expired);
+            self.state.refresh_interaction_status();
+        }
         self.state.upsert_subagent(
             id,
             None,
@@ -1775,6 +1825,48 @@ impl Actor {
             return;
         }
         let task = value["task_id"].as_str();
+        if let Some(task) = task {
+            let root = self
+                .state
+                .saved
+                .thread_id
+                .as_deref()
+                .unwrap_or(&self.state.saved.key);
+            if value["subtype"] == "task_started"
+                && (value["task_type"] == "local_agent"
+                    || value["subagent_type"].is_string()
+                    || value["tool_use_id"]
+                        .as_str()
+                        .is_some_and(|id| self.interaction_children.known(id)))
+            {
+                let parent = value["parent_task_id"].as_str().unwrap_or(root);
+                if self.interaction_children.claude_task(
+                    root,
+                    parent,
+                    task,
+                    value["tool_use_id"].as_str(),
+                    value["subagent_type"].as_str(),
+                ) {
+                    self.interaction_children
+                        .start(task, value["run_id"].as_str());
+                }
+            }
+            if value["subtype"] == "task_notification"
+                || (value["subtype"] == "task_updated"
+                    && matches!(
+                        value["patch"]["status"].as_str(),
+                        Some("completed" | "failed" | "killed")
+                    ))
+            {
+                if let Some(expired) = self
+                    .interaction_children
+                    .finish(task, value["run_id"].as_str())
+                {
+                    self.state.expire_interactions(&expired);
+                    self.state.refresh_interaction_status();
+                }
+            }
+        }
         if let (Some(task), Some(tool)) = (task, value["tool_use_id"].as_str()) {
             self.subagent_tasks.insert(task.to_owned(), tool.to_owned());
         }
@@ -1835,6 +1927,27 @@ impl Actor {
             }
         }
     }
+    fn control_owner(&self, value: &Value) -> Option<crate::interaction::InteractionOwner> {
+        let agent = value["request"]["agent_id"].as_str();
+        let parent = value["parent_tool_use_id"].as_str();
+        if let Some(id) = agent.or(parent) {
+            let owner = self.interaction_children.owner(id, None)?;
+            if parent
+                .is_some_and(|parent| self.interaction_children.canonical(parent) != owner.thread)
+            {
+                return None;
+            }
+            return Some(owner);
+        }
+        if !self.state.status.busy() || self.interrupting {
+            return None;
+        }
+        Some(crate::interaction::InteractionOwner {
+            thread: self.state.saved.thread_id.clone().unwrap_or_default(),
+            turn: self.state.turn_id.clone(),
+            agent: None,
+        })
+    }
     fn effective_permission_mode(&mut self, mode: &str) {
         self.permission_mode_revision += 1;
         self.state.resolved_access = Some(mode.into());
@@ -1844,10 +1957,6 @@ impl Actor {
         }
     }
     fn message(&mut self, value: Value) -> Result<(), String> {
-        if let Some(parent) = value["parent_tool_use_id"].as_str() {
-            self.subagent_message(parent, &value);
-            return Ok(());
-        }
         if let Some(session) = value["session_id"].as_str().filter(|id| !id.is_empty()) {
             if self.state.saved.pending_edit.is_some() {
                 // A fork's new identity is committed together with its truncated
@@ -1858,6 +1967,15 @@ impl Actor {
                 }
             } else {
                 self.state.saved.thread_id = Some(session.into());
+            }
+        }
+        if !matches!(
+            value["type"].as_str(),
+            Some("control_request" | "control_cancel_request")
+        ) {
+            if let Some(parent) = value["parent_tool_use_id"].as_str() {
+                self.subagent_message(parent, &value);
+                return Ok(());
             }
         }
         self.subagent_system_message(&value);
@@ -1969,9 +2087,8 @@ impl Actor {
                             self.state.finish_work();
                             self.state.status = status;
                             self.state.turn_id = None;
-                            self.state.approvals.clear();
-                            self.state.questions.clear();
-                            self.state.elicitations.clear();
+                            let root = self.state.saved.thread_id.clone().unwrap_or_default();
+                            self.state.expire_interactions(&root);
                             self.interrupting = false;
                         } else if self.state.turn_id.is_none() {
                             self.state.status = Status::Idle;
@@ -2055,13 +2172,25 @@ impl Actor {
             "control_request" => {
                 let id = value["request_id"].clone();
                 let request = &value["request"];
+                let owner = self.control_owner(&value);
+                if owner.is_none()
+                    && matches!(
+                        request["subtype"].as_str(),
+                        Some("can_use_tool" | "elicitation")
+                    )
+                {
+                    return self.respond(id, if request["subtype"] == "elicitation" {json!({"action":"cancel"})} else {json!({"behavior":"deny","message":"This request has expired or its agent is not part of this session."})});
+                }
                 if request["subtype"] == "elicitation" {
                     if self.state.elicitations.iter().any(|r| r.id == id) {
                         return Ok(());
                     }
                     match crate::elicitation::ElicitationRequest::parse_claude(id.clone(), request)
                     {
-                        Ok(r) if self.state.status.busy() && !self.interrupting => {
+                        Ok(r) if owner.is_some() && !self.interrupting => {
+                            if let Some(owner) = owner {
+                                self.state.interaction_owners.insert(id.to_string(), owner);
+                            }
                             self.state.elicitations.push(r);
                             self.state.status = Status::Waiting;
                         }
@@ -2092,7 +2221,7 @@ impl Actor {
                 if self.state.approvals.iter().any(|a| a["id"] == id) {
                     return Ok(());
                 }
-                if !self.state.status.busy() || self.interrupting {
+                if owner.is_none() || self.interrupting {
                     return self.respond(
                         id,
                         json!({"behavior":"deny","message":"This request has expired."}),
@@ -2103,7 +2232,8 @@ impl Actor {
                         return Ok(());
                     }
                     match QuestionRequest::parse(id.clone(), &request["input"], true) {
-                        Ok(question) if self.state.status.busy() && !self.interrupting => {
+                        Ok(question) if owner.is_some() && !self.interrupting => {
+                            if let Some(owner)=owner {self.state.interaction_owners.insert(id.to_string(),owner);}
                             self.state.questions.push(question);
                             self.state.status = Status::Waiting;
                             return Ok(());
@@ -2111,10 +2241,32 @@ impl Actor {
                         _ => return self.respond(id, json!({"behavior":"deny","message":"Invalid or expired question request."})),
                     }
                 }
-                self.state.approvals.push(json!({"id":id,"method":"item/commandExecution/requestApproval","claudeInput":request["input"],"claudeRequest":request,"params":{"command":format!("{} {}", request["tool_name"].as_str().unwrap_or("Tool"), request["input"]),"cwd":self.state.saved.cwd,"reason":request["decision_reason"].as_str().unwrap_or("Claude Code requests permission for this action."),"itemId":request["tool_use_id"]}}));
+                let agent = owner.as_ref().and_then(|owner| owner.agent.clone());
+                if let Some(owner) = owner {
+                    self.state.interaction_owners.insert(id.to_string(), owner);
+                }
+                self.state.approvals.push(json!({"groveAgent":agent,"id":id,"method":"item/commandExecution/requestApproval","claudeInput":request["input"],"claudeRequest":request,"params":{"command":format!("{} {}", request["tool_name"].as_str().unwrap_or("Tool"), request["input"]),"cwd":self.state.saved.cwd,"reason":request["decision_reason"].as_str().unwrap_or("Claude Code requests permission for this action."),"itemId":request["tool_use_id"]}}));
                 self.state.status = Status::Waiting;
             }
             "control_cancel_request" => {
+                if let Some(parent) = value["parent_tool_use_id"]
+                    .as_str()
+                    .or(value["agent_id"].as_str())
+                {
+                    if self
+                        .state
+                        .interaction_owners
+                        .get(&value["request_id"].to_string())
+                        .is_none_or(|owner| {
+                            self.interaction_children.canonical(parent) != owner.thread
+                        })
+                    {
+                        return Ok(());
+                    }
+                }
+                self.state
+                    .interaction_owners
+                    .remove(&value["request_id"].to_string());
                 self.state.questions.retain(|q| q.id != value["request_id"]);
                 self.state
                     .elicitations
@@ -2263,9 +2415,19 @@ impl Actor {
                     self.queue_ready = false;
                 }
                 self.state.turn_id = None;
-                self.state.approvals.clear();
-                self.state.questions.clear();
-                self.state.elicitations.clear();
+                let root = self.state.saved.thread_id.clone().unwrap_or_default();
+                let owners = &self.state.interaction_owners;
+                let child = |id: &Value| {
+                    owners
+                        .get(&id.to_string())
+                        .is_some_and(|owner| owner.thread != root)
+                };
+                self.state.approvals.retain(|a| child(&a["id"]));
+                self.state.questions.retain(|q| child(&q.id));
+                self.state.elicitations.retain(|r| child(&r.id));
+                self.state
+                    .interaction_owners
+                    .retain(|_, owner| owner.thread != root);
                 self.state.status = if self.interrupting {
                     Status::Interrupted
                 } else if value["is_error"] == true {
@@ -2320,6 +2482,7 @@ impl Actor {
             }
             _ => {}
         }
+        self.state.refresh_interaction_status();
         Ok(())
     }
     fn assistant_block_id(
@@ -2750,13 +2913,14 @@ mod tests {
         let mut actor = actor();
         actor.state.begin_work();
         actor.state.status = Status::Working;
+        actor.state.turn_id = Some("primary-turn".into());
         actor.state.saved.thread_id = Some("primary".into());
         let spawn = json!({"type":"tool_use","id":"child","name":"Agent","input":{"name":"Explorer","subagent_type":"Explore","description":"Find auth paths","prompt":"Search all auth entry points"}});
         actor.block("child", &spawn);
         actor.block("child", &spawn);
         assert_eq!(actor.state.saved.work_periods[0].subagents.len(), 1);
         let item_count = actor.state.saved.items.len();
-        actor.message(json!({"type":"assistant","session_id":"other","parent_tool_use_id":"child","message":{"model":"child-model","usage":{"input_tokens":900},"content":[{"type":"tool_use","id":"read","name":"Read","input":{}},{"type":"tool_use","id":"nested","name":"Task","input":{"subagent_type":"Researcher","description":"Inspect tests"}}]}})).unwrap();
+        actor.message(json!({"type":"assistant","session_id":"primary","parent_tool_use_id":"child","message":{"model":"child-model","usage":{"input_tokens":900},"content":[{"type":"tool_use","id":"read","name":"Read","input":{}},{"type":"tool_use","id":"nested","name":"Task","input":{"subagent_type":"Researcher","description":"Inspect tests"}}]}})).unwrap();
         assert_eq!(actor.state.saved.items.len(), item_count);
         assert_eq!(actor.state.saved.thread_id.as_deref(), Some("primary"));
         assert!(actor.context_model.is_none());
@@ -2814,6 +2978,30 @@ mod tests {
             actor.state.saved.work_periods[0].subagents[0].status,
             SubagentStatus::Unknown
         );
+    }
+
+    #[test]
+    fn claude_child_permission_uses_task_alias_and_parent_completion_preserves_it() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.state.status = Status::Working;
+        actor.state.saved.thread_id = Some("primary".into());
+        actor.block("agent-tool", &json!({"type":"tool_use","id":"agent-tool","name":"Task","input":{"name":"Reviewer","description":"Review permissions"}}));
+        actor.message(json!({"type":"system","subtype":"task_started","task_id":"sdk-task","tool_use_id":"agent-tool","task_type":"local_agent","subagent_type":"Reviewer"})).unwrap();
+        actor.message(json!({"type":"control_request","request_id":"child-request","parent_tool_use_id":"agent-tool","request":{"subtype":"can_use_tool","agent_id":"sdk-task","tool_use_id":"bash-1","tool_name":"Bash","input":"cargo test"}})).unwrap();
+        assert_eq!(actor.state.approvals.len(), 1);
+        assert_eq!(
+            actor.state.interaction_agent(&json!("child-request")),
+            Some("Reviewer · ent-tool")
+        );
+        actor
+            .message(json!({"type":"result","is_error":false}))
+            .unwrap();
+        assert_eq!(actor.state.approvals.len(), 1);
+        assert_eq!(actor.state.status, Status::Waiting);
+        actor.message(json!({"type":"system","subtype":"task_notification","task_id":"sdk-task","status":"completed"})).unwrap();
+        assert_eq!(actor.state.approvals.len(), 0);
+        assert_eq!(actor.state.status, Status::Idle);
     }
     #[test]
     fn deferred_inline_preserves_identical_composer_after_configuration() {
@@ -3863,6 +4051,11 @@ mod tests {
             json!({"type":"control_response","response":{"subtype":"success","request_id":"extended","response":{"behavior":"allow","updatedInput":expected}}})
         );
         actor.message(frame.clone()).unwrap();
+        assert_eq!(
+            actor.state.questions.len(),
+            1,
+            "a resolved provider request id may be reused after the response settles"
+        );
         actor
             .action(Action::AnswerQuestions(json!("extended"), None))
             .unwrap();

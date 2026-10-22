@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
@@ -677,6 +677,9 @@ pub struct Snapshot {
     pub turn_id: Option<String>,
     pub work_started: Option<Instant>,
     pub approvals: Vec<Value>,
+    pub interaction_owners: HashMap<String, crate::interaction::InteractionOwner>,
+    pub interaction_epoch: u64,
+    pub(crate) retired_interactions: HashSet<String>,
     pub questions: Vec<QuestionRequest>,
     pub question_answer_acks: Vec<QuestionAnswerAck>,
     pub elicitations: Vec<crate::elicitation::ElicitationRequest>,
@@ -743,7 +746,52 @@ impl Status {
         matches!(self, Self::Starting | Self::Working | Self::Waiting)
     }
 }
+pub(crate) fn next_interaction_epoch() -> u64 {
+    static EPOCH: AtomicU64 = AtomicU64::new(1);
+    EPOCH.fetch_add(1, Ordering::Relaxed)
+}
 impl Snapshot {
+    pub(crate) fn retire_interaction(&mut self, id: &Value) {
+        self.interaction_owners.remove(&id.to_string());
+        self.retired_interactions.insert(id.to_string());
+    }
+
+    pub fn interaction_agent(&self, id: &Value) -> Option<&str> {
+        self.interaction_owners
+            .get(&id.to_string())
+            .and_then(|owner| owner.agent.as_deref())
+    }
+    pub(crate) fn expire_interactions(&mut self, thread: &str) {
+        let ids: Vec<_> = self
+            .interaction_owners
+            .iter()
+            .filter(|(_, owner)| owner.thread == thread)
+            .map(|(id, _)| id.clone())
+            .collect();
+        self.approvals
+            .retain(|a| !ids.contains(&a["id"].to_string()));
+        self.questions.retain(|q| !ids.contains(&q.id.to_string()));
+        self.elicitations
+            .retain(|r| !ids.contains(&r.id.to_string()));
+        self.retired_interactions.extend(ids);
+        self.interaction_owners
+            .retain(|_, owner| owner.thread != thread);
+    }
+    pub(crate) fn refresh_interaction_status(&mut self) {
+        if !self.approvals.is_empty() || !self.questions.is_empty() || !self.elicitations.is_empty()
+        {
+            self.status = Status::Waiting;
+        } else if self.status == Status::Waiting
+            || (self.status == Status::Working && self.turn_id.is_none())
+        {
+            self.status = if self.turn_id.is_some() {
+                Status::Working
+            } else {
+                Status::Idle
+            };
+        }
+    }
+
     /// Keep effective sandbox and approvals separate: an unrestricted filesystem
     /// does not imply that the provider will stop asking for approval.
     pub fn configured_access_summary(&self) -> String {
@@ -770,9 +818,17 @@ impl Snapshot {
                 .question_answer_acks
                 .last()
                 .map_or(1, |ack| ack.sequence + 1),
-            id,
-            thread_id: self.saved.thread_id.clone(),
-            turn_id: self.turn_id.clone(),
+            id: id.clone(),
+            thread_id: self
+                .interaction_owners
+                .get(&id.to_string())
+                .map(|owner| owner.thread.clone())
+                .or_else(|| self.saved.thread_id.clone()),
+            turn_id: self
+                .interaction_owners
+                .get(&id.to_string())
+                .and_then(|owner| owner.turn.clone())
+                .or_else(|| self.turn_id.clone()),
         }
     }
 
@@ -908,6 +964,9 @@ impl Snapshot {
             turn_id: None,
             work_started: None,
             approvals: Vec::new(),
+            interaction_owners: HashMap::new(),
+            interaction_epoch: next_interaction_epoch(),
+            retired_interactions: HashSet::new(),
             questions: Vec::new(),
             question_answer_acks: Vec::new(),
             elicitations: Vec::new(),
@@ -1292,16 +1351,29 @@ impl Snapshot {
                 self.turn_id = None;
                 self.compacting = false;
                 self.compact_requested = false;
-                self.approvals.clear();
+                let parent = self.saved.thread_id.as_deref();
+                let owners = &self.interaction_owners;
+                let child = |id: &Value| {
+                    owners
+                        .get(&id.to_string())
+                        .is_some_and(|owner| Some(owner.thread.as_str()) != parent)
+                };
+                self.approvals.retain(|a| child(&a["id"]));
                 self.questions
-                    .retain(|q| q.source == QuestionSource::AsyncMessage);
-                self.elicitations.retain(|r| r.turn_id.is_none());
+                    .retain(|q| q.source == QuestionSource::AsyncMessage || child(&q.id));
+                self.elicitations
+                    .retain(|r| r.turn_id.is_none() || child(&r.id));
+                self.interaction_owners
+                    .retain(|_, owner| Some(owner.thread.as_str()) != parent);
                 self.status = match p["turn"]["status"].as_str() {
                     Some("failed") => Status::Failed,
                     Some("interrupted") => Status::Interrupted,
                     _ => Status::Done,
                 };
-                if !self.elicitations.is_empty() || !self.questions.is_empty() {
+                if !self.elicitations.is_empty()
+                    || !self.questions.is_empty()
+                    || !self.approvals.is_empty()
+                {
                     self.status = Status::Waiting;
                 }
                 self.error = p["turn"]["error"]["message"].as_str().map(str::to_owned);
@@ -1768,6 +1840,11 @@ fn prompt_input(text: &str, images: Vec<String>) -> Vec<Value> {
     input
 }
 pub enum Action {
+    /// UI responses are bound to the connection that rendered the interaction.
+    Interaction {
+        epoch: u64,
+        action: Box<Action>,
+    },
     UpdatePlanReview {
         plan_id: String,
         revision_id: String,
@@ -2212,6 +2289,7 @@ enum Pending {
         ack: QuestionAnswerAck,
     },
     Compact,
+    ChildInterrupt,
     EditMessage,
     RecoverEdit,
     Interrupt {
@@ -2244,6 +2322,7 @@ struct Actor {
     last_save: Instant,
     last_child_poll: Instant,
     child_read_failures: HashMap<String, u8>,
+    interaction_children: crate::interaction::Children,
     needs_save: bool,
     title_generator: crate::session_title::Generator,
 }
@@ -2276,6 +2355,7 @@ impl Actor {
             last_save: Instant::now(),
             last_child_poll: Instant::now(),
             child_read_failures: HashMap::new(),
+            interaction_children: crate::interaction::Children::default(),
             needs_save: false,
             title_generator: crate::session_title::Generator::default(),
         }
@@ -2333,6 +2413,10 @@ impl Actor {
         self.state.models.clear();
         self.state.skills.clear();
         self.interrupt_retry = None;
+        self.interaction_children = crate::interaction::Children::default();
+        self.state.interaction_owners.clear();
+        self.state.retired_interactions.clear();
+        self.state.interaction_epoch = next_interaction_epoch();
         self.state.approvals.clear();
         self.state.questions.clear();
         self.state.elicitations.clear();
@@ -2872,6 +2956,12 @@ impl Actor {
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
         }
         match action {
+            Action::Interaction { epoch, action } => {
+                if epoch != self.state.interaction_epoch {
+                    return Err("This interaction belongs to a previous connection".into());
+                }
+                return self.action(*action);
+            }
             Action::UpdatePlanReview {
                 plan_id,
                 revision_id,
@@ -3223,6 +3313,8 @@ impl Actor {
                     let ack = self.state.question_answer_ack(id);
                     self.state.question_answer_acks.push(ack);
                 }
+                let resolved = self.state.questions[at].id.clone();
+                self.state.retire_interaction(&resolved);
                 self.state.questions.remove(at);
                 self.state.status = if self.state.approvals.is_empty()
                     && self.state.questions.is_empty()
@@ -3259,11 +3351,20 @@ impl Actor {
                     input,
                     feedback,
                 )?;
+                let owner = self.state.interaction_owners.get(&id.to_string()).cloned();
+                let child = owner.as_ref().is_some_and(|owner| owner.agent.is_some());
                 let permission_cancel = choice == "cancel"
                     && self.state.approvals[at]["method"] == "item/permissions/requestApproval";
                 self.write(&json!({"id":id,"result":result}))?;
+                let resolved = self.state.approvals[at]["id"].clone();
+                self.state.retire_interaction(&resolved);
                 self.state.approvals.remove(at);
-                if choice == "cancel" {
+                if choice == "cancel" && child {
+                    if let Some(owner) = &owner {
+                        self.state.expire_interactions(&owner.thread);
+                    }
+                }
+                if choice == "cancel" && !child {
                     self.queue_paused = true;
                     self.queue_ready = false;
                     self.state.approvals.clear();
@@ -3271,7 +3372,17 @@ impl Actor {
                     self.state.elicitations.clear();
                 }
                 if permission_cancel {
-                    if let Some(turn) = self.state.turn_id.clone() {
+                    if child {
+                        if let Some(owner) = owner {
+                            if let Some(turn) = owner.turn {
+                                self.request(
+                                    "turn/interrupt",
+                                    json!({"threadId":owner.thread,"turnId":turn}),
+                                    Pending::ChildInterrupt,
+                                )?;
+                            }
+                        }
+                    } else if let Some(turn) = self.state.turn_id.clone() {
                         self.interrupt(turn, 0)?;
                     }
                 }
@@ -3324,6 +3435,8 @@ impl Actor {
                     json!({"action":action})
                 };
                 self.write(&json!({"id":id,"result":result}))?;
+                let resolved = self.state.elicitations[at].id.clone();
+                self.state.retire_interaction(&resolved);
                 self.state.elicitations.remove(at);
                 self.state.status = if self.state.approvals.is_empty()
                     && self.state.questions.is_empty()
@@ -3339,6 +3452,7 @@ impl Actor {
                 };
             }
         }
+        self.state.refresh_interaction_status();
         Ok(true)
     }
     fn interrupt(&mut self, turn: String, attempt: u8) -> Result<(), String> {
@@ -3347,6 +3461,34 @@ impl Actor {
             json!({"threadId":self.state.saved.thread_id,"turnId":turn}),
             Pending::Interrupt { attempt, turn },
         )
+    }
+    fn interaction_owner(
+        &self,
+        p: &Value,
+        thread_bound: bool,
+    ) -> Option<crate::interaction::InteractionOwner> {
+        let thread = p["threadId"].as_str()?;
+        if Some(thread) == self.state.saved.thread_id.as_deref() {
+            let turn = p["turnId"].as_str();
+            if !(thread_bound && turn.is_none())
+                && (self.state.turn_id.is_none() || turn != self.state.turn_id.as_deref())
+            {
+                return None;
+            }
+            return Some(crate::interaction::InteractionOwner {
+                thread: thread.into(),
+                turn: turn.map(str::to_owned),
+                agent: None,
+            });
+        }
+        if !thread_bound && p["turnId"].as_str().is_none() {
+            return None;
+        }
+        // Provider child approvals and questions belong to one active child
+        // turn. Never attach an unscoped request to whichever turn is current.
+        p["turnId"].as_str()?;
+        self.interaction_children
+            .owner(thread, p["turnId"].as_str())
     }
     fn message(&mut self, m: Value) -> Result<(), String> {
         if m.get("method").is_some() {
@@ -3363,13 +3505,11 @@ impl Actor {
                     if self.state.questions.iter().any(|q| q.id == *id) {
                         return Ok(());
                     }
-                    let current = self.state.saved.thread_id.is_some()
-                        && self.state.turn_id.is_some()
-                        && m["params"]["threadId"].as_str()
-                            == self.state.saved.thread_id.as_deref()
-                        && m["params"]["turnId"].as_str() == self.state.turn_id.as_deref();
+                    let owner = self.interaction_owner(&m["params"], false);
+                    let current = owner.is_some();
                     match QuestionRequest::parse(id.clone(), &m["params"], false) {
                         Ok(request) if current => {
+                            if let Some(owner) = owner { self.state.interaction_owners.insert(id.to_string(),owner); }
                             self.state.questions.push(request);
                             self.state.status = Status::Waiting;
                         }
@@ -3379,24 +3519,21 @@ impl Actor {
                 }
                 let method = m["method"].as_str().unwrap_or_default();
                 let p = &m["params"];
-                let routed = self.state.saved.thread_id.is_some()
-                    && p["threadId"].as_str() == self.state.saved.thread_id.as_deref();
-                let active = routed
-                    && self.state.turn_id.is_some()
-                    && p["turnId"].as_str() == self.state.turn_id.as_deref();
+                let owner = self.interaction_owner(p, false);
+                let active = owner.is_some();
                 match method {
                     "mcpServer/elicitation/request" => {
                         if self.state.elicitations.iter().any(|r|r.id==*id){return Ok(());}
-                        let current=routed && (p["turnId"].is_null() || active);
+                        let elicitation_owner=self.interaction_owner(p,true);let current=elicitation_owner.is_some();
                         match crate::elicitation::ElicitationRequest::parse_codex(id.clone(),p) {
-                            Ok(request) if current => { self.state.elicitations.push(request);self.state.status=Status::Waiting; }
+                            Ok(request) if current => { if let Some(owner)=elicitation_owner { self.state.interaction_owners.insert(id.to_string(),owner); }self.state.elicitations.push(request);self.state.status=Status::Waiting; }
                             _=>self.write(&json!({"id":id,"error":{"code":-32602,"message":"Invalid, unsupported or expired elicitation"}}))?,
                         }
                     }
                     "item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval" if active => {
                         if method=="item/commandExecution/requestApproval" && !p["kind"].is_null() && !matches!(p["kind"].as_str(),Some("command"|"writeStdin")) {
                             self.write(&json!({"id":id,"error":{"code":-32602,"message":"Unknown command approval kind"}}))?;
-                        }else{self.state.approvals.push(m);self.state.status=Status::Waiting;}
+                        }else{let mut approval=m.clone();if let Some(owner)=owner {if let Some(agent)=&owner.agent {approval["groveAgent"]=json!(agent);}self.state.interaction_owners.insert(id.to_string(),owner); }self.state.approvals.push(approval);self.state.status=Status::Waiting;}
                     }
                     "execCommandApproval"|"applyPatchApproval" if self.state.turn_id.is_some() && p["conversationId"].as_str()==self.state.saved.thread_id.as_deref()=> {
                         self.state.approvals.push(m);self.state.status=Status::Waiting;
@@ -3417,7 +3554,52 @@ impl Actor {
                     && active.is_some()
                     && m["params"]["turn"]["id"].as_str() == active.as_deref()
                     && m["params"]["threadId"].as_str() == self.state.saved.thread_id.as_deref();
+                if let Some(root) = self.state.saved.thread_id.as_deref() {
+                    if let Some(expired) = self.interaction_children.codex_event(
+                        root,
+                        self.state.turn_id.as_deref(),
+                        &m,
+                    ) {
+                        self.state.expire_interactions(&expired);
+                    }
+                }
+                if m["method"] == "serverRequest/resolved" {
+                    let id = &m["params"]["requestId"];
+                    if self
+                        .state
+                        .interaction_owners
+                        .get(&id.to_string())
+                        .is_some_and(|owner| {
+                            Some(owner.thread.as_str()) == m["params"]["threadId"].as_str()
+                        })
+                    {
+                        self.state.approvals.retain(|a| a["id"] != *id);
+                        self.state.questions.retain(|q| q.id != *id);
+                        self.state.elicitations.retain(|r| r.id != *id);
+                        self.state.retire_interaction(id);
+                    }
+                    self.state.refresh_interaction_status();
+                    return Ok(());
+                }
+                if m["params"]["item"]["type"] == "subAgentActivity"
+                    && m["params"]["item"]["kind"] == "started"
+                {
+                    if let Some(id) = m["params"]["item"]["agentThreadId"]
+                        .as_str()
+                        .filter(|id| self.interaction_children.known(id))
+                    {
+                        self.state.upsert_subagent(
+                            id,
+                            m["params"]["item"]["agentPath"]
+                                .as_str()
+                                .and_then(|path| path.rsplit('/').next()),
+                            None,
+                            SubagentStatus::Working,
+                        );
+                    }
+                }
                 self.state.apply(&m);
+                self.state.refresh_interaction_status();
                 if completed && m["params"]["turn"]["status"] == "completed" {
                     crate::rich_plan::import_completed(&mut self.state.saved);
                 }
@@ -3442,6 +3624,15 @@ impl Actor {
             return Ok(());
         };
         if let Some(error) = m.get("error") {
+            if matches!(request.kind, Pending::ChildInterrupt) {
+                self.state.error = Some(
+                    error["message"]
+                        .as_str()
+                        .unwrap_or("Could not interrupt the child turn")
+                        .into(),
+                );
+                return Ok(());
+            }
             if let Pending::ChildRead { thread, .. } = &request.kind {
                 let failures = self.child_read_failures.entry(thread.clone()).or_default();
                 *failures = failures.saturating_add(1);
@@ -3967,7 +4158,7 @@ impl Actor {
                 self.state
                     .apply_subagent_read(&thread, period_start, &result["thread"]);
             }
-            Pending::Interrupt { .. } | Pending::Compact => {}
+            Pending::Interrupt { .. } | Pending::Compact | Pending::ChildInterrupt => {}
         }
         self.dispatch_queue()?;
         Ok(())
@@ -5574,6 +5765,38 @@ mod tests {
         actor.action(Action::Approval(json!(9), false)).unwrap();
         assert!(actor.state.approvals.is_empty());
         assert_eq!(actor.state.status, Status::Working);
+    }
+    #[test]
+    fn child_approval_requires_its_exact_turn_and_survives_parent_completion() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.interaction_children.register(
+            "thread-1",
+            "thread-1",
+            "child-1",
+            Some("Reviewer"),
+            None,
+        );
+        actor
+            .interaction_children
+            .start("child-1", Some("child-turn"));
+        actor.message(json!({"id":70,"method":"item/commandExecution/requestApproval","params":{"threadId":"child-1"}})).unwrap();
+        assert!(actor.state.approvals.is_empty());
+        actor.message(json!({"id":71,"method":"item/commandExecution/requestApproval","params":{"threadId":"child-1","turnId":"stale-turn"}})).unwrap();
+        assert!(actor.state.approvals.is_empty());
+        actor.message(json!({"id":72,"method":"item/commandExecution/requestApproval","params":{"threadId":"child-1","turnId":"child-turn"}})).unwrap();
+        assert_eq!(actor.state.approvals.len(), 1);
+        assert_eq!(
+            actor.state.interaction_agent(&json!(72)),
+            Some("Reviewer · child-1")
+        );
+        actor.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}})).unwrap();
+        assert_eq!(actor.state.approvals.len(), 1);
+        assert_eq!(actor.state.status, Status::Waiting);
+        actor.message(json!({"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn","status":"completed"}}})).unwrap();
+        assert!(actor.state.approvals.is_empty());
+        assert!(actor.state.interaction_owners.is_empty());
+        assert_eq!(actor.state.status, Status::Idle);
     }
     fn async_question_message() -> Value {
         // Recorded request_user_input_async AgentMessage, exposed by app-server as
