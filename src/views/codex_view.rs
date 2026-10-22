@@ -624,6 +624,7 @@ pub struct CodexView {
     input: Entity<InputState>,
     checkout_context: Option<(String, String)>,
     expanded: HashSet<String>,
+    pub(super) agents_in_checkout: bool,
     work_tick_pending: Rc<Cell<bool>>,
     question_drafts: HashMap<String, QuestionGroupDraft>,
     question_receipts: Vec<QuestionReceipt>,
@@ -785,6 +786,7 @@ impl CodexView {
             native_plans: HashMap::new(),
             input,
             expanded: HashSet::new(),
+            agents_in_checkout: false,
             work_tick_pending: Rc::new(Cell::new(false)),
             question_drafts: HashMap::new(),
             question_receipts: Vec::new(),
@@ -2896,16 +2898,19 @@ impl Render for CodexView {
                                     this.toggle_expansion(&key, cx);
                                 })),
                         )
-                        .when(expanded && !subagents.is_empty(), |section| {
-                            section.child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(rpx(SPACE_SM))
-                                    .py(rpx(SPACE_LG))
-                                    .children(subagents.iter().map(subagent_row)),
-                            )
-                        }),
+                        .when(
+                            expanded && !self.agents_in_checkout && !subagents.is_empty(),
+                            |section| {
+                                section.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(rpx(SPACE_SM))
+                                        .py(rpx(SPACE_LG))
+                                        .children(subagents.iter().map(subagent_row)),
+                                )
+                            },
+                        ),
                 );
                 if active && state.work_started.is_some() && !self.work_tick_pending.replace(true) {
                     let owner = cx.entity().downgrade();

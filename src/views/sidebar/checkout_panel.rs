@@ -1,6 +1,8 @@
 //! Checkout actions live beside the selected canvas, outside its scroll region.
 use super::*;
-use crate::views::components::{form_action, project_field_well, shimmer_label, transcript_action};
+use crate::views::components::{
+    form_action, project_field_well, shimmer_label, tooltip, transcript_action,
+};
 use gpui_component::{
     menu::{PopupMenu, PopupMenuItem},
     Disableable,
@@ -35,6 +37,9 @@ fn checkout_action(
 
 #[derive(Default)]
 pub(super) struct CheckoutPanel {
+    pub(super) agents_visible: bool,
+    agent_disclosures: HashMap<SessionId, AgentDisclosure>,
+    agent_observer: Option<(gpui::EntityId, gpui::Subscription)>,
     path: Option<String>,
     state: Option<Result<CheckoutGitState, String>>,
     summary: Option<ChangeSummary>,
@@ -64,6 +69,12 @@ pub(super) struct CheckoutPanel {
     restore_focus: bool,
     operation: CheckoutOperation,
     operations: HashMap<String, CheckoutOperation>,
+}
+
+#[derive(Default)]
+struct AgentDisclosure {
+    show_all: bool,
+    previous: bool,
 }
 
 #[derive(Default)]
@@ -976,12 +987,153 @@ impl Sidebar {
             .into_any_element()
     }
 
+    fn render_checkout_agents(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let Some(Selection::Session(id)) = self.selection else {
+            self.checkout_panel.agent_observer = None;
+            return None;
+        };
+        let Some(session) = self.runtime.read(cx).registry.read(cx).codex(id).cloned() else {
+            self.checkout_panel.agent_observer = None;
+            return None;
+        };
+        if self
+            .checkout_panel
+            .agent_observer
+            .as_ref()
+            .is_none_or(|(owner, _)| *owner != session.entity_id())
+        {
+            let observer = cx.observe(&session, |_, _, cx| cx.notify());
+            self.checkout_panel.agent_observer = Some((session.entity_id(), observer));
+        }
+        let saved = &session.read(cx).state.saved;
+        let provider = saved.provider.agent().icon_name();
+        let agents = checkout_agents(&saved.work_periods);
+        if agents.is_empty() {
+            return None;
+        }
+        let running = agents
+            .iter()
+            .filter(|agent| agent.status == grove_core::codex::SubagentStatus::Working)
+            .count();
+        let (active, previous) = checkout_agent_groups(&agents, &saved.work_periods);
+        let disclosure = self.checkout_panel.agent_disclosures.entry(id).or_default();
+        let show_all = disclosure.show_all;
+        let show_previous = disclosure.previous;
+        let mut section = div()
+            .id("checkout-agents")
+            .debug_selector(|| "checkout-agents".into())
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .child(
+                div()
+                    .h(rpx(AGENT_ROW_H))
+                    .px(rpx(SPACE_2XL))
+                    .flex()
+                    .items_center()
+                    .text_size(rpx(TEXT_MICRO))
+                    .text_color(c::FG_DIM())
+                    .child(format!("Agents · {running} running")),
+            )
+            .children(
+                active
+                    .iter()
+                    .take(if show_all { usize::MAX } else { AGENTS_VISIBLE })
+                    .map(|agent| checkout_agent_row(agent, provider)),
+            );
+        if active.len() > AGENTS_VISIBLE {
+            section = section.child(
+                checkout_row(
+                    "checkout-agents-more",
+                    if show_all {
+                        "Show fewer".to_owned()
+                    } else {
+                        format!("Show {} more", active.len() - AGENTS_VISIBLE)
+                    },
+                    "plus",
+                    window,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let disclosure = this.checkout_panel.agent_disclosures.entry(id).or_default();
+                    disclosure.show_all = !disclosure.show_all;
+                    cx.notify();
+                })),
+            );
+        }
+        if !previous.is_empty() {
+            section = section.child(
+                checkout_action(
+                    "checkout-agents-previous",
+                    format!(
+                        "{} previous agents ({})",
+                        if show_previous { "Collapse" } else { "Expand" },
+                        previous.len()
+                    ),
+                    false,
+                    window,
+                    cx,
+                )
+                .debug_selector(|| "checkout-agents-previous".into())
+                .icon_only()
+                .w_full()
+                .h(rpx(AGENT_ROW_H))
+                .px(rpx(SPACE_2XL))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_XL))
+                        .w_full()
+                        .min_w_0()
+                        .text_size(rpx(TEXT_MICRO))
+                        .text_color(c::FG_DIM())
+                        .child(format!("Previous agents ({})", previous.len()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(rpx(SPACE_LG))
+                                .border_t_1()
+                                .border_color(c::BORDER_SOFT()),
+                        )
+                        .child(icon("chev-down", ICON_SM, c::FG_DIM()).when(
+                            show_previous,
+                            |glyph| {
+                                glyph.with_transformation(gpui::Transformation::rotate(
+                                    gpui::percentage(0.5),
+                                ))
+                            },
+                        )),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let disclosure = this.checkout_panel.agent_disclosures.entry(id).or_default();
+                    disclosure.previous = !disclosure.previous;
+                    cx.notify();
+                })),
+            );
+            if show_previous {
+                section = section.children(
+                    previous
+                        .iter()
+                        .map(|agent| checkout_agent_row(agent, provider)),
+                );
+            }
+        }
+        Some(section.into_any_element())
+    }
+
     pub(super) fn render_content(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.checkout_panel.narrow_content = None;
+        self.checkout_panel.agents_visible = false;
         for kind in ["checkout", "publish", "summary", "commit", "pr-merge"] {
             self.checkout_panel
                 .trigger_focus
@@ -1017,9 +1169,11 @@ impl Sidebar {
                 .is_some_and(|panel| panel.read(cx).is_open())
             || targets.is_empty()
         {
+            self.checkout_panel.agent_observer = None;
             return self.render_content_body(window, cx);
         }
         let wide = Self::logical_window_width(window) >= WIDE_VIEWPORT;
+        self.checkout_panel.agents_visible = wide || self.checkout_panel.expanded;
         let selected = selected_checkout(&targets, self.checkout_panel.chosen_root.as_deref());
         let mut card = project_field_well(false, false)
             .id("checkout-card")
@@ -1098,15 +1252,7 @@ impl Sidebar {
                         );
                     })),
                 )
-                .child(
-                    div()
-                        .id("checkout-divider")
-                        .debug_selector(|| "checkout-divider".into())
-                        .w_full()
-                        .border_t_1()
-                        .border_color(c::BORDER_SOFT())
-                        .my(rpx(SPACE_SM)),
-                );
+                .child(checkout_divider("checkout-divider"));
             let state = self.checkout_panel.state.clone().and_then(Result::ok);
             if let Some(state) = state.as_ref() {
                 let identity = state.target_identity();
@@ -1411,15 +1557,7 @@ impl Sidebar {
                     checkout_row("checkout-script", "Add project script", "plus", window, cx)
                         .disabled(true),
                 )
-                .child(
-                    div()
-                        .id("checkout-divider")
-                        .debug_selector(|| "checkout-divider".into())
-                        .w_full()
-                        .border_t_1()
-                        .border_color(c::BORDER_SOFT())
-                        .my(rpx(SPACE_SM)),
-                )
+                .child(checkout_divider("checkout-divider"))
                 .child(
                     checkout_row(
                         "checkout-commit-publish",
@@ -1434,6 +1572,11 @@ impl Sidebar {
                     checkout_row("checkout-changes", "Changes", "unified", window, cx)
                         .disabled(true),
                 );
+        }
+        if let Some(agents) = self.render_checkout_agents(window, cx) {
+            card = card
+                .child(checkout_divider("checkout-agents-divider"))
+                .child(agents);
         }
         let mut panel = div()
             .id("checkout-panel")
@@ -1609,6 +1752,107 @@ fn commit_provider(
         Some(Agent::Claude) => Ok(grove_core::codex::Provider::Claude),
         _ => Err("Choose Codex or Claude Code as your default agent to generate commits.".into()),
     }
+}
+
+const AGENTS_VISIBLE: usize = 5;
+const AGENT_ROW_H: f32 = 32.;
+
+/// Later work periods replace earlier observations, including terminal states.
+fn checkout_agents(periods: &[grove_core::codex::WorkPeriod]) -> Vec<grove_core::codex::Subagent> {
+    let mut latest: Vec<grove_core::codex::Subagent> = Vec::new();
+    for agent in periods.iter().flat_map(|period| &period.subagents) {
+        if let Some(previous) = latest.iter_mut().find(|previous| previous.id == agent.id) {
+            *previous = agent.clone();
+        } else {
+            latest.push(agent.clone());
+        }
+    }
+    latest
+}
+
+fn checkout_agent_groups<'a>(
+    agents: &'a [grove_core::codex::Subagent],
+    periods: &[grove_core::codex::WorkPeriod],
+) -> (
+    Vec<&'a grove_core::codex::Subagent>,
+    Vec<&'a grove_core::codex::Subagent>,
+) {
+    let latest_ids: std::collections::HashSet<_> = periods
+        .last()
+        .into_iter()
+        .flat_map(|period| &period.subagents)
+        .map(|agent| agent.id.as_str())
+        .collect();
+    agents.iter().partition(|agent| {
+        latest_ids.contains(agent.id.as_str())
+            || matches!(
+                agent.status,
+                grove_core::codex::SubagentStatus::Working
+                    | grove_core::codex::SubagentStatus::Unknown
+            )
+    })
+}
+
+fn checkout_divider(id: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .w_full()
+        .border_t_1()
+        .border_color(c::BORDER_SOFT())
+        .my(rpx(SPACE_SM))
+}
+
+fn checkout_agent_row(
+    agent: &grove_core::codex::Subagent,
+    provider: &'static str,
+) -> gpui::Stateful<gpui::Div> {
+    use grove_core::codex::SubagentStatus;
+    let status = match agent.status {
+        SubagentStatus::Working => "Working",
+        SubagentStatus::Completed => "Done",
+        SubagentStatus::Failed => "Failed",
+        SubagentStatus::Unknown => "Unknown",
+    };
+    let name_id = agent.id.clone();
+    let status_id = agent.id.clone();
+    let detail = format!("{} · {} · {}", agent.name, agent.activity, status);
+    div()
+        .id(SharedString::from(format!("checkout-agent-{}", agent.id)))
+        .role(gpui::Role::Group)
+        .tab_index(0)
+        .focus_visible(|style| style.bg(c::BG_HOVER()))
+        .aria_label(detail.clone())
+        .tooltip(move |window, cx| tooltip(detail.clone(), window).build(window, cx))
+        .h(rpx(AGENT_ROW_H))
+        .px(rpx(SPACE_2XL))
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_XL))
+        .min_w_0()
+        .text_size(rpx(TEXT_SMALL))
+        .text_color(c::FG_DIM())
+        .child(icon(provider, ICON_LG, c::FG_DIM()))
+        .child(
+            div()
+                .debug_selector(move || format!("checkout-agent-name-{name_id}"))
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(agent.name.clone()),
+        )
+        .child(
+            div()
+                .debug_selector(move || format!("checkout-agent-status-{status_id}"))
+                .flex_shrink_0()
+                .text_size(rpx(TEXT_MICRO))
+                .text_color(if agent.status == SubagentStatus::Failed {
+                    c::FORM_ERROR()
+                } else {
+                    c::FG_DIM()
+                })
+                .child(status),
+        )
 }
 
 fn checkout_row(
@@ -1995,6 +2239,319 @@ mod tests {
         assert!(!panel.accepts_result("/two", 3));
         assert!(!panel.accepts_result("/one", 1));
     }
+    #[gpui::test]
+    fn codex_and_claude_checkout_agents_follow_session_updates_and_disclosures(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(fixture.path())
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs_err::write(fixture.path().join("main.rs"), "fn main() {}\n").unwrap();
+        fs_err::write(fixture.path().join("README.md"), "# Example\n").unwrap();
+        let fixture_path = fixture.path().to_string_lossy().into_owned();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Checkout QA".into(),
+                    path: fixture_path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let path = fixture_path.clone();
+            let id = runtime.read(cx).registry.clone().update(cx, |registry, _| {
+                registry.insert_meta("Checkout QA".into(), path.clone(), Agent::Codex)
+            });
+            runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![grove_core::git::Worktree {
+                        path,
+                        branch: "main".into(),
+                        mtime: None,
+                        is_main: true,
+                    }],
+                );
+            });
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.selection = Some(Selection::Session(id));
+            sidebar.initial_selection_pending = false;
+            sidebar
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            let id = cx.update(|_, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    let id = sidebar
+                        .runtime
+                        .read(cx)
+                        .registry
+                        .clone()
+                        .update(cx, |registry, _| {
+                            registry.insert_meta(
+                                "Checkout QA".into(),
+                                fixture_path.clone(),
+                                provider.agent(),
+                            )
+                        });
+                    sidebar.selection = Some(Selection::Session(id));
+                    id
+                })
+            });
+            let (handle, _actions) = grove_core::codex::Handle::channel();
+            let (_updates, receive) = std::sync::mpsc::channel();
+            let saved = grove_core::codex::SavedSession {
+                rich_plans: Default::default(),
+                claude_resume: None,
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
+                provider,
+                composer: Default::default(),
+                context: None,
+                key: "agents-fixture".into(),
+                project: "Checkout QA".into(),
+                cwd: fixture_path.clone(),
+                label: provider.label().into(),
+                title: None,
+                title_generation: None,
+                roots: Vec::new(),
+                thread_id: None,
+                items: Vec::new(),
+                work_periods: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                config_args: Vec::new(),
+            };
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(
+                    grove_core::codex::Snapshot::new(saved),
+                    grove_core::codex::Connection {
+                        handle: handle.clone(),
+                        updates: receive.into(),
+                    },
+                    cx,
+                )
+            });
+            cx.update(|_, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar
+                        .runtime
+                        .read(cx)
+                        .registry
+                        .clone()
+                        .update(cx, |registry, _| {
+                            registry.attach_codex(id, session.clone(), handle)
+                        });
+                    sidebar.checkout_panel.expanded = true;
+                    cx.notify();
+                })
+            });
+            cx.run_until_parked();
+            // The observer is installed even before a child has appeared.
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            cx.update(|_, cx| {
+                session.update(cx, |session, cx| {
+                    use grove_core::codex::{Subagent, SubagentStatus, WorkPeriod};
+                    let agent = |id: &str, status| Subagent {
+                        id: id.into(),
+                        name: format!("A deliberately long agent name for {id}"),
+                        activity: "Inspecting checkout layout".into(),
+                        role: None,
+                        task: None,
+                        status,
+                    };
+                    session.state.saved.items = vec![
+                        serde_json::json!({"type":"userMessage", "text":"Inspect checkout"}),
+                        serde_json::json!({"type":"reasoning", "text":"Inspecting"}),
+                        serde_json::json!({"type":"userMessage", "text":"Continue checkout"}),
+                        serde_json::json!({"type":"reasoning", "text":"Continuing"}),
+                    ];
+                    session.state.saved.work_periods = vec![
+                        WorkPeriod {
+                            start_item: 0,
+                            end_item: Some(2),
+                            duration_ms: None,
+                            subagents: vec![
+                                agent("old-running", SubagentStatus::Working),
+                                agent("old-done", SubagentStatus::Completed),
+                                agent("updated", SubagentStatus::Working),
+                            ],
+                        },
+                        WorkPeriod {
+                            start_item: 2,
+                            end_item: None,
+                            duration_ms: None,
+                            subagents: (0..6)
+                                .map(|index| {
+                                    agent(
+                                        &format!("current-{index}"),
+                                        if index == 0 {
+                                            SubagentStatus::Completed
+                                        } else {
+                                            SubagentStatus::Working
+                                        },
+                                    )
+                                })
+                                .chain(std::iter::once(agent("updated", SubagentStatus::Failed)))
+                                .collect(),
+                        },
+                    ];
+                    cx.notify();
+                })
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx.debug_bounds("checkout-agents").is_some());
+            let card = cx.debug_bounds("checkout-card").unwrap();
+            let name = cx.debug_bounds("checkout-agent-name-old-running").unwrap();
+            let status = cx
+                .debug_bounds("checkout-agent-status-old-running")
+                .unwrap();
+            assert!(name.right() <= status.left());
+            assert!(status.right() < card.right());
+            let divider = cx.debug_bounds("checkout-agents-divider").unwrap();
+            assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
+            assert!(divider.right() >= card.right() - gpui::px(SPACE_XS));
+            assert!(
+                !sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.agent_disclosures
+                    [&id]
+                    .show_all)
+            );
+            assert!(
+                !sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.agent_disclosures
+                    [&id]
+                    .previous)
+            );
+            assert!(cx.debug_bounds("checkout-agents-more").is_some());
+            let more = cx.debug_bounds("checkout-agents-more").unwrap();
+            cx.simulate_click(more.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.agent_disclosures
+                    [&id]
+                    .show_all)
+            );
+            let previous = cx.debug_bounds("checkout-agents-previous").unwrap();
+            cx.simulate_click(previous.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.agent_disclosures
+                    [&id]
+                    .previous)
+            );
+            cx.simulate_resize(gpui::size(gpui::px(500.), gpui::px(800.)));
+            cx.update(|_, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.checkout_panel.expanded = false;
+                    cx.notify();
+                })
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                !sidebar.read_with(cx, |sidebar, cx| sidebar.codex_views[&id]
+                    .read(cx)
+                    .agents_in_checkout)
+            );
+            cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(sidebar.read_with(cx, |sidebar, cx| sidebar.codex_views[&id]
+                .read(cx)
+                .agents_in_checkout));
+        }
+    }
+
+    #[test]
+    fn checkout_agent_groups_keep_latest_terminal_observations_and_independent_children() {
+        use grove_core::codex::{Subagent, SubagentStatus, WorkPeriod};
+        let agent = |id: &str, status| Subagent {
+            id: id.into(),
+            name: id.into(),
+            activity: String::new(),
+            role: None,
+            task: None,
+            status,
+        };
+        let mut periods = vec![
+            WorkPeriod {
+                start_item: 0,
+                end_item: Some(1),
+                duration_ms: None,
+                subagents: vec![
+                    agent("running", SubagentStatus::Working),
+                    agent("unknown", SubagentStatus::Unknown),
+                    agent("done", SubagentStatus::Completed),
+                    agent("changed", SubagentStatus::Working),
+                ],
+            },
+            WorkPeriod {
+                start_item: 1,
+                end_item: None,
+                duration_ms: None,
+                subagents: vec![
+                    agent("current-done", SubagentStatus::Completed),
+                    agent("changed", SubagentStatus::Failed),
+                ],
+            },
+        ];
+        let agents = checkout_agents(&periods);
+        assert_eq!(agents.len(), 5);
+        let (main, previous) = checkout_agent_groups(&agents, &periods);
+        assert_eq!(
+            main.iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            ["running", "unknown", "changed", "current-done"]
+        );
+        assert_eq!(previous[0].id, "done");
+        assert_eq!(main[2].status, SubagentStatus::Failed);
+        periods.push(WorkPeriod {
+            start_item: 2,
+            end_item: None,
+            duration_ms: None,
+            subagents: Vec::new(),
+        });
+        let (main, previous) = checkout_agent_groups(&agents, &periods);
+        assert_eq!(main.len(), 2);
+        assert_eq!(previous.len(), 3);
+    }
+
     #[gpui::test]
     fn checkout_rows_pr_disclosure_and_filtered_changes_keep_layout(cx: &mut gpui::TestAppContext) {
         let fixture = tempfile::tempdir().unwrap();

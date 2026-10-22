@@ -569,6 +569,12 @@ impl Sidebar {
                     })
                 })
                 .clone();
+            view.update(cx, |view, cx| {
+                if view.agents_in_checkout != self.checkout_panel.agents_visible {
+                    view.agents_in_checkout = self.checkout_panel.agents_visible;
+                    cx.notify();
+                }
+            });
             self.canvas_focus_observers.entry(id).or_insert_with(|| {
                 cx.on_focus_in(&view.focus_handle(cx), window, move |this, _, cx| {
                     this.select(Selection::Session(id), cx);
