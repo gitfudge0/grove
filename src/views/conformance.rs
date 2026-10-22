@@ -379,19 +379,46 @@ fn text_icon_action_regressions_use_the_leading_vendor_slot() {
         retry.ends_with("settings_control("),
         "Retry must use shared control gap geometry"
     );
-    let launch = source("src/views/sidebar/content.rs");
-    let launch = launch
-        .split_once("form_action(id, label, false, window, cx)")
+    // Checkout launch rows use a full-width content layout so the provider
+    // precedes its name while the quiet destination indicator stays fixed.
+    let launch_source = source("src/views/sidebar/content.rs");
+    let launch = launch_source
+        .split_once(".id(\"project-start-actions\")")
         .unwrap()
         .1
-        .split_once(".on_click(")
+        .split_once("let missing = WORKTREE_LAUNCH_AGENTS")
         .unwrap()
         .0;
-    assert!(launch.contains(".icon("));
+    assert!(launch.contains("dense_action_with_colors("));
     assert!(
-        !launch.contains(".child("),
-        "Launch label must not gain a trailing directional glyph"
+        launch.contains(".icon_only()"),
+        "retain the provider accessible name"
     );
+    assert!(launch.contains("gpui::transparent_black()"));
+    assert!(launch.contains(".border_t_1()") && launch.contains(".border_b_1()"));
+    assert!(!launch.contains(".bg(c::FIELD_FILL())"));
+    assert!(!launch.contains("RADIUS_PANEL"));
+    let compact: String = launch.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let provider = compact
+        .find("icon(agent.icon_name(),PROJECT_START_ICON_SIZE")
+        .unwrap();
+    let label = compact
+        .find(".child(div().flex_1().min_w_0().truncate().child(label))")
+        .unwrap();
+    let destination = compact
+        .find("icon(\"arrow-right\",ICON_SM,c::FG_DIM()")
+        .unwrap();
+    assert!(provider < label && label < destination);
+    assert!(launch.contains(".gap(rpx(SPACE_SM))"));
+    assert_eq!(
+        launch.matches(".flex_none()").count(),
+        2,
+        "reserve both glyph slots"
+    );
+    for label in ["Terminal", "Codex", "Claude Code", "OpenCode"] {
+        assert!(launch.contains(&format!("\"{label}\"")));
+        assert!(!launch.contains(&format!("\"Start {label}\"")));
+    }
 }
 #[test]
 fn disclosure_buttons_keep_icons_before_their_labels() {

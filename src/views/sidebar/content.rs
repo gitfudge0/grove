@@ -12,7 +12,7 @@ use crate::{
     settings::SettingsState,
     theme as c,
     views::{
-        components::{form_action, form_field, project_field_well},
+        components::{dense_action_with_colors, form_action, form_field, project_field_well},
         motion, rpx,
         terminal_view::TerminalView,
         tokens::*,
@@ -29,6 +29,7 @@ const EMPTY_CARD_W: f32 = 430.;
 const EMPTY_CARD_PAD: f32 = 24.;
 const EMPTY_TITLE_SIZE: f32 = 18.;
 const PROJECT_START_ROW_H: f32 = 50.;
+const PROJECT_START_ICON_SIZE: f32 = 24.;
 
 impl Sidebar {
     pub(super) fn render_worktree_removal(
@@ -1215,46 +1216,66 @@ impl Sidebar {
             .min_w_0()
             .flex_shrink_0()
             .mt(rpx(SPACE_20))
-            .border_1()
+            .border_t_1()
             .border_color(c::BORDER_SOFT())
-            .rounded(rpx(RADIUS_PANEL))
-            .overflow_hidden()
-            .bg(c::FIELD_FILL())
             .flex()
             .flex_col();
-        for (index, (id, label, agent)) in [
-            ("start-terminal", "Start Terminal", Agent::Terminal),
-            ("start-codex", "Start Codex", Agent::Codex),
-            ("start-claude", "Start Claude Code", Agent::Claude),
-            ("start-opencode", "Start OpenCode", Agent::OpenCode),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (id, label, agent) in [
+            ("start-terminal", "Terminal", Agent::Terminal),
+            ("start-codex", "Codex", Agent::Codex),
+            ("start-claude", "Claude Code", Agent::Claude),
+            ("start-opencode", "OpenCode", Agent::OpenCode),
+        ] {
             let target = path.to_string();
             actions = actions.child(
                 div()
                     .w_full()
                     .min_w_0()
-                    .when(index > 0, |row| {
-                        row.border_t_1().border_color(c::BORDER_SOFT())
-                    })
+                    .border_b_1()
+                    .border_color(c::BORDER_SOFT())
                     .child(
-                        form_action(id, label, false, window, cx)
-                            .h(rpx(PROJECT_START_ROW_H))
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path(format!("icons/{}.svg", agent.icon_name()))
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .debug_selector(move || id.into())
-                            .w_full()
-                            .min_w_0()
-                            .cursor_pointer()
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.launch(project_idx, target.clone(), agent, cx);
-                            })),
+                        dense_action_with_colors(
+                            id,
+                            label,
+                            gpui::transparent_black(),
+                            c::FG(),
+                            c::BG_HOVER(),
+                            window,
+                            cx,
+                        )
+                        // Retain the button's accessible name while the custom
+                        // content reserves the provider and destination slots.
+                        .icon_only()
+                        .h(rpx(PROJECT_START_ROW_H))
+                        .rounded(gpui::px(0.))
+                        .debug_selector(move || id.into())
+                        .w_full()
+                        .min_w_0()
+                        .cursor_pointer()
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(div().flex_none().child(icon(
+                                    agent.icon_name(),
+                                    PROJECT_START_ICON_SIZE,
+                                    c::FG(),
+                                )))
+                                .child(div().flex_1().min_w_0().truncate().child(label))
+                                // A quiet destination indicator, not a second action.
+                                .child(div().flex_none().child(icon(
+                                    "arrow-right",
+                                    ICON_SM,
+                                    c::FG_DIM(),
+                                ))),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.launch(project_idx, target.clone(), agent, cx);
+                        })),
                     ),
             );
         }
