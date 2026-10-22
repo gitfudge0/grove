@@ -118,7 +118,7 @@ impl CodexSession {
             ));
         }
         let id = self.handle.submit_with_mode(text, images, mode)?;
-        self.state.error = None;
+        self.state.clear_error();
         cx.notify();
         Ok(id)
     }
@@ -131,7 +131,7 @@ impl CodexSession {
             return Err(codex::CLEAR_BUSY.into());
         }
         self.handle.send(Action::ClearConversation)?;
-        self.state.error = None;
+        self.state.clear_error();
         cx.notify();
         Ok(())
     }
@@ -146,7 +146,7 @@ impl CodexSession {
             return Err("There are no queued prompts to send.".into());
         }
         self.handle.send(Action::ResumeQueue)?;
-        self.state.error = None;
+        self.state.clear_error();
         cx.notify();
         Ok(())
     }
@@ -163,7 +163,7 @@ impl CodexSession {
             return Err(codex::NOTHING_TO_COMPACT.into());
         }
         self.handle.send(Action::Compact)?;
-        self.state.error = None;
+        self.state.clear_error();
         cx.notify();
         Ok(())
     }
@@ -198,7 +198,7 @@ impl CodexSession {
             self.handle.send(Action::Prompt(text))?;
             0
         };
-        self.state.error = None;
+        self.state.clear_error();
         self.state.status = codex::Status::Working;
         cx.notify();
         Ok(submission)

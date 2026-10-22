@@ -726,7 +726,7 @@ impl Actor {
         self.pid.store(0, Ordering::SeqCst);
         self.initialized = false;
         self.queue_ready = false;
-        self.state.status = Status::Failed;
+        self.state.status = Status::Disconnected;
         self.state.turn_id = None;
         self.state.compacting = false;
         self.compact_pending = false;
@@ -826,7 +826,7 @@ impl Actor {
         self.permission_changes.clear();
         self.blocks.clear();
         self.state.status = Status::Starting;
-        self.state.error = None;
+        self.state.clear_error();
         self.interaction_children = crate::interaction::Children::default();
         self.state.interaction_owners.clear();
         self.state.retired_interactions.clear();
@@ -912,7 +912,7 @@ impl Actor {
         self.in_flight = Some(QueuedPrompt { id, text, images });
         self.redirect_pending = true;
         self.pending_completion = None;
-        self.state.error = None;
+        self.state.clear_error();
         Ok(())
     }
     fn edit_message(
@@ -1106,7 +1106,7 @@ impl Actor {
         self.state.status = Status::Working;
         self.session_idle = false;
         self.state.turn_id = Some(uuid);
-        self.state.error = None;
+        self.state.clear_error();
         self.interrupting = false;
         self.blocks.clear();
         self.message_id.clear();
@@ -2282,6 +2282,47 @@ impl Actor {
                     self.state.status = Status::Working;
                 }
             }
+            "rate_limit_event" => {
+                let info = &value["rate_limit_info"];
+                match info["status"].as_str() {
+                    Some("rejected") => self.state.set_provider_error(
+                        "Claude",
+                        "Claude usage limit reached.".into(),
+                        false,
+                        Some(
+                            if matches!(
+                                info["rateLimitType"].as_str(),
+                                Some(
+                                    "five_hour"
+                                        | "seven_day"
+                                        | "seven_day_opus"
+                                        | "seven_day_sonnet"
+                                        | "overage"
+                                )
+                            ) {
+                                "usage_limit_reached"
+                            } else {
+                                "rate_limit_error"
+                            },
+                        ),
+                        info["resetsAt"].as_i64().or(info["resets_at"].as_i64()),
+                    ),
+                    Some("allowed_warning") => self.state.provider_warning(
+                        "Approaching usage limit",
+                        "Claude reports that usage is approaching a limit. Work can continue.",
+                    ),
+                    Some("allowed")
+                        if self.state.effective_notice().is_some_and(|notice| {
+                            notice.provider == "Claude"
+                                && (notice.kind == codex::SessionNoticeKind::UsageLimit
+                                    || notice.reset_at.is_some())
+                        }) =>
+                    {
+                        self.state.clear_error();
+                    }
+                    _ => {}
+                }
+            }
             "stream_event" if value["parent_tool_use_id"].is_null() => self.stream(&value["event"]),
             "assistant" if value["parent_tool_use_id"].is_null() => {
                 let message = &value["message"];
@@ -2297,7 +2338,13 @@ impl Actor {
                     }
                 }
                 if let Some(error) = value["error"].as_str() {
-                    self.state.error = Some(format!("Claude Code: {error}"));
+                    self.state.set_provider_error(
+                        "Claude",
+                        format!("Claude Code: {error}"),
+                        false,
+                        Some(error),
+                        None,
+                    );
                 }
                 if let Some(uuid) = value["uuid"].as_str() {
                     self.last_assistant_uuid = Some(uuid.to_owned());
@@ -2436,6 +2483,13 @@ impl Actor {
                     Status::Done
                 };
                 if value["is_error"] == true && !self.interrupting {
+                    // The terminal result often has a generic subtype. Retain
+                    // a preceding explicit rejection's category/reset metadata.
+                    let usage_notice = self
+                        .state
+                        .effective_notice()
+                        .filter(|notice| notice.kind == codex::SessionNoticeKind::UsageLimit)
+                        .cloned();
                     self.state.error = Some(
                         value["errors"]
                             .as_array()
@@ -2452,7 +2506,22 @@ impl Actor {
                                 format!("Claude Code ended with {}", value["subtype"])
                             }),
                     );
+                    if let Some(body) = self.state.error.clone() {
+                        self.state.set_provider_error(
+                            "Claude",
+                            body,
+                            false,
+                            if usage_notice.is_some() {
+                                Some("usage_limit_reached")
+                            } else {
+                                value["subtype"].as_str()
+                            },
+                            usage_notice.and_then(|notice| notice.reset_at),
+                        );
+                    }
                     self.queue_ready = false;
+                } else if value["is_error"] != true && self.state.effective_notice().is_some() {
+                    self.state.clear_error();
                 }
                 for item in &mut self.state.saved.items {
                     if item["status"] == "inProgress" {
@@ -2744,6 +2813,91 @@ mod tests {
             Arc::new(AtomicU32::new(0)),
             Arc::new(AtomicBool::new(false)),
         )
+    }
+    #[test]
+    fn provider_rate_limit_events_preserve_continue_and_child_boundaries() {
+        let mut actor = actor();
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("turn-1".into());
+        actor
+            .message(
+                json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning"}}),
+            )
+            .unwrap();
+        assert_eq!(actor.state.status, Status::Working);
+        assert!(actor.state.error.is_none());
+        assert_eq!(
+            actor.state.saved.items.last().unwrap()["severity"],
+            "warning"
+        );
+        actor.message(json!({"type":"rate_limit_event","parent_tool_use_id":"child","rate_limit_info":{"status":"rejected"}})).unwrap();
+        assert!(actor.state.error.is_none());
+        actor.message(json!({"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1234}})).unwrap();
+        let notice = actor.state.effective_notice().unwrap();
+        assert_eq!(notice.kind, codex::SessionNoticeKind::UsageLimit);
+        assert_eq!(notice.reset_at, Some(1234));
+        assert_eq!(actor.state.status, Status::Working);
+        actor
+            .message(json!({"type":"assistant","error":"rate_limit","message":{"content":[]}}))
+            .unwrap();
+        assert_eq!(actor.state.effective_notice().unwrap().reset_at, Some(1234));
+        actor.message(json!({"type":"result","is_error":true,"subtype":"error_during_execution","errors":["Request rejected"]})).unwrap();
+        assert_eq!(
+            actor.state.effective_notice().unwrap().kind,
+            codex::SessionNoticeKind::UsageLimit
+        );
+        assert_eq!(actor.state.effective_notice().unwrap().reset_at, Some(1234));
+    }
+    #[test]
+    fn provider_allowed_recovers_usage_but_preserves_other_errors_and_transport_disconnects() {
+        let mut actor = actor();
+        actor.state.turn_id = Some("turn-1".into());
+        actor.message(json!({"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1234}})).unwrap();
+        actor
+            .message(json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}))
+            .unwrap();
+        assert!(actor.state.error.is_none());
+        actor.state.set_provider_error(
+            "Claude",
+            "Authentication failed".into(),
+            false,
+            Some("authentication_failed"),
+            None,
+        );
+        actor
+            .message(json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}))
+            .unwrap();
+        assert_eq!(actor.state.error.as_deref(), Some("Authentication failed"));
+        actor.fail("Process exited".into());
+        assert_eq!(actor.state.status, Status::Disconnected);
+    }
+    #[test]
+    fn provider_errors_keep_claude_result_details() {
+        let mut actor = actor();
+        actor.state.turn_id = Some("turn-1".into());
+        actor
+            .message(json!({"type":"assistant","error":"rate_limit","message":{"content":[]}}))
+            .unwrap();
+        assert_eq!(
+            actor.state.effective_notice().unwrap().kind,
+            codex::SessionNoticeKind::Stopped
+        );
+        assert!(actor.state.effective_notice().unwrap().usage_url.is_none());
+        actor.state.error = None;
+        actor.state.notice = None;
+        actor
+            .message(
+                json!({"type":"result","is_error":true,"errors":["First detail","Second detail"]}),
+            )
+            .unwrap();
+        assert_eq!(
+            actor.state.error.as_deref(),
+            Some("First detail\nSecond detail")
+        );
+        assert_eq!(
+            actor.state.effective_notice().unwrap().kind,
+            codex::SessionNoticeKind::Stopped
+        );
     }
     #[test]
     #[cfg(unix)]

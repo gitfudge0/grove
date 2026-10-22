@@ -670,6 +670,21 @@ pub struct QuestionAnswerAck {
     pub thread_id: Option<String>,
     pub turn_id: Option<String>,
 }
+/// Provider-supplied recovery metadata. Raw messages remain available verbatim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionNoticeKind {
+    Retrying,
+    Stopped,
+    UsageLimit,
+}
+#[derive(Clone, Debug)]
+pub struct SessionNotice {
+    pub kind: SessionNoticeKind,
+    pub provider: &'static str,
+    pub body: String,
+    pub reset_at: Option<i64>,
+    pub usage_url: Option<&'static str>,
+}
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub saved: SavedSession,
@@ -684,6 +699,8 @@ pub struct Snapshot {
     pub question_answer_acks: Vec<QuestionAnswerAck>,
     pub elicitations: Vec<crate::elicitation::ElicitationRequest>,
     pub error: Option<String>,
+    pub notice: Option<SessionNotice>,
+    rate_limit_reset: Option<i64>,
     pub sandbox: Option<Value>,
     pub approval_policy: Option<Value>,
     /// Modes advertised by the installed Claude CLI, not assumed SDK capabilities.
@@ -751,6 +768,94 @@ pub(crate) fn next_interaction_epoch() -> u64 {
     EPOCH.fetch_add(1, Ordering::Relaxed)
 }
 impl Snapshot {
+    /// Reset the raw error together with its provider recovery metadata.
+    pub fn clear_error(&mut self) {
+        self.error = None;
+        self.notice = None;
+    }
+    /// Direct callers can still clear/replace `error`; never reuse stale metadata.
+    pub fn effective_notice(&self) -> Option<&SessionNotice> {
+        self.notice
+            .as_ref()
+            .filter(|notice| self.error.as_deref() == Some(notice.body.as_str()))
+    }
+    pub(crate) fn set_provider_error(
+        &mut self,
+        provider: &'static str,
+        body: String,
+        retrying: bool,
+        code: Option<&str>,
+        reset_at: Option<i64>,
+    ) {
+        let preceding = self
+            .effective_notice()
+            .filter(|notice| notice.provider == provider)
+            .cloned();
+        let usage = matches!(code, Some("usageLimitExceeded" | "usage_limit_reached"))
+            || body.to_lowercase().contains("you’ve hit your usage limit")
+            || body.to_lowercase().contains("you've hit your usage limit")
+            || (matches!(code, Some("rate_limit_error" | "rate_limit"))
+                && preceding
+                    .as_ref()
+                    .is_some_and(|notice| notice.kind == SessionNoticeKind::UsageLimit));
+        let reset_at = reset_at
+            .or_else(|| {
+                if usage || matches!(code, Some("rate_limit_error" | "rate_limit")) || retrying {
+                    preceding.as_ref().and_then(|notice| notice.reset_at)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if usage && provider == "Codex" {
+                    self.rate_limit_reset
+                } else {
+                    None
+                }
+            });
+        self.notice = Some(SessionNotice {
+            kind: if retrying {
+                SessionNoticeKind::Retrying
+            } else if usage {
+                SessionNoticeKind::UsageLimit
+            } else {
+                SessionNoticeKind::Stopped
+            },
+            provider,
+            body: body.clone(),
+            reset_at,
+            usage_url: if usage {
+                match provider {
+                    "Codex" => Some("https://chatgpt.com/settings/usage"),
+                    "Claude" => Some("https://claude.ai/settings/usage"),
+                    _ => None,
+                }
+            } else {
+                None
+            },
+        });
+        self.error = Some(body);
+    }
+    pub(crate) fn clear_retry_notice(&mut self) {
+        if self
+            .effective_notice()
+            .is_some_and(|notice| notice.kind == SessionNoticeKind::Retrying)
+        {
+            self.clear_error();
+        }
+    }
+    pub(crate) fn provider_warning(&mut self, title: &str, text: &str) {
+        if self.saved.items.last().is_some_and(|item| {
+            item["type"] == "providerNotice"
+                && item["title"] == title
+                && item["text"] == text
+                && item["severity"] == "warning"
+        }) {
+            return;
+        }
+        self.saved.items.push(json!({"id":format!("provider-notice-{}", self.saved.items.len()), "type":"providerNotice", "title":title, "text":text, "severity":"warning"}));
+    }
+
     pub(crate) fn retire_interaction(&mut self, id: &Value) {
         self.interaction_owners.remove(&id.to_string());
         self.retired_interactions.insert(id.to_string());
@@ -971,6 +1076,8 @@ impl Snapshot {
             question_answer_acks: Vec::new(),
             elicitations: Vec::new(),
             error: None,
+            notice: None,
+            rate_limit_reset: None,
             sandbox: None,
             approval_policy: None,
             permission_modes: Vec::new(),
@@ -1276,6 +1383,44 @@ impl Snapshot {
         {
             return self.apply_subagent_notification(message, period);
         }
+        // Account/configuration notifications may have no thread association.
+        if p["threadId"].is_null() {
+            match message["method"].as_str() {
+                Some("warning" | "configWarning") => {
+                    let text = p["message"]
+                        .as_str()
+                        .or(p["details"].as_str())
+                        .unwrap_or("Codex reported a warning");
+                    self.provider_warning(p["summary"].as_str().unwrap_or("Codex warning"), text);
+                    return true;
+                }
+                // Occupancy is not evidence that a request was rejected.
+                Some("account/rateLimits/updated") => {
+                    let limits = &p["rateLimits"];
+                    self.rate_limit_reset = ["primary", "secondary"]
+                        .iter()
+                        .filter_map(|key| {
+                            let window = &limits[*key];
+                            (window["usedPercent"].as_f64().unwrap_or(0.0) >= 100.0)
+                                .then(|| window["resetsAt"].as_i64())
+                                .flatten()
+                        })
+                        .max();
+                    if self.effective_notice().is_some_and(|notice| {
+                        notice.provider == "Codex"
+                            && notice.kind == SessionNoticeKind::UsageLimit
+                            && notice.reset_at != self.rate_limit_reset
+                    }) {
+                        if let Some(notice) = self.notice.as_mut() {
+                            notice.reset_at = self.rate_limit_reset;
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                _ => {}
+            }
+        }
         if p["threadId"].as_str() != self.saved.thread_id.as_deref()
             || self.saved.thread_id.is_none()
         {
@@ -1311,6 +1456,13 @@ impl Snapshot {
             return false;
         }
         match message["method"].as_str().unwrap_or_default() {
+            "warning" | "configWarning" => {
+                let text = p["message"]
+                    .as_str()
+                    .or(p["details"].as_str())
+                    .unwrap_or("Codex reported a warning");
+                self.provider_warning(p["summary"].as_str().unwrap_or("Codex warning"), text);
+            }
             "thread/name/updated" => {
                 self.set_provider_title(p["threadName"].as_str());
             }
@@ -1338,7 +1490,7 @@ impl Snapshot {
                 } else {
                     Status::Waiting
                 };
-                self.error = None;
+                self.clear_error();
             }
             "turn/completed" => {
                 self.finish_work();
@@ -1376,7 +1528,22 @@ impl Snapshot {
                 {
                     self.status = Status::Waiting;
                 }
-                self.error = p["turn"]["error"]["message"].as_str().map(str::to_owned);
+                self.error = p["turn"]["error"]["message"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        (p["turn"]["status"] == "failed")
+                            .then(|| "Codex could not complete this request.".to_owned())
+                    });
+                if let Some(body) = self.error.clone() {
+                    self.set_provider_error(
+                        "Codex",
+                        body,
+                        false,
+                        p["turn"]["error"]["codexErrorInfo"].as_str(),
+                        None,
+                    );
+                }
             }
             "serverRequest/resolved" => {
                 self.approvals
@@ -1394,11 +1561,17 @@ impl Snapshot {
                 }
             }
             "error" => {
-                self.error = Some(
+                self.set_provider_error(
+                    "Codex",
                     p["error"]["message"]
                         .as_str()
                         .unwrap_or("Codex reported an error")
                         .into(),
+                    p["willRetry"] == true,
+                    p["error"]["codexErrorInfo"]
+                        .as_str()
+                        .or(p["error"]["code"].as_str()),
+                    None,
                 );
                 if p["willRetry"] != true {
                     self.status = Status::Failed;
@@ -1426,6 +1599,9 @@ impl Snapshot {
                 self.record_context(used, p["tokenUsage"]["modelContextWindow"].as_u64());
             }
             "item/started" | "item/completed" => {
+                if p["item"]["type"] == "agentMessage" {
+                    self.clear_retry_notice();
+                }
                 let mut item = p["item"].clone();
                 if item["type"] == "collabAgentToolCall" {
                     if let Some(period) = self
@@ -1558,6 +1734,9 @@ impl Snapshot {
                 self.saved.items[at]["text"] = json!(text);
             }
             "item/agentMessage/delta" | "item/commandExecution/outputDelta" | "item/plan/delta" => {
+                if message["method"] == "item/agentMessage/delta" {
+                    self.clear_retry_notice();
+                }
                 let method = message["method"].as_str().unwrap_or_default();
                 let output = method.contains("outputDelta");
                 let at=self.saved.items.iter().position(|old|old["id"]==p["itemId"]).unwrap_or_else(|| {let mut item = json!({"id":p["itemId"],"type":if output{"commandExecution"}else if method.contains("plan"){"plan"}else{"agentMessage"}});stamp_message_received(&mut item, None);self.saved.items.push(item);self.saved.items.len()-1});
@@ -1718,7 +1897,9 @@ pub fn item_text(item: &Value) -> String {
                     .join("\n")
             })
             .unwrap_or_default(),
-        "agentMessage" | "plan" => item["text"].as_str().unwrap_or_default().into(),
+        "agentMessage" | "plan" | "providerNotice" => {
+            item["text"].as_str().unwrap_or_default().into()
+        }
         COMPACTION_ITEM => compaction_label(item),
         "reasoning" => ["summary", "content"]
             .iter()
@@ -2422,7 +2603,7 @@ impl Actor {
         self.state.elicitations.clear();
         self.state.turn_id = None;
         self.state.status = Status::Starting;
-        self.state.error = None;
+        self.state.clear_error();
         self.process = Some(spawn(&args, &self.state.saved.cwd)?);
         if let Some(process) = &self.process {
             self.pid.store(process.child.id(), Ordering::SeqCst);
@@ -2641,7 +2822,7 @@ impl Actor {
             ));
         }
         self.state.status = Status::Working;
-        self.state.error = None;
+        self.state.clear_error();
         Ok(())
     }
     fn recover_failed_edit(&mut self) -> Result<(), String> {
@@ -2729,7 +2910,7 @@ impl Actor {
             Pending::Turn { submission },
         )?;
         self.state.status = Status::Working;
-        self.state.error = None;
+        self.state.clear_error();
         Ok(())
     }
     fn submit_mode(
@@ -2763,7 +2944,7 @@ impl Actor {
                 self.state.queue_sending.push(id);
                 self.state.queue_steering.push(id);
                 self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: false }).inspect_err(|_| { self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
-                self.state.error = None;
+                self.state.clear_error();
             }
             SubmissionMode::Queue => {
                 self.state.saved.clear_submitted_draft(&text, &images);
@@ -2819,7 +3000,7 @@ impl Actor {
             Pending::Compact,
         )?;
         self.state.compact_requested = true;
-        self.state.error = None;
+        self.state.clear_error();
         Ok(())
     }
     fn dispatch_queue(&mut self) -> Result<(), String> {
@@ -2861,7 +3042,7 @@ impl Actor {
         })?;
         self.queue_ready = false;
         self.state.status = Status::Working;
-        self.state.error = None;
+        self.state.clear_error();
         Ok(())
     }
     fn clear_conversation(
@@ -3007,7 +3188,7 @@ impl Actor {
                     Pending::InlineTurn,
                 )?;
                 self.state.status = Status::Working;
-                self.state.error = None;
+                self.state.clear_error();
             }
             Action::ClearConversation => {
                 self.clear_conversation(persist)?;
@@ -3168,7 +3349,7 @@ impl Actor {
                 self.state.queue_sending.push(id);
                 self.state.queue_steering.push(id);
                 self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: true }).inspect_err(|_| { self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
-                self.state.error = None;
+                self.state.clear_error();
             }
             Action::SubmitWithMode {
                 id,
@@ -3290,7 +3471,7 @@ impl Actor {
                                 ack: self.state.question_answer_ack(id),
                             },
                         )?;
-                        self.state.error = None;
+                        self.state.clear_error();
                     } else {
                         self.state.resolve_async_question(&id);
                         self.state.status = if !self.state.questions.is_empty()
@@ -4775,6 +4956,56 @@ mod tests {
         state.status = Status::Working;
         state.turn_id = Some("turn-1".into());
         state
+    }
+    #[test]
+    fn provider_notices_preserve_retry_recovery_and_raw_error_ownership() {
+        let mut state = state();
+        state.apply(&json!({"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"Connection interrupted"},"willRetry":true}}));
+        assert_eq!(state.status, Status::Working);
+        assert_eq!(
+            state.effective_notice().unwrap().kind,
+            SessionNoticeKind::Retrying
+        );
+        state.apply(&json!({"method":"item/commandExecution/outputDelta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"tool","delta":"Local output"}}));
+        assert_eq!(
+            state.effective_notice().unwrap().kind,
+            SessionNoticeKind::Retrying
+        );
+        state.apply(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"message","delta":"Recovered"}}));
+        assert!(state.error.is_none());
+        state.apply(&json!({"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"resetsAt":1234}}}}));
+        assert!(state.error.is_none());
+        state.apply(&json!({"method":"error","params":{"threadId":"thread-1","error":{"message":"Limit reached","codexErrorInfo":"usageLimitExceeded"},"willRetry":false}}));
+        assert_eq!(state.effective_notice().unwrap().reset_at, Some(1234));
+        assert!(state.apply(&json!({"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"resetsAt":5678}}}})));
+        assert_eq!(state.effective_notice().unwrap().reset_at, Some(5678));
+        assert_eq!(
+            state.effective_notice().unwrap().kind,
+            SessionNoticeKind::UsageLimit
+        );
+        state.error = Some("A different error".into());
+        assert!(state.effective_notice().is_none());
+    }
+    #[test]
+    fn provider_notice_does_not_revive_after_clear_and_identical_raw_error() {
+        let mut state = state();
+        state.set_provider_error("Codex", "Connection interrupted".into(), true, None, None);
+        state.clear_error();
+        state.error = Some("Connection interrupted".into());
+        assert!(state.effective_notice().is_none());
+    }
+    #[test]
+    fn provider_warning_is_historical_and_foreign_errors_are_ignored() {
+        let mut state = state();
+        assert!(state.apply(&json!({"method":"configWarning","params":{"summary":"Configuration warning","details":"Unsupported setting"}})));
+        assert_eq!(state.saved.items.last().unwrap()["type"], "providerNotice");
+        let count = state.saved.items.len();
+        state.apply(&json!({"method":"configWarning","params":{"summary":"Configuration warning","details":"Unsupported setting"}}));
+        assert_eq!(state.saved.items.len(), count);
+        assert!(state.error.is_none());
+        assert_eq!(state.status, Status::Working);
+        assert!(!state.apply(&json!({"method":"error","params":{"threadId":"foreign","error":{"message":"Not ours"}}})));
+        assert!(state.error.is_none());
     }
     fn actor() -> Actor {
         let (_, actions) = mpsc::channel();

@@ -535,26 +535,55 @@ fn question_key(state: &codex::Snapshot, request: &codex::QuestionRequest) -> St
         request.id
     )
 }
-/// Every conversation attachment uses the transcript/composer's centered content rail.
-fn content_rail(child: impl IntoElement) -> gpui::Div {
+/// Provider text stays literal and selectable; explicit blocks preserve every line break.
+fn literal_notice_text(id: impl Into<gpui::SharedString>, text: &str) -> impl IntoElement {
+    let id: gpui::SharedString = id.into();
     div()
+        .id(id.clone())
         .w_full()
-        .flex_shrink_0()
+        .min_w_0()
+        .font_family(crate::fonts::UI_FAMILY)
+        .text_size(rpx(TEXT_SMALL))
+        .line_height(rpx(CARD_LINE_SM_H))
         .flex()
-        .justify_center()
-        .px(rpx(SPACE_20))
-        .child(div().w_full().min_w_0().max_w(rpx(CHAT_MAX_W)).child(child))
+        .flex_col()
+        .children(text.split('\n').enumerate().map(|(index, line)| {
+            div()
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("{id}-line-{index}")
+                })
+                .w_full()
+                .min_w_0()
+                .min_h(rpx(CARD_LINE_SM_H))
+                .child(
+                    TextView::html(
+                        gpui::SharedString::from(format!("{id}-line-{index}")),
+                        line.replace('&', "&amp;")
+                            .replace('<', "&lt;")
+                            .replace('>', "&gt;"),
+                    )
+                    .selectable(true)
+                    .font_family(crate::fonts::UI_FAMILY)
+                    .text_size(rpx(TEXT_SMALL))
+                    .line_height(rpx(CARD_LINE_SM_H))
+                    .text_color(c::FG())
+                    .w_full()
+                    .min_w_0(),
+                )
+        }))
 }
 /// Attached backing shared by completion choices and queued messages.
+fn composer_tray_inset(window: &Window) -> f32 {
+    if window.viewport_size().width < gpui::px(CHAT_MAX_W) {
+        SPACE_2XL
+    } else {
+        SPACE_20
+    }
+}
 fn composer_tray(window: &Window) -> gpui::Div {
     div()
-        .mx(rpx(
-            if window.viewport_size().width < gpui::px(CHAT_MAX_W) {
-                SPACE_2XL
-            } else {
-                SPACE_20
-            },
-        ))
+        .mx(rpx(composer_tray_inset(window)))
         .mb(-rpx(SPACE_2XL + SPACE_MD))
         .pb(rpx(SPACE_2XL + SPACE_MD))
         .px(rpx(SPACE_2XL))
@@ -1902,8 +1931,188 @@ impl CodexView {
         cx.notify();
     }
 
-    /// The docked, read-only checklist above the composer. `jumps[i]` is the
-    /// transcript child where task `i` started.
+    /// Current session feedback shares the task dock’s exact horizontal inset.
+    fn session_notice(
+        &self,
+        state: &codex::Snapshot,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let disconnected = state.status == codex::Status::Disconnected;
+        let notice = state.effective_notice();
+        if !disconnected && notice.is_some_and(|n| n.kind == codex::SessionNoticeKind::Retrying) {
+            return None;
+        }
+        let body = state
+            .error
+            .as_deref()
+            .or(disconnected.then_some("The session is disconnected."))?;
+        let title = if disconnected {
+            "Connection lost"
+        } else if notice.is_some_and(|n| n.kind == codex::SessionNoticeKind::UsageLimit) {
+            "Usage limit reached"
+        } else if state.status.busy() {
+            "Provider error"
+        } else {
+            "Request stopped"
+        };
+        let expanded = self.expanded.contains("session-notice-details");
+        let (summary, details) =
+            if notice.is_some_and(|n| n.kind == codex::SessionNoticeKind::UsageLimit) {
+                (
+                    "The provider’s usage limit prevents this request from continuing.",
+                    Some(body),
+                )
+            } else if notice.is_some() {
+                body.split_once('\n')
+                    .map_or((body, None), |(first, rest)| (first, Some(rest)))
+            } else {
+                (body, None)
+            };
+        let mut content = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_MD))
+            .when(disconnected || notice.is_some(), |content| {
+                content.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+            })
+            .child(literal_notice_text("session-notice-body", summary));
+        if let Some(reset) = notice.and_then(|n| n.reset_at) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let seconds = reset.saturating_sub(now).max(0);
+            let reset_text = if seconds == 0 {
+                "The reported reset time has passed.".to_owned()
+            } else if seconds < 60 {
+                "Usage resets in less than a minute.".to_owned()
+            } else if seconds < 3600 {
+                format!("Usage resets in {} minutes.", (seconds + 59) / 60)
+            } else {
+                format!("Usage resets in about {} hours.", (seconds + 3599) / 3600)
+            };
+            content = content.child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(reset_text),
+            );
+        }
+        let copy_body = body.to_owned();
+        let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_SM)).child(
+            form_action("session-notice-copy", "Copy message", false, window, cx)
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/copy.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .debug_selector(|| "session-notice-copy".into())
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_body.clone()));
+                }),
+        );
+        if disconnected {
+            actions = actions.child(
+                form_action("codex-reconnect", "Reconnect", false, window, cx)
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/restart.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .debug_selector(|| "codex-reconnect".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.session.read(cx).state.status == codex::Status::Disconnected {
+                            this.session
+                                .update(cx, |session, cx| session.send(Action::Reconnect, cx));
+                        }
+                    })),
+            );
+        } else if let Some(url) = notice.and_then(|n| n.usage_url) {
+            actions = actions.child(
+                form_action("session-notice-usage", "Manage usage", false, window, cx)
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/external-link.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .on_click(move |_, _, cx| cx.open_url(url)),
+            );
+        }
+        if details.is_some() {
+            actions = actions.child(
+                form_action(
+                    "session-notice-details",
+                    if expanded {
+                        "Hide details"
+                    } else {
+                        "Show details"
+                    },
+                    false,
+                    window,
+                    cx,
+                )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path(if expanded {
+                            "icons/chev-down.svg"
+                        } else {
+                            "icons/chev-right.svg"
+                        })
+                        .size(rpx(ICON_SM)),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if !this.expanded.remove("session-notice-details") {
+                        this.expanded.insert("session-notice-details".into());
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        content = content.child(actions);
+        if expanded {
+            if let Some(details) = details {
+                content = content.child(
+                    div()
+                        .id("session-notice-diagnostic-scroll")
+                        .max_h(rpx(TOOL_DETAIL_MAX_H))
+                        .overflow_y_scroll()
+                        .child(literal_notice_text("session-notice-diagnostic", details)),
+                );
+            }
+        }
+        Some(
+            div()
+                .id("codex-error")
+                .debug_selector(|| "codex-error".into())
+                .role(gpui::Role::Alert)
+                .flex_shrink_0()
+                .mx(rpx(composer_tray_inset(window)))
+                .p(rpx(SPACE_2XL))
+                .rounded(rpx(RADIUS_PANEL))
+                .border_1()
+                .border_color(c::BORDER_SOFT())
+                .bg(c::BG_RAIL())
+                .flex()
+                .gap(rpx(SPACE_LG))
+                .child(crate::icons::icon(
+                    "message-error",
+                    ICON_MD,
+                    c::FORM_ERROR(),
+                ))
+                .child(content)
+                .into_any_element(),
+        )
+    }
+
+    /// The docked, read-only checklist; jumps identify the task’s transcript start.
     fn task_strip(
         &self,
         list: &TaskList,
@@ -2336,7 +2545,7 @@ impl CodexView {
         }
         self.interrupt_requested_for_turn = state.turn_id.clone();
         self.session.update(cx, |session, cx| {
-            session.state.error = None;
+            session.state.clear_error();
             session.send(Action::Interrupt, cx);
         });
         if self.session.read(cx).state.error.is_some() {
@@ -2948,6 +3157,50 @@ impl Render for CodexView {
                 }
                 continue;
             }
+            if kind == "providerNotice" {
+                message_child += 1;
+                messages = messages.child(
+                    div()
+                        .id(("provider-notice", index))
+                        .debug_selector(move || format!("provider-notice-{index}"))
+                        .role(gpui::Role::Status)
+                        .w_full()
+                        .max_w(rpx(CHAT_MAX_W))
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_SM))
+                        .py(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_LG))
+                                .child(crate::icons::icon("message-warning", ICON_MD, c::AMBER()))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .child(
+                                            item["title"]
+                                                .as_str()
+                                                .unwrap_or("Provider warning")
+                                                .to_owned(),
+                                        ),
+                                ),
+                        )
+                        .child(div().w_full().min_w_0().pl(rpx(ICON_MD + SPACE_LG)).child(
+                            literal_notice_text(
+                                gpui::SharedString::from(format!("provider-notice-text-{index}")),
+                                item["text"].as_str().unwrap_or_default(),
+                            ),
+                        )),
+                );
+                continue;
+            }
             if tasks::is_checklist(item) {
                 // Checklist updates belong in the docked panel, not the transcript.
                 continue;
@@ -3104,6 +3357,7 @@ impl Render for CodexView {
                         let tool_key = tool_expansion_key(tool, detail_index);
                         let tool_expanded = self.expanded.contains(&tool_key);
                         let keyboard_key = tool_key.clone();
+                        let failed = tool_failed(tool);
                         let activity =
                             tool_activity_summary(tool, tool_is_running(&state, detail_index));
                         let mut label_run = window.text_style().to_run(activity.len());
@@ -3148,13 +3402,15 @@ impl Render for CodexView {
                                         .size(rpx(ICON_SM))
                                         .flex_shrink_0()
                                         .child(crate::icons::icon(
-                                            if tool["type"] == "reasoning" {
+                                            if failed {
+                                                "message-error"
+                                            } else if tool["type"] == "reasoning" {
                                                 "brain"
                                             } else {
                                                 "terminal"
                                             },
                                             ICON_SM,
-                                            c::FG_DIM(),
+                                            if failed { c::FORM_ERROR() } else { c::FG_DIM() },
                                         )),
                                 )
                                 .child(
@@ -3947,6 +4203,7 @@ impl Render for CodexView {
             surface = surface.child(
                 div()
                     .id("codex-live-activity")
+                    .role(gpui::Role::Status)
                     .debug_selector(|| "codex-live-activity".into())
                     .w_full()
                     .flex_shrink_0()
@@ -3980,17 +4237,6 @@ impl Render for CodexView {
                             ),
                     ),
             );
-        }
-        if let Some(error) = &state.error {
-            surface = surface.child(content_rail(
-                div()
-                    .id("codex-error")
-                    .debug_selector(|| "codex-error".into())
-                    .role(gpui::Role::Alert)
-                    .py(rpx(SPACE_SM))
-                    .text_color(c::FORM_ERROR())
-                    .child(error.clone()),
-            ));
         }
         if !state.approvals.is_empty() || !state.elicitations.is_empty() {
             let approvals = self.approval_panel(&state, window, cx);
@@ -4319,6 +4565,7 @@ impl Render for CodexView {
                             .flex_col()
                             .gap(rpx(SPACE_MD))
                             .when(focused_launch, |rail| rail.child(self.launch_intro(&state)))
+                            .when_some(self.session_notice(&state, window, cx), gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
@@ -4361,13 +4608,6 @@ impl Render for CodexView {
                                                     }))
                                                     .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx)))
                                             )
-                                            .when(!busy && state.error.is_some(), |row| row.child(
-                                                form_action("codex-reconnect", "Reconnect", false, window, cx).icon(gpui_component::Icon::default().path("icons/restart.svg").size(rpx(ICON_SM)))
-                                                    .debug_selector(|| "codex-reconnect".into())
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.session.update(cx, |session, cx| session.send(Action::Reconnect, cx));
-                                                    }))
-                                            ))
                                             .when(busy, |row| row.child(
                                                 composer_icon("codex-stop", if stopping { "Stopping the current turn" } else { "Stop · Interrupt the current turn" }, "stop", stopping || state.turn_id.is_none(), true)
                                                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
@@ -4656,7 +4896,7 @@ impl CodexView {
         let images = editor.images.clone();
         editor.accepted_prompts = Some(self.session.read(cx).state.accepted_prompts);
         self.session.update(cx, |session, cx| {
-            session.state.error = None;
+            session.state.clear_error();
             session.send(Action::PromptInline { text, images }, cx);
         });
     }
@@ -4830,7 +5070,7 @@ impl CodexView {
                                     if this.edit_confirmation.take().is_some() {
                                         this.edit_request_pending = true;
                                         this.session.update(cx, |session, cx| {
-                                            session.state.error = None;
+                                            session.state.clear_error();
                                             session.send(Action::EditMessageInline {index, message_id:message_id.clone()}, cx);
                                         });
                                     }
@@ -6336,7 +6576,7 @@ impl CodexView {
         self.input
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.session.update(cx, |session, cx| {
-            session.state.error = None;
+            session.state.clear_error();
             session.send(Action::Draft(String::new()), cx);
         });
         cx.notify();
@@ -6985,7 +7225,7 @@ fn tool_is_running(state: &codex::Snapshot, index: usize) -> bool {
 fn is_tool_item(item: &serde_json::Value) -> bool {
     !matches!(
         item["type"].as_str(),
-        Some("userMessage" | "agentMessage" | "plan" | codex::COMPACTION_ITEM)
+        Some("userMessage" | "agentMessage" | "plan" | "providerNotice" | codex::COMPACTION_ITEM)
     )
 }
 
@@ -7132,6 +7372,12 @@ fn compacting(state: &codex::Snapshot) -> bool {
 
 /// The live activity line's text, or `None` when the session is not working.
 fn live_activity(state: &codex::Snapshot) -> Option<String> {
+    if let Some(notice) = state
+        .effective_notice()
+        .filter(|notice| notice.kind == codex::SessionNoticeKind::Retrying)
+    {
+        return Some(format!("Retrying automatically · {}", notice.body));
+    }
     let provider = state.saved.provider.label();
     if state.status == codex::Status::Starting && state.saved.provider == codex::Provider::Claude {
         return Some(format!("Connecting to {provider}…"));
@@ -7317,6 +7563,13 @@ fn context_ring(fraction: f32, color: gpui::Hsla) -> impl IntoElement {
     .flex_shrink_0()
 }
 
+fn tool_failed(item: &serde_json::Value) -> bool {
+    item["status"] == "failed"
+        || item["is_error"] == true
+        || item["exitCode"].as_i64().is_some_and(|code| code != 0)
+        || item.get("error").is_some_and(|error| !error.is_null())
+}
+
 /// Quiet activity rows describe the invocation; output stays behind disclosure.
 fn tool_activity_summary(item: &serde_json::Value, running: bool) -> String {
     if item["type"] == "reasoning" {
@@ -7326,7 +7579,13 @@ fn tool_activity_summary(item: &serde_json::Value, running: bool) -> String {
         let command = item["command"].as_str().unwrap_or("command");
         return format!(
             "{} {}",
-            if running { "Running" } else { "Ran" },
+            if running {
+                "Running"
+            } else if tool_failed(item) {
+                "Command failed ·"
+            } else {
+                "Ran"
+            },
             command.split_whitespace().collect::<Vec<_>>().join(" ")
         ) + if running { "…" } else { "" };
     }
@@ -7345,7 +7604,11 @@ fn tool_activity_summary(item: &serde_json::Value, running: bool) -> String {
         return "Waiting…".into();
     }
     if !running {
-        return tool_summary(item);
+        return if tool_failed(item) {
+            format!("Tool failed · {}", tool_summary(item))
+        } else {
+            tool_summary(item)
+        };
     }
     match item["type"].as_str().unwrap_or_default() {
         "fileChange" => "Updating files…".into(),
@@ -8875,7 +9138,7 @@ impl CodexView {
         group.submitting = true;
         let epoch = state.interaction_epoch;
         self.session.update(cx, |session, cx| {
-            session.state.error = None;
+            session.state.clear_error();
             session.send(
                 Action::Interaction {
                     epoch,
@@ -12170,6 +12433,151 @@ mod tests {
             view.task_cache.as_ref().unwrap().list.clone().unwrap()
         });
         assert_eq!(after, before);
+    }
+
+    #[gpui::test]
+    fn provider_notices_match_task_panel_and_recover_without_reconnect(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for (width, rem) in [(1000.0, 16.0), (560.0, 16.0), (560.0, 20.0)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.0)));
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    view.update(cx, |view, cx| view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.status = Status::Failed;
+                        session.state.error = Some("Upstream request failed.\n\nUnexpected <response>.".into());
+                        session.state.notice = None;
+                        session.state.saved.items = vec![
+                            json!({"id":"u1","type":"userMessage","content":[{"text":"Go"}]}),
+                            json!({"id":"plan","type":"plan","plan":[{"step":"Inspect","status":"completed"},{"step":"Build","status":"inProgress"}]}),
+                        ];
+                        cx.notify();
+                    }));
+                });
+                draw(cx);
+                let notice = cx.debug_bounds("codex-error").unwrap();
+                let tasks = cx.debug_bounds("codex-task-strip-panel").unwrap();
+                assert_eq!(
+                    notice.left(),
+                    tasks.left(),
+                    "{provider:?} width={width} rem={rem}"
+                );
+                assert_eq!(
+                    notice.right(),
+                    tasks.right(),
+                    "{provider:?} width={width} rem={rem}"
+                );
+                assert!(notice.bottom() <= tasks.top());
+                assert!(cx.debug_bounds("codex-reconnect").is_none());
+                let first = cx.debug_bounds("session-notice-body-line-0").unwrap();
+                let second = cx.debug_bounds("session-notice-body-line-1").unwrap();
+                assert!(
+                    second.top() >= first.bottom(),
+                    "provider line breaks remain separate native blocks"
+                );
+                let third = cx.debug_bounds("session-notice-body-line-2").unwrap();
+                assert!(
+                    third.top() >= second.bottom(),
+                    "blank provider lines retain their height"
+                );
+                assert!(third.right() <= notice.right());
+                let copy = cx.debug_bounds("session-notice-copy").unwrap();
+                cx.simulate_click(copy.center(), gpui::Modifiers::default());
+                cx.update(|_, cx| {
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().as_deref(),
+                        Some("Upstream request failed.\n\nUnexpected <response>.")
+                    );
+                });
+            }
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    let body = "Connection interrupted".to_owned();
+                    session.state.status = Status::Working;
+                    session.state.error = Some(body.clone());
+                    session.state.notice = Some(codex::SessionNotice {
+                        kind: codex::SessionNoticeKind::Retrying,
+                        provider: "fixture",
+                        body,
+                        reset_at: None,
+                        usage_url: None,
+                    });
+                    cx.notify();
+                });
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("codex-error").is_none());
+            assert!(cx.debug_bounds("codex-live-activity").is_some());
+            assert!(cx.debug_bounds("codex-reconnect").is_none());
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.error = None;
+                    session.state.status = Status::Done;
+                    cx.notify();
+                });
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("codex-error").is_none());
+            assert!(cx.debug_bounds("codex-live-activity").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn provider_warning_shares_transcript_rail_at_narrow_widths(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for width in [1000.0, 560.0] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.0)));
+                cx.update(|_, cx| view.update(cx, |view, cx| view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = provider;
+                    session.state.status = Status::Done;
+                    session.state.saved.items = vec![
+                        json!({"id":"reply","type":"agentMessage","text":"The configured instructions file could not be loaded. ".repeat(8)}),
+                        json!({"id":"warning","type":"providerNotice","title":"Configuration warning","text":"The configured instructions file could not be loaded. ".repeat(8),"severity":"warning"}),
+                        json!({"id":"compact","type":codex::COMPACTION_ITEM,"status":"completed","trigger":"auto"}),
+                    ];
+                    cx.notify();
+                })));
+                draw(cx);
+                let response = cx.debug_bounds("codex-message-anchor-0").unwrap();
+                let warning = cx.debug_bounds("provider-notice-1").unwrap();
+                let body = cx.debug_bounds("provider-notice-text-1-line-0").unwrap();
+                assert_eq!(
+                    warning.left(),
+                    response.left(),
+                    "{provider:?}, width {width}"
+                );
+                assert_eq!(
+                    warning.right(),
+                    response.right(),
+                    "{provider:?}, width {width}"
+                );
+                assert!(body.left() > warning.left());
+                assert!(body.right() <= warning.right());
+                // TextView's wrapped descendant can exceed its borderless owner’s nominal
+                // synthetic height. Native captures confirm the actual content stays clear
+                // of the following event; compare painted content to that event directly.
+                let next = cx.debug_bounds("codex-compaction-2").unwrap();
+                assert!(
+                    body.bottom() <= next.top(),
+                    "{provider:?} width {width}: body={body:?} next={next:?}"
+                );
+                assert!(cx.debug_bounds("codex-error").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn tool_failure_summary_is_local_and_explicit() {
+        let command = json!({"type":"commandExecution","command":"npm test","exitCode":1,"status":"completed"});
+        assert!(tool_activity_summary(&command, false).starts_with("Command failed"));
+        assert!(!is_tool_item(&json!({"type":"providerNotice"})));
+        assert!(!tool_failed(
+            &json!({"type":"commandExecution","exitCode":0,"status":"completed"})
+        ));
     }
 
     #[gpui::test]
