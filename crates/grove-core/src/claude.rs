@@ -193,6 +193,9 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
     if let Some(resume) = pending_resume.as_ref().or(saved.claude_resume.as_ref()) {
         command.arg("--session-id").arg(&resume.fork_id);
         if let Some(anchor) = &resume.assistant_uuid {
+            // Editing intentionally drops the selected prompt and every later
+            // turn in a new session. --resume-drops-turn only allows one turn
+            // and rejects middle-of-chat edits; the original is kept by forking.
             command
                 .arg("--resume")
                 .arg(
@@ -203,8 +206,6 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
                 )
                 .arg("--resume-session-at")
                 .arg(anchor)
-                .arg("--resume-drops-turn")
-                .arg(&resume.human_uuid)
                 .arg("--fork-session");
         }
     } else if let Some(id) = &saved.thread_id {
@@ -2585,6 +2586,7 @@ mod tests {
             json!({"id":"before","type":"agentMessage","text":"retained","claudeAssistantUuid":"assistant"}),
             json!({"id":"target","type":"userMessage","content":[{"type":"text","text":"original prompt"}],"claudeHumanUuid":"human","claudePreviousAssistantUuid":"assistant"}),
             json!({"id":"later","type":"agentMessage","text":"later"}),
+            json!({"id":"next-human","type":"userMessage","content":[{"type":"text","text":"a subsequent turn"}],"claudeHumanUuid":"next-human","claudePreviousAssistantUuid":"later-assistant"}),
         ];
         actor.state.saved.pending_edit = Some(PendingEdit {
             target: 1,
@@ -2595,11 +2597,27 @@ mod tests {
             composer_draft: Some(("independent draft".into(), vec![])),
             claude_fork_id: Some("fork".into()),
         });
+        // Editing in the middle intentionally discards all subsequent turns in
+        // the fork. Claude's optional single-turn discard guard rejects this.
+        let command = launch_command(&[], &actor.state.saved).unwrap();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for pair in [
+            ["--resume", "original"],
+            ["--resume-session-at", "assistant"],
+            ["--session-id", "fork"],
+        ] {
+            assert!(args.windows(2).any(|actual| actual == pair));
+        }
+        assert!(args.iter().any(|arg| arg == "--fork-session"));
+        assert!(!args.iter().any(|arg| arg == "--resume-drops-turn"));
         codex::persist(&actor.state.saved).unwrap();
         fs_err::write(&file, "pre target snapshot").unwrap();
         actor.recover_edit().unwrap();
         assert_eq!(fs_err::read_to_string(&file).unwrap(), "current workspace");
-        assert_eq!(actor.state.saved.items.len(), 3);
+        assert_eq!(actor.state.saved.items.len(), 4);
         assert_eq!(actor.state.saved.thread_id.as_deref(), Some("original"));
         assert!(actor.state.saved.pending_edit.is_none());
         actor.state.saved.pending_edit = Some(PendingEdit {
@@ -2726,12 +2744,12 @@ mod tests {
         for pair in [
             ["--resume", "original-id"],
             ["--resume-session-at", "assistant-id"],
-            ["--resume-drops-turn", "human-id"],
             ["--session-id", "fork-id"],
         ] {
             assert!(args.windows(2).any(|actual| actual == pair));
         }
         assert!(args.iter().any(|arg| arg == "--fork-session"));
+        assert!(!args.iter().any(|arg| arg == "--resume-drops-turn"));
         actor.state.saved.claude_resume = Some(saved.claude_resume.unwrap());
         actor
             .message(json!({"type":"system","subtype":"init","session_id":"fork-id"}))
