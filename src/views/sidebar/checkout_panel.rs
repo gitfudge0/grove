@@ -46,11 +46,6 @@ pub(super) struct CheckoutPanel {
     pr_expanded: bool,
     pr_composing: bool,
     pr_merge: Option<PullRequest>,
-    pr_message: Option<String>,
-    busy: bool,
-    network_action: Option<(&'static str, &'static str)>,
-    network_target: Option<(String, u64)>,
-    message: Option<String>,
     publish: Option<String>,
     expanded: bool,
     chosen_root: Option<String>,
@@ -65,12 +60,22 @@ pub(super) struct CheckoutPanel {
     popup_subscription: Option<gpui::Subscription>,
     generation: u64,
     checked_at: Option<Instant>,
+    restore_focus: bool,
+    operation: CheckoutOperation,
+    operations: HashMap<String, CheckoutOperation>,
+}
+
+#[derive(Default)]
+struct CheckoutOperation {
+    pr_message: Option<String>,
+    busy: bool,
+    network_action: Option<(&'static str, &'static str)>,
+    network_target: Option<(String, u64)>,
+    message: Option<String>,
     commit_status: CommitUi,
     commit_job: u64,
     commit_job_path: Option<String>,
-    commit_job_generation: u64,
     commit_control: Option<std::sync::Arc<CommitControl>>,
-    restore_focus: bool,
 }
 
 #[derive(Default)]
@@ -98,6 +103,83 @@ const COMMIT_POLL_INTERVAL: Duration = Duration::from_millis(80);
 const COMMIT_SUCCESS_FEEDBACK: Duration = Duration::from_secs(2);
 
 impl CheckoutPanel {
+    /// Keep operation state with its checkout while view inspection remains generation scoped.
+    fn select_path(&mut self, path: Option<String>) {
+        if self.path == path {
+            return;
+        }
+        if let Some(previous) = self.path.take() {
+            self.operations
+                .insert(previous, std::mem::take(&mut self.operation));
+        }
+        self.operation = path
+            .as_ref()
+            .and_then(|path| self.operations.remove(path))
+            .unwrap_or_default();
+        self.path = path;
+    }
+
+    /// Deliver background events to their owner, including while another checkout is visible.
+    fn update_operation(&mut self, path: &str, update: impl FnOnce(&mut Self, bool)) {
+        let current = self.path.as_deref() == Some(path);
+        if current {
+            update(self, true);
+            return;
+        }
+        let mut operation = self.operations.remove(path).unwrap_or_default();
+        std::mem::swap(&mut self.operation, &mut operation);
+        update(self, false);
+        std::mem::swap(&mut self.operation, &mut operation);
+        self.operations.insert(path.to_owned(), operation);
+    }
+
+    fn commit_event(&mut self, path: &str, job: u64, event: CommitEvent) -> bool {
+        let mut succeeded = false;
+        self.update_operation(path, |panel, current| {
+            let operation = &mut panel.operation;
+            if operation.commit_job != job {
+                return;
+            }
+            match event {
+                CommitEvent::Progress(CommitPhase::Generating) => {
+                    if !matches!(operation.commit_status, CommitUi::Canceling) {
+                        operation.commit_status = CommitUi::Generating;
+                    }
+                }
+                CommitEvent::Progress(CommitPhase::Committing) => {
+                    operation.commit_status = CommitUi::Committing;
+                }
+                CommitEvent::Finished(finished) => {
+                    let (result, state) = *finished;
+                    operation.busy = false;
+                    operation.commit_control = None;
+                    operation.commit_job_path = None;
+                    let canceled = matches!(operation.commit_status, CommitUi::Canceling);
+                    match result {
+                        Ok(outcome) => {
+                            succeeded = true;
+                            operation.commit_status = CommitUi::Succeeded;
+                            operation.message = Some(format!("Committed: {}", outcome.subject));
+                        }
+                        Err(_) if canceled => {
+                            operation.commit_status = CommitUi::Idle;
+                            operation.message = Some("Commit canceled.".into());
+                        }
+                        Err(error) => {
+                            operation.commit_status = CommitUi::Failed;
+                            operation.message = Some(error);
+                        }
+                    }
+                    if current {
+                        panel.state = Some(state);
+                        panel.checked_at = Some(Instant::now());
+                    }
+                }
+            }
+        });
+        succeeded
+    }
+
     fn accepts_result(&self, path: &str, generation: u64) -> bool {
         self.path.as_deref() == Some(path) && self.generation == generation
     }
@@ -175,7 +257,7 @@ impl Sidebar {
     }
 
     fn checkout_load(&mut self, path: String, cx: &mut Context<Self>) {
-        if self.checkout_panel.loading || self.checkout_panel.busy {
+        if self.checkout_panel.loading || self.checkout_panel.operation.busy {
             return;
         }
         self.checkout_panel.loading = true;
@@ -257,7 +339,7 @@ impl Sidebar {
     }
 
     fn checkout_compose_pr(&mut self, path: String, cx: &mut Context<Self>) {
-        if self.checkout_panel.pr_composing || self.checkout_panel.busy {
+        if self.checkout_panel.pr_composing || self.checkout_panel.operation.busy {
             return;
         }
         let Some(Ok(state)) = self.checkout_panel.state.clone() else {
@@ -366,7 +448,7 @@ impl Sidebar {
                                     .size(rpx(ICON_SM)),
                             )
                             .debug_selector(|| "checkout-pr-resolve".into())
-                            .disabled(self.checkout_panel.busy)
+                            .disabled(self.checkout_panel.operation.busy)
                             .tooltip("Prepare a new agent session with a conflict-resolution draft")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.checkout_resolve_pr(target.clone(), request.clone(), cx);
@@ -392,13 +474,13 @@ impl Sidebar {
                             .with_focus_handle(
                                 self.checkout_panel.trigger_focus["pr-merge"].clone(),
                             )
-                            .disabled(self.checkout_panel.busy)
+                            .disabled(self.checkout_panel.operation.busy)
                             .tooltip("Review and confirm a merge commit")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.checkout_panel.return_focus =
                                     this.checkout_panel.trigger_focus.get("pr-merge").cloned();
                                 this.checkout_panel.pr_merge = Some(request.clone());
-                                this.checkout_panel.message = None;
+                                this.checkout_panel.operation.message = None;
                                 if this.checkout_panel.confirmation_focus.is_none() {
                                     this.checkout_panel.confirmation_focus =
                                         Some(cx.focus_handle());
@@ -440,7 +522,7 @@ impl Sidebar {
                 });
                 let target = path.to_string();
                 section = section.child(checkout_loading_row("checkout-pr", if self.checkout_panel.pr_composing { "Preparing PR…" } else { "Create PR…" }, "plus", self.checkout_panel.pr_composing, window, cx)
-                    .disabled(!ready || self.checkout_panel.busy || self.checkout_panel.pr_composing)
+                    .disabled(!ready || self.checkout_panel.operation.busy || self.checkout_panel.pr_composing)
                     .tooltip(if ready { "Review title, description, base and changes on GitHub before creating the PR" } else { "Publish or push this branch before creating a PR" })
                     .on_click(cx.listener(move |this, _, _, cx| this.checkout_compose_pr(target.clone(), cx))));
             }
@@ -474,7 +556,7 @@ impl Sidebar {
                 );
             }
         }
-        if let Some(message) = &self.checkout_panel.pr_message {
+        if let Some(message) = &self.checkout_panel.operation.pr_message {
             section = section.child(
                 div()
                     .px(rpx(SPACE_2XL))
@@ -487,7 +569,7 @@ impl Sidebar {
     }
 
     fn checkout_resolve_pr(&mut self, path: String, pr: PullRequest, cx: &mut Context<Self>) {
-        if self.checkout_panel.busy
+        if self.checkout_panel.operation.busy
             || self.checkout_panel.path.as_ref() != Some(&path)
             || pr.state != "OPEN"
             || pr.mergeable != "CONFLICTING"
@@ -495,7 +577,7 @@ impl Sidebar {
             return;
         }
         if !crate::runtime::native_codex_enabled(&cx.global::<SettingsState>().store, None) {
-            self.checkout_panel.pr_message =
+            self.checkout_panel.operation.pr_message =
                 Some("Enable native agent sessions to prepare conflict resolution".into());
             cx.notify();
             return;
@@ -503,7 +585,7 @@ impl Sidebar {
         let provider = match self.checkout_commit_provider(cx) {
             Ok(provider) => provider,
             Err(error) => {
-                self.checkout_panel.pr_message = Some(error);
+                self.checkout_panel.operation.pr_message = Some(error);
                 cx.notify();
                 return;
             }
@@ -535,15 +617,14 @@ impl Sidebar {
     }
 
     fn checkout_merge_pr(&mut self, path: String, pr: PullRequest, cx: &mut Context<Self>) {
-        if self.checkout_panel.busy || self.checkout_panel.path.as_ref() != Some(&path) {
+        if self.checkout_panel.operation.busy || self.checkout_panel.path.as_ref() != Some(&path) {
             return;
         }
         let Some(Ok(expected)) = self.checkout_panel.state.clone() else {
             return;
         };
-        let generation = self.checkout_panel.generation;
-        self.checkout_panel.busy = true;
-        self.checkout_panel.message = Some("Validating pull request…".into());
+        self.checkout_panel.operation.busy = true;
+        self.checkout_panel.operation.message = Some("Validating pull request…".into());
         cx.spawn(async move |this, cx| {
             let target = path.clone();
             let result = cx
@@ -551,24 +632,20 @@ impl Sidebar {
                 .spawn(async move { checkout_pr::merge(Path::new(&target), &expected, &pr) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.checkout_panel.busy = false;
-                if this.checkout_panel.accepts_result(&path, generation) {
-                    this.checkout_panel.pr_checked_at = None;
-                    this.checkout_panel.pr_state = None;
-                    this.checkout_panel.checked_at = None;
-                    match result {
-                        Ok(()) => {
-                            this.checkout_panel.pr_merge = None;
-                            this.checkout_panel.message = None;
-                            this.checkout_panel.pr_message = Some("Pull request merged".into());
+                this.checkout_panel
+                    .update_operation(&path, |panel, current| {
+                        panel.operation.busy = false;
+                        panel.operation.message = None;
+                        panel.operation.pr_message = Some(
+                            result.map_or_else(|error| error, |()| "Pull request merged".into()),
+                        );
+                        if current {
+                            panel.pr_checked_at = None;
+                            panel.pr_state = None;
+                            panel.checked_at = None;
+                            panel.pr_merge = None;
                         }
-                        Err(error) => {
-                            this.checkout_panel.pr_merge = None;
-                            this.checkout_panel.message = None;
-                            this.checkout_panel.pr_message = Some(error);
-                        }
-                    }
-                }
+                    });
                 cx.notify();
             });
         })
@@ -576,20 +653,20 @@ impl Sidebar {
     }
 
     fn checkout_run(&mut self, path: String, action: GitAction, cx: &mut Context<Self>) {
-        if self.checkout_panel.busy || self.checkout_panel.path.as_ref() != Some(&path) {
+        if self.checkout_panel.operation.busy || self.checkout_panel.path.as_ref() != Some(&path) {
             return;
         }
         let Some(Ok(expected)) = self.checkout_panel.state.clone() else {
             return;
         };
         let generation = self.checkout_panel.generation;
-        self.checkout_panel.busy = true;
-        self.checkout_panel.network_target = Some((path.clone(), generation));
-        self.checkout_panel.network_action = Some(match action {
+        self.checkout_panel.operation.busy = true;
+        self.checkout_panel.operation.network_target = Some((path.clone(), generation));
+        self.checkout_panel.operation.network_action = Some(match action {
             GitAction::Publish { .. } => ("Publishing…", "git-publish"),
             _ => ("Pushing…", "git-push"),
         });
-        self.checkout_panel.message = None;
+        self.checkout_panel.operation.message = None;
         cx.spawn(async move |this, cx| {
             let target = path.clone();
             let (result, state) = cx
@@ -600,31 +677,30 @@ impl Sidebar {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.checkout_panel.busy = false;
-                this.checkout_panel.network_action = None;
-                this.checkout_panel.network_target = None;
-                if this.checkout_panel.accepts_result(&path, generation) {
-                    this.checkout_panel.checked_at = Some(Instant::now());
-                    this.checkout_panel.state = Some(state);
-                    if result.is_ok() {
-                        this.checkout_panel.publish = None;
-                        this.checkout_panel.restore_focus = true;
-                    }
-                    this.checkout_panel.message = Some(result.map_or_else(
-                        |error| error,
-                        |()| "Completed. Local status refreshed.".into(),
-                    ));
-                }
+                this.checkout_panel
+                    .update_operation(&path, |panel, current| {
+                        panel.operation.busy = false;
+                        panel.operation.network_action = None;
+                        panel.operation.network_target = None;
+                        if current {
+                            panel.checked_at = Some(Instant::now());
+                            panel.state = Some(state);
+                            if result.is_ok() {
+                                panel.publish = None;
+                                panel.restore_focus = true;
+                            }
+                        }
+                        panel.operation.message = Some(result.map_or_else(
+                            |error| error,
+                            |()| "Completed. Local status refreshed.".into(),
+                        ));
+                    });
                 cx.notify();
             });
             cx.background_executor()
                 .timer(STATUS_REFRESH_INTERVAL)
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.checkout_panel.accepts_result(&path, generation) {
-                    cx.notify();
-                }
-            });
+            let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
     }
@@ -644,28 +720,27 @@ impl Sidebar {
     }
 
     fn checkout_begin_commit(&mut self, path: String, cx: &mut Context<Self>) {
-        if self.checkout_panel.busy || self.checkout_panel.path.as_ref() != Some(&path) {
+        if self.checkout_panel.operation.busy || self.checkout_panel.path.as_ref() != Some(&path) {
             return;
         }
         let provider = match self.checkout_commit_provider(cx) {
             Ok(provider) => provider,
             Err(error) => {
-                self.checkout_panel.commit_status = CommitUi::Failed;
-                self.checkout_panel.message = Some(error);
+                self.checkout_panel.operation.commit_status = CommitUi::Failed;
+                self.checkout_panel.operation.message = Some(error);
                 cx.notify();
                 return;
             }
         };
-        self.checkout_panel.commit_job = self.checkout_panel.commit_job.wrapping_add(1);
-        let job = self.checkout_panel.commit_job;
-        let generation = self.checkout_panel.generation;
+        self.checkout_panel.operation.commit_job =
+            self.checkout_panel.operation.commit_job.wrapping_add(1);
+        let job = self.checkout_panel.operation.commit_job;
         let control = std::sync::Arc::new(CommitControl::default());
-        self.checkout_panel.commit_control = Some(control.clone());
-        self.checkout_panel.commit_job_path = Some(path.clone());
-        self.checkout_panel.commit_job_generation = generation;
-        self.checkout_panel.commit_status = CommitUi::Generating;
-        self.checkout_panel.busy = true;
-        self.checkout_panel.message = None;
+        self.checkout_panel.operation.commit_control = Some(control.clone());
+        self.checkout_panel.operation.commit_job_path = Some(path.clone());
+        self.checkout_panel.operation.commit_status = CommitUi::Generating;
+        self.checkout_panel.operation.busy = true;
+        self.checkout_panel.operation.message = None;
         let (send, receive) = std::sync::mpsc::channel();
         let target = path.clone();
         cx.background_executor()
@@ -690,34 +765,7 @@ impl Sidebar {
                         Ok(event) => {
                             let finished = matches!(event, CommitEvent::Finished(..));
                             let updated = this.update(cx, |this, cx| {
-                                if this.checkout_panel.commit_job != job { return; }
-                                let current = this.checkout_panel.accepts_result(&path, generation);
-                                match event {
-                                    CommitEvent::Progress(phase) if current => {
-                                        match phase {
-                                            CommitPhase::Generating if !matches!(this.checkout_panel.commit_status, CommitUi::Canceling) => this.checkout_panel.commit_status = CommitUi::Generating,
-                                            CommitPhase::Committing => this.checkout_panel.commit_status = CommitUi::Committing,
-                                            CommitPhase::Generating => {},
-                                        }
-                                    }
-                                    CommitEvent::Finished(finished) => {
-                                        let (result, state) = *finished;
-                                        this.checkout_panel.busy = false;
-                                        this.checkout_panel.commit_control = None;
-                                        this.checkout_panel.commit_job_path = None;
-                                        if current {
-                                            this.checkout_panel.state = Some(state);
-                                            this.checkout_panel.checked_at = Some(Instant::now());
-                                            let canceled = matches!(this.checkout_panel.commit_status, CommitUi::Canceling);
-                                            match result {
-                                                Ok(outcome) => { succeeded = true; this.checkout_panel.commit_status = CommitUi::Succeeded; this.checkout_panel.message = Some(format!("Committed: {}", outcome.subject)); }
-                                                Err(_) if canceled => { this.checkout_panel.commit_status = CommitUi::Idle; this.checkout_panel.message = Some("Commit canceled.".into()); }
-                                                Err(error) => { this.checkout_panel.commit_status = CommitUi::Failed; this.checkout_panel.message = Some(error); }
-                                            }
-                                        }
-                                    }
-                                    CommitEvent::Progress(_) => {},
-                                }
+                                succeeded |= this.checkout_panel.commit_event(&path, job, event);
                                 cx.notify();
                             });
                             if updated.is_err() || finished { break 'updates; }
@@ -725,14 +773,16 @@ impl Sidebar {
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                             let _ = this.update(cx, |this, cx| {
-                                if this.checkout_panel.commit_job == job {
-                                    this.checkout_panel.busy = false; this.checkout_panel.commit_control = None; this.checkout_panel.commit_job_path = None;
-                                    if this.checkout_panel.accepts_result(&path, generation) {
-                                        this.checkout_panel.commit_status = CommitUi::Failed;
-                                        this.checkout_panel.message = Some("Commit generation ended unexpectedly. Retry the commit.".into());
+                                this.checkout_panel.update_operation(&path, |panel, _| {
+                                    if panel.operation.commit_job == job {
+                                        panel.operation.busy = false;
+                                        panel.operation.commit_control = None;
+                                        panel.operation.commit_job_path = None;
+                                        panel.operation.commit_status = CommitUi::Failed;
+                                        panel.operation.message = Some("Commit generation ended unexpectedly. Retry the commit.".into());
                                     }
-                                    cx.notify();
-                                }
+                                });
+                                cx.notify();
                             });
                             break 'updates;
                         }
@@ -743,22 +793,23 @@ impl Sidebar {
             if succeeded {
                 cx.background_executor().timer(COMMIT_SUCCESS_FEEDBACK).await;
                 let _ = this.update(cx, |this, cx| {
-                    if this.checkout_panel.commit_job == job && this.checkout_panel.accepts_result(&path, generation) {
-                        this.checkout_panel.commit_status = CommitUi::Idle; cx.notify();
-                    }
+                    this.checkout_panel.update_operation(&path, |panel, _| {
+                        if panel.operation.commit_job == job {
+                            panel.operation.commit_status = CommitUi::Idle;
+                        }
+                    });
+                    cx.notify();
                 });
             }
             cx.background_executor().timer(STATUS_REFRESH_INTERVAL).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.checkout_panel.commit_job == job && this.checkout_panel.accepts_result(&path, generation) { cx.notify(); }
-            });
+            let _ = this.update(cx, |_, cx| cx.notify());
         }).detach();
         cx.notify();
     }
 
     fn checkout_cancel_commit(&mut self, cx: &mut Context<Self>) {
-        if let Some(control) = &self.checkout_panel.commit_control {
-            self.checkout_panel.commit_status = if control.cancel() {
+        if let Some(control) = &self.checkout_panel.operation.commit_control {
+            self.checkout_panel.operation.commit_status = if control.cancel() {
                 CommitUi::Canceling
             } else {
                 CommitUi::Committing
@@ -772,12 +823,12 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.checkout_panel.busy {
+        if self.checkout_panel.operation.busy {
             return;
         }
         self.checkout_panel.publish = None;
         self.checkout_panel.pr_merge = None;
-        self.checkout_panel.message = None;
+        self.checkout_panel.operation.message = None;
         if let Some(focus) = self.checkout_panel.return_focus.take() {
             focus.focus(window, cx);
         }
@@ -792,7 +843,7 @@ impl Sidebar {
         let Some(path) = self.checkout_panel.path.clone() else {
             return div().into_any_element();
         };
-        let busy = self.checkout_panel.busy;
+        let busy = self.checkout_panel.operation.busy;
         let mut form = div()
             .w_full()
             .max_w(rpx(MODAL_W_SM))
@@ -871,7 +922,7 @@ impl Sidebar {
                         this.checkout_merge_pr(merge_path.clone(), pr.clone(), cx);
                     })));
         }
-        if let Some(message) = &self.checkout_panel.message {
+        if let Some(message) = &self.checkout_panel.operation.message {
             form = form.child(
                 div()
                     .id("checkout-operation-message")
@@ -947,9 +998,8 @@ impl Sidebar {
         if self.checkout_panel.root_owner != self.selection {
             self.checkout_panel.root_owner = self.selection.clone();
             self.checkout_panel.chosen_root = None;
-            self.checkout_panel.path = None;
+            self.checkout_panel.select_path(None);
             self.checkout_panel.publish = None;
-            self.checkout_panel.commit_status = CommitUi::Idle;
             self.checkout_panel.popup = None;
             self.checkout_panel.popup_subscription = None;
             self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
@@ -982,7 +1032,7 @@ impl Sidebar {
         if let Some((idx, path)) = selected {
             if self.checkout_panel.path.as_ref() != Some(&path) {
                 self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
-                self.checkout_panel.path = Some(path.clone());
+                self.checkout_panel.select_path(Some(path.clone()));
                 self.checkout_panel.checked_at = None;
                 self.checkout_panel.state = None;
                 self.checkout_panel.pr_state = None;
@@ -992,12 +1042,9 @@ impl Sidebar {
                 self.checkout_panel.pr_expanded = false;
                 self.checkout_panel.pr_composing = false;
                 self.checkout_panel.pr_merge = None;
-                self.checkout_panel.pr_message = None;
                 self.checkout_panel.summary = None;
                 self.checkout_panel.loading = false;
-                self.checkout_panel.message = None;
                 self.checkout_panel.publish = None;
-                self.checkout_panel.commit_status = CommitUi::Idle;
             }
             if (self.checkout_panel.state.is_none()
                 || self
@@ -1078,26 +1125,15 @@ impl Sidebar {
             }
             card = card.child(self.render_checkout_pr(&path, state.as_ref(), window, cx));
             let target = path.clone();
-            let busy = self.checkout_panel.busy;
-            let same_job = self.checkout_panel.commit_job_path.as_ref() == Some(&path)
-                && self.checkout_panel.commit_job_generation == self.checkout_panel.generation;
-            let same_network =
-                self.checkout_panel
-                    .network_target
-                    .as_ref()
-                    .is_some_and(|(target, generation)| {
-                        target == &path && *generation == self.checkout_panel.generation
-                    });
-            let active_other = busy
-                && ((self.checkout_panel.commit_job_path.is_some() && !same_job)
-                    || (self.checkout_panel.network_target.is_some() && !same_network));
+            let busy = self.checkout_panel.operation.busy;
+            let same_job = self.checkout_panel.operation.commit_job_path.as_ref() == Some(&path);
+            let same_network = self.checkout_panel.operation.network_target.is_some();
             let (base_label, base_glyph, base_enabled) = commit_row_state(state.as_ref());
             let initial_loading =
                 self.checkout_panel.loading && self.checkout_panel.state.is_none();
-            let (label, glyph, enabled, loading) = if active_other {
-                ("Git operation in progress", "git", false, true)
-            } else if let Some((label, glyph)) = self
+            let (label, glyph, enabled, loading) = if let Some((label, glyph)) = self
                 .checkout_panel
+                .operation
                 .network_action
                 .filter(|_| busy && same_network)
             {
@@ -1105,7 +1141,7 @@ impl Sidebar {
             } else if initial_loading {
                 ("Checking status…", "git", false, true)
             } else {
-                match self.checkout_panel.commit_status {
+                match self.checkout_panel.operation.commit_status {
                     CommitUi::Generating if same_job => {
                         ("Generating… Cancel", "sparkle", true, true)
                     }
@@ -1137,16 +1173,22 @@ impl Sidebar {
                     && !state.remotes.is_empty()
             });
             let dirty = state.as_ref().is_some_and(|state| state.dirty);
-            let retry = matches!(self.checkout_panel.commit_status, CommitUi::Failed);
-            let cancel =
-                same_job && matches!(self.checkout_panel.commit_status, CommitUi::Generating);
+            let retry = matches!(
+                self.checkout_panel.operation.commit_status,
+                CommitUi::Failed
+            );
+            let cancel = same_job
+                && matches!(
+                    self.checkout_panel.operation.commit_status,
+                    CommitUi::Generating
+                );
             card = card.child(checkout_loading_row("checkout-commit-publish", label, glyph, loading, window, cx)
                 .disabled(!enabled)
                 .with_focus_handle(self.checkout_panel.trigger_focus[if publish { "publish" } else { "commit" }].clone())
                 .relative()
                 .child({ let bounds = self.checkout_panel.source_bounds["publish"].clone();
                     gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {}).absolute().inset_0() })
-                .tooltip(self.checkout_panel.message.clone().unwrap_or_else(|| {
+                .tooltip(self.checkout_panel.operation.message.clone().unwrap_or_else(|| {
                     self.checkout_panel.state.as_ref().and_then(|state| state.as_ref().err()).cloned().unwrap_or_else(||
                         "Generate a commit message and commit staged changes, or all nonignored changes when nothing is staged.".into())
                 }))
@@ -1376,7 +1418,7 @@ impl Sidebar {
                             move |_, _, cx| {
                                 let _ = owner.update(cx, |this, cx| {
                                     this.checkout_panel.publish = Some(remote.clone());
-                                    this.checkout_panel.message = None;
+                                    this.checkout_panel.operation.message = None;
                                     cx.notify();
                                 });
                             },
@@ -1405,7 +1447,7 @@ impl Sidebar {
                                 .on_click(move |_, _, cx| {
                                     let _ = owner.update(cx, |this, cx| {
                                         this.checkout_panel.chosen_root = Some(target.clone());
-                                        this.checkout_panel.path = None;
+                                        this.checkout_panel.select_path(None);
                                         cx.notify();
                                     });
                                 }),
@@ -1712,6 +1754,110 @@ mod tests {
             );
             assert!(actions.try_recv().is_err());
         }
+    }
+
+    #[test]
+    fn commit_jobs_and_cancellation_follow_their_checkout_across_navigation() {
+        let mut panel = CheckoutPanel::default();
+        let first = std::sync::Arc::new(CommitControl::default());
+        let second = std::sync::Arc::new(CommitControl::default());
+        panel.select_path(Some("/project/one".into()));
+        panel.operation.busy = true;
+        panel.operation.commit_job = 1;
+        panel.operation.commit_job_path = panel.path.clone();
+        panel.operation.commit_control = Some(first.clone());
+        panel.operation.commit_status = CommitUi::Generating;
+        panel.select_path(Some("/project/two".into()));
+        assert!(
+            !panel.operation.busy,
+            "another worktree must remain available"
+        );
+        panel.operation.busy = true;
+        panel.operation.commit_job = 1;
+        panel.operation.commit_job_path = panel.path.clone();
+        panel.operation.commit_control = Some(second.clone());
+        panel.operation.commit_status = CommitUi::Generating;
+        panel.commit_event(
+            "/project/one",
+            1,
+            CommitEvent::Progress(CommitPhase::Committing),
+        );
+        assert!(matches!(
+            panel.operation.commit_status,
+            CommitUi::Generating
+        ));
+        panel.select_path(Some("/project/one".into()));
+        assert!(
+            panel.operation.busy,
+            "returning must preserve duplicate prevention"
+        );
+        assert!(matches!(
+            panel.operation.commit_status,
+            CommitUi::Committing
+        ));
+        assert!(std::sync::Arc::ptr_eq(
+            panel.operation.commit_control.as_ref().unwrap(),
+            &first
+        ));
+        panel.select_path(Some("/project/two".into()));
+        assert!(panel.operation.commit_control.as_ref().unwrap().cancel());
+        panel.operation.commit_status = CommitUi::Canceling;
+        panel.select_path(None);
+        panel.commit_event(
+            "/project/two",
+            1,
+            CommitEvent::Finished(Box::new((Err("canceled".into()), Err("fixture".into())))),
+        );
+        panel.commit_event(
+            "/project/one",
+            1,
+            CommitEvent::Finished(Box::new((
+                Ok(CommitOutcome {
+                    subject: "First checkout".into(),
+                    hash: None,
+                }),
+                Err("fixture".into()),
+            ))),
+        );
+        assert!(!panel.operation.busy);
+        panel.select_path(Some("/project/two".into()));
+        assert!(!panel.operation.busy);
+        assert_eq!(panel.operation.message.as_deref(), Some("Commit canceled."));
+        panel.select_path(Some("/project/one".into()));
+        assert!(!panel.operation.busy);
+        assert!(matches!(panel.operation.commit_status, CommitUi::Succeeded));
+        assert_eq!(
+            panel.operation.message.as_deref(),
+            Some("Committed: First checkout")
+        );
+        panel.commit_event(
+            "/project/one",
+            0,
+            CommitEvent::Progress(CommitPhase::Generating),
+        );
+        assert!(matches!(panel.operation.commit_status, CommitUi::Succeeded));
+    }
+
+    #[test]
+    fn hidden_network_completion_preserves_other_checkout_busy_and_error() {
+        let mut panel = CheckoutPanel::default();
+        panel.select_path(Some("/one".into()));
+        panel.operation.busy = true;
+        panel.operation.network_action = Some(("Pushing…", "git-push"));
+        panel.select_path(Some("/two".into()));
+        assert!(!panel.operation.busy);
+        panel.operation.busy = true;
+        panel.update_operation("/one", |panel, current| {
+            assert!(!current);
+            panel.operation.busy = false;
+            panel.operation.network_action = None;
+            panel.operation.message = Some("Push failed".into());
+        });
+        assert!(panel.operation.busy);
+        assert!(panel.operation.message.is_none());
+        panel.select_path(Some("/one".into()));
+        assert!(!panel.operation.busy);
+        assert_eq!(panel.operation.message.as_deref(), Some("Push failed"));
     }
 
     #[test]
