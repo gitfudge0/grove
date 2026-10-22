@@ -160,6 +160,8 @@ const IMAGE_PREVIEW_EDGE: f32 = 56.0;
 const COMPOSER_TOKEN_UNDERLINE: f32 = 1.0;
 const QUEUED_PROMPTS_MAX_H: f32 = 144.0;
 const QUESTION_PANEL_MAX_H: f32 = 360.0;
+/// Leave room for the transcript and composer even when permission forms are long.
+const APPROVAL_TRAY_VIEWPORT_SHARE: f32 = 0.45;
 const TOOL_DETAIL_MAX_H: f32 = 280.0;
 /// Context share, in whole percent, at which the meter switches to the warning colour.
 const CONTEXT_WARN_PERCENT: u32 = 80;
@@ -451,6 +453,7 @@ struct ApprovalDraft {
     input: Entity<InputState>,
     feedback: Entity<InputState>,
     editing: bool,
+    policy_expanded: bool,
     submitting: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -572,6 +575,49 @@ fn literal_notice_text(id: impl Into<gpui::SharedString>, text: &str) -> impl In
                 )
         }))
 }
+fn permission_heading(title: String, source: String) -> gpui::Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(rpx(SPACE_SM))
+        .child(crate::icons::icon("message-warning", ICON_MD, c::AMBER()))
+        .child(
+            div()
+                .min_w_0()
+                .text_size(rpx(TEXT_TITLE))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(title),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .ml_auto()
+                .text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG_DIM())
+                .child(source),
+        )
+}
+fn permission_code(id: String, text: &str) -> impl IntoElement {
+    TextView::html(
+        gpui::SharedString::from(id),
+        format!(
+            "<pre>{}</pre>",
+            text.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        ),
+    )
+    .selectable(true)
+    .whitespace_normal()
+    .font_family(crate::fonts::MONO_FAMILY)
+    .text_size(rpx(TEXT_CODE))
+    .w_full()
+    .min_w_0()
+}
+
 /// Attached backing shared by completion choices and queued messages.
 fn composer_tray_inset(window: &Window) -> f32 {
     if window.viewport_size().width < gpui::px(CHAT_MAX_W) {
@@ -4193,7 +4239,9 @@ impl Render for CodexView {
                     cx.stop_propagation();
                 }
             }));
-        if let Some(activity) = live_activity(&state) {
+        if let Some(activity) = live_activity(&state)
+            .filter(|_| state.approvals.is_empty() && state.elicitations.is_empty())
+        {
             let running = compacting(&state)
                 || (state.status.busy()
                     && state.questions.is_empty()
@@ -4237,37 +4285,33 @@ impl Render for CodexView {
                     ),
             );
         }
-        if !state.approvals.is_empty() || !state.elicitations.is_empty() {
-            let approvals = self.approval_panel(&state, window, cx);
-            let elicitations = self.elicitation_panel(&state, window, cx);
-            surface = surface.child(
+        let agent_controls = if !state.approvals.is_empty() || !state.elicitations.is_empty() {
+            Some(
                 div()
-                    .w_full()
-                    .flex_1()
+                    .id("agent-controls")
+                    .debug_selector(|| "agent-controls".into())
+                    .min_w_0()
                     .min_h_0()
-                    .max_h(rpx(QUESTION_PANEL_MAX_H))
+                    .max_h(
+                        rpx(QUESTION_PANEL_MAX_H)
+                            .to_pixels(window.rem_size())
+                            .min(window.viewport_size().height * APPROVAL_TRAY_VIEWPORT_SHARE),
+                    )
+                    .overflow_y_scroll()
                     .flex()
-                    .justify_center()
-                    .px(rpx(SPACE_20))
-                    .child(
-                        div()
-                            .id("agent-controls")
-                            .debug_selector(|| "agent-controls".into())
-                            .w_full()
-                            .min_w_0()
-                            .h_full()
-                            .min_h_0()
-                            .max_w(rpx(CHAT_MAX_W))
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap(rpx(SPACE_3XL))
-                            .py(rpx(SPACE_LG))
-                            .child(approvals)
-                            .child(elicitations),
-                    ),
-            );
-        }
+                    .flex_col()
+                    .gap(rpx(SPACE_LG))
+                    .mx(rpx(composer_tray_inset(window)))
+                    .when(!state.approvals.is_empty(), |tray| {
+                        tray.child(self.approval_panel(&state, window, cx))
+                    })
+                    .when(!state.elicitations.is_empty(), |tray| {
+                        tray.child(self.elicitation_panel(&state, window, cx))
+                    }),
+            )
+        } else {
+            None
+        };
         self.previews.retain(|url, _| {
             self.images.contains(url)
                 || state.saved.items.iter().any(|item| {
@@ -4565,6 +4609,7 @@ impl Render for CodexView {
                             .gap(rpx(SPACE_MD))
                             .when(focused_launch, |rail| rail.child(self.launch_intro(&state)))
                             .when_some(self.session_notice(&state, window, cx), gpui::ParentElement::child)
+                            .when_some(agent_controls, gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
@@ -8247,6 +8292,11 @@ impl CodexView {
             );
             let mut group = div()
                 .id(("agent-elicitation", request_index))
+                .p(rpx(SPACE_2XL))
+                .rounded(rpx(RADIUS_PANEL))
+                .border_1()
+                .border_color(c::BORDER_SOFT())
+                .bg(c::BG_RAIL())
                 .role(gpui::Role::Group)
                 .aria_label(format!("Input requested by {source}"))
                 .w_full()
@@ -8255,12 +8305,11 @@ impl CodexView {
                 .flex()
                 .flex_col()
                 .gap(rpx(SPACE_LG))
-                .child(
-                    div()
-                        .text_color(c::FG())
-                        .child(format!("{source} needs your input")),
-                )
-                .child(div().child(request.message.clone()));
+                .child(permission_heading(
+                    format!("{} needs {}", if request.server_name == "cua_repl" { "Computer Use" } else { &request.server_name }, if matches!(&request.mode, ElicitationMode::Form(form) if form.fields.is_empty()) { "permission" } else { "your input" }),
+                    format!("{} · {source}", state.saved.provider.label()),
+                ))
+                .child(literal_notice_text(format!("elicitation-message-{request_index}"), &request.message));
             let valid = self.elicitation_content(&key, request, cx);
             match &request.mode {
                 ElicitationMode::Url { url, .. } => {
@@ -8425,16 +8474,19 @@ impl CodexView {
             }
             let mut buttons = div().flex().flex_wrap().gap(rpx(SPACE_LG));
             for (action, label) in [
-                ("cancel", "Cancel"),
-                ("decline", "Decline"),
                 (
                     "accept",
                     if matches!(request.mode, ElicitationMode::Url { .. }) {
                         "I've completed this"
+                    } else if matches!(&request.mode, ElicitationMode::Form(form) if form.fields.is_empty())
+                    {
+                        "Allow"
                     } else {
                         "Submit"
                     },
                 ),
+                ("decline", "Decline"),
+                ("cancel", "Cancel request"),
             ] {
                 let click_key = key.clone();
                 let id = request.id.clone();
@@ -8635,6 +8687,7 @@ impl CodexView {
                     input,
                     feedback,
                     editing: false,
+                    policy_expanded: false,
                     submitting: false,
                     _subscriptions: subscriptions,
                 },
@@ -8717,6 +8770,11 @@ impl CodexView {
             let draft = &self.approval_drafts[&key];
             let mut group = div()
                 .id(("codex-approval", index))
+                .p(rpx(SPACE_2XL))
+                .rounded(rpx(RADIUS_PANEL))
+                .border_1()
+                .border_color(c::BORDER_SOFT())
+                .bg(c::BG_RAIL())
                 .role(gpui::Role::Group)
                 .aria_label(grove_core::controls::approval_title(approval))
                 .w_full()
@@ -8729,22 +8787,50 @@ impl CodexView {
                 .font_weight(gpui::FontWeight::NORMAL)
                 .text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG())
-                .child(
+                .child(permission_heading(
+                    grove_core::controls::approval_title(approval),
+                    state.saved.provider.label().into(),
+                ));
+            if let Some(command) = grove_core::controls::approval_command(approval) {
+                if let Some(reason) = approval["params"]["reason"]
+                    .as_str()
+                    .or_else(|| approval["claudeInput"]["description"].as_str())
+                {
+                    group = group.child(literal_notice_text(
+                        format!("approval-reason-{index}"),
+                        reason,
+                    ));
+                }
+                group = group.child(
                     div()
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(c::FG())
-                        .child(format!(
-                            "{} needs your permission · {}",
-                            state.saved.provider.label(),
-                            grove_core::controls::approval_title(approval)
+                        .w_full()
+                        .min_w_0()
+                        .p(rpx(SPACE_LG))
+                        .rounded(rpx(RADIUS_CONTROL))
+                        .bg(c::BG())
+                        .child(permission_code(
+                            format!("approval-command-{index}"),
+                            command,
                         )),
-                )
-                .child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(grove_core::controls::approval_details(approval)),
                 );
+                if let Some(cwd) = approval["params"]["cwd"].as_str() {
+                    group = group
+                        .child(div().text_color(c::FG_DIM()).child("Working directory"))
+                        .child(literal_notice_text(format!("approval-cwd-{index}"), cwd));
+                }
+                let extra = grove_core::controls::approval_command_extra(approval);
+                if !extra.is_empty() {
+                    group = group.child(literal_notice_text(
+                        format!("approval-extra-{index}"),
+                        &extra,
+                    ));
+                }
+            } else {
+                group = group.child(literal_notice_text(
+                    format!("approval-details-{index}"),
+                    &grove_core::controls::approval_details(approval),
+                ));
+            }
             let editable = approval
                 .get("claudeInput")
                 .is_some_and(serde_json::Value::is_object);
@@ -8829,6 +8915,7 @@ impl CodexView {
                     );
             }
             let mut buttons = div().flex().flex_wrap().gap(rpx(SPACE_LG));
+            let mut policy_button = None;
             for (choice_index, choice) in grove_core::controls::approval_choices(approval)
                 .into_iter()
                 .enumerate()
@@ -8836,32 +8923,97 @@ impl CodexView {
                 let click_key = key.clone();
                 let id = approval["id"].clone();
                 let denying = matches!(choice.id.as_str(), "deny" | "cancel");
-                buttons = buttons.child(
-                    transcript_action(
-                        gpui::SharedString::from(format!("approval-{index}-{choice_index}")),
-                        choice.label,
-                        false,
-                        window,
-                        cx,
-                    )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path(gpui::SharedString::from(format!(
-                                "icons/{}.svg",
-                                if denying { "close" } else { "check" }
-                            )))
-                            .size(rpx(ICON_SM)),
-                    )
-                    .debug_selector(move || format!("approval-{index}-{choice_index}"))
-                    .disabled(draft.submitting || (!denying && !valid_json))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.respond_approval(&click_key, id.clone(), choice.id.clone(), cx);
-                    })),
-                );
+                let is_policy = choice.id == "execpolicy";
+                let button = transcript_action(
+                    gpui::SharedString::from(format!("approval-{index}-{choice_index}")),
+                    choice.label,
+                    choice.id == "allow_once",
+                    window,
+                    cx,
+                )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path(gpui::SharedString::from(format!(
+                            "icons/{}.svg",
+                            if denying { "close" } else { "check" }
+                        )))
+                        .size(rpx(ICON_SM)),
+                )
+                .debug_selector(move || format!("approval-{index}-{choice_index}"))
+                .disabled(draft.submitting || (!denying && !valid_json))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.respond_approval(&click_key, id.clone(), choice.id.clone(), cx);
+                }));
+                if is_policy {
+                    policy_button = Some(button);
+                } else {
+                    buttons = buttons.child(button);
+                }
             }
-            panel = panel.child(group.child(buttons));
+            group = group.child(buttons);
+            if let Some(button) = policy_button {
+                let click_key = key.clone();
+                group = group.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .pt(rpx(SPACE_LG))
+                        .child(
+                            transcript_action(
+                                gpui::SharedString::from(format!("approval-policy-{index}")),
+                                "Matching command prefix",
+                                false,
+                                window,
+                                cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path(if draft.policy_expanded {
+                                        "icons/chev-down.svg"
+                                    } else {
+                                        "icons/chev-right.svg"
+                                    })
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .aria_expanded(draft.policy_expanded)
+                            .debug_selector(move || format!("approval-policy-{index}"))
+                            .disabled(draft.submitting)
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| this.toggle_approval_policy(&click_key, cx),
+                            )),
+                        ),
+                );
+                if draft.policy_expanded {
+                    group = group
+                        .child(
+                            div()
+                                .text_color(c::FG_DIM())
+                                .child("Proposed execution policy amendment"),
+                        )
+                        .child(permission_code(
+                            format!("approval-prefix-{index}"),
+                            &serde_json::to_string_pretty(
+                                &approval["params"]["proposedExecpolicyAmendment"],
+                            )
+                            .unwrap_or_default(),
+                        ))
+                        .child(button);
+                }
+            }
+            panel = panel.child(group);
         }
         panel
+    }
+    fn toggle_approval_policy(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(draft) = self.approval_drafts.get_mut(key) {
+            if !draft.submitting {
+                draft.policy_expanded = !draft.policy_expanded;
+                cx.notify();
+            }
+        }
     }
     fn toggle_approval_edit(&mut self, key: &str, cx: &mut Context<Self>) {
         if let Some(draft) = self.approval_drafts.get_mut(key) {
@@ -10071,6 +10223,98 @@ mod tests {
         });
         (view.unwrap(), cx, actions, updates)
     }
+    /// Opt-in real text shaping / Metal snapshots, independent of installed Grove.
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn approval_tray_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            c::sync_component_theme(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        for width in [1024.0, 600.0] {
+            for kind in ["computer", "command", "command-prefix", "claude"] {
+                let mut state = snapshot();
+                state.status = Status::Waiting;
+                state.saved.items = vec![
+                    json!({"id":"intro","type":"agentMessage","text":"I’ll inspect the launcher’s current layout."}),
+                    json!({"id":"plan","type":"plan","plan":[{"step":"Inspect launcher","status":"completed"},{"step":"Verify interaction states","status":"inProgress"}]}),
+                ];
+                if kind == "computer" {
+                    state.elicitations.push(ElicitationRequest::parse_codex(json!("computer"), &json!({
+                        "serverName":"cua_repl", "message":"Allow Computer Use to use \"Grove Launcher QA\"?",
+                        "requestedSchema":{"type":"object","properties":{}}
+                    })).unwrap());
+                } else if kind == "claude" {
+                    state.saved.provider = codex::Provider::Claude;
+                    state.approvals.push(json!({"id":"claude", "method":"item/commandExecution/requestApproval",
+                        "groveAgent":"Reviewer", "claudeInput":{"command":"cargo test --lib controls::tests", "description":"Verify approval response mapping"},
+                        "claudeRequest":{"tool_name":"Bash","input":{"command":"cargo test --lib controls::tests"}}
+                    }));
+                } else {
+                    state.approvals.push(json!({"id":"command","method":"item/commandExecution/requestApproval","params":{
+                        "reason":"May I resolve the vendored selection test dependencies to compile and run its focused regression tests?",
+                        "command":"/bin/zsh -lc 'cargo test --manifest-path vendor/gpui-component/ui/Cargo.toml --lib text::window_selection::tests --no-run --locked'",
+                        "cwd":"/Users/digvijaymahapatra/Sandbox/grove",
+                        "proposedExecpolicyAmendment":["cargo","test","--manifest-path","vendor/gpui-component/ui/Cargo.toml","--lib","text::window_selection::tests","--no-run","--locked"]
+                    }}));
+                }
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let connection = Connection {
+                    handle,
+                    updates: receive.into(),
+                };
+                let mut capture_view = None;
+                let window = cx
+                    .open_window(
+                        gpui::size(gpui::px(width), gpui::px(800.0)),
+                        |window, cx| {
+                            let session =
+                                cx.new(|cx| CodexSession::from_connection(state, connection, cx));
+                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                            capture_view = Some(chat.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(chat, window, cx)
+                                    .bordered(false)
+                                    .bg(c::BG())
+                            })
+                        },
+                    )
+                    .unwrap();
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    if kind == "command-prefix" {
+                        capture_view.as_ref().unwrap().update(cx, |view, cx| {
+                            for draft in view.approval_drafts.values_mut() {
+                                draft.policy_expanded = true;
+                            }
+                            cx.notify();
+                        });
+                    }
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                let path = format!("/tmp/grove-permission-{kind}-{width:.0}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Native approval fixture: {path}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+
     fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
         cx.update(|window, cx| {
@@ -14463,6 +14707,11 @@ mod tests {
                     controls.contains(&button.origin),
                     "approval button {selector}: {button:?}; controls: {controls:?}"
                 );
+                let composer = cx.debug_bounds("codex-composer").unwrap();
+                assert!(controls.bottom() <= composer.top());
+                assert!(controls.left() >= composer.left());
+                assert!(controls.right() <= composer.right());
+                assert!(cx.debug_bounds("codex-live-activity").is_none());
                 assert!(button.right() <= controls.right());
                 assert!(button.bottom() <= controls.bottom());
                 assert!(button.bottom() <= gpui::px(480.0));
@@ -14488,6 +14737,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[gpui::test]
+    fn matching_prefix_requires_disclosure_before_sending(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.simulate_resize(gpui::size(gpui::px(600.0), gpui::px(700.0)));
+        let approval = json!({"id":"prefix", "method":"item/commandExecution/requestApproval", "params":{
+            "command":"cargo test --manifest-path vendor/gpui-component/ui/Cargo.toml --lib text::window_selection::tests --no-run --locked",
+            "cwd":"/tmp/project", "proposedExecpolicyAmendment":["cargo","test"]
+        }});
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Waiting;
+                    session.state.approvals = vec![approval.clone()];
+                    cx.notify();
+                })
+            })
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("approval-0-2").is_none());
+        let scroll_controls_to_bottom = |cx: &mut gpui::VisualTestContext| {
+            let controls = cx.debug_bounds("agent-controls").unwrap();
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: controls.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.0), gpui::px(-100000.0))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            draw(cx);
+        };
+        scroll_controls_to_bottom(cx);
+        let disclosure = cx.debug_bounds("approval-policy-0").unwrap();
+        cx.simulate_click(disclosure.center(), gpui::Modifiers::default());
+        draw(cx);
+        scroll_controls_to_bottom(cx);
+        let button = cx.debug_bounds("approval-0-2").unwrap();
+        let controls = cx.debug_bounds("agent-controls").unwrap();
+        assert!(button.top() >= controls.top() && button.bottom() <= controls.bottom());
+        cx.simulate_click(button.center(), gpui::Modifiers::default());
+        draw(cx);
+        let epoch = view.read_with(cx, |view, cx| view.session.read(cx).state.interaction_epoch);
+        let responses: Vec<_> = actions_at_epoch(&actions, epoch)
+            .into_iter()
+            .filter_map(|action| match action {
+                Action::RespondApproval { choice, .. } => Some(choice),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(responses, vec!["execpolicy"]);
     }
 
     #[gpui::test]

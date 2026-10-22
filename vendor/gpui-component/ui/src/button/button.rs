@@ -213,6 +213,12 @@ impl From<Button> for AnyElement {
 }
 
 impl Button {
+    /// Expose the expanded accessibility state for disclosure buttons.
+    pub fn aria_expanded(mut self, expanded: bool) -> Self {
+        self.base = self.base.aria_expanded(expanded);
+        self
+    }
+
     /// Let an app restore focus to a persistent invoking control.
     pub fn with_focus_handle(mut self, focus: gpui::FocusHandle) -> Self {
         self.focus_handle = Some(focus);

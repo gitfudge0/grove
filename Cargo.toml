@@ -230,6 +230,8 @@ semver.workspace = true
 # gpui's `TestAppContext`/`VisualTestContext` and the `#[gpui::test]` macro —
 # used by the modal-focus regression test (`views::modals`).
 gpui = { workspace = true, features = ["test-support"] }
+# Opt-in ignored native screenshot fixture uses the existing platform renderer.
+gpui_platform = { workspace = true, features = ["test-support"] }
 # Same vendored path dependency as `[dependencies]`, but with the Grove-only
 # `grove-test-support` marker feature turned on. It makes
 # `sync_native_content_type` (`vendor/gpui-component/ui/src/input/content_type.rs`)

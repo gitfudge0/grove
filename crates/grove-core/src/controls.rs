@@ -1,5 +1,6 @@
 //! Provider-offered approval choices. Never manufacture policy grants from UI data.
 use serde_json::{json, Value};
+use std::fmt::Write as _;
 
 #[derive(Clone, Debug)]
 pub struct ApprovalChoice {
@@ -85,6 +86,73 @@ pub fn approval_details(a: &Value) -> String {
     }
     lines.join("\n")
 }
+/// Structured command data is presentation only; policy responses always use the original request.
+pub fn approval_command(a: &Value) -> Option<&str> {
+    if a["claudeRequest"]["tool_name"] == "Bash" {
+        a["claudeInput"]["command"].as_str()
+    } else if a.get("claudeInput").is_none()
+        && matches!(
+            a["method"].as_str(),
+            Some("item/commandExecution/requestApproval" | "execCommandApproval")
+        )
+    {
+        a["params"]["command"].as_str()
+    } else {
+        None
+    }
+}
+
+/// Keep unfamiliar fields visible without repeating structured command fields or policy JSON.
+pub fn approval_command_extra(a: &Value) -> String {
+    let mut remainder = a.clone();
+    if let Some(p) = remainder.get_mut("params").and_then(Value::as_object_mut) {
+        for key in ["reason", "command", "cwd"] {
+            if p.get(key).is_some_and(Value::is_string) {
+                p.remove(key);
+            }
+        }
+        if approval_choices(a)
+            .iter()
+            .any(|choice| choice.id == "execpolicy")
+        {
+            p.remove("proposedExecpolicyAmendment");
+        }
+    }
+    if a["claudeRequest"]["tool_name"] == "Bash" {
+        if let Some(input) = remainder
+            .get_mut("claudeInput")
+            .and_then(Value::as_object_mut)
+        {
+            input.remove("command");
+        }
+    }
+    let mut details = approval_details(&remainder);
+    // Provider routing metadata is already represented by the tray identity.
+    if let Some(p) = remainder["params"].as_object() {
+        for (key, value) in p {
+            if !matches!(
+                key.as_str(),
+                "permissions"
+                    | "additionalPermissions"
+                    | "networkApprovalContext"
+                    | "fileChanges"
+                    | "proposedExecpolicyAmendment"
+                    | "proposedNetworkPolicyAmendments"
+                    | "grantRoot"
+                    | "availableDecisions"
+                    | "threadId"
+                    | "turnId"
+                    | "itemId"
+                    | "callId"
+            ) && !value.is_null()
+            {
+                let _ = write!(details, "\n{key}: {value}");
+            }
+        }
+    }
+    details.trim().to_owned()
+}
+
 pub fn approval_choices(a: &Value) -> Vec<ApprovalChoice> {
     let mut c = Vec::new();
     if a.get("claudeInput").is_some() {
@@ -227,6 +295,30 @@ pub fn approval_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn structured_command_preserves_unfamiliar_and_unoffered_policy_data() {
+        let a = json!({"method":"item/commandExecution/requestApproval","params":{
+            "command":"cargo test <literal>","cwd":"/tmp/project","reason":"Run tests",
+            "threadId":"routing-only","customContext":{"important":true},
+            "proposedExecpolicyAmendment":["cargo","test"],"availableDecisions":["accept","decline"]
+        }});
+        assert_eq!(approval_command(&a), Some("cargo test <literal>"));
+        assert!(approval_command(&json!({"method":"item/commandExecution/requestApproval","claudeInput":{"path":"/tmp"},"claudeRequest":{"tool_name":"Read"},"params":{"command":"Read {path}"}})).is_none());
+        let extra = approval_command_extra(&a);
+        assert!(extra.contains("customContext"));
+        assert!(extra.contains("proposedExecpolicyAmendment"));
+        assert!(!extra.contains("routing-only"));
+        assert!(!extra.contains("Run tests"));
+        let mut offered = a.clone();
+        offered["params"]
+            .as_object_mut()
+            .unwrap()
+            .remove("availableDecisions");
+        assert!(!approval_command_extra(&offered).contains("proposedExecpolicyAmendment"));
+        offered["params"]["reason"] = json!({"future":"shape"});
+        assert!(approval_command_extra(&offered).contains("future"));
+    }
+
     #[test]
     fn command_decisions_use_exact_offered_policies_and_reject_forgery() {
         let a = json!({"method":"item/commandExecution/requestApproval","params":{"kind":"writeStdin","proposedExecpolicyAmendment":["cargo","test"],"proposedNetworkPolicyAmendments":[{"host":"example.com","action":"allow"}]}});

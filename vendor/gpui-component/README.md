@@ -169,3 +169,7 @@ Applied to `ui/src` (source, not manifests):
     `Root::has_visible_overlay` includes sheets, dialogs, managed
     tooltips and fallback menus so AppKit surfaces yield to GPUI overlays.
     These additions grant no JavaScript/native bridge and add no webview crate.
+
+13. **Expanded accessibility state for compact disclosures.**
+    `Button::aria_expanded` forwards the disclosure state to the existing base
+    element without changing the shared button's geometry or activation.
