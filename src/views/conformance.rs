@@ -341,6 +341,95 @@ fn r8_dense_controls_share_geometry() {
         .unwrap()
         .contains(".gap(rpx(SPACE_SM))"));
 }
+/// Guard the known dense-action regressions without treating fields, metadata,
+/// menu rows, or icon-only children as text-and-icon action buttons.
+#[test]
+fn text_icon_action_regressions_use_the_leading_vendor_slot() {
+    for (file, start, end) in [
+        (
+            "src/views/native_plan.rs",
+            "format!(\"lines-next-{target}\")",
+            ".disabled(",
+        ),
+        (
+            "src/views/sidebar/project_setup.rs",
+            "form_action(\"project-choose\"",
+            ".disabled(",
+        ),
+        (
+            "src/views/release_highlights.rs",
+            "fn button(",
+            "fn unavailable()",
+        ),
+    ] {
+        let text = source(file);
+        let action = text.split_once(start).unwrap().1.split_once(end).unwrap().0;
+        assert!(
+            action.contains(".icon("),
+            "{file}: action icon must use the leading slot"
+        );
+        assert!(
+            !action.contains(".child(crate::icons::icon("),
+            "{file}: no trailing action glyph"
+        );
+    }
+    let highlights = source("src/views/release_highlights.rs");
+    let retry = highlights.split_once("\"highlights-retry\"").unwrap().0;
+    assert!(
+        retry.ends_with("settings_control("),
+        "Retry must use shared control gap geometry"
+    );
+    let launch = source("src/views/sidebar/content.rs");
+    let launch = launch
+        .split_once("form_action(id, label, false, window, cx)")
+        .unwrap()
+        .1
+        .split_once(".on_click(")
+        .unwrap()
+        .0;
+    assert!(launch.contains(".icon("));
+    assert!(
+        !launch.contains(".child("),
+        "Launch label must not gain a trailing directional glyph"
+    );
+}
+#[test]
+fn disclosure_buttons_keep_icons_before_their_labels() {
+    for (file, start, end, icon, label) in [
+        (
+            "src/views/components.rs",
+            "pub fn question_disclosure(",
+            "pub fn settings_control(",
+            ".child(crate::icons::icon(",
+            ".child(label)",
+        ),
+        (
+            "src/views/codex_view.rs",
+            ".id(\"codex-task-strip\")",
+            ".on_key_down(",
+            ".child(crate::icons::icon(",
+            ".child(cluster)",
+        ),
+        (
+            "src/views/sidebar/checkout_panel.rs",
+            "\"checkout-agents-previous\",",
+            ".on_click(",
+            ".child(icon(\"chev-down\"",
+            ".child(format!(\"Previous agents",
+        ),
+    ] {
+        let text = source(file);
+        let button = text.split_once(start).unwrap().1.split_once(end).unwrap().0;
+        assert!(
+            button.find(icon).unwrap() < button.find(label).unwrap(),
+            "{file}: disclosure icon must precede label"
+        );
+        assert!(
+            button.contains(".gap(rpx(SPACE_SM))"),
+            "{file}: shared icon-to-label gap"
+        );
+    }
+}
 #[test]
 fn r9_retired_private_modal_width_does_not_return() {
     reject("R9 modal widths", |line| {

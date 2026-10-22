@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "plan_id": "button-icon-order-gap",
+  "revision_id": "2026-10-22-r1",
+  "title": "Consistent Button Icons in Grove",
+  "sources": [
+    {
+      "attribution": "User request",
+      "text": "In our design system, buttons with both text and icon  need gap between icon and text, and icon always comes first. This isn't applied everywhere. Make a plan for this change."
+    },
+    {
+      "attribution": "Read-only source inspection",
+      "text": "DESIGN.md:26\u201337; src/views/components.rs:282\u2013314,444\u2013460,741\u2013780; src/views/tokens.rs:6; vendor/gpui-component/ui/src/button/button.rs:600\u2013622; src/views/native_plan.rs:610\u2013619; src/views/release_highlights.rs:264; src/views/conformance.rs:293\u2013343."
+    }
+  ],
+  "changes": {
+    "files": 6,
+    "changed": 6,
+    "new": 0,
+    "deleted": 0
+  },
+  "claims": [
+    {
+      "id": "leading",
+      "text": "Every text-and-icon button places its icon first.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "examples",
+            "kind": "column",
+            "text": "Proposed button content order; illustrative, not a rendered geometry check",
+            "children": [
+              {
+                "id": "example-next",
+                "kind": "control",
+                "text": "\u2192    Next lines"
+              },
+              {
+                "id": "example-retry",
+                "kind": "control",
+                "text": "\u21bb    Retry"
+              },
+              {
+                "id": "example-save",
+                "kind": "control",
+                "text": "\u2713    Save"
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "contract",
+          "text": "Directional button icons follow the same leading rule.",
+          "exhibit": {
+            "kind": "code",
+            "language": "text",
+            "text": "DESIGN.md:37 currently says:\n\u201cleading by default, directional icons trailing only for disclosure/forward navigation.\u201d\n\nReplace the button exception with: text-and-icon buttons always place the catalog icon before the label, separated by the shared dense gap. Loading replaces the leading icon in place.\n\nThe current user instruction settles this change; no decision remains. Preserve trailing metadata and disclosure indicators on non-button controls."
+          },
+          "children": [
+            {
+              "id": "next-location",
+              "text": "src/views/native_plan.rs:610 \u00b7 Next lines",
+              "exhibit": {
+                "kind": "code",
+                "language": "rust",
+                "text": "Current:\ntranscript_action(..., \"Next lines\", ...)\n    .child(crate::icons::icon(\"arrow-right\", ICON_SM, c::FG_DIM()))\n\nPlanned: use .icon(...) instead of the trailing .child(...).\nThe vendor renders .icon before .label and appended children after .label."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gap",
+      "text": "Every text-and-icon button uses the shared visible gap.",
+      "exhibit": {
+        "kind": "code",
+        "language": "text",
+        "text": "Shared gap: SPACE_SM = 4.0 design pixels (src/views/tokens.rs:6).\nApply rpx(SPACE_SM) once, matching settings_control at components.rs:460.\n\nDense native actions already use Size::XSmall (components.rs:300\u2013303).\nTheir vendor inner content row uses gap_1 and orders icon \u2192 label \u2192 custom children (vendor button.rs:600\u2013622).\n\nUse the shared content row for custom buttons; do not add outer button gap and assume it reaches a nested label row."
+      },
+      "children": [
+        {
+          "id": "shared",
+          "text": "Existing recipes remain the geometry owners.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "dense",
+                "title": "src/views/components.rs:282 \u00b7 dense_action_with_colors",
+                "detail": "Keep form_action and transcript_action on the existing dense recipe. Confirm its inner gap matches SPACE_SM at ordinary and changed rem sizes; adjust the owning recipe only if measurement exposes drift."
+              },
+              {
+                "id": "settings",
+                "title": "src/views/components.rs:444 \u00b7 settings_control",
+                "detail": "Retain the existing flex row and rpx(SPACE_SM); owners must append the icon before the label."
+              },
+              {
+                "id": "retry",
+                "title": "src/views/release_highlights.rs:264 \u00b7 highlights-retry",
+                "detail": "This custom Role::Button appends icon then Retry without a flex/gap recipe. Move it to the appropriate shared action recipe while preserving ID, accessible name, focus, enabled state and activation."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "coverage",
+      "text": "The same rule covers buttons across Grove screens.",
+      "exhibit": {
+        "kind": "calls",
+        "entries": [
+          {
+            "id": "confirmed",
+            "title": "Confirmed source changes \u00b7 six files",
+            "detail": "DESIGN.md; src/views/native_plan.rs; src/views/release_highlights.rs; src/views/components.rs (rendered regression coverage); src/views/conformance.rs (guard coverage); .agents/skills/grove-ui/SKILL.md (inspection checklist for leading order and measured gap). Proposed file count is this minimum, not an exhaustive audit result."
+          },
+          {
+            "id": "inventory",
+            "title": "Candidate audit \u00b7 shared and custom buttons",
+            "detail": "Audit src/views/**/*.rs for Button::new, form_action, transcript_action, dense_action_with_colors, settings_control, Role::Button and clickable custom action rows. Classify actual buttons separately from menu items, field dropdowns, tree rows and metadata. Inventory each button label, icon path, content order, gap owner and special states before editing."
+          },
+          {
+            "id": "surfaces",
+            "title": "Candidate surfaces identified in source",
+            "detail": "src/views/native_plan.rs; inline_html.rs; release_highlights.rs; codex_view.rs; settings_panel.rs; sidebar/{content,project_setup,projects,checkout_panel}.rs; shared Claude/transcript views found by the audit. Expand the source-change list only for confirmed violations."
+          },
+          {
+            "id": "preserve",
+            "title": "Preserve behavior and independent changes",
+            "detail": "Keep button labels, handlers, tooltip/accessibility names, focus, enabled/loading state, icon-only sizing and hit targets. Reconcile with existing dirty crates/grove-core/src/reports.rs and inline_html.rs rather than overwriting them. Vendor code is evidence; change app recipes/callers first. Authored HTML content and its decorative glyphs are outside the native button contract."
+          }
+        ]
+      }
+    },
+    {
+      "id": "checks",
+      "text": "Regression checks prove order, spacing, and stable behavior.",
+      "exhibit": {
+        "kind": "calls",
+        "entries": [
+          {
+            "id": "bounds",
+            "title": "Rendered bounds \u00b7 components.rs:741 action_recipe_tests",
+            "detail": "Extend the existing settings positive-gap test to cover dense vendor buttons, corrected Next lines and custom Retry. Assert glyph.right < label.left and a SPACE_SM gap at default and non-default rem scale. Cover disabled and loading slots without label movement."
+          },
+          {
+            "id": "guard",
+            "title": "Source conformance \u00b7 conformance.rs:293 r8_dense_controls_share_geometry",
+            "detail": "Add focused guards with valid/invalid fixtures for recognized action construction patterns: missing shared gap and icon appended after label. Do not rely on broad regex checks as proof of runtime order. Keep deliberate non-button trailing indicators accepted."
+          },
+          {
+            "id": "native",
+            "title": "Native UI \u00b7 affected surfaces and states",
+            "detail": "Inspect exact build at ordinary/narrow widths, long labels and app zoom. Exercise rest, hover, keyboard focus, disabled, loading and release. Check native plans Next lines and Retry error state, plus every confirmed migrated caller; verify no clipping, lost keyboard activation or accessibility name changes."
+          },
+          {
+            "id": "providers",
+            "title": "Codex and Claude \u00b7 acceptance status",
+            "detail": "Both untested in this plan-only pass. After implementation, inspect affected shared buttons in actual Codex and Claude sessions; record each as verified, unsupported or untested and explain method/reason. Fixture rendering establishes shared layout only, not live question/approval/response delivery behavior. Exercise live boundaries only where a changed button triggers them."
+          },
+          {
+            "id": "delivery",
+            "title": "Implementation verification and delivery",
+            "detail": "Run cargo fmt --check, targeted action_recipe_tests and views::conformance tests, and cargo check -p grove; orchestrator independently reads raw output. Record native screenshot/state evidence and provider results. No platform-specific behavior is proposed; assess affected native platforms if audit expands scope. Run ./install.sh once only after authorized implementation and final checks. No build, installation or source changes occur for this plan request."
+          }
+        ]
+      }
+    }
+  ],
+  "scope": [
+    "Plan only. No implementation is authorized by review feedback or Send response.",
+    "The latest user direction settles leading icons and shared spacing; there are no open design decisions.",
+    "Six proposed changed files are the confirmed minimum; audit findings may add native caller files. No new app files or vendor changes are planned.",
+    "Use Grove Review response and Send response to submit feedback.",
+    "Keep trailing indicators on non-button controls, icon-only controls, authored report HTML, labels and action semantics unchanged unless a confirmed button violation requires migration."
+  ]
+}

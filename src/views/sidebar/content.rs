@@ -1250,11 +1250,6 @@ impl Sidebar {
                             .min_w_0()
                             .cursor_pointer()
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .child(div().min_w_0().flex_1().flex().justify_end().child(icon(
-                                "arrow-right",
-                                ICON_SM,
-                                c::FG_DIM(),
-                            )))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.launch(project_idx, target.clone(), agent, cx);
                             })),

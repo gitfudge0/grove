@@ -17,7 +17,7 @@ Use Geist for application labels, forms, metadata, native diffs, and script edit
 
 ## Choose the relevant checks
 
-Inspect the actual native rendering against the selected reference at normal and narrower widths, with long names where applicable. Check spacing, type, contrast, glyphs, clipping, and stable columns. Exercise the states changed by the task rather than every screen on every edit:
+Inspect the actual native rendering against the selected reference at normal and narrower widths, with long names where applicable. Check spacing, type, contrast, glyphs, clipping, and stable columns. Audit text-and-icon buttons, including directional and custom actions: the icon must precede the label with the shared `SPACE_SM` gap. Measure rendered glyph/label bounds at default and changed rem zoom; disabled and loading states retain their leading slot. Distinguish buttons from non-button field indicators and metadata before moving trailing glyphs. Exercise the states changed by the task rather than every screen on every edit:
 
 | Change | Native acceptance checks |
 |---|---|

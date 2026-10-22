@@ -21,6 +21,9 @@ const NARROW_HEIGHT_FRACTION: f32 = 0.5;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Minimum count-column width; wider values expand the shared columns together.
 const STAT_COL_W: f32 = 48.;
+const AGENT_STATUS_W: f32 = 52.;
+const AGENT_LINE_H: f32 = SPACE_3XL;
+const AGENT_TASK_LINES: usize = 2;
 
 /// Reuse compact shared actions on the card's neutral field surface.
 fn checkout_action(
@@ -1088,19 +1091,11 @@ impl Sidebar {
                     div()
                         .flex()
                         .items_center()
-                        .gap(rpx(SPACE_XL))
+                        .gap(rpx(SPACE_SM))
                         .w_full()
                         .min_w_0()
                         .text_size(rpx(TEXT_MICRO))
                         .text_color(c::FG_DIM())
-                        .child(format!("Previous agents ({})", previous.len()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(rpx(SPACE_LG))
-                                .border_t_1()
-                                .border_color(c::BORDER_SOFT()),
-                        )
                         .child(icon("chev-down", ICON_SM, c::FG_DIM()).when(
                             show_previous,
                             |glyph| {
@@ -1108,7 +1103,15 @@ impl Sidebar {
                                     gpui::percentage(0.5),
                                 ))
                             },
-                        )),
+                        ))
+                        .child(format!("Previous agents ({})", previous.len()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(rpx(SPACE_LG))
+                                .border_t_1()
+                                .border_color(c::BORDER_SOFT()),
+                        ),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     let disclosure = this.checkout_panel.agent_disclosures.entry(id).or_default();
@@ -1803,10 +1806,26 @@ fn checkout_divider(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .my(rpx(SPACE_SM))
 }
 
-fn checkout_agent_row(
-    agent: &grove_core::codex::Subagent,
-    provider: &'static str,
-) -> gpui::Stateful<gpui::Div> {
+/// Presentation uses only observed provider text; terminal activity is not an outcome.
+#[derive(Debug, PartialEq, Eq)]
+struct AgentPresentation {
+    heading: String,
+    name: String,
+    activity: Option<String>,
+    status: &'static str,
+    detail: String,
+}
+
+fn normalized_agent_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn informative_agent_activity(text: &str) -> Option<String> {
+    let text = normalized_agent_text(text);
+    (!text.is_empty() && !text.eq_ignore_ascii_case("Activity unavailable")).then_some(text)
+}
+
+fn checkout_agent_presentation(agent: &grove_core::codex::Subagent) -> AgentPresentation {
     use grove_core::codex::SubagentStatus;
     let status = match agent.status {
         SubagentStatus::Working => "Working",
@@ -1814,9 +1833,66 @@ fn checkout_agent_row(
         SubagentStatus::Failed => "Failed",
         SubagentStatus::Unknown => "Unknown",
     };
+    let name = normalized_agent_text(&agent.name);
+    let name = if name.is_empty() {
+        "Agent".into()
+    } else {
+        name
+    };
+    let task = agent
+        .task
+        .as_deref()
+        .map(normalized_agent_text)
+        .filter(|s| !s.is_empty());
+    let observed = informative_agent_activity(&agent.activity);
+    let heading = task
+        .clone()
+        .or_else(|| observed.clone())
+        .unwrap_or_else(|| name.clone());
+    let activity = observed
+        .filter(|text| !text.eq_ignore_ascii_case(&heading))
+        .map(|text| {
+            let prefix = if agent.status == SubagentStatus::Working {
+                "Now"
+            } else {
+                "Latest"
+            };
+            format!("{prefix}: {text}")
+        });
+    let mut detail = format!("{name} · {status}");
+    if let Some(task) = task {
+        detail.push_str(" · Task: ");
+        detail.push_str(&task);
+    }
+    if let Some(observed) = informative_agent_activity(&agent.activity) {
+        detail.push_str(" · Latest observed activity: ");
+        detail.push_str(&observed);
+    }
+    AgentPresentation {
+        heading,
+        name,
+        activity,
+        status,
+        detail,
+    }
+}
+
+fn checkout_agent_row(
+    agent: &grove_core::codex::Subagent,
+    provider: &'static str,
+) -> gpui::Stateful<gpui::Div> {
+    use grove_core::codex::SubagentStatus;
+    let presentation = checkout_agent_presentation(agent);
     let name_id = agent.id.clone();
+    let task_id = agent.id.clone();
+    let activity_id = agent.id.clone();
     let status_id = agent.id.clone();
-    let detail = format!("{} · {} · {}", agent.name, agent.activity, status);
+    let provider_label = if provider == Agent::Claude.icon_name() {
+        "Claude"
+    } else {
+        "Codex"
+    };
+    let detail = format!("{provider_label} · {}", presentation.detail);
     div()
         .id(SharedString::from(format!("checkout-agent-{}", agent.id)))
         .role(gpui::Role::Group)
@@ -1824,34 +1900,70 @@ fn checkout_agent_row(
         .focus_visible(|style| style.bg(c::BG_HOVER()))
         .aria_label(detail.clone())
         .tooltip(move |window, cx| tooltip(detail.clone(), window).build(window, cx))
-        .h(rpx(AGENT_ROW_H))
         .px(rpx(SPACE_2XL))
+        .py(rpx(SPACE_MD))
         .flex()
-        .items_center()
-        .gap(rpx(SPACE_XL))
+        .flex_col()
+        .gap(rpx(SPACE_XS))
         .min_w_0()
         .text_size(rpx(TEXT_SMALL))
         .text_color(c::FG_DIM())
-        .child(icon(provider, ICON_LG, c::FG_DIM()))
+        .line_height(rpx(AGENT_LINE_H))
         .child(
             div()
-                .debug_selector(move || format!("checkout-agent-name-{name_id}"))
-                .flex_1()
+                .debug_selector(move || format!("checkout-agent-task-{task_id}"))
+                .w_full()
                 .min_w_0()
-                .truncate()
-                .child(agent.name.clone()),
+                .whitespace_normal()
+                .line_clamp(AGENT_TASK_LINES)
+                .text_color(c::FG())
+                .child(presentation.heading),
         )
         .child(
             div()
-                .debug_selector(move || format!("checkout-agent-status-{status_id}"))
-                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_MD))
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .child(icon(provider, ICON_SM, c::FG_DIM())),
+                )
+                .child(
+                    div()
+                        .debug_selector(move || format!("checkout-agent-name-{name_id}"))
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(rpx(TEXT_MICRO))
+                        .child(presentation.name),
+                )
+                .child(
+                    div()
+                        .debug_selector(move || format!("checkout-agent-status-{status_id}"))
+                        .w(rpx(AGENT_STATUS_W))
+                        .flex_shrink_0()
+                        .text_right()
+                        .text_size(rpx(TEXT_MICRO))
+                        .text_color(if agent.status == SubagentStatus::Failed {
+                            c::FORM_ERROR()
+                        } else {
+                            c::FG_DIM()
+                        })
+                        .child(presentation.status),
+                ),
+        )
+        // One line is reserved so the first activity update does not move following rows.
+        .child(
+            div()
+                .debug_selector(move || format!("checkout-agent-activity-{activity_id}"))
+                .h(rpx(AGENT_LINE_H))
+                .w_full()
+                .min_w_0()
+                .truncate()
                 .text_size(rpx(TEXT_MICRO))
-                .text_color(if agent.status == SubagentStatus::Failed {
-                    c::FORM_ERROR()
-                } else {
-                    c::FG_DIM()
-                })
-                .child(status),
+                .child(presentation.activity.unwrap_or_default()),
         )
 }
 
@@ -2322,12 +2434,12 @@ mod tests {
             let (handle, _actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
-                rich_plans: Default::default(),
+                rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
                 provider,
-                composer: Default::default(),
+                composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
                 key: "agents-fixture".into(),
                 project: "Checkout QA".into(),
@@ -2361,11 +2473,11 @@ mod tests {
                         .registry
                         .clone()
                         .update(cx, |registry, _| {
-                            registry.attach_codex(id, session.clone(), handle)
+                            registry.attach_codex(id, session.clone(), handle);
                         });
                     sidebar.checkout_panel.expanded = true;
                     cx.notify();
-                })
+                });
             });
             cx.run_until_parked();
             // The observer is installed even before a child has appeared.
@@ -2380,7 +2492,7 @@ mod tests {
                         name: format!("A deliberately long agent name for {id}"),
                         activity: "Inspecting checkout layout".into(),
                         role: None,
-                        task: None,
+                        task: Some("Inspect checkout layout and verify long task headings remain readable at narrow widths".into()),
                         status,
                     };
                     session.state.saved.items = vec![
@@ -2420,7 +2532,7 @@ mod tests {
                         },
                     ];
                     cx.notify();
-                })
+                });
             });
             cx.run_until_parked();
             cx.update(|window, cx| {
@@ -2434,6 +2546,16 @@ mod tests {
                 .unwrap();
             assert!(name.right() <= status.left());
             assert!(status.right() < card.right());
+            let task = cx.debug_bounds("checkout-agent-task-old-running").unwrap();
+            let activity = cx
+                .debug_bounds("checkout-agent-activity-old-running")
+                .unwrap();
+            assert!(task.size.height <= gpui::px(AGENT_LINE_H * AGENT_TASK_LINES as f32));
+            assert!(task.bottom() <= name.top());
+            assert!(activity.top() >= name.bottom());
+            assert_eq!(activity.size.height, gpui::px(AGENT_LINE_H));
+            assert!(task.left() >= card.left() && task.right() < card.right());
+            assert!(activity.right() < card.right());
             let divider = cx.debug_bounds("checkout-agents-divider").unwrap();
             assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
             assert!(divider.right() >= card.right() - gpui::px(SPACE_XS));
@@ -2459,7 +2581,23 @@ mod tests {
                     [&id]
                     .show_all)
             );
+            // Expanded activity rows use the existing checkout scroll region.
+            let panel = cx.debug_bounds("checkout-panel").unwrap();
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: panel.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-2000.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
             let previous = cx.debug_bounds("checkout-agents-previous").unwrap();
+            assert!(
+                previous.bottom() <= panel.bottom(),
+                "scroll reveals previous agents"
+            );
             cx.simulate_click(previous.center(), gpui::Modifiers::default());
             cx.run_until_parked();
             cx.update(|window, cx| {
@@ -2475,7 +2613,7 @@ mod tests {
                 sidebar.update(cx, |sidebar, cx| {
                     sidebar.checkout_panel.expanded = false;
                     cx.notify();
-                })
+                });
             });
             cx.run_until_parked();
             cx.update(|window, cx| {
@@ -2495,6 +2633,52 @@ mod tests {
                 .read(cx)
                 .agents_in_checkout));
         }
+    }
+
+    #[test]
+    fn checkout_agent_presentation_uses_observed_text_without_duplicates() {
+        use grove_core::codex::{Subagent, SubagentStatus};
+        let mut agent = Subagent {
+            id: "one".into(),
+            name: " Agent 1 ".into(),
+            task: Some("  Fix\n retries  ".into()),
+            activity: " Inspecting\n tests ".into(),
+            role: None,
+            status: SubagentStatus::Working,
+        };
+        let working = checkout_agent_presentation(&agent);
+        assert_eq!(working.heading, "Fix retries");
+        assert_eq!(working.activity.as_deref(), Some("Now: Inspecting tests"));
+        assert!(working.detail.contains("Task: Fix retries"));
+        for (status, label) in [
+            (SubagentStatus::Completed, "Done"),
+            (SubagentStatus::Failed, "Failed"),
+            (SubagentStatus::Unknown, "Unknown"),
+        ] {
+            agent.status = status;
+            let row = checkout_agent_presentation(&agent);
+            assert_eq!(row.status, label);
+            assert_eq!(row.activity.as_deref(), Some("Latest: Inspecting tests"));
+        }
+        agent.activity = "fix RETRIES".into();
+        assert_eq!(checkout_agent_presentation(&agent).activity, None);
+        agent.task = Some(" \n ".into());
+        let fallback = checkout_agent_presentation(&agent);
+        assert_eq!(fallback.heading, "fix RETRIES");
+        assert_eq!(fallback.activity, None);
+        for placeholder in ["", " \n ", " Activity unavailable ", "ACTIVITY UNAVAILABLE"] {
+            agent.activity = placeholder.into();
+            assert_eq!(checkout_agent_presentation(&agent).heading, "Agent 1");
+            assert_eq!(checkout_agent_presentation(&agent).activity, None);
+        }
+        agent.name.clear();
+        assert_eq!(checkout_agent_presentation(&agent).heading, "Agent");
+        agent.task = Some("Long task ".repeat(100));
+        agent.activity = "Long observation ".repeat(100);
+        let long = checkout_agent_presentation(&agent);
+        assert!(long.heading.len() > 900);
+        assert!(long.detail.contains(long.heading.as_str()));
+        assert!(long.detail.contains(agent.activity.trim()));
     }
 
     #[test]

@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "plan_id": "agent-sidebar-activity",
+  "revision_id": "r1-20261022-task-first",
+  "title": "Show each agent’s task and latest activity",
+  "sources": [
+    {
+      "attribution": "User request and Image 1",
+      "text": "We show agents on the right panel. Image 1  However, we don't show what each agent did/does/is doing at a glance. Let's plan a fix fors this."
+    },
+    {
+      "attribution": "Source inspection",
+      "text": "src/views/sidebar/checkout_panel.rs:1000–1125,1756–1845 renders grouped agent rows with name, status and activity tooltip. crates/grove-core/src/codex.rs:65–132 already holds task and activity; Codex collaboration and Claude agent registration populate task. Source evidence does not establish live provider behavior."
+    },
+    {
+      "attribution": "UI contract",
+      "text": "DESIGN.md and .agents/skills/grove-ui/SKILL.md: native checkout card, provider identity, fixed status space, session-owned disclosures, accessibility and native rendering checks."
+    }
+  ],
+  "changes": {
+    "files": 2,
+    "changed": 2,
+    "new": 0,
+    "deleted": 0
+  },
+  "claims": [
+    {
+      "id": "task-first",
+      "text": "Lead with the assigned task so agents are distinguishable at a glance.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "agent-list",
+            "kind": "column",
+            "text": "Proposed hierarchy · illustrative, not a pixel rendering",
+            "children": [
+              {
+                "id": "working",
+                "kind": "surface",
+                "text": "Illustrative content",
+                "children": [
+                  {
+                    "id": "working-task",
+                    "kind": "text",
+                    "text": "Fix authentication retry handling"
+                  },
+                  {
+                    "id": "working-meta",
+                    "kind": "text",
+                    "text": "Codex · Agent 1     Working"
+                  },
+                  {
+                    "id": "working-activity",
+                    "kind": "text",
+                    "text": "Now: Inspecting refresh-token tests"
+                  }
+                ]
+              },
+              {
+                "id": "done",
+                "kind": "surface",
+                "text": "Illustrative content",
+                "children": [
+                  {
+                    "id": "done-task",
+                    "kind": "text",
+                    "text": "Add build-secret support"
+                  },
+                  {
+                    "id": "done-meta",
+                    "kind": "text",
+                    "text": "Claude · Agent 2     Done"
+                  },
+                  {
+                    "id": "done-activity",
+                    "kind": "text",
+                    "text": "Latest: Ran the deployment checks"
+                  }
+                ]
+              },
+              {
+                "id": "failed",
+                "kind": "surface",
+                "text": "Illustrative content",
+                "children": [
+                  {
+                    "id": "failed-task",
+                    "kind": "text",
+                    "text": "Audit release permissions"
+                  },
+                  {
+                    "id": "failed-meta",
+                    "kind": "text",
+                    "text": "Codex · Agent 3     Failed"
+                  },
+                  {
+                    "id": "failed-activity",
+                    "kind": "text",
+                    "text": "Latest: Permission check returned an error"
+                  }
+                ]
+              },
+              {
+                "id": "unknown",
+                "kind": "surface",
+                "text": "Illustrative content",
+                "children": [
+                  {
+                    "id": "unknown-task",
+                    "kind": "text",
+                    "text": "Investigate startup delay"
+                  },
+                  {
+                    "id": "unknown-meta",
+                    "kind": "text",
+                    "text": "Claude · Agent 4     Unknown"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "decisions": [
+        {
+          "id": "row-density",
+          "prompt": "How much activity should each agent show in the panel?",
+          "options": [
+            {
+              "id": "task-and-activity",
+              "label": "Task + latest activity (Recommended)",
+              "description": "Show a stable task heading, identity/status line, and one activity line when it adds information. Taller rows give an immediate sense of progress."
+            },
+            {
+              "id": "compact-task",
+              "label": "Compact task rows",
+              "description": "Show the task and identity/status only. Keep changing activity in the tooltip to preserve a shorter panel."
+            }
+          ],
+          "default": "task-and-activity"
+        }
+      ],
+      "children": [
+        {
+          "id": "content-hierarchy",
+          "text": "Keep the assignment stable while progress changes beneath it.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Task: at most two lines. Metadata: provider identity glyph and agent name, with a reserved status slot. Activity: at most one line when distinct from the task. Working uses “Now”; finished/failed agents use “Latest”. These are the latest observed provider text, never generated summaries or proof of a successful task outcome. Unknown remains explicit; do not imply that stale activity is current."
+          }
+        },
+        {
+          "id": "fallbacks",
+          "text": "Use available provider text without fabricating missing work.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Heading fallback: nonempty normalized task → informative activity → provider name / Agent N. Skip duplicate activity. Keep full available task/activity in the shared tooltip and accessible name. When useful, disclose that activity is unavailable; avoid repeating empty-state copy on every row. Existing capped provider text cannot reveal content Grove never received."
+          }
+        }
+      ]
+    },
+    {
+      "id": "fit-existing-card",
+      "text": "Preserve navigation, status clarity and session ownership as rows grow.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Keep provider identity glyphs and semantic statuses. Long task/activity text yields before the fixed status area. Preserve stable agent ordering, current/previous grouping, running count, Show more, Previous agents and per-session disclosure preferences. Add no new row click action. Retain keyboard focus on existing controls; full text must be accessible without requiring hover. Expanded checkout content must remain outside the composer and fit narrow layouts."
+      },
+      "children": [
+        {
+          "id": "owning-view",
+          "text": "Implement the presentation in the checkout card using existing native primitives.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "row-helper",
+                "title": "Task/activity presentation helper",
+                "detail": "Derive heading and optional activity from existing Subagent fields, preserving status semantics and grouping. Replace fixed 32px row assumptions with bounded content height and local named geometry constants.",
+                "source": "src/views/sidebar/checkout_panel.rs:1756"
+              },
+              {
+                "id": "row-render",
+                "title": "Render task-first rows",
+                "detail": "Use existing type tokens, theme colors, provider glyphs and shared tooltip/status recipes; preserve reserved status space and narrow-card behavior.",
+                "source": "src/views/sidebar/checkout_panel.rs:1809"
+              },
+              {
+                "id": "contract",
+                "title": "Record the approved hierarchy",
+                "detail": "Update the checkout-card agent invariant alongside the implementation after the density decision. No skill change is expected.",
+                "source": "DESIGN.md"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "verification",
+      "text": "Verify displayed content and real provider updates separately for Codex and Claude.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Codex: UNTESTED live; source inspection only. Claude: UNTESTED live; source inspection only. During implementation, exercise real spawn → activity → completion, failure and restart for each provider, plus reload and session switch. Record each as verified, unsupported or untested with method/blocker. Fixtures prove local presentation logic only. Do not infer live provider parity from common fields."
+      },
+      "children": [
+        {
+          "id": "logic-checks",
+          "text": "Focused checks catch wrong fallbacks and stale session content.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Cover empty/whitespace task, activity-only agents, duplicate task/activity, long text, Working/Done/Failed/Unknown, late activity after completion, stable ordering, current/previous grouping and session ownership. Run relevant repository checks and conformance; orchestrator reads raw results independently."
+          }
+        },
+        {
+          "id": "native-checks",
+          "text": "Inspect the actual native card at narrow and wide widths.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Record build/worktree and screenshot/interaction evidence. Check dark/light, long task and activity text, all affected statuses, keyboard focus and disclosures, tooltip/full accessible text, reduced motion, Show more/Previous agents, and no clipping, status overlap or composer obstruction. Report affected supported platforms as exercised or untested; no platform-specific behavior change is planned."
+          }
+        }
+      ]
+    }
+  ],
+  "scope": [
+    "Plan only. No application implementation, builds or installation. Native Review response and Send response resolve the density decision; feedback does not authorize implementation.",
+    "Estimated initial implementation: src/views/sidebar/checkout_panel.rs (presentation/helper and focused tests) plus DESIGN.md. No persistence schema, AI summarization or additional model calls. Touch core provider code only if live evidence establishes a missing-field defect, then revise scope.",
+    "After later implementation authorization: complete relevant checks and native QA, then run ./install.sh once at the selected final delivery endpoint unless the user defers installation. No release is included."
+  ]
+}

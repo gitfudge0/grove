@@ -1818,6 +1818,7 @@ impl Sidebar {
             .flex_shrink_0()
             .flex()
             .items_center()
+            .gap(rpx(SPACE_SM))
             .justify_center()
             .rounded(rpx(RADIUS_CONTROL))
             .hover(move |s| {

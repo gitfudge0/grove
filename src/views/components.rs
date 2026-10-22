@@ -410,7 +410,7 @@ pub fn question_disclosure(
         .min_w_0()
         .flex()
         .items_center()
-        .gap(rpx(SPACE_LG))
+        .gap(rpx(SPACE_SM))
         .px(rpx(SPACE_3XL))
         .py(rpx(SPACE_2XL))
         .border_t_1()
@@ -418,6 +418,11 @@ pub fn question_disclosure(
         .when(expanded, |row| row.bg(c::FIELD_FILL()))
         .hover(|row| row.bg(c::BG_HOVER()))
         .focus_visible(|row| row.bg(c::BG_HOVER()))
+        .child(crate::icons::icon(
+            if expanded { "chev-down" } else { "chev-right" },
+            ICON_SM,
+            c::FG_DIM(),
+        ))
         .child(
             div()
                 .flex_1()
@@ -433,11 +438,6 @@ pub fn question_disclosure(
                         .child(summary),
                 ),
         )
-        .child(crate::icons::icon(
-            if expanded { "chev-down" } else { "chev-right" },
-            ICON_SM,
-            c::FG_DIM(),
-        ))
 }
 
 /// Neutral Settings action and choice geometry. Selection never changes its border.
@@ -744,37 +744,94 @@ pub fn attached_validation(
 #[cfg(test)]
 mod action_recipe_tests {
     use super::*;
-    struct SettingsProbe;
-    impl gpui::Render for SettingsProbe {
+    struct ActionProbe {
+        rem: f32,
+        disabled: bool,
+        loading: bool,
+    }
+    impl gpui::Render for ActionProbe {
         fn render(
             &mut self,
-            _: &mut gpui::Window,
-            _: &mut gpui::Context<Self>,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
         ) -> impl IntoElement {
-            settings_control("settings-gap-probe", "Refresh now", false, true)
+            use gpui_component::Disableable;
+            window.set_rem_size(gpui::px(self.rem));
+            div()
+                .flex()
+                .flex_col()
+                .items_start()
                 .child(
-                    div()
-                        .debug_selector(|| "settings-probe-glyph".into())
-                        .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM())),
+                    settings_control(
+                        "settings-gap-probe",
+                        "Retry media preview",
+                        false,
+                        !self.disabled,
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-probe-glyph".into())
+                            .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM())),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "settings-probe-label".into())
+                            .child("Retry"),
+                    ),
                 )
                 .child(
-                    div()
-                        .debug_selector(|| "settings-probe-label".into())
-                        .child("Refresh now"),
+                    transcript_action("dense-gap-probe", "Next lines", false, window, cx)
+                        // Keep the label measurable while exercising the real vendor icon slot.
+                        .icon_only()
+                        .icon(gpui_component::Icon::default().path("icons/arrow-right.svg"))
+                        .debug_selector(|| "dense-probe-button".into())
+                        .disabled(self.disabled)
+                        .loading(self.loading)
+                        .child(
+                            div()
+                                .debug_selector(|| "dense-probe-label".into())
+                                .child("Next lines"),
+                        ),
                 )
         }
     }
     #[gpui::test]
-    fn settings_action_keeps_positive_catalog_icon_label_gap(cx: &mut gpui::TestAppContext) {
+    fn text_icon_actions_keep_leading_gap_at_zoom_and_inactive_states(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(gpui_component::init);
-        let (_, cx) = cx.add_window_view(|_, _| SettingsProbe);
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
-        let glyph = cx.debug_bounds("settings-probe-glyph").unwrap();
-        let label = cx.debug_bounds("settings-probe-label").unwrap();
-        assert_eq!(f32::from(label.left() - glyph.right()), SPACE_SM);
-        assert_eq!(f32::from(glyph.size.width), ICON_SM);
+        for rem in [crate::zoom::REM_BASE, 20.0] {
+            let mut rest_label_offset = None;
+            for (disabled, loading) in [(false, false), (true, false), (false, true)] {
+                let (_, cx) = cx.add_window_view(|_, _| ActionProbe {
+                    rem,
+                    disabled,
+                    loading,
+                });
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                let scale = rem / crate::zoom::REM_BASE;
+                let glyph = cx.debug_bounds("settings-probe-glyph").unwrap();
+                let label = cx.debug_bounds("settings-probe-label").unwrap();
+                assert_eq!(f32::from(label.left() - glyph.right()), SPACE_SM * scale);
+                assert_eq!(f32::from(glyph.size.width), ICON_SM * scale);
+                let button = cx.debug_bounds("dense-probe-button").unwrap();
+                let label = cx.debug_bounds("dense-probe-label").unwrap();
+                // Dense custom variants have no border. Their natural-width content
+                // starts after shared padding, then the vendor's actual icon slot.
+                let label_offset = f32::from(label.left() - button.left());
+                assert_eq!(
+                    label_offset - (SPACE_LG + ICON_SM) * scale,
+                    SPACE_SM * scale
+                );
+                assert_eq!(
+                    *rest_label_offset.get_or_insert(label_offset),
+                    label_offset,
+                    "disabled/loading must not move the label"
+                );
+            }
+        }
     }
 }

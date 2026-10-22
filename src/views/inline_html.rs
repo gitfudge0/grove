@@ -104,10 +104,19 @@ fn closed_fence(source: &str) -> bool {
         })
 }
 
+/// Agents often lead with the report marker, so a BOM and comments may precede
+/// the doctype.
 fn complete_document(source: &str) -> bool {
-    let lower = source.trim().to_ascii_lowercase();
+    let lower = source.to_ascii_lowercase();
+    let mut start = lower.trim_start_matches('\u{feff}').trim_start();
+    while let Some(rest) = start.strip_prefix("<!--") {
+        let Some(end) = rest.find("-->") else {
+            return false;
+        };
+        start = rest[end + 3..].trim_start();
+    }
     source.len() <= MAX_HTML_BYTES
-        && (lower.starts_with("<!doctype html") || lower.starts_with("<html"))
+        && (start.starts_with("<!doctype html") || start.starts_with("<html"))
         && lower.contains("</html>")
 }
 
@@ -115,7 +124,12 @@ fn parse(node: &markdown_ast::Node, cx: &MarkdownParseContext<'_>) -> Option<Mar
     let markdown_ast::Node::Code(code) = node else {
         return None;
     };
-    if !code.lang.as_deref()?.eq_ignore_ascii_case("html") {
+    // Untagged fences qualify too; the complete-document check still applies.
+    if !code
+        .lang
+        .as_deref()
+        .is_none_or(|lang| lang.is_empty() || lang.eq_ignore_ascii_case("html"))
+    {
         return None;
     }
     let markdown = cx.node_source(node)?;
@@ -1769,6 +1783,16 @@ mod tests {
         }
         assert!(complete_document(
             "<!DOCTYPE html><html><body></body></html>"
+        ));
+        for source in [
+            "<!-- grove:integrated-report -->\n<!doctype html><html></html>",
+            "\u{feff}  <!-- a --><!--b-->\n<HTML></HTML>",
+        ] {
+            assert!(complete_document(source));
+        }
+        assert!(!complete_document("<!-- unterminated <html></html>"));
+        assert!(!complete_document(
+            "<!-- note --><div>fragment</div></html>"
         ));
         assert!(!complete_document("<div>fragment</div>"));
         assert!(!complete_document("<html><body>streaming"));

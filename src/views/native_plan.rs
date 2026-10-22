@@ -616,7 +616,7 @@ impl NativePlan {
                                     window,
                                     cx,
                                 )
-                                .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
+                                .icon(gpui_component::Icon::default().path("icons/arrow-right.svg"))
                                 .disabled((page + 1) * LINES_PER_PAGE >= lines.len())
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {

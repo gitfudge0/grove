@@ -2009,17 +2009,17 @@ impl CodexView {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap(rpx(SPACE_LG))
+            .gap(rpx(SPACE_SM))
             .text_size(rpx(TEXT_SMALL))
             .text_color(c::FG_DIM())
             .whitespace_nowrap()
             .focus_visible(|style| style.bg(c::MENU_HOVER()))
-            .child(cluster)
             .child(crate::icons::icon(
                 if expanded { "chev-down" } else { "chev-right" },
                 ICON_MD,
                 c::FG_MUTE(),
             ))
+            .child(cluster)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if action_key(event) {
                     this.toggle_tasks(cx);
