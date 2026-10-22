@@ -2,6 +2,7 @@
 
 pub mod agent;
 mod agent_guidance;
+pub mod app_theme;
 pub mod attention;
 pub mod checkout_git;
 pub mod checkout_pr;

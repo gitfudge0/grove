@@ -64,15 +64,25 @@ pub fn boot(cx: &mut gpui::App) {
         tracing::info!(repaired, "grove-gpui: repaired stale session-meta projects");
     }
 
-    // 4. The two built-in terminal palettes are fixed. The OS mode arrives with the window.
+    // 4. Resolve the standalone theme; legacy system appearance is seeded by the window.
     let appearance = store.appearance();
-    let follow_system = appearance == AppearancePreference::System;
+    let follow_system = store
+        .selected_theme
+        .as_deref()
+        .and_then(grove_core::app_theme::by_id)
+        .is_none()
+        && appearance == AppearancePreference::System;
     let light = appearance == AppearancePreference::Light;
-    theme::set_by_name(if light {
-        DEFAULT_LIGHT_THEME
-    } else {
-        DEFAULT_DARK_THEME
-    });
+    theme::set_by_name(store.selected_theme_id(light));
+    if store.selected_theme.is_none() && !follow_system {
+        let id = store.selected_theme_id(light).to_string();
+        let mut migrated = store.clone();
+        migrated.selected_theme = Some(id);
+        match storage::save(&migrated) {
+            Ok(()) => store = migrated,
+            Err(error) => tracing::warn!(%error, "could not save legacy theme migration"),
+        }
+    }
 
     // 7. Clamped so a hand-edited store.json can't make the chrome unusable.
     let zoom = resolve_zoom(&store);
@@ -92,7 +102,6 @@ pub fn boot(cx: &mut gpui::App) {
     crate::telemetry::start_heartbeat();
 
     // 8. In dependency order.
-    crate::theme::set_chrome_light(light);
     cx.set_global(SettingsState::new(store));
     cx.set_global(ThemeState::new(
         follow_system,

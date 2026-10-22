@@ -5,33 +5,215 @@
 // File-level: this module is the colour-role vocabulary — a role is declared because the palette defines it, not because a widget draws it today.
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{cell::RefCell, sync::Arc};
 
 use gpui::{BorrowAppContext as _, Hsla, Rgba, WindowAppearance};
 use grove_core::theme;
 
-/// Fixed terminal palettes for dark and light appearance.
-pub const DEFAULT_DARK_THEME: &str = "tokyonight-storm";
-pub const DEFAULT_LIGHT_THEME: &str = "tokyonight-day";
+pub const DEFAULT_DARK_THEME: &str = "grove-dark";
+pub const DEFAULT_LIGHT_THEME: &str = "grove-light";
 
-// App chrome follows the reference palette independently from PTY themes.
-static CHROME_LIGHT: AtomicBool = AtomicBool::new(false);
-
-pub fn set_chrome_light(light: bool) {
-    CHROME_LIGHT.store(light, Ordering::Relaxed);
+/// Semantic application roles; these are deliberately separate from ANSI colors.
+#[derive(Clone, Copy)]
+enum ChromeRole {
+    Background,
+    Rail,
+    Strip,
+    Hover,
+    Border,
+    StrongBorder,
+    Foreground,
+    Supporting,
+    Quiet,
+    Info,
+    Agent,
+    Success,
+    Warning,
+    Field,
+    Error,
+    Switch,
+    Scrim,
 }
 
-fn chrome(dark: u32, light: u32) -> Hsla {
-    gpui::rgb(if CHROME_LIGHT.load(Ordering::Relaxed) {
-        light
-    } else {
-        dark
+struct ResolvedChrome {
+    light: bool,
+    grove: bool,
+    background: Rgba,
+    foreground: Rgba,
+    colors: Option<[Hsla; 17]>,
+}
+
+impl ResolvedChrome {
+    fn from_theme(theme: &theme::Theme) -> Self {
+        Self {
+            light: theme.kind == theme::ThemeKind::Light,
+            grove: theme.name.starts_with("grove-")
+                || grove_core::app_theme::by_id(&theme.name).is_none(),
+            background: ic(theme.bg),
+            foreground: ic(theme.fg),
+            colors: None,
+        }
+    }
+
+    fn resolved(mut self) -> Self {
+        use ChromeRole::{
+            Agent, Background, Border, Error, Field, Foreground, Hover, Info, Quiet, Rail, Scrim,
+            Strip, StrongBorder, Success, Supporting, Switch, Warning,
+        };
+        self.colors = Some(
+            [
+                Background,
+                Rail,
+                Strip,
+                Hover,
+                Border,
+                StrongBorder,
+                Foreground,
+                Supporting,
+                Quiet,
+                Info,
+                Agent,
+                Success,
+                Warning,
+                Field,
+                Error,
+                Switch,
+                Scrim,
+            ]
+            .map(|role| self.color(role)),
+        );
+        self
+    }
+
+    fn color(&self, role: ChromeRole) -> Hsla {
+        use ChromeRole::{
+            Agent, Background, Border, Error, Field, Foreground, Hover, Info, Quiet, Rail, Scrim,
+            Strip, StrongBorder, Success, Supporting, Switch, Warning,
+        };
+        if let Some(colors) = &self.colors {
+            return colors[role as usize];
+        }
+        let rgb = |dark, light| gpui::rgb(if self.light { light } else { dark });
+        if self.grove {
+            return match role {
+                Background => rgb(0x111111, 0xffffff),
+                Rail => rgb(0x171716, 0xf7f7f8),
+                Strip => rgb(0x111111, 0xf7f7f8),
+                Hover => rgb(0x232327, 0xededee),
+                Border => rgb(0x34343a, 0xdedee0),
+                StrongBorder => rgb(0x515158, 0xc3c3c7),
+                Foreground => rgb(0xf7f7f8, 0x141416),
+                Supporting => rgb(0xaaaab2, 0x66666d),
+                Quiet => rgb(0x707078, 0x707078),
+                Info => rgb(0x79a9e8, 0x79a9e8),
+                Agent => rgb(0x8b5cf6, 0x7c3aed),
+                Success => rgb(0x78d98b, 0x78d98b),
+                Warning => rgb(0xe0ad63, 0xe0ad63),
+                Field => rgb(0x1b1b1b, 0xefefef),
+                Error => rgb(0xef7d8e, 0xb6384c),
+                Switch => rgb(0x39b76c, 0x39b76c),
+                Scrim => rgb(0x0d0d0f, 0x141416),
+            }
+            .into();
+        }
+        // Surface hierarchy derives from each catalog's base neutrals. Status hues
+        // retain Grove's meaning and use accessible foregrounds on light themes.
+        let result = match role {
+            Background => self.background,
+            Foreground => self.foreground,
+            Rail | Strip => mix(self.background, self.foreground, 0.025),
+            Hover => mix(self.background, self.foreground, 0.10),
+            Field => mix(self.background, self.foreground, 0.055),
+            Border => mix(self.background, self.foreground, 0.20),
+            StrongBorder => mix(self.background, self.foreground, 0.34),
+            Supporting => mix(self.background, self.foreground, 0.78),
+            Quiet => mix(self.background, self.foreground, 0.65),
+            Info => rgb(0x79a9e8, 0x2465a5),
+            Agent => rgb(0xa78bfa, 0x7c3aed),
+            Success | Switch => rgb(0x78d98b, 0x237a42),
+            Warning => rgb(0xe0ad63, 0x896009),
+            Error => rgb(0xef7d8e, 0xb6384c),
+            Scrim => rgb(0x0d0d0f, 0x141416),
+        };
+        match role {
+            Foreground | Supporting | Quiet | Info | Agent | Success | Warning | Error => {
+                self.readable(result).into()
+            }
+            _ => result.into(),
+        }
+    }
+
+    fn readable(&self, candidate: Rgba) -> Rgba {
+        let surfaces = [
+            self.background,
+            mix(self.background, self.foreground, 0.055),
+            mix(self.background, self.foreground, 0.10),
+        ];
+        let endpoint = gpui::rgb(if self.light { 0x000000 } else { 0xffffff });
+        for step in 0..=100 {
+            let color = mix(candidate, endpoint, step as f32 / 100.0);
+            if surfaces
+                .iter()
+                .all(|background| contrast(color, *background) >= 4.5)
+            {
+                return color;
+            }
+        }
+        endpoint
+    }
+}
+
+fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let linear = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = |c: Rgba| 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b);
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+thread_local! {
+    static CHROME: RefCell<Option<(u64, ResolvedChrome)>> = const { RefCell::new(None) };
+    static HIGHLIGHT: RefCell<Option<(u64, Arc<gpui_component::highlighter::HighlightTheme>)>> = const { RefCell::new(None) };
+}
+
+/// Swatches resolve the same semantic neutrals as live chrome, without activation.
+pub fn swatches(palette: &theme::Theme) -> [Hsla; 4] {
+    let chrome = ResolvedChrome::from_theme(palette);
+    [
+        chrome.color(ChromeRole::Background),
+        chrome.color(ChromeRole::Foreground),
+        chrome.color(ChromeRole::Info),
+        chrome.color(ChromeRole::Agent),
+    ]
+}
+
+fn chrome(role: ChromeRole) -> Hsla {
+    let generation = theme::generation();
+    CHROME.with(|cache| {
+        if cache
+            .borrow()
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != generation)
+        {
+            *cache.borrow_mut() = Some((
+                generation,
+                theme::with_current(|theme| ResolvedChrome::from_theme(theme).resolved()),
+            ));
+        }
+        cache.borrow().as_ref().map_or_else(
+            || theme::with_current(|t| ResolvedChrome::from_theme(t).color(role)),
+            |(_, palette)| palette.color(role),
+        )
     })
-    .into()
 }
 
 pub fn BORDER_STRONG() -> Hsla {
-    chrome(0x515158, 0xc3c3c7)
+    chrome(ChromeRole::StrongBorder)
 }
 pub fn WINDOW_CLOSE() -> Hsla {
     gpui::rgb(0xff5f57).into()
@@ -93,65 +275,47 @@ fn base_fg() -> Rgba {
 }
 
 pub fn BG() -> Hsla {
-    chrome(0x111111, 0xffffff)
+    chrome(ChromeRole::Background)
 }
 
 pub fn BG_RAIL() -> Hsla {
-    chrome(0x171716, 0xf7f7f8)
+    chrome(ChromeRole::Rail)
 }
 
 /// Sidebar tint over the compositor's blurred window background.
 pub fn BG_RAIL_GLASS() -> Hsla {
-    alpha(
-        BG_RAIL(),
-        if CHROME_LIGHT.load(Ordering::Relaxed) {
-            0.54
-        } else {
-            0.50
-        },
-    )
+    alpha(BG_RAIL(), if !is_dark() { 0.54 } else { 0.50 })
 }
 
 pub fn BG_STRIP() -> Hsla {
-    chrome(0x111111, 0xf7f7f8)
+    chrome(ChromeRole::Strip)
 }
 
 pub fn BG_HOVER() -> Hsla {
-    chrome(0x232327, 0xededee)
+    chrome(ChromeRole::Hover)
 }
 
 /// Neutral fill for dense menu hover and keyboard navigation.
 pub fn MENU_HOVER() -> Hsla {
-    chrome(0x232327, 0xededee)
+    chrome(ChromeRole::Hover)
 }
 
 pub fn BG_HL() -> Hsla {
-    chrome(0x232327, 0xededee)
+    chrome(ChromeRole::Hover)
 }
 
 pub fn BORDER() -> Hsla {
-    chrome(0x34343a, 0xdedee0)
+    chrome(ChromeRole::Border)
 }
 pub fn BORDER_SOFT() -> Hsla {
-    alpha(
-        FG(),
-        if CHROME_LIGHT.load(Ordering::Relaxed) {
-            0.09
-        } else {
-            0.08
-        },
-    )
+    alpha(FG(), if !is_dark() { 0.09 } else { 0.08 })
 }
 
 /// Dark themes dim toward black; light themes dim toward the foreground so the wash stays visible on near-white backgrounds.
 pub fn SCRIM() -> Hsla {
     alpha(
-        chrome(0x0d0d0f, 0x141416),
-        if CHROME_LIGHT.load(Ordering::Relaxed) {
-            0.38
-        } else {
-            0.76
-        },
+        chrome(ChromeRole::Scrim),
+        if !is_dark() { 0.38 } else { 0.76 },
     )
 }
 
@@ -166,23 +330,23 @@ pub fn is_dark() -> bool {
 }
 
 pub fn FG() -> Hsla {
-    chrome(0xf7f7f8, 0x141416)
+    chrome(ChromeRole::Foreground)
 }
 pub fn FG_DIM() -> Hsla {
-    chrome(0xaaaab2, 0x66666d)
+    chrome(ChromeRole::Supporting)
 }
 pub fn FG_MUTE() -> Hsla {
-    chrome(0x707078, 0x707078)
+    chrome(ChromeRole::Quiet)
 }
 
 pub fn BLUE() -> Hsla {
-    chrome(0x79a9e8, 0x79a9e8)
+    chrome(ChromeRole::Info)
 }
 pub fn CYAN() -> Hsla {
     BLUE()
 }
 pub fn MAGENTA() -> Hsla {
-    chrome(0x8b5cf6, 0x7c3aed)
+    chrome(ChromeRole::Agent)
 }
 /// Keep native editor, Markdown and selection colors in Grove's single palette.
 /// Called at startup and on every appearance change.
@@ -193,11 +357,7 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     } else {
         gpui_component::ThemeMode::Light
     };
-    theme.highlight_theme = if is_dark() {
-        gpui_component::highlighter::HighlightTheme::default_dark()
-    } else {
-        gpui_component::highlighter::HighlightTheme::default_light()
-    };
+    theme.highlight_theme = highlight_theme();
     theme.foreground = FG();
     theme.background = BG();
     theme.popover = SURFACE_RAISED();
@@ -232,11 +392,11 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
 }
 
 pub fn GREEN() -> Hsla {
-    chrome(0x78d98b, 0x78d98b)
+    chrome(ChromeRole::Success)
 }
 /// The "needs input" accent — warmer than YELLOW so it reads as a call to action next to green/working.
 pub fn AMBER() -> Hsla {
-    chrome(0xe0ad63, 0xe0ad63)
+    chrome(ChromeRole::Warning)
 }
 fn amber_rgba() -> Rgba {
     theme::with_current(|t| mix(ic(t.yellow), ic(t.red), 0.25))
@@ -273,14 +433,7 @@ pub fn TEXT_SELECTION() -> Hsla {
     alpha_rgba(FG().into(), 0.22).into()
 }
 pub fn SEL_TINT_SOFT() -> Hsla {
-    alpha(
-        MAGENTA(),
-        if CHROME_LIGHT.load(Ordering::Relaxed) {
-            0.10
-        } else {
-            0.14
-        },
-    )
+    alpha(MAGENTA(), if !is_dark() { 0.10 } else { 0.14 })
 }
 pub fn SEL_RING() -> Hsla {
     FG()
@@ -361,7 +514,7 @@ impl ThemeState {
             dark_name,
             light_name,
             system_mode: WindowAppearance::default(),
-            generation: 0,
+            generation: theme::generation(),
         }
     }
 
@@ -376,49 +529,146 @@ impl ThemeState {
     /// Unknown names are ignored by grove-core, so the previous theme stays active.
     pub fn set_by_name(cx: &mut gpui::App, name: &str) {
         if grove_core::theme::set_by_name(name) {
-            cx.update_global::<Self, _>(|this, _| this.generation += 1);
             sync_component_theme(cx);
+            cx.update_global::<Self, _>(|this, _| this.generation = theme::generation());
             cx.refresh_windows();
         }
     }
 
-    /// No-op unless `follow_system` is set.
+    /// Resolve legacy System once, then keep a standalone theme for this run.
     pub fn apply_system_theme(cx: &mut gpui::App) {
-        let name = cx.global::<Self>();
-        if !name.follow_system {
+        let state = cx.global::<Self>();
+        if !state.follow_system {
             return;
         }
-        let name = name.resolve_system_theme_name(name.system_mode).to_string();
+        let name = state
+            .resolve_system_theme_name(state.system_mode)
+            .to_string();
+        cx.update_global::<Self, _>(|state, _| state.follow_system = false);
+        if cx
+            .global::<crate::settings::SettingsState>()
+            .store
+            .selected_theme
+            .is_none()
+        {
+            let ((), result) =
+                crate::settings::SettingsState::update_and_flush_checked(cx, |store| {
+                    store.selected_theme = Some(name.clone());
+                });
+            if let Err(error) = result {
+                tracing::warn!(%error, "could not save legacy theme migration; keeping resolved theme for this run");
+            }
+        }
         Self::set_by_name(cx, &name);
     }
 
-    /// Called once with the first frame's `appearance()` — seeding it there is why follow-system looks correct immediately.
     pub fn set_system_mode(cx: &mut gpui::App, mode: WindowAppearance) {
         cx.update_global::<Self, _>(|this, _| this.system_mode = mode);
-        if cx.global::<Self>().follow_system {
-            set_chrome_light(matches!(
-                mode,
-                WindowAppearance::Light | WindowAppearance::VibrantLight
-            ));
-        }
         Self::apply_system_theme(cx);
     }
 }
 
+#[cfg(test)]
+fn set_chrome_light(light: bool) {
+    theme::set_by_name(if light {
+        DEFAULT_LIGHT_THEME
+    } else {
+        DEFAULT_DARK_THEME
+    });
+}
+
+/// Shared syntax adapter for native editors and Markdown. Grove defaults retain
+/// their established syntax; named themes use their palette's syntax accents.
+pub fn highlight_theme() -> Arc<gpui_component::highlighter::HighlightTheme> {
+    let generation = theme::generation();
+    HIGHLIGHT.with(|cache| {
+        if let Some((cached, value)) = cache.borrow().as_ref() {
+            if *cached == generation {
+                return value.clone();
+            }
+        }
+        let value = theme::with_current(|palette| {
+            let default = if is_dark_of(palette) {
+                gpui_component::highlighter::HighlightTheme::default_dark()
+            } else {
+                gpui_component::highlighter::HighlightTheme::default_light()
+            };
+            if palette.name.starts_with("grove-")
+                || grove_core::app_theme::by_id(&palette.name).is_none()
+            {
+                return default;
+            }
+            let mut value = (*default).clone();
+            value.name = format!("grove-{}-{}", palette.name, generation);
+            value.style.editor_background = Some(BG());
+            value.style.editor_foreground = Some(FG());
+            value.style.editor_active_line = Some(BG_HOVER());
+            value.style.editor_line_number = Some(FG_MUTE());
+            value.style.editor_active_line_number = Some(FG_DIM());
+            // Recolor every registered scope, including specific subclasses;
+            // leaving inherited string.escape/boolean/etc. would leak old colors.
+            let mut syntax = serde_json::to_value(&value.style.syntax).unwrap_or_default();
+            if let Some(scopes) = syntax.as_object_mut() {
+                let chrome = ResolvedChrome::from_theme(palette);
+                for (name, style) in scopes {
+                    let color =
+                        if name.starts_with("comment") || name == "hint" || name == "predictive" {
+                            palette.fg_dark
+                        } else if name.starts_with("string") {
+                            palette.green
+                        } else if matches!(name.as_str(), "number" | "boolean" | "constant") {
+                            palette.yellow
+                        } else if matches!(
+                            name.as_str(),
+                            "keyword" | "preproc" | "operator" | "tag" | "tag.doctype"
+                        ) {
+                            palette.magenta
+                        } else if matches!(
+                            name.as_str(),
+                            "function" | "constructor" | "link_text" | "link_uri" | "title"
+                        ) {
+                            palette.blue
+                        } else if matches!(
+                            name.as_str(),
+                            "type" | "enum" | "variant" | "attribute" | "property"
+                        ) {
+                            palette.cyan
+                        } else {
+                            palette.fg
+                        };
+                    if !style.is_object() {
+                        *style = serde_json::json!({});
+                    }
+                    if let Some(style) = style.as_object_mut() {
+                        style.insert(
+                            "color".into(),
+                            serde_json::json!(Hsla::from(chrome.readable(ic(color)))),
+                        );
+                    }
+                }
+            }
+            value.style.syntax = serde_json::from_value(syntax).unwrap_or_default();
+            Arc::new(value)
+        });
+        *cache.borrow_mut() = Some((generation, value.clone()));
+        value
+    })
+}
+
 /// Reference form surface, independent of the terminal palette.
 pub fn FIELD_FILL() -> Hsla {
-    chrome(0x1b1b1b, 0xefefef)
+    chrome(ChromeRole::Field)
 }
 pub fn SURFACE_RAISED() -> Hsla {
-    chrome(0x1b1b1b, 0xefefef)
+    chrome(ChromeRole::Field)
 }
 pub fn FORM_ERROR() -> Hsla {
-    chrome(0xef7d8e, 0xb6384c)
+    chrome(ChromeRole::Error)
 }
 
 /// Semantic switch and attached validation paint roles.
 pub fn SWITCH_ON() -> Hsla {
-    chrome(0x39b76c, 0x39b76c)
+    chrome(ChromeRole::Switch)
 }
 pub fn SWITCH_THUMB() -> Hsla {
     gpui::rgb(0xffffff).into()
@@ -427,13 +677,35 @@ pub fn ERROR_WASH() -> Hsla {
     alpha(FORM_ERROR(), 0.09)
 }
 pub fn TOOLTIP_BG() -> Hsla {
-    gpui::rgb(0x1b1b1b).into()
+    theme::with_current(|t| {
+        if t.name.starts_with("grove-") || grove_core::app_theme::by_id(&t.name).is_none() {
+            gpui::rgb(0x1b1b1b).into()
+        } else if is_dark_of(t) {
+            FIELD_FILL()
+        } else {
+            FG()
+        }
+    })
 }
 pub fn TOOLTIP_FG() -> Hsla {
-    gpui::rgb(0xf7f7f8).into()
+    theme::with_current(|t| {
+        if t.name.starts_with("grove-") || grove_core::app_theme::by_id(&t.name).is_none() {
+            gpui::rgb(0xf7f7f8).into()
+        } else if is_dark_of(t) {
+            FG()
+        } else {
+            BG()
+        }
+    })
 }
 pub fn TOOLTIP_BORDER() -> Hsla {
-    gpui::rgb(0x34343a).into()
+    theme::with_current(|t| {
+        if t.name.starts_with("grove-") || grove_core::app_theme::by_id(&t.name).is_none() {
+            gpui::rgb(0x34343a).into()
+        } else {
+            BORDER()
+        }
+    })
 }
 pub fn TOOLTIP_SHADOW() -> Hsla {
     alpha(gpui::rgb(0).into(), 0.36)
@@ -445,8 +717,51 @@ pub fn QUIET_VEIL() -> Hsla {
 }
 
 #[cfg(test)]
+pub(crate) static ACTIVE_THEME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+pub(crate) use tests::ActiveThemeGuard;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn legacy_system_is_resolved_once_and_same_name_refreshes_all_adapters(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let _disk = crate::settings::lock_test_config();
+        let _lock = ACTIVE_THEME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _restore = ActiveThemeGuard::capture();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::settings::SettingsState::new(
+                grove_core::storage::Store::default(),
+            ));
+            cx.set_global(ThemeState::new(
+                true,
+                DEFAULT_DARK_THEME.into(),
+                DEFAULT_LIGHT_THEME.into(),
+            ));
+            ThemeState::set_system_mode(cx, WindowAppearance::Light);
+            assert_eq!(theme::current().name, "grove-light");
+            assert!(!cx.global::<ThemeState>().follow_system);
+            ThemeState::set_system_mode(cx, WindowAppearance::Dark);
+            assert_eq!(theme::current().name, "grove-light");
+            ThemeState::set_by_name(cx, "nord");
+            let before = cx.global::<ThemeState>().generation;
+            let syntax = highlight_theme();
+            ThemeState::set_by_name(cx, "nord");
+            assert!(cx.global::<ThemeState>().generation > before);
+            assert_eq!(cx.global::<ThemeState>().generation, theme::generation());
+            assert!(!Arc::ptr_eq(&syntax, &highlight_theme()));
+            let component = gpui_component::Theme::global(cx);
+            assert_eq!(component.foreground, FG());
+            assert_eq!(component.background, BG());
+            assert_eq!(component.highlight_theme, highlight_theme());
+        });
+    }
 
     #[gpui::test]
     fn component_inline_code_contrast_tracks_appearance(cx: &mut gpui::TestAppContext) {
@@ -515,20 +830,16 @@ mod tests {
         0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
     }
 
-    /// Serializes tests that mutate the global active theme, so a swap can't race a concurrent default-reader.
-    static ACTIVE_THEME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Restores the pre-test active theme, even on panic.
-    struct ActiveThemeGuard(theme::Theme, bool);
+    pub(crate) struct ActiveThemeGuard(theme::Theme);
     impl ActiveThemeGuard {
-        fn capture() -> Self {
-            Self(theme::current(), CHROME_LIGHT.load(Ordering::Relaxed))
+        pub(crate) fn capture() -> Self {
+            Self(theme::current())
         }
     }
     impl Drop for ActiveThemeGuard {
         fn drop(&mut self) {
             theme::set(self.0.clone());
-            set_chrome_light(self.1);
         }
     }
 
@@ -667,46 +978,30 @@ mod tests {
     }
 
     #[test]
-    fn reference_chrome_appearance_is_independent_of_terminal_theme() {
+    fn grove_defaults_preserve_reference_and_catalog_neutrals_follow_theme() {
         let _lock = ACTIVE_THEME_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _restore = ActiveThemeGuard::capture();
-        for (light, expected) in [
+        for (id, expected) in [
             (
-                false,
+                "grove-dark",
                 [
                     0x111111, 0x171716, 0x111111, 0x232327, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
                     0x515158,
                 ],
             ),
             (
-                true,
+                "grove-light",
                 [
                     0xffffff, 0xf7f7f8, 0xf7f7f8, 0xededee, 0x141416, 0x66666d, 0x707078, 0xdedee0,
                     0xc3c3c7,
                 ],
             ),
         ] {
-            set_chrome_light(light);
-            for terminal_theme in theme::BUILTINS {
-                theme::set(terminal_theme.clone());
-                assert_eq!(theme::current().bg, terminal_theme.bg);
-                let base = lum_rgba(BG().into());
-                let rail = lum_rgba(BG_RAIL().into());
-                let hover = lum_rgba(BG_HOVER().into());
-                if light {
-                    assert!(
-                        hover < rail && rail < base,
-                        "light hover must darken the rail, which darkens the base"
-                    );
-                } else {
-                    assert!(
-                        hover > rail && rail > base,
-                        "dark hover must lighten the rail, which lightens the base"
-                    );
-                }
-                let actual = [
+            theme::set_by_name(id);
+            assert_eq!(
+                [
                     BG(),
                     BG_RAIL(),
                     BG_STRIP(),
@@ -715,15 +1010,41 @@ mod tests {
                     FG_DIM(),
                     FG_MUTE(),
                     BORDER(),
-                    BORDER_STRONG(),
+                    BORDER_STRONG()
                 ]
-                .map(rgb_bytes);
-                let expected = expected.map(|rgb| rgb_bytes(gpui::rgb(rgb).into()));
-                assert_eq!(
-                    actual, expected,
-                    "reference light={light} changed under terminal theme {}",
-                    terminal_theme.name
-                );
+                .map(rgb_bytes),
+                expected.map(|rgb| rgb_bytes(gpui::rgb(rgb).into()))
+            );
+        }
+        for item in grove_core::app_theme::CATALOG {
+            theme::set_by_name(item.id);
+            assert_eq!(is_dark(), item.kind == theme::ThemeKind::Dark);
+            assert_ne!(BG(), FIELD_FILL(), "{} surface step", item.label);
+            assert_eq!(BG_HOVER(), MENU_HOVER());
+            assert_eq!(DIFF_ADD_BG(), alpha(GREEN(), 0.12));
+            assert_eq!(DIFF_DEL_BG(), alpha(RED(), 0.12));
+            if !item.id.starts_with("grove-") {
+                assert_eq!(rgb_bytes(BG()), rgb_bytes(ic(item.terminal().bg).into()));
+                for foreground in [
+                    FG(),
+                    FG_DIM(),
+                    FG_MUTE(),
+                    BLUE(),
+                    GREEN(),
+                    AMBER(),
+                    FORM_ERROR(),
+                ] {
+                    for background in [BG(), FIELD_FILL(), BG_HOVER()] {
+                        assert!(
+                            contrast(foreground.into(), background.into()) >= 4.49,
+                            "{} unreadable role",
+                            item.label
+                        );
+                    }
+                }
+                let highlight = highlight_theme();
+                assert_eq!(highlight.style.editor_background, Some(BG()));
+                assert_eq!(highlight.style.editor_foreground, Some(FG()));
             }
         }
     }

@@ -1373,6 +1373,14 @@ impl Focusable for Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Resolve legacy System before pinning the native material's tone.
+        if cx.global::<ThemeState>().follow_system {
+            ThemeState::set_system_mode(cx, window.appearance());
+        }
+        if !cfg!(test) {
+            crate::platform::window_chrome::sync_theme_appearance(window, c::is_dark());
+        }
+
         #[cfg(target_os = "macos")]
         {
             let mut state = self.sidebar.read(cx).menu_state(window, cx);
@@ -1443,12 +1451,6 @@ impl Render for Shell {
             self.window_observers = Some(vec![
                 cx.observe_window_appearance(window, |_, window, cx| {
                     ThemeState::set_system_mode(cx, window.appearance());
-                    if cx.global::<ThemeState>().follow_system {
-                        c::set_chrome_light(matches!(
-                            window.appearance(),
-                            gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight
-                        ));
-                    }
                     cx.notify();
                 }),
                 cx.observe_window_activation(window, move |_, window, cx| {

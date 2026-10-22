@@ -88,3 +88,51 @@ pub fn refresh_native_backdrop(window: &gpui::Window) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn refresh_native_backdrop(_window: &gpui::Window) {}
+
+/// Match native material tone to the selected application theme, independently
+/// of the OS setting. The window retains the named AppKit appearance.
+#[cfg(target_os = "macos")]
+pub fn sync_theme_appearance(window: &gpui::Window, dark: bool) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {
+        static NSAppearanceNameAqua: *mut Object;
+        static NSAppearanceNameDarkAqua: *mut Object;
+    }
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: called during GPUI rendering on AppKit's main thread. GPUI owns
+    // the borrowed view/window, AppKit owns the named appearance, and NSWindow
+    // retains it through setAppearance:. Compare first to avoid repaint loops.
+    unsafe {
+        let view = handle.ns_view.as_ptr().cast::<Object>();
+        let native: *mut Object = msg_send![view, window];
+        if native.is_null() {
+            return;
+        }
+        let name = if dark {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        };
+        let desired: *mut Object = msg_send![class!(NSAppearance), appearanceNamed: name];
+        if desired.is_null() {
+            return;
+        }
+        let current: *mut Object = msg_send![native, appearance];
+        if current != desired {
+            let _: () = msg_send![native, setAppearance: desired];
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn sync_theme_appearance(_window: &gpui::Window, _dark: bool) {}

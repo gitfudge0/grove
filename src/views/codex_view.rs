@@ -16,7 +16,6 @@ use gpui::{
     Window,
 };
 use gpui_component::{
-    highlighter::HighlightTheme,
     input::{
         IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, TextDecoration,
         TextDecorationCollection,
@@ -7747,11 +7746,7 @@ pub(super) fn markdown_style(window: &Window) -> TextViewStyle {
     let mut style = TextViewStyle::default();
     style.is_dark = c::is_dark();
     style.heading_base_font_size = rpx(TEXT_BODY).to_pixels(window.rem_size());
-    style.highlight_theme = if c::is_dark() {
-        HighlightTheme::default_dark().clone()
-    } else {
-        HighlightTheme::default_light().clone()
-    };
+    style.highlight_theme = c::highlight_theme();
     style.paragraph_gap = rpx(SPACE_2XL);
     style.code_block = div()
         .bg(c::FIELD_FILL())

@@ -712,6 +712,10 @@ static CUSTOM: RwLock<Vec<Theme>> = RwLock::new(Vec::new());
 /// Serializes tests touching CUSTOM/themes.json. Not `#[cfg(test)]`: shared by the downstream grove crate's tests.
 pub static CUSTOM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Acquire)
+}
+
 pub fn current() -> Theme {
     (*active()).clone()
 }
@@ -723,6 +727,9 @@ pub fn with_current<R>(f: impl FnOnce(&Theme) -> R) -> R {
 
 /// Checks builtins first, then customs (builtins win on collision). `None` for an unknown/stale name.
 pub fn by_name(name: &str) -> Option<Theme> {
+    if let Some(item) = crate::app_theme::by_id(name) {
+        return Some(item.terminal());
+    }
     if let Some(t) = BUILTINS.iter().find(|t| t.name == name) {
         return Some(t.clone());
     }

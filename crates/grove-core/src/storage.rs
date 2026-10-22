@@ -396,6 +396,9 @@ pub struct Store {
     pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appearance: Option<AppearancePreference>,
+    /// Standalone app theme identity; legacy appearance is migration input only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_theme: Option<String>,
     #[serde(default)]
     pub sidebar_appearance: SidebarAppearance,
     /// None means the user has not made the one-time tmux/native choice yet.
@@ -468,6 +471,27 @@ impl Store {
             AppearancePreference::Light
         } else {
             AppearancePreference::Dark
+        }
+    }
+
+    /// Unknown ids are retained on disk while rendering a safe Grove fallback.
+    pub fn selected_theme_id(&self, system_light: bool) -> &str {
+        if let Some(id) = self
+            .selected_theme
+            .as_deref()
+            .filter(|id| crate::app_theme::by_id(id).is_some())
+        {
+            return id;
+        }
+        let light = match self.appearance() {
+            AppearancePreference::Light => true,
+            AppearancePreference::Dark => false,
+            AppearancePreference::System => system_light,
+        };
+        if light {
+            "grove-light"
+        } else {
+            "grove-dark"
         }
     }
 
@@ -683,6 +707,29 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::agent::Agent;
+
+    #[test]
+    fn selected_theme_precedence_unknown_fallback_and_restart() {
+        let store: Store = serde_json::from_str(
+            r#"{"selected_theme":"nord","appearance":"light","theme":"catppuccin-latte"}"#,
+        )
+        .unwrap();
+        assert_eq!(store.selected_theme_id(true), "nord");
+        let restarted: Store =
+            serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
+        assert_eq!(restarted.selected_theme_id(false), "nord");
+        let unknown: Store =
+            serde_json::from_str(r#"{"selected_theme":"future-theme","appearance":"light"}"#)
+                .unwrap();
+        assert_eq!(unknown.selected_theme_id(false), "grove-light");
+        assert_eq!(unknown.selected_theme.as_deref(), Some("future-theme"));
+        let legacy: Store =
+            serde_json::from_str(r#"{"appearance":"dark","theme":"catppuccin-latte"}"#).unwrap();
+        assert_eq!(legacy.selected_theme_id(true), "grove-dark");
+        let system: Store = serde_json::from_str(r#"{"appearance":"system"}"#).unwrap();
+        assert_eq!(system.selected_theme_id(true), "grove-light");
+        assert_eq!(system.selected_theme_id(false), "grove-dark");
+    }
 
     #[test]
     fn write_atomic_no_tmp_residue_and_full_content() {

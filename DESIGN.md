@@ -6,7 +6,7 @@ Use the [project UI skill](.agents/skills/grove-ui/SKILL.md) for implementation 
 
 ## Foundations
 
-- One app-level System/Dark/Light appearance setting resolves fixed palettes. Workspace and project views never override appearance. Main canvas and appbar/statusbar strips are opaque; sidebar material is the explicit exception below. Native editors, Markdown, selection, and integrated HTML reports follow the active appearance. Ordinary authored HTML retains its own styling.
+- One app-level theme setting chooses from a single list of standalone light and dark themes. Workspace and project views never override it. Grove Light and Grove Dark preserve the established appearance; legacy System/Dark/Light settings migrate to matching Grove defaults, with explicit saved theme identity taking precedence. Main canvas and appbar/statusbar strips are opaque; sidebar material is the explicit exception below. Native editors, Markdown, diffs, selection, terminal ANSI/default colors, and integrated HTML reports follow the same resolved theme generation. Explicit terminal RGB colors and intrinsic assets retain their authored colors. Ordinary authored HTML retains its own styling.
 
 - Use semantic `c::*()` colors, not copied hex values or a PTY palette for app chrome. Neutral fills express hover, selection, focus, and open state. Violet is reserved for agent identity, connection, and active-port roles; green means success, amber needs-you/warning, red error/destruction/interruption, and blue information or the explicit activity/effort roles below. Pair status colors with meaningful glyphs or text. On light surfaces, supporting status indicators accompany legible foreground copy; destructive copy uses the semantic error role.
 
@@ -170,3 +170,9 @@ Diff header controls do not shrink or overlap: titles yield, and text actions si
 When a UI change introduces or changes an invariant, update its rule here in the same change. Update the skill when its procedure or verification checks need to change. A fix that restores an already documented rule needs no redundant documentation edit. Record the reusable invariant, not a screenshot-specific literal or an already superseded layout. New shared behavior should use the existing primitive; add focused conformance or interaction coverage when it can catch that failure. Source checks complement native rendering and interaction evidence, and cannot prove visual correctness or live provider behavior.
 
 The [drift audit](.agents/skills/grove-ui/references/drift-audit-2026-10-22.md) maps the October 20–22 fixes to these rules and identifies superseded treatments. The historical migration catalog is provenance only.
+
+## Theme selection
+
+General settings exposes Theme with the current name and palette swatches, opening a nested Themes page. One searchable list contains every standalone variant; All/Light/Dark filters only narrow the list. Selecting by click, Enter, or Space applies and saves immediately, without Preview, Apply, Cancel, or an independent appearance mode. Tab and arrows move focus without selecting. Back/Escape returns to settings and restores source focus without undoing the selection. An empty search gives recovery guidance. A failed save keeps the previous theme active, presents an inline error and Retry, and restores selection focus after successful retry. Sidebar Frosted/Solid is independent.
+
+Theme application refreshes existing and new windows without restarting sessions, replacing drafts, or reloading report documents. Palette neutrals establish surfaces and text; explicit Grove semantic roles retain status hue meaning independently of terminal ANSI accents. The curated built-in catalog does not expose the legacy custom theme editor or JSON import/export.

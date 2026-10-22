@@ -38,6 +38,14 @@ fn ensure_test_config_dir() {
     });
 }
 
+#[cfg(test)]
+pub(crate) fn lock_test_config() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ensure_test_config_dir();
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Quiet period a mutation must survive before it is written to disk. Long
 /// enough to outlast a wheel/keyboard burst, short enough that a crash right
 /// after a deliberate change rarely loses it.
@@ -210,12 +218,7 @@ mod tests {
     /// The returned guard also serializes the disk tests against each other:
     /// they share one config file, so they must not interleave.
     fn isolate_config_dir() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, OnceLock};
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ensure_test_config_dir();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock_test_config()
     }
 
     /// Task 2 Step 4: the whole point of `flush_ui_zoom_save`. A setting
