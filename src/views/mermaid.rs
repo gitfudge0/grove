@@ -34,8 +34,13 @@ enum Rendered {
 }
 struct CacheEntry {
     source: String,
-    dark: bool,
+    theme_generation: u64,
     result: Rendered,
+}
+impl CacheEntry {
+    fn matches(&self, source: &str, theme_generation: u64) -> bool {
+        self.theme_generation == theme_generation && self.source == source
+    }
 }
 static CACHE: Mutex<VecDeque<CacheEntry>> = Mutex::new(VecDeque::new());
 
@@ -104,7 +109,7 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
     let Some(diagram) = node.data::<Diagram>() else {
         return div().into_any_element();
     };
-    let dark = c::is_dark();
+    let theme_generation = grove_core::theme::generation();
     let mut launch = false;
     let result = {
         let Ok(mut cache) = CACHE.lock() else {
@@ -112,7 +117,7 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
         };
         if let Some(entry) = cache
             .iter()
-            .find(|entry| entry.dark == dark && entry.source == diagram.source)
+            .find(|entry| entry.matches(&diagram.source, theme_generation))
         {
             entry.result.clone()
         } else if cache
@@ -131,7 +136,7 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
             }
             cache.push_back(CacheEntry {
                 source: diagram.source.clone(),
-                dark,
+                theme_generation,
                 result: Rendered::Pending,
             });
             launch = true;
@@ -154,7 +159,7 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
             if let Ok(mut cache) = CACHE.lock() {
                 if let Some(entry) = cache
                     .iter_mut()
-                    .find(|entry| entry.dark == dark && entry.source == source)
+                    .find(|entry| entry.matches(&source, theme_generation))
                 {
                     entry.result = result;
                 }
@@ -291,6 +296,18 @@ fn rasterize(source: &str, options: RenderOptions) -> Option<(Arc<Image>, f32, f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_changes_invalidate_diagrams_even_within_one_appearance() {
+        let entry = CacheEntry {
+            source: "flowchart LR\nA-->B".to_owned(),
+            theme_generation: 7,
+            result: Rendered::Pending,
+        };
+        assert!(entry.matches("flowchart LR\nA-->B", 7));
+        assert!(!entry.matches("flowchart LR\nA-->B", 8));
+        assert!(!entry.matches("flowchart LR\nA-->C", 7));
+    }
 
     #[test]
     fn only_complete_matching_fences_render() {

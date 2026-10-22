@@ -361,13 +361,11 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     theme.foreground = FG();
     theme.background = BG();
     theme.popover = SURFACE_RAISED();
-    theme.tokens.popover = SURFACE_RAISED().into();
     theme.popover_foreground = FG();
     theme.muted_foreground = FG_DIM();
     theme.muted = FIELD_FILL();
     // Markdown inline code and component hover/selected fills share this neutral role.
     theme.accent = MENU_HOVER();
-    theme.tokens.accent = MENU_HOVER().into();
     theme.accent_foreground = FG();
     theme.input = FIELD_FILL();
     theme.border = BORDER();
@@ -388,6 +386,10 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     theme.caret = FG();
     theme.selection = TEXT_SELECTION();
     theme.link = BLUE();
+    // Vendor components consume both the legacy color fields and semantic
+    // tokens (Root background, Markdown code blocks, menus and selections).
+    // Publish one palette to both representations after applying our overrides.
+    theme.tokens = theme.colors.into();
     theme.mono_font_family = crate::fonts::MONO_FAMILY.into();
 }
 
@@ -791,6 +793,10 @@ mod tests {
                 assert_eq!(component.accent_foreground, FG());
                 assert_eq!(component.tokens.popover, SURFACE_RAISED().into());
                 assert_eq!(component.tokens.accent, MENU_HOVER().into());
+                assert_eq!(component.tokens.background, BG().into());
+                assert_eq!(component.tokens.muted, FIELD_FILL().into());
+                assert_eq!(component.tokens.selection, TEXT_SELECTION().into());
+                assert_eq!(component.tokens.border, BORDER().into());
                 assert_eq!(component.popover_foreground, FG());
                 let linear = |v: f32| {
                     if v <= 0.04045 {
