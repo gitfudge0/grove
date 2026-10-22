@@ -2190,6 +2190,7 @@ mod tests {
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),
+                native_config_version: 1,
             };
             let session = cx.new(|cx| {
                 crate::entities::codex_session::CodexSession::from_connection(
@@ -2454,6 +2455,7 @@ mod tests {
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),
+                native_config_version: 1,
             };
             let session = cx.new(|cx| {
                 crate::entities::codex_session::CodexSession::from_connection(

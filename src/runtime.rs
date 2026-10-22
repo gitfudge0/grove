@@ -235,7 +235,8 @@ impl Runtime {
     ) -> bool {
         let args = {
             let store = &cx.global::<SettingsState>().store;
-            agent.launch_args(
+            agent.launch_args_for_backend(
+                native_codex_enabled(store, None),
                 store.dangerously_skip_permissions_enabled.unwrap_or(false),
                 store.chrome_enabled.unwrap_or(false),
             )
@@ -514,6 +515,7 @@ impl Runtime {
             draft: String::new(),
             draft_images: Vec::new(),
             config_args: Vec::new(),
+            native_config_version: 1,
         };
         let id = self.attach_native_codex(saved, args, cx);
         let snap = self.snapshot(cx);
@@ -989,7 +991,8 @@ impl Runtime {
             .collect::<Vec<_>>();
         let launch_args = {
             let store = &cx.global::<SettingsState>().store;
-            agent.multi_root_launch_args(
+            agent.multi_root_launch_args_for_backend(
+                native_codex_enabled(store, None),
                 store.dangerously_skip_permissions_enabled.unwrap_or(false),
                 store.chrome_enabled.unwrap_or(false),
                 &extra_roots,
@@ -1502,6 +1505,7 @@ mod tests {
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),
+                native_config_version: 1,
             };
             let connection = grove_core::codex::Connection {
                 handle: handle.clone(),

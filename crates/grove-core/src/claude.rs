@@ -287,6 +287,98 @@ fn spawn(args: &[String], saved: &SavedSession) -> Result<Process, String> {
         lines,
     })
 }
+fn permission_modes_from_help(help: &str) -> Vec<String> {
+    let Some(section) = help.split("--permission-mode <mode>").nth(1) else {
+        return Vec::new();
+    };
+    let Some(choices) = section
+        .split("(choices:")
+        .nth(1)
+        .and_then(|v| v.split(')').next())
+    else {
+        return Vec::new();
+    };
+    choices
+        .split(',')
+        .filter_map(|value| {
+            let mode = value.trim().trim_matches('"');
+            [
+                "default",
+                "manual",
+                "acceptEdits",
+                "plan",
+                "dontAsk",
+                "bypassPermissions",
+                "auto",
+            ]
+            .contains(&mode)
+            .then(|| mode.to_owned())
+        })
+        .collect()
+}
+fn discover_permission_modes(
+    mut command: Command,
+    stopping: &AtomicBool,
+    timeout: Duration,
+) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut output) = tempfile::tempfile() else {
+        return Vec::new();
+    };
+    let Ok(writer) = output.try_clone() else {
+        return Vec::new();
+    };
+    command
+        .stdin(Stdio::null())
+        .stdout(writer)
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let Ok(mut child) = command.spawn() else {
+        return Vec::new();
+    };
+    let started = Instant::now();
+    let success = loop {
+        if stopping.load(Ordering::SeqCst)
+            || started.elapsed() >= timeout
+            || output.metadata().map_or(true, |v| v.len() > 128 * 1024)
+        {
+            break false;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => break false,
+        }
+    };
+    // Reap the owned helper and its group even if a CLI shim left descendants.
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    if !success || output.seek(SeekFrom::Start(0)).is_err() {
+        return Vec::new();
+    }
+    let mut help = String::new();
+    if output.take(128 * 1024).read_to_string(&mut help).is_err() {
+        return Vec::new();
+    }
+    permission_modes_from_help(&help)
+}
+fn available_permission_modes(stopping: &AtomicBool) -> Vec<String> {
+    let (program, args) = crate::agent::Agent::Claude.session_invocation(&["--help".into()]);
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(env) = crate::env_path::session_environment() {
+        command.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+    }
+    discover_permission_modes(command, stopping, Duration::from_secs(2))
+}
 fn permission_mode(access: &str) -> Result<&str, String> {
     match access {
         "read-only" | "plan" => Ok("plan"),
@@ -347,6 +439,9 @@ struct Actor {
     reconfigure: bool,
     reset_configuration: bool,
     configuring: bool,
+    pending_access: Option<String>,
+    permission_changes: HashMap<String, (String, u64)>,
+    permission_mode_revision: u64,
     tracks_session_state: bool,
     pending_completion: Option<Status>,
     session_idle: bool,
@@ -384,11 +479,13 @@ impl Actor {
         stopping: Arc<AtomicBool>,
     ) -> Self {
         let args = if args.is_empty() {
+            saved.migrate_native_config();
             saved.config_args.clone()
         } else {
             args
         };
         saved.config_args = launch_options(&args).map_or_else(|_| args.clone(), |v| v.0);
+        saved.native_config_version = 1;
         let mut transcript = crate::claude_transcript::ClaudeTranscriptState::default();
         transcript.restore(&mut saved.items);
         let last_assistant_uuid = saved
@@ -412,6 +509,9 @@ impl Actor {
             reconfigure: false,
             reset_configuration: false,
             configuring: false,
+            pending_access: None,
+            permission_changes: HashMap::new(),
+            permission_mode_revision: 0,
             tracks_session_state: false,
             pending_completion: None,
             session_idle: true,
@@ -656,6 +756,12 @@ impl Actor {
     fn control(&mut self, request: Value) -> Result<(), String> {
         self.control_id += 1;
         let id = format!("grove-{}", self.control_id);
+        if request["subtype"] == "set_permission_mode" {
+            if let Some(mode) = request["mode"].as_str() {
+                self.permission_changes
+                    .insert(id.clone(), (mode.into(), self.permission_mode_revision));
+            }
+        }
         self.pending.insert(
             id.clone(),
             request["subtype"].as_str().unwrap_or_default().into(),
@@ -686,6 +792,7 @@ impl Actor {
         {
             self.initial = initial;
         }
+        self.state.permission_modes = available_permission_modes(&self.stopping);
         let process = spawn(&args, &self.state.saved)?;
         tracing::info!(
             stage = "process_spawned",
@@ -714,6 +821,7 @@ impl Actor {
         self.tracks_session_state = false;
         self.pending_completion = None;
         self.pending.clear();
+        self.permission_changes.clear();
         self.blocks.clear();
         self.state.status = Status::Starting;
         self.state.error = None;
@@ -736,7 +844,7 @@ impl Actor {
         if let Some(model) = self.state.model.clone() {
             self.control(json!({"subtype":"set_model","model":model}))?;
         }
-        if let Some(access) = self.state.access.clone() {
+        if let Some(access) = self.pending_access.take() {
             self.control(
                 json!({"subtype":"set_permission_mode","mode":permission_mode(&access)?}),
             )?;
@@ -866,6 +974,7 @@ impl Actor {
         self.pid.store(process.child.id(), Ordering::SeqCst);
         self.process = Some(process);
         self.pending.clear();
+        self.permission_changes.clear();
         self.blocks.clear();
         self.message_id.clear();
         self.started = Instant::now();
@@ -1072,6 +1181,7 @@ impl Actor {
         self.initial = None;
         self.args = args;
         self.pending.clear();
+        self.permission_changes.clear();
         self.blocks.clear();
         self.message_id.clear();
         self.input_uuid = None;
@@ -1309,7 +1419,18 @@ impl Actor {
                     }
                 }
                 if let Some(access) = &access {
-                    permission_mode(access)?;
+                    let mode = permission_mode(access)?;
+                    if !self.state.permission_modes.is_empty()
+                        && !self
+                            .state
+                            .permission_modes
+                            .iter()
+                            .any(|value| value == mode)
+                    {
+                        return Err(format!(
+                            "This Claude Code version does not advertise permission mode {mode}"
+                        ));
+                    }
                 }
                 if let Some(model) = model {
                     if self.state.model.as_deref() != Some(model.as_str()) {
@@ -1324,8 +1445,7 @@ impl Actor {
                     self.state.saved.composer.effort = Some(effort);
                 }
                 if let Some(access) = access {
-                    self.state.access = Some(access.clone());
-                    self.state.saved.composer.access = Some(access);
+                    self.pending_access = Some(permission_mode(&access)?.into());
                 }
                 self.state.saved.composer.reset_to_configured = false;
                 self.reconfigure = true;
@@ -1348,6 +1468,8 @@ impl Actor {
                 self.reconfigure = true;
             }
             Action::ResetConfiguration => {
+                self.pending_access = None;
+                self.permission_changes.clear();
                 self.reset_configuration = true;
                 self.state.saved.composer = codex::ComposerSettings::default();
                 self.state.model = None;
@@ -1713,6 +1835,14 @@ impl Actor {
             }
         }
     }
+    fn effective_permission_mode(&mut self, mode: &str) {
+        self.permission_mode_revision += 1;
+        self.state.resolved_access = Some(mode.into());
+        if self.state.access.is_some() {
+            self.state.access = Some(mode.into());
+            self.state.saved.composer.access = Some(mode.into());
+        }
+    }
     fn message(&mut self, value: Value) -> Result<(), String> {
         if let Some(parent) = value["parent_tool_use_id"].as_str() {
             self.subagent_message(parent, &value);
@@ -1734,6 +1864,9 @@ impl Actor {
         match value["type"].as_str().unwrap_or_default() {
             "control_response" => {
                 let response = &value["response"];
+                let permission_change = response["request_id"]
+                    .as_str()
+                    .and_then(|id| self.permission_changes.remove(id));
                 let pending = response["request_id"]
                     .as_str()
                     .and_then(|id| self.pending.remove(id));
@@ -1749,17 +1882,47 @@ impl Actor {
                             data["maxTokens"].as_u64(),
                         );
                     }
+                } else if response["subtype"] == "error"
+                    && pending.as_deref() == Some("set_permission_mode")
+                {
+                    if let Some(prompt) = self.deferred.take() {
+                        self.state.rejected_submission = Some(prompt.id);
+                        self.state.queue_sending.retain(|id| *id != prompt.id);
+                    }
+                    self.queue_ready = false;
+                    self.state.error = Some(
+                        response["error"]
+                            .as_str()
+                            .unwrap_or("Claude Code rejected the permission mode")
+                            .into(),
+                    );
                 } else if response["subtype"] == "error" {
                     return Err(response["error"]
                         .as_str()
                         .unwrap_or("Claude Code rejected a control request")
                         .into());
                 }
+                if response["subtype"] == "success"
+                    && pending.as_deref() == Some("set_permission_mode")
+                {
+                    if let Some((requested, revision)) = permission_change {
+                        // Status can precede its control ACK. Keep its authoritative
+                        // effective mode while persisting the acknowledged explicit choice.
+                        let access = if revision == self.permission_mode_revision {
+                            requested
+                        } else {
+                            self.state.resolved_access.clone().unwrap_or(requested)
+                        };
+                        self.state.resolved_access = Some(access.clone());
+                        self.state.access = Some(access.clone());
+                        self.state.saved.composer.access = Some(access);
+                    }
+                }
                 if self.configuring && self.pending.is_empty() {
                     self.configuring = false;
                     self.state.status = Status::Idle;
                     self.state.resolved_model = self.state.model.clone();
-                    self.state.resolved_access = self.state.access.clone();
+
                     self.state.resolved_effort = self.state.effort.clone();
                 }
                 if pending.as_deref() == Some("initialize") {
@@ -1774,8 +1937,12 @@ impl Actor {
                     let data = &response["response"];
                     self.tracks_session_state = data.get("session_state").is_some();
                     self.session_idle = data["session_state"] == "idle";
-                    self.state.resolved_access =
-                        data["current_permission_mode"].as_str().map(str::to_owned);
+                    if let Some(mode) = data["current_permission_mode"].as_str() {
+                        self.effective_permission_mode(mode);
+                    }
+                    if self.pending_access.is_some() {
+                        self.reconfigure = true;
+                    }
                     self.state.resolved_model = data["models"]
                         .as_array()
                         .and_then(|models| models.iter().find(|m| m["value"] == "default"))
@@ -1834,6 +2001,10 @@ impl Actor {
             }
             "system" if value["subtype"] == "status" => {
                 self.state.compacting = value["status"] == "compacting";
+                if let Some(mode) = value["permissionMode"].as_str() {
+                    // A later provider status supersedes even an in-flight ACK.
+                    self.effective_permission_mode(mode);
+                }
                 if value["compact_result"]
                     .as_str()
                     .is_some_and(|result| result != "success")
@@ -1868,7 +2039,9 @@ impl Actor {
             }
             "system" if value["subtype"] == "init" => {
                 self.state.resolved_model = value["model"].as_str().map(str::to_owned);
-                self.state.resolved_access = value["permissionMode"].as_str().map(str::to_owned);
+                if let Some(mode) = value["permissionMode"].as_str() {
+                    self.effective_permission_mode(mode);
+                }
                 self.state.resolved_effort = self.state.effort.clone();
                 if self.state.skills.is_empty() {
                     if let Some(commands) = value["slash_commands"].as_array() {
@@ -2408,6 +2581,157 @@ mod tests {
             Arc::new(AtomicU32::new(0)),
             Arc::new(AtomicBool::new(false)),
         )
+    }
+    #[test]
+    #[cfg(unix)]
+    fn permission_mode_discovery_times_out_and_honors_cancellation() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 10"]);
+        let started = Instant::now();
+        assert!(discover_permission_modes(
+            command,
+            &AtomicBool::new(false),
+            Duration::from_millis(50)
+        )
+        .is_empty());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 10"]);
+        assert!(
+            discover_permission_modes(command, &AtomicBool::new(true), Duration::from_secs(2))
+                .is_empty()
+        );
+    }
+    #[test]
+    fn claude_mode_discovery_requires_advertised_choices() {
+        assert_eq!(permission_modes_from_help("--permission-mode <mode> Permission mode (choices: \"acceptEdits\", \"manual\", \"plan\")"), vec!["acceptEdits", "manual", "plan"]);
+        assert!(permission_modes_from_help("unknown CLI version").is_empty());
+    }
+    #[test]
+    fn claude_permission_change_ack_is_bound_to_request_and_fallback_is_authoritative() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.state.resolved_access = Some("default".into());
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("plan".into()),
+            })
+            .unwrap();
+        actor.configure_live().unwrap();
+        let request = read(&mut reader);
+        let effort = read(&mut reader);
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("acceptEdits".into()),
+            })
+            .unwrap();
+        assert!(actor.state.access.is_none());
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"]}})).unwrap();
+        assert_eq!(actor.state.access.as_deref(), Some("plan"));
+        assert_eq!(actor.pending_access.as_deref(), Some("acceptEdits"));
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":effort["request_id"]}})).unwrap();
+        actor
+            .message(json!({"type":"system","subtype":"status","permissionMode":"default"}))
+            .unwrap();
+        assert_eq!(actor.state.resolved_access.as_deref(), Some("default"));
+        assert_eq!(
+            actor.state.saved.composer.access.as_deref(),
+            Some("default")
+        );
+    }
+    #[test]
+    fn pending_access_selection_survives_model_reset_without_claiming_acknowledgement() {
+        let mut actor = actor();
+        actor.state.resolved_access = Some("default".into());
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("plan".into()),
+            })
+            .unwrap();
+        actor.action(Action::ResetModelEffort).unwrap();
+        assert_eq!(actor.pending_access.as_deref(), Some("plan"));
+        assert_eq!(
+            actor.state.saved.composer.access.as_deref(),
+            Some("default")
+        );
+        actor
+            .pending
+            .insert("initialize".into(), "initialize".into());
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"current_permission_mode":"default"}}})).unwrap();
+        assert!(actor.reconfigure);
+        assert_eq!(actor.pending_access.as_deref(), Some("plan"));
+        assert_eq!(actor.state.resolved_access.as_deref(), Some("default"));
+    }
+    #[test]
+    fn permission_status_before_ack_preserves_acknowledged_explicit_mode_and_fallback() {
+        for effective in ["plan", "default"] {
+            let mut actor = actor();
+            let mut reader = transport(&mut actor);
+            actor
+                .action(Action::Configure {
+                    model: None,
+                    effort: None,
+                    access: Some("plan".into()),
+                })
+                .unwrap();
+            actor.configure_live().unwrap();
+            let request = read(&mut reader);
+            let _effort = read(&mut reader);
+            actor
+                .message(json!({"type":"system","subtype":"status","permissionMode":effective}))
+                .unwrap();
+            assert!(actor.state.saved.composer.access.is_none());
+            actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"]}})).unwrap();
+            assert_eq!(
+                actor.state.saved.composer.access.as_deref(),
+                Some(effective)
+            );
+            assert_eq!(actor.state.resolved_access.as_deref(), Some(effective));
+        }
+    }
+    #[test]
+    fn rejected_claude_permission_change_retains_previous_access_and_stops_deferred_prompt() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.state.access = Some("bypassPermissions".into());
+        actor.state.saved.composer.access = actor.state.access.clone();
+        actor.state.resolved_access = actor.state.access.clone();
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("plan".into()),
+            })
+            .unwrap();
+        actor.configure_live().unwrap();
+        let request = read(&mut reader);
+        let effort = read(&mut reader);
+        actor.deferred = Some(QueuedPrompt {
+            id: 99,
+            text: "do work".into(),
+            images: vec![],
+        });
+        actor.message(json!({"type":"control_response","response":{"subtype":"error","request_id":request["request_id"],"error":"mode unavailable"}})).unwrap();
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":effort["request_id"]}})).unwrap();
+        assert_eq!(
+            actor.state.saved.composer.access.as_deref(),
+            Some("bypassPermissions")
+        );
+        assert_eq!(
+            actor.state.resolved_access.as_deref(),
+            Some("bypassPermissions")
+        );
+        assert!(actor.deferred.is_none());
+        assert!(!actor.queue_ready);
+        assert_eq!(actor.state.rejected_submission, Some(99));
+        assert_eq!(actor.state.error.as_deref(), Some("mode unavailable"));
+        assert_eq!(actor.state.status, Status::Idle);
     }
     #[test]
     fn subagent_prompt_is_task_fallback_and_activity_does_not_replace_it() {
@@ -3814,7 +4138,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(actor.state.model.as_deref(), Some("sonnet"));
-        assert_eq!(actor.state.access.as_deref(), Some("plan"));
+        assert!(actor.state.access.is_none());
+        assert_eq!(actor.pending_access.as_deref(), Some("plan"));
         actor.configure_live().unwrap();
         let first = read(&mut reader);
         let second = read(&mut reader);

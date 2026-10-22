@@ -81,6 +81,27 @@ impl Agent {
         args
     }
 
+    /// Global permission preferences belong to CLI agents only. Explicit native
+    /// caller options are passed separately and must not use this preference.
+    pub fn launch_args_for_backend(
+        self,
+        native: bool,
+        skip_permissions: bool,
+        chrome: bool,
+    ) -> Vec<String> {
+        self.launch_args(!native && skip_permissions, chrome)
+    }
+
+    pub fn multi_root_launch_args_for_backend(
+        self,
+        native: bool,
+        skip_permissions: bool,
+        chrome: bool,
+        additional_roots: &[String],
+    ) -> Option<Vec<String>> {
+        self.multi_root_launch_args(!native && skip_permissions, chrome, additional_roots)
+    }
+
     /// Builds launch arguments for one primary root plus additional writable roots.
     /// Claude and Codex accept repeated `--add-dir <path>` pairs. OpenCode and
     /// Terminal receive their extra roots through Grove's symlink bundle.
@@ -347,6 +368,28 @@ fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cli_access_preference_is_absent_from_native_launches_with_roots_and_chrome() {
+        let roots = vec!["/extra".to_owned()];
+        for agent in [Agent::Claude, Agent::Codex] {
+            assert_eq!(
+                agent.launch_args_for_backend(true, true, true),
+                agent.launch_args(false, true)
+            );
+            assert_eq!(
+                agent.multi_root_launch_args_for_backend(true, true, true, &roots),
+                agent.multi_root_launch_args(false, true, &roots)
+            );
+            assert_eq!(
+                agent.launch_args_for_backend(false, true, true),
+                agent.launch_args(true, true)
+            );
+            assert_eq!(
+                agent.multi_root_launch_args_for_backend(false, true, true, &roots),
+                agent.multi_root_launch_args(true, true, &roots)
+            );
+        }
+    }
     #[cfg(unix)]
     #[test]
     fn finder_path_resolves_standard_user_install_and_preserves_path_priority() {

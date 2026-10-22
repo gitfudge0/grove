@@ -206,6 +206,10 @@ pub struct SavedSession {
     pub draft_images: Vec<String>,
     #[serde(default)]
     pub config_args: Vec<String>,
+    /// Version 1 marks startup options supplied specifically for a native session.
+    /// Missing/zero predates CLI/native isolation and requires reconnect migration.
+    #[serde(default)]
+    pub native_config_version: u8,
     #[serde(default)]
     pub composer: ComposerSettings,
     /// Last known context-window occupancy, so a reopened session shows its meter.
@@ -242,6 +246,50 @@ pub struct PendingEdit {
     pub claude_fork_id: Option<String>,
 }
 impl SavedSession {
+    /// Run only when reconnecting/restoring, never against a live provider.
+    pub(crate) fn migrate_native_config(&mut self) {
+        if self.native_config_version != 0 {
+            return;
+        }
+        match self.provider {
+            Provider::Claude => self
+                .config_args
+                .retain(|arg| arg != "--dangerously-skip-permissions"),
+            Provider::Codex => {
+                // This exact pair was emitted by the old global CLI preference.
+                // Do not erase individual custom settings or composer selections.
+                let approval = "approval_policy=\"never\"";
+                let sandbox = "sandbox_mode=\"danger-full-access\"";
+                let has = |value: &str| {
+                    self.config_args.windows(2).any(|pair| {
+                        matches!(pair[0].as_str(), "-c" | "--config") && pair[1] == value
+                    })
+                };
+                let bundle = has(approval) && has(sandbox);
+                let mut migrated = Vec::new();
+                let mut i = 0;
+                while i < self.config_args.len() {
+                    if self.config_args[i] == "--dangerously-bypass-approvals-and-sandbox" {
+                        i += 1;
+                    } else if bundle
+                        && matches!(self.config_args[i].as_str(), "-c" | "--config")
+                        && self
+                            .config_args
+                            .get(i + 1)
+                            .is_some_and(|v| v == approval || v == sandbox)
+                    {
+                        i += 2;
+                    } else {
+                        migrated.push(self.config_args[i].clone());
+                        i += 1;
+                    }
+                }
+                self.config_args = migrated;
+            }
+        }
+        self.native_config_version = 1;
+    }
+
     pub(crate) fn fresh_conversation(&self) -> Self {
         let mut saved = self.clone();
         saved.thread_id = None;
@@ -634,6 +682,9 @@ pub struct Snapshot {
     pub elicitations: Vec<crate::elicitation::ElicitationRequest>,
     pub error: Option<String>,
     pub sandbox: Option<Value>,
+    pub approval_policy: Option<Value>,
+    /// Modes advertised by the installed Claude CLI, not assumed SDK capabilities.
+    pub permission_modes: Vec<String>,
     pub models: Vec<Value>,
     pub skills: Vec<Value>,
     pub model: Option<String>,
@@ -693,6 +744,26 @@ impl Status {
     }
 }
 impl Snapshot {
+    /// Keep effective sandbox and approvals separate: an unrestricted filesystem
+    /// does not imply that the provider will stop asking for approval.
+    pub fn configured_access_summary(&self) -> String {
+        let sandbox = match self.sandbox.as_ref().and_then(|v| v["type"].as_str()) {
+            Some("dangerFullAccess") => "No sandbox",
+            Some("readOnly") => "Read only",
+            Some("workspaceWrite") => "Workspace access",
+            Some("externalSandbox") => "External sandbox",
+            _ => return "Configured access".into(),
+        };
+        let approvals = match self.approval_policy.as_ref().and_then(Value::as_str) {
+            Some("never") => "never ask",
+            Some("on-request") => "ask on request",
+            Some("on-failure") => "ask on failure",
+            Some("untrusted") => "ask for untrusted commands",
+            _ => "configured approvals",
+        };
+        format!("{sandbox} · {approvals}")
+    }
+
     pub(crate) fn question_answer_ack(&self, id: Value) -> QuestionAnswerAck {
         QuestionAnswerAck {
             sequence: self
@@ -842,6 +913,8 @@ impl Snapshot {
             elicitations: Vec::new(),
             error: None,
             sandbox: None,
+            approval_policy: None,
+            permission_modes: Vec::new(),
             models: Vec::new(),
             skills: Vec::new(),
             model: composer.model,
@@ -2244,9 +2317,11 @@ impl Actor {
         }
         let (mut args, initial) = launch_options(&self.args)?;
         if args.is_empty() {
+            self.state.saved.migrate_native_config();
             args.clone_from(&self.state.saved.config_args);
         } else {
             self.state.saved.config_args.clone_from(&args);
+            self.state.saved.native_config_version = 1;
         }
         if self.state.saved.thread_id.is_none() {
             self.initial = initial;
@@ -2886,6 +2961,8 @@ impl Actor {
                         Some("workspaceWrite") => Some("workspace-write".into()),
                         _ => None,
                     };
+                self.state.sandbox = self.configured_turn.get("sandboxPolicy").cloned();
+                self.state.approval_policy = self.configured_turn.get("approvalPolicy").cloned();
                 self.reset_configuration = true;
             }
             Action::Configure {
@@ -3552,7 +3629,9 @@ impl Actor {
                     Some("danger-full-access") => Some(json!({"type":"dangerFullAccess"})),
                     Some("workspace-write") => Some(json!({"type":"workspaceWrite",
                         "writableRoots":self.state.saved.roots.iter().map(|root| &root.wt_path).collect::<Vec<_>>(),
-                        "networkAccess":result["config"]["sandbox_workspace_write"]["network_access"].as_bool().unwrap_or(false)})),
+                        "networkAccess":result["config"]["sandbox_workspace_write"]["network_access"].as_bool().unwrap_or(false),
+                        "excludeTmpdirEnvVar":result["config"]["sandbox_workspace_write"]["exclude_tmpdir_env_var"].as_bool().unwrap_or(false),
+                        "excludeSlashTmp":result["config"]["sandbox_workspace_write"]["exclude_slash_tmp"].as_bool().unwrap_or(false)})),
                     _ => None,
                 };
                 if let Some(policy) = configured_sandbox {
@@ -3596,16 +3675,17 @@ impl Actor {
                     _ => None,
                 };
                 if let Some(sandbox) = result.get("sandbox") {
-                    if self.configured_turn.get("sandboxPolicy").is_none() {
+                    if !sandbox.is_null() {
                         self.configured_turn["sandboxPolicy"] = sandbox.clone();
                     }
                 }
                 if let Some(approval) = result.get("approvalPolicy") {
-                    if self.configured_turn.get("approvalPolicy").is_none() {
+                    if !approval.is_null() {
                         self.configured_turn["approvalPolicy"] = approval.clone();
                     }
                 }
                 self.state.sandbox = result.get("sandbox").cloned();
+                self.state.approval_policy = result.get("approvalPolicy").cloned();
                 if result["sandbox"]["type"] == "workspaceWrite" {
                     for root in &self.state.saved.roots {
                         if root.wt_path != self.state.saved.cwd
@@ -4119,9 +4199,100 @@ mod tests {
             draft: String::new(),
             draft_images: Vec::new(),
             config_args: Vec::new(),
+            native_config_version: 1,
             composer: ComposerSettings::default(),
             context: None,
         }
+    }
+    #[test]
+    fn legacy_native_bypass_migration_preserves_explicit_access_and_custom_options() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut legacy = serde_json::to_value(saved()).unwrap();
+            legacy
+                .as_object_mut()
+                .unwrap()
+                .remove("native_config_version");
+            let mut session: SavedSession = serde_json::from_value(legacy).unwrap();
+            session.provider = provider;
+            session.composer.access = Some("full-access".into());
+            session.config_args = if provider == Provider::Codex {
+                vec![
+                    "-c",
+                    "approval_policy=\"never\"",
+                    "-c",
+                    "sandbox_mode=\"danger-full-access\"",
+                    "-c",
+                    "model=\"custom\"",
+                ]
+            } else {
+                vec![
+                    "--dangerously-skip-permissions",
+                    "--chrome",
+                    "--allowedTools",
+                    "Read",
+                ]
+            }
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            let explicit = session.config_args.clone();
+            let mut native = session.clone();
+            native.native_config_version = 1;
+            native.migrate_native_config();
+            assert_eq!(native.config_args, explicit);
+            session.migrate_native_config();
+            assert_eq!(session.composer.access.as_deref(), Some("full-access"));
+            assert_eq!(
+                session.config_args,
+                if provider == Provider::Codex {
+                    vec!["-c", "model=\"custom\""]
+                } else {
+                    vec!["--chrome", "--allowedTools", "Read"]
+                }
+            );
+            let mut recovered: SavedSession =
+                serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
+            recovered.migrate_native_config();
+            assert_eq!(recovered.config_args, session.config_args);
+            assert_eq!(recovered.native_config_version, 1);
+        }
+        let mut custom = saved();
+        custom.native_config_version = 0;
+        custom.config_args = vec!["-c".into(), "approval_policy=\"never\"".into()];
+        let expected = custom.config_args.clone();
+        custom.migrate_native_config();
+        assert_eq!(custom.config_args, expected);
+    }
+    #[test]
+    fn effective_codex_access_separates_sandbox_approvals_and_preserves_richer_reset() {
+        let mut actor = actor();
+        let sandbox = json!({"type":"workspaceWrite","writableRoots":["/custom"],"networkAccess":false,"excludeSlashTmp":true,"readOnlyAccess":{"type":"restricted","readableRoots":["/read"]}});
+        actor.state.sandbox = Some(json!({"type":"dangerFullAccess"}));
+        actor.state.approval_policy = Some(json!("on-request"));
+        assert_eq!(
+            actor.state.configured_access_summary(),
+            "No sandbox · ask on request"
+        );
+        actor.configured_turn =
+            json!({"sandboxPolicy":sandbox,"approvalPolicy":{"reject":{"sandbox_approval":true}}});
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("full-access".into()),
+            })
+            .unwrap();
+        actor.action(Action::ResetConfiguration).unwrap();
+        assert_eq!(actor.turn_params(vec![])["sandboxPolicy"], sandbox);
+        assert_eq!(actor.state.sandbox, Some(sandbox));
+        assert_eq!(
+            actor.state.approval_policy,
+            Some(json!({"reject":{"sandbox_approval":true}}))
+        );
+        assert_eq!(
+            actor.state.configured_access_summary(),
+            "Workspace access · configured approvals"
+        );
     }
     #[test]
     fn work_periods_follow_turn_boundaries_and_recover_without_inventing_time() {

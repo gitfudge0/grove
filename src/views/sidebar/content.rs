@@ -2417,6 +2417,7 @@ mod tests {
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),
+                native_config_version: 1,
             };
             let mut state = grove_core::codex::Snapshot::new(saved);
             state.status = grove_core::codex::Status::Idle;
@@ -2543,6 +2544,7 @@ mod tests {
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),
+                native_config_version: 1,
             };
             let mut state = grove_core::codex::Snapshot::new(saved);
             state.status = grove_core::codex::Status::Working;

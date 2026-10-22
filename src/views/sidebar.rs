@@ -3008,13 +3008,15 @@ impl Sidebar {
                     let store = &cx.global::<SettingsState>().store;
                     let args = meta
                         .agent
-                        .multi_root_launch_args(
+                        .multi_root_launch_args_for_backend(
+                            crate::runtime::native_codex_enabled(store, None),
                             store.dangerously_skip_permissions_enabled.unwrap_or(false),
                             store.chrome_enabled.unwrap_or(false),
                             &extra_roots,
                         )
                         .unwrap_or_else(|| {
-                            meta.agent.launch_args(
+                            meta.agent.launch_args_for_backend(
+                                crate::runtime::native_codex_enabled(store, None),
                                 store.dangerously_skip_permissions_enabled.unwrap_or(false),
                                 store.chrome_enabled.unwrap_or(false),
                             )
@@ -8923,6 +8925,7 @@ for line in sys.stdin:
                     draft: String::new(),
                     draft_images: Vec::new(),
                     config_args: Vec::new(),
+                    native_config_version: 1,
                 };
                 let (handle, _actions) = grove_core::codex::Handle::channel();
                 let (_updates, receive) = std::sync::mpsc::channel();
@@ -9098,6 +9101,7 @@ for line in sys.stdin:
                 draft: String::new(),
                 draft_images: Vec::new(),
                 config_args: Vec::new(),
+            native_config_version: 1,
             };
             let state = grove_core::codex::Snapshot::new(saved);
             let connection = grove_core::codex::Connection {

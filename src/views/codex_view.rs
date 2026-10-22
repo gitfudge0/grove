@@ -5081,7 +5081,13 @@ impl CodexView {
             ComposerMenu::Settings | ComposerMenu::Effort => {
                 state.effort.as_deref().or(state.resolved_effort.as_deref())
             }
-            ComposerMenu::Access => state.access.as_deref().or(state.resolved_access.as_deref()),
+            ComposerMenu::Access => {
+                if state.saved.provider == codex::Provider::Claude {
+                    state.access.as_deref().or(state.resolved_access.as_deref())
+                } else {
+                    state.access.as_deref()
+                }
+            }
         }
         .map(str::to_owned);
         let index = match menu {
@@ -5676,12 +5682,18 @@ impl CodexView {
             Some("full-access") => "Full access",
             Some("read-only") => "Read only",
             Some("workspace-write") => "Workspace access",
-            Some("default") => "Ask for permission",
+            Some("default" | "manual") => "Ask for permission",
+            Some("auto") => "Automatic permissions",
             Some("acceptEdits") => "Accept edits",
             Some("plan") => "Plan mode",
             Some("dontAsk") => "Deny unapproved tools",
             Some("bypassPermissions") => "Bypass permissions",
             _ => "Configured access",
+        };
+        let access = if state.saved.provider == codex::Provider::Codex && state.access.is_none() {
+            state.configured_access_summary()
+        } else {
+            access.to_owned()
         };
         let mut controls = Vec::new();
         for (index, menu, id, name, icon, label) in [
@@ -5699,7 +5711,7 @@ impl CodexView {
                 "codex-access",
                 "Choose access level",
                 access_icon,
-                access.into(),
+                access.clone(),
             ),
         ] {
             if index > 0 {
@@ -5728,8 +5740,31 @@ impl CodexView {
                 window.text_system(),
             )
             .min(rpx(MODEL_EFFORT_CARD_W).to_pixels(window.rem_size()));
+            let detail = if menu == ComposerMenu::Access
+                && state.saved.provider == codex::Provider::Codex
+                && state.access.is_none()
+            {
+                format!(
+                    "Sandbox: {}\nApprovals: {}",
+                    state
+                        .sandbox
+                        .as_ref()
+                        .map_or_else(|| "provider configured".into(), ToString::to_string),
+                    state
+                        .approval_policy
+                        .as_ref()
+                        .map_or_else(|| "provider configured".into(), ToString::to_string)
+                )
+            } else if menu == ComposerMenu::Access {
+                access.clone()
+            } else {
+                name.to_owned()
+            };
+            let control = header_control_with_tooltip(id, name, move |window, cx| {
+                tooltip(detail.clone(), window).build(window, cx)
+            });
             controls.push(
-                header_control(id, name)
+                control
                     .relative()
                     .track_focus(&self.option_focus[index])
                     .child(
@@ -5835,15 +5870,28 @@ impl CodexView {
             ComposerMenu::Access => {
                 choices = if state.saved.provider == codex::Provider::Claude {
                     vec![
-                        ("default", "Ask for permission · standard Claude checks"),
+                        ("default", "Ask for permission · provider rules apply"),
+                        ("manual", "Ask for permission · provider rules apply"),
+                        (
+                            "auto",
+                            "Automatic permissions · provider evaluates tool risk",
+                        ),
                         ("acceptEdits", "Accept edits · ask before other tools"),
                         ("plan", "Plan mode · explore before implementing"),
                         ("dontAsk", "Deny tools that require permission"),
                         (
                             "bypassPermissions",
-                            "Bypass permissions · no approval prompts",
+                            "Bypass approval checks · provider restrictions still apply",
                         ),
                     ]
+                    .into_iter()
+                    .filter(|(mode, _)| {
+                        state
+                            .permission_modes
+                            .iter()
+                            .any(|supported| supported == mode)
+                    })
+                    .collect()
                 } else {
                     vec![
                         ("read-only", "Read only · inspect without edits"),
@@ -5860,7 +5908,7 @@ impl CodexView {
                 .into_iter()
                 .map(|(value, label)| (value.into(), label.into()))
                 .collect();
-                "Access · applies only after your explicit selection"
+                "Access · explicit selection overrides provider defaults"
             }
         };
 
@@ -9633,6 +9681,16 @@ mod tests {
     fn claude_permissions_use_claude_modes_without_codex_sandbox_claims() {
         let mut state = snapshot();
         state.saved.provider = codex::Provider::Claude;
+        state.permission_modes = [
+            "default",
+            "acceptEdits",
+            "plan",
+            "dontAsk",
+            "bypassPermissions",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
         let (choices, _) = CodexView::menu_choices(&state, ComposerMenu::Access);
         assert!(choices.iter().any(|(value, _)| value == "default"));
         assert!(choices
@@ -9671,6 +9729,7 @@ mod tests {
             draft: String::new(),
             draft_images: Vec::new(),
             config_args: Vec::new(),
+            native_config_version: 1,
         });
         state.status = Status::Idle;
         state

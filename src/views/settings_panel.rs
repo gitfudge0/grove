@@ -774,9 +774,10 @@ impl SettingsPanel {
                 } else {
                     "Conversation view is experimental. OpenCode always uses a terminal. Open and saved conversations are preserved."
                 }))
-                .child(Self::section("Agent access"))
-                .child(Self::setting_row("Permission prompts", "Choose how agents run commands.", permissions))
-                .when(skip, |body| body.child(div().id("settings-permission-warning").role(gpui::Role::Alert).text_size(rpx(TEXT_SMALL)).text_color(c::AMBER()).child("Agents can run commands without asking. Use only in projects you trust.")))
+                .child(Self::section("Terminal agent access"))
+                .child(Self::setting_row("Permission prompts", "Choose how CLI agents run commands. Native conversations use their provider’s access controls.", permissions))
+                .when(skip, |body| body.child(div().id("settings-permission-warning").role(gpui::Role::Alert).text_size(rpx(TEXT_SMALL)).text_color(c::AMBER()).child("CLI agents can run commands without asking. Use only in projects you trust.")))
+                .child(Self::section("Browser access"))
                 .child(Self::setting_row("Claude in Chrome", "Let Claude read and control Chrome tabs.", browser))
         ));
         body = body.when(self.category == Category::Terminal, |body| {

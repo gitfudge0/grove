@@ -71,6 +71,7 @@ fn main() -> Result<(), String> {
         draft: String::new(),
         draft_images: Vec::new(),
         config_args: Vec::new(),
+        native_config_version: 1,
     };
     let connection = codex::connect(saved, Vec::new());
     let ready = if startup_queue {
