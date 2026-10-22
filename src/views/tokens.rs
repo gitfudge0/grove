@@ -145,7 +145,6 @@ pub const FIELD_H: f32 = 60.;
 pub const FIELD_INSET_X: f32 = 14.;
 pub const FORM_VALUE_SIZE: f32 = 16.;
 pub const FORM_VALUE_LINE_H: f32 = 22.;
-pub const FORM_BUTTON_H: f32 = 44.;
 pub const TEXTAREA_H: f32 = 130.;
 pub const SWITCH_W: f32 = 48.;
 pub const SWITCH_H: f32 = 28.;

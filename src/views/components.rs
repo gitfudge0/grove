@@ -255,32 +255,12 @@ pub fn form_action(
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> gpui_component::button::Button {
-    use gpui_component::{
-        button::{Button, ButtonCustomVariant, ButtonVariants},
-        Sizable, Size,
-    };
     let (fill, foreground, hover) = if primary {
         (c::FG(), c::BG(), c::FG_DIM())
     } else {
         (c::FIELD_FILL(), c::FG(), c::BG_HOVER())
     };
-    Button::new(id)
-        .label(label)
-        .with_size(Size::Medium)
-        .h(rpx(FORM_BUTTON_H))
-        .px(rpx(FIELD_INSET_X))
-        .text_size(rpx(FORM_VALUE_SIZE))
-        .custom(
-            ButtonCustomVariant::new(cx)
-                .color(fill)
-                .foreground(foreground)
-                .hover(hover)
-                .active(hover)
-                .shadow(false),
-        )
-        .rounded(gpui::px(
-            RADIUS_PANEL * f32::from(window.rem_size()) / crate::zoom::REM_BASE,
-        ))
+    dense_action_with_colors(id, label, fill, foreground, hover, window, cx)
 }
 
 /// Compact transcript actions; quiet actions share their surrounding surface.

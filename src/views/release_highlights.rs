@@ -181,7 +181,7 @@ fn button(
 ) -> gpui_component::button::Button {
     let button = super::components::form_action(id, label, id == "highlights-next", window, cx);
     if id == "highlights-next" {
-        button.child(crate::icons::icon("arrow-right", ICON_MD, c::BG()))
+        button.child(crate::icons::icon("arrow-right", ICON_SM, c::BG()))
     } else {
         button.icon(gpui_component::Icon::default().path(match id {
             "highlights-back" => "icons/arrow-left.svg",

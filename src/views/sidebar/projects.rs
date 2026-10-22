@@ -20,6 +20,8 @@ use grove_core::storage::ProjectScripts;
 
 /// Bound focus traversal even if every decision action is disabled.
 const FOCUS_SCAN_LIMIT: usize = 128;
+/// Workspace destination choices are selection rows, not action buttons.
+const DESTINATION_ROW_H: f32 = 44.;
 
 #[derive(Clone)]
 pub(super) enum ProjectPanelEvent {
@@ -742,7 +744,7 @@ impl Render for ProjectPanel {
                                 .tab_index(0)
                                 .w_full()
                                 .min_w_0()
-                                .h(rpx(FORM_BUTTON_H))
+                                .h(rpx(DESTINATION_ROW_H))
                                 .px(rpx(SPACE_2XL))
                                 .rounded(rpx(RADIUS_PANEL))
                                 .border_1()
@@ -1380,17 +1382,6 @@ mod tests {
                 div()
                     .debug_selector(|| "recipe-browse".into())
                     .child(super::super::project_setup::browse_action(window, cx)),
-                div().debug_selector(|| "recipe-height-only".into()).child(
-                    crate::views::components::form_action(
-                        "height-only-probe",
-                        "Browse",
-                        false,
-                        window,
-                        cx,
-                    )
-                    .h(rpx(CONTROL_H))
-                    .icon(gpui_component::Icon::default().path("icons/folder.svg")),
-                ),
                 div()
                     .debug_selector(|| "recipe-form".into())
                     .child(project_action(
@@ -1405,7 +1396,7 @@ mod tests {
         }
     }
     #[gpui::test]
-    fn mini_uses_complete_dense_recipe_not_shortened_form(cx: &mut gpui::TestAppContext) {
+    fn all_action_contexts_share_complete_small_recipe(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let (_, cx) = cx.add_window_view(|_, _| ButtonRecipeProbe);
         draw(cx);
@@ -1413,25 +1404,18 @@ mod tests {
         let dense = cx.debug_bounds("recipe-dense").unwrap();
         let form = cx.debug_bounds("recipe-form").unwrap();
         let browse = cx.debug_bounds("recipe-browse").unwrap();
-        let height_only = cx.debug_bounds("recipe-height-only").unwrap();
         assert_eq!(
             browse.size, dense.size,
             "actual Browse builder must share full dense geometry"
-        );
-        assert_eq!(height_only.size.height, dense.size.height);
-        assert!(
-            height_only.size.width > dense.size.width,
-            "negative control: height-only form shrink keeps oversized internals"
         );
         assert_eq!(
             mini.size, dense.size,
             "Mini must share label/icon/gap/padding geometry with dense actions"
         );
         assert_eq!(f32::from(mini.size.height), CONTROL_H);
-        assert_eq!(f32::from(form.size.height), FORM_BUTTON_H);
-        assert!(
-            form.size.width > mini.size.width,
-            "form must retain its larger label, icon, gap and padding"
+        assert_eq!(
+            form.size, dense.size,
+            "form actions must share the smaller label, icon, gap and padding recipe"
         );
     }
     fn draw(cx: &mut gpui::VisualTestContext) {

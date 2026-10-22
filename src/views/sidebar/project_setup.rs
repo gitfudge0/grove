@@ -607,7 +607,7 @@ impl Render for ProjectSetup {
         };
         let primary = if source {
             form_action("project-choose", "Continue", true, window, cx)
-                .child(crate::icons::icon("arrow-right", ICON_MD, c::BG()))
+                .child(crate::icons::icon("arrow-right", ICON_SM, c::BG()))
                 .disabled(self.path_input.read(cx).value().trim().is_empty())
                 .on_click(cx.listener(|this, _, window, cx| this.choose(window, cx)))
                 .into_any_element()

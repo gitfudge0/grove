@@ -881,14 +881,14 @@ impl Sidebar {
                     .icon(
                         gpui_component::Icon::default()
                             .path("icons/git-publish.svg")
-                            .size(rpx(ICON_MD)),
+                            .size(rpx(ICON_SM)),
                     )
                     .with_focus_handle(self.confirm_focus.clone())
                     .disabled(busy)
                     .when(busy, |button| {
                         button
                             .icon_only()
-                            .child(icon("git-publish", ICON_MD, c::FG_DIM()))
+                            .child(icon("git-publish", ICON_SM, c::FG_DIM()))
                             .child(shimmer_label(
                                 "checkout-publish-shimmer".into(),
                                 "Publishing…".into(),
@@ -916,7 +916,7 @@ impl Sidebar {
                 .child("The exact PR head, checks, reviews and checkout will be revalidated. Repository protections apply.")
                 .child(form_action("checkout-confirm-merge", if busy { "Merging…" } else { "Create merge commit" }, true, window, cx)
                     .debug_selector(|| "checkout-confirm-merge".into())
-                    .icon(gpui_component::Icon::default().path("icons/check.svg").size(rpx(ICON_MD)))
+                    .icon(gpui_component::Icon::default().path("icons/check.svg").size(rpx(ICON_SM)))
                     .with_focus_handle(self.confirm_focus.clone())
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -937,7 +937,7 @@ impl Sidebar {
                 .icon(
                     gpui_component::Icon::default()
                         .path("icons/close.svg")
-                        .size(rpx(ICON_MD)),
+                        .size(rpx(ICON_SM)),
                 )
                 .with_focus_handle(self.cancel_focus.clone())
                 .disabled(busy)

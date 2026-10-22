@@ -19,15 +19,9 @@ use crate::{
     },
 };
 use gpui::{div, prelude::*, AnyElement, Context, Focusable, FontWeight, Window};
-use gpui_component::{
-    button::{Button, ButtonCustomVariant, ButtonVariants},
-    Disableable,
-};
+use gpui_component::Disableable;
 use grove_core::agent::Agent;
 
-const FORM_ACTION_H: f32 = 44.;
-const FORM_PRIMARY_MIN_W: f32 = 130.;
-const FORM_SECONDARY_MIN_W: f32 = 100.;
 const SESSION_HEADER_H: f32 = 36.;
 const SESSION_ICON_SLOT: f32 = 24.;
 const HEADER_PREFIX_FRACTION: f32 = 0.4;
@@ -88,11 +82,11 @@ impl Sidebar {
                 .child(
                     self.control("cancel-worktree-removal", "Cancel", Action::Cancel, cx)
                         .debug_selector(|| "cancel-worktree-removal".into())
-                        .h(rpx(FORM_ACTION_H))
                         .w_auto()
-                        .min_w(rpx(FORM_SECONDARY_MIN_W))
-                        .px(rpx(SPACE_3XL))
-                        .rounded(rpx(RADIUS_PANEL))
+                        .px(rpx(SPACE_LG))
+                        .gap(rpx(SPACE_SM))
+                        .text_size(rpx(TEXT_SMALL))
+                        .rounded(rpx(RADIUS_CONTROL))
                         .bg(c::FIELD_FILL())
                         .child(icon("close", ICON_SM, c::FG_DIM()))
                         .child("Cancel"),
@@ -106,11 +100,11 @@ impl Sidebar {
                     )
                     .debug_selector(|| "confirm-worktree-removal".into())
                     .track_focus(&self.confirm_focus)
-                    .h(rpx(FORM_ACTION_H))
                     .w_auto()
-                    .min_w(rpx(FORM_PRIMARY_MIN_W))
-                    .px(rpx(SPACE_3XL))
-                    .rounded(rpx(RADIUS_PANEL))
+                    .px(rpx(SPACE_LG))
+                    .gap(rpx(SPACE_SM))
+                    .text_size(rpx(TEXT_SMALL))
+                    .rounded(rpx(RADIUS_CONTROL))
                     .bg(c::RED())
                     .text_color(c::BG())
                     .child(icon("trash", ICON_SM, c::FG_DIM()))
@@ -126,11 +120,11 @@ impl Sidebar {
                 )
                 .debug_selector(|| "dismiss-worktree-removal".into())
                 .track_focus(&self.confirm_focus)
-                .h(rpx(FORM_ACTION_H))
                 .w_auto()
-                .min_w(rpx(FORM_SECONDARY_MIN_W))
-                .px(rpx(SPACE_3XL))
-                .rounded(rpx(RADIUS_PANEL))
+                .px(rpx(SPACE_LG))
+                .gap(rpx(SPACE_SM))
+                .text_size(rpx(TEXT_SMALL))
+                .rounded(rpx(RADIUS_CONTROL))
                 .bg(c::FG())
                 .text_color(c::BG())
                 .child(icon(
@@ -150,11 +144,11 @@ impl Sidebar {
                 )
                 .debug_selector(|| "skip-worktree-script".into())
                 .track_focus(&self.confirm_focus)
-                .h(rpx(FORM_ACTION_H))
                 .w_auto()
-                .min_w(rpx(FORM_SECONDARY_MIN_W))
-                .px(rpx(SPACE_3XL))
-                .rounded(rpx(RADIUS_PANEL))
+                .px(rpx(SPACE_LG))
+                .gap(rpx(SPACE_SM))
+                .text_size(rpx(TEXT_SMALL))
+                .rounded(rpx(RADIUS_CONTROL))
                 .bg(c::FIELD_FILL())
                 .child(icon("arrow-right", ICON_SM, c::FG_DIM()))
                 .child("Skip script"),
@@ -1239,32 +1233,20 @@ impl Sidebar {
                         row.border_t_1().border_color(c::BORDER_SOFT())
                     })
                     .child(
-                        Button::new(id)
-                            .label(label)
+                        form_action(id, label, false, window, cx)
                             .icon(
                                 gpui_component::Icon::default()
                                     .path(format!("icons/{}.svg", agent.icon_name()))
-                                    .size(rpx(SPACE_3XL)),
+                                    .size(rpx(ICON_SM)),
                             )
                             .debug_selector(move || id.into())
-                            .custom(
-                                ButtonCustomVariant::new(cx)
-                                    .color(c::FIELD_FILL())
-                                    .foreground(c::FG())
-                                    .hover(c::BG_HOVER())
-                                    .active(c::BG_HOVER())
-                                    .shadow(false),
-                            )
-                            .rounded(gpui_component::button::ButtonRounded::None)
                             .w_full()
                             .min_w_0()
-                            .h(rpx(ROW_MIN_H))
-                            .px(rpx(SPACE_3XL))
                             .cursor_pointer()
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .child(div().min_w_0().flex_1().flex().justify_end().child(icon(
                                 "arrow-right",
-                                ICON_MD,
+                                ICON_SM,
                                 c::FG_DIM(),
                             )))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1405,8 +1387,6 @@ impl Sidebar {
                                 .debug_selector(|| "project-new-worktree".into())
                                 .icon(gpui_component::Icon::default().path("icons/plus.svg"))
                                 .mt(rpx(SPACE_2XL))
-                                .h(rpx(FORM_ACTION_H))
-                                .rounded(rpx(RADIUS_PANEL).to_pixels(window.rem_size()))
                                 .bg(c::BG())
                                 .border_1()
                                 .border_color(c::BORDER_STRONG())
@@ -1427,7 +1407,6 @@ impl Sidebar {
                             )
                             .debug_selector(|| "project-initialize-git".into())
                             .icon(gpui_component::Icon::default().path("icons/plus.svg"))
-                            .h(rpx(FORM_ACTION_H))
                             .disabled(self.git_init_pending.is_some())
                             .on_click(cx.listener(
                                 move |this, _, window, cx| {
@@ -1467,7 +1446,6 @@ impl Sidebar {
                             form_action("check-first-commit", "Check again", false, window, cx)
                                 .debug_selector(|| "check-first-commit".into())
                                 .icon(gpui_component::Icon::default().path("icons/restart.svg"))
-                                .h(rpx(FORM_ACTION_H))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.act(Action::RefreshGit(project_path.clone()), window, cx);
                                 })),
@@ -1586,9 +1564,7 @@ impl Sidebar {
                                             window,
                                             cx,
                                         )
-                                        .h(rpx(FORM_ACTION_H))
                                         .flex_1()
-                                        .min_w(rpx(FORM_PRIMARY_MIN_W))
                                         .disabled(!enabled)
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.submit_worktree(cx)),
@@ -1596,9 +1572,7 @@ impl Sidebar {
                                     )
                                     .child(
                                         form_action("cancel-worktree", "Cancel", false, window, cx)
-                                            .h(rpx(FORM_ACTION_H))
                                             .flex_1()
-                                            .min_w(rpx(FORM_SECONDARY_MIN_W))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.act(super::Action::Cancel, window, cx);
                                             })),
@@ -1862,7 +1836,6 @@ impl Sidebar {
                     card.child(
                         form_action("add-project", "Add project", true, window, cx)
                             .icon(gpui_component::Icon::default().path("icons/plus.svg"))
-                            .h(rpx(FORM_ACTION_H))
                             .mt(rpx(SPACE_LG))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.add_project(window, cx)),

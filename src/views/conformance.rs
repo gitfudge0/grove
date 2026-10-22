@@ -406,7 +406,7 @@ fn r14_placeholder_copy_uses_examples() {
     });
 }
 #[test]
-fn r15_form_buttons_have_shared_height() {
+fn r15_form_actions_share_the_small_recipe() {
     let components = source("src/views/components.rs");
     let body = components
         .split("pub fn form_action(")
@@ -415,14 +415,12 @@ fn r15_form_buttons_have_shared_height() {
         .split("pub fn transcript_action(")
         .next()
         .unwrap();
-    for required in [
-        ".h(rpx(FORM_BUTTON_H))",
-        ".with_size(Size::Medium)",
-        ".px(rpx(FIELD_INSET_X))",
-        ".text_size(rpx(FORM_VALUE_SIZE))",
-    ] {
-        assert!(body.contains(required), "form recipe missing {required}");
-    }
+    assert!(body.contains("dense_action_with_colors("));
+    assert!(!body.contains(".with_size("));
+    assert!(!body.contains(".h("));
+    reject("R15 retired large action height", |line| {
+        line.contains("FORM_BUTTON_H") || line.contains("FORM_ACTION_H")
+    });
 }
 #[test]
 fn r16_retired_footer_radius_stays_removed() {
