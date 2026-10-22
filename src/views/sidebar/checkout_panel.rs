@@ -21,8 +21,8 @@ const NARROW_HEIGHT_FRACTION: f32 = 0.5;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Minimum count-column width; wider values expand the shared columns together.
 const STAT_COL_W: f32 = 48.;
-const AGENT_STATUS_W: f32 = 52.;
-const AGENT_LINE_H: f32 = SPACE_3XL;
+const AGENT_STATUS_W: f32 = 64.;
+const AGENT_LINE_H: f32 = 18.;
 const AGENT_TASK_LINES: usize = 2;
 
 /// Reuse compact shared actions on the card's neutral field surface.
@@ -1849,16 +1849,7 @@ fn checkout_agent_presentation(agent: &grove_core::codex::Subagent) -> AgentPres
         .clone()
         .or_else(|| observed.clone())
         .unwrap_or_else(|| name.clone());
-    let activity = observed
-        .filter(|text| !text.eq_ignore_ascii_case(&heading))
-        .map(|text| {
-            let prefix = if agent.status == SubagentStatus::Working {
-                "Now"
-            } else {
-                "Latest"
-            };
-            format!("{prefix}: {text}")
-        });
+    let activity = observed.filter(|text| !text.eq_ignore_ascii_case(&heading));
     let mut detail = format!("{name} · {status}");
     if let Some(task) = task {
         detail.push_str(" · Task: ");
@@ -1904,27 +1895,19 @@ fn checkout_agent_row(
         .py(rpx(SPACE_MD))
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_XS))
         .min_w_0()
         .text_size(rpx(TEXT_SMALL))
+        .font_weight(gpui::FontWeight::NORMAL)
         .text_color(c::FG_DIM())
         .line_height(rpx(AGENT_LINE_H))
         .child(
             div()
-                .debug_selector(move || format!("checkout-agent-task-{task_id}"))
-                .w_full()
-                .min_w_0()
-                .whitespace_normal()
-                .line_clamp(AGENT_TASK_LINES)
-                .text_color(c::FG())
-                .child(presentation.heading),
-        )
-        .child(
-            div()
                 .flex()
                 .items_center()
-                .gap(rpx(SPACE_MD))
+                .gap(rpx(SPACE_SM))
+                .mb(rpx(SPACE_SM))
                 .min_w_0()
+                .line_height(rpx(SPACE_3XL))
                 .child(
                     div()
                         .flex_shrink_0()
@@ -1938,6 +1921,25 @@ fn checkout_agent_row(
                         .truncate()
                         .text_size(rpx(TEXT_MICRO))
                         .child(presentation.name),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(rpx(SPACE_LG))
+                .min_w_0()
+                .text_size(rpx(TEXT_BODY))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(
+                    div()
+                        .debug_selector(move || format!("checkout-agent-task-{task_id}"))
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .line_clamp(AGENT_TASK_LINES)
+                        .text_color(c::FG())
+                        .child(presentation.heading),
                 )
                 .child(
                     div()
@@ -1945,24 +1947,25 @@ fn checkout_agent_row(
                         .w(rpx(AGENT_STATUS_W))
                         .flex_shrink_0()
                         .text_right()
-                        .text_size(rpx(TEXT_MICRO))
-                        .text_color(if agent.status == SubagentStatus::Failed {
-                            c::FORM_ERROR()
-                        } else {
-                            c::FG_DIM()
+                        .text_color(match agent.status {
+                            SubagentStatus::Working => c::BLUE(),
+                            SubagentStatus::Completed => c::GREEN(),
+                            SubagentStatus::Failed => c::FORM_ERROR(),
+                            SubagentStatus::Unknown => c::FG_DIM(),
                         })
                         .child(presentation.status),
                 ),
         )
-        // One line is reserved so the first activity update does not move following rows.
+        // Reserve one supporting line so activity updates do not move following rows.
         .child(
             div()
                 .debug_selector(move || format!("checkout-agent-activity-{activity_id}"))
+                .mt(rpx(SPACE_XS))
                 .h(rpx(AGENT_LINE_H))
                 .w_full()
                 .min_w_0()
                 .truncate()
-                .text_size(rpx(TEXT_MICRO))
+                .text_size(rpx(TEXT_SMALL))
                 .child(presentation.activity.unwrap_or_default()),
         )
 }
@@ -2540,24 +2543,69 @@ mod tests {
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
             });
-            assert!(cx.debug_bounds("checkout-agents").is_some());
+            // Exercise both provider fixtures at normal and narrow viewport sizes and UI zoom.
+            for (width, scale) in [(1280., 1.), (500., 1.), (500., 1.1)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+                cx.update(|window, _| {
+                    window.set_rem_size(gpui::px(crate::zoom::REM_BASE * scale));
+                });
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                    for label in ["Working", "Done", "Failed", "Unknown"] {
+                        let mut run = window.text_style().to_run(label.len());
+                        run.font.family = crate::fonts::UI_FAMILY.into();
+                        run.font.weight = gpui::FontWeight::SEMIBOLD;
+                        let width = window
+                            .text_system()
+                            .shape_line(
+                                label.into(),
+                                rpx(TEXT_BODY).to_pixels(window.rem_size()),
+                                &[run],
+                                None,
+                            )
+                            .width;
+                        assert!(
+                            width <= rpx(AGENT_STATUS_W).to_pixels(window.rem_size()),
+                            "{label} must fit the fixed status slot"
+                        );
+                    }
+                });
+                assert!(cx.debug_bounds("checkout-agents").is_some());
+                let card = cx.debug_bounds("checkout-card").unwrap();
+                let name = cx.debug_bounds("checkout-agent-name-old-running").unwrap();
+                let status = cx
+                    .debug_bounds("checkout-agent-status-old-running")
+                    .unwrap();
+                assert!(status.right() < card.right());
+                let task = cx.debug_bounds("checkout-agent-task-old-running").unwrap();
+                let activity = cx
+                    .debug_bounds("checkout-agent-activity-old-running")
+                    .unwrap();
+                // Native layout rounds fractional zoom dimensions to device pixels.
+                assert!(
+                    task.size.height
+                        <= gpui::px((AGENT_LINE_H * AGENT_TASK_LINES as f32 * scale).ceil())
+                );
+                assert!(name.bottom() < task.top());
+                assert!(task.right() <= status.left());
+                assert_eq!(task.top(), status.top());
+                assert!(
+                    (activity.top() - task.bottom() - gpui::px(SPACE_XS * scale)).abs()
+                        < gpui::px(0.5)
+                );
+                assert!(
+                    (activity.size.height - gpui::px(AGENT_LINE_H * scale)).abs() < gpui::px(0.5)
+                );
+                assert!(task.left() >= card.left() && task.right() < card.right());
+                assert!(activity.right() < card.right());
+            }
+            cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+            cx.update(|window, cx| {
+                window.set_rem_size(gpui::px(crate::zoom::REM_BASE));
+                let _ = window.draw(cx);
+            });
             let card = cx.debug_bounds("checkout-card").unwrap();
-            let name = cx.debug_bounds("checkout-agent-name-old-running").unwrap();
-            let status = cx
-                .debug_bounds("checkout-agent-status-old-running")
-                .unwrap();
-            assert!(name.right() <= status.left());
-            assert!(status.right() < card.right());
-            let task = cx.debug_bounds("checkout-agent-task-old-running").unwrap();
-            let activity = cx
-                .debug_bounds("checkout-agent-activity-old-running")
-                .unwrap();
-            assert!(task.size.height <= gpui::px(AGENT_LINE_H * AGENT_TASK_LINES as f32));
-            assert!(task.bottom() <= name.top());
-            assert!(activity.top() >= name.bottom());
-            assert_eq!(activity.size.height, gpui::px(AGENT_LINE_H));
-            assert!(task.left() >= card.left() && task.right() < card.right());
-            assert!(activity.right() < card.right());
             let divider = cx.debug_bounds("checkout-agents-divider").unwrap();
             assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
             assert!(divider.right() >= card.right() - gpui::px(SPACE_XS));
@@ -2571,6 +2619,18 @@ mod tests {
                     [&id]
                     .previous)
             );
+            // Taller two-line tasks may put Show more below the checkout viewport.
+            let panel = cx.debug_bounds("checkout-panel").unwrap();
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: panel.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-2000.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
             assert!(cx.debug_bounds("checkout-agents-more").is_some());
             let more = cx.debug_bounds("checkout-agents-more").unwrap();
             cx.simulate_click(more.center(), gpui::Modifiers::default());
@@ -2650,7 +2710,7 @@ mod tests {
         };
         let working = checkout_agent_presentation(&agent);
         assert_eq!(working.heading, "Fix retries");
-        assert_eq!(working.activity.as_deref(), Some("Now: Inspecting tests"));
+        assert_eq!(working.activity.as_deref(), Some("Inspecting tests"));
         assert!(working.detail.contains("Task: Fix retries"));
         for (status, label) in [
             (SubagentStatus::Completed, "Done"),
@@ -2660,7 +2720,7 @@ mod tests {
             agent.status = status;
             let row = checkout_agent_presentation(&agent);
             assert_eq!(row.status, label);
-            assert_eq!(row.activity.as_deref(), Some("Latest: Inspecting tests"));
+            assert_eq!(row.activity.as_deref(), Some("Inspecting tests"));
         }
         agent.activity = "fix RETRIES".into();
         assert_eq!(checkout_agent_presentation(&agent).activity, None);
