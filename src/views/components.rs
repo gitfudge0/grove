@@ -3,9 +3,9 @@ use super::{motion, rpx, tokens::*};
 use crate::theme as c;
 use gpui::{div, prelude::*, AnimationExt as _, App, Div, MouseButton, Stateful};
 
-const FORM_FIELD_H: f32 = 60.;
-pub(super) const FORM_FIELD_INSET: f32 = 14.;
-const FORM_FIELD_VALUE: f32 = 16.;
+const FORM_FIELD_H: f32 = FIELD_H;
+pub(super) const FORM_FIELD_INSET: f32 = FIELD_INSET_X;
+const FORM_FIELD_VALUE: f32 = FORM_VALUE_SIZE;
 
 /// Preferred width for a truncating label whose trailing control stays adjacent.
 pub fn truncation_safe_label_width(
@@ -42,7 +42,7 @@ pub fn tooltip(
     tooltip_content(
         move |_, _| {
             div()
-                .max_w(rpx(304.))
+                .max_w(rpx(TOOLTIP_TEXT_MAX_W))
                 .whitespace_normal()
                 .child(label.clone())
         },
@@ -60,17 +60,17 @@ pub fn tooltip_content<E: gpui::IntoElement>(
         .text_size(rpx(TEXT_SMALL))
         .line_height(rpx(SPACE_3XL))
         .px(rpx(SPACE_LG))
-        .py(rpx(5.))
-        .max_w(rpx(320.))
+        .py(rpx(TOOLTIP_PADDING_Y))
+        .max_w(rpx(TOOLTIP_MAX_W))
         .rounded(rpx(RADIUS_GROUP))
-        .bg(gpui::rgb(0x1b1b1b))
-        .text_color(gpui::rgb(0xf7f7f8))
+        .bg(c::TOOLTIP_BG())
+        .text_color(c::TOOLTIP_FG())
         .border_1()
-        .border_color(gpui::rgb(0x34343a))
+        .border_color(c::TOOLTIP_BORDER())
         .shadow(vec![gpui::BoxShadow {
-            color: gpui::hsla(0., 0., 0., 0.36),
-            offset: gpui::point(gpui::px(0.), rpx(2.).to_pixels(window.rem_size())),
-            blur_radius: rpx(8.).to_pixels(window.rem_size()),
+            color: c::TOOLTIP_SHADOW(),
+            offset: gpui::point(gpui::px(0.), rpx(SPACE_XS).to_pixels(window.rem_size())),
+            blur_radius: rpx(SPACE_LG).to_pixels(window.rem_size()),
             spread_radius: gpui::px(0.),
             inset: false,
         }])
@@ -146,7 +146,14 @@ pub fn form_field(
         .min_w_0()
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_SM))
+        .gap_0()
+        .when(error.is_some(), |field| {
+            field
+                .rounded(rpx(RADIUS_PANEL))
+                .overflow_hidden()
+                .border_1()
+                .border_color(c::FORM_ERROR())
+        })
         .child(
             div()
                 .h(rpx(FORM_FIELD_H))
@@ -163,11 +170,12 @@ pub fn form_field(
                 .border_color(if error.is_some() {
                     c::FORM_ERROR()
                 } else {
-                    fill
+                    c::BORDER_SOFT()
                 })
                 .child(
                     div()
-                        .text_size(rpx(TEXT_BODY))
+                        .text_size(rpx(TEXT_SMALL))
+                        .line_height(rpx(SPACE_3XL))
                         .text_color(c::FG_DIM())
                         .child(label),
                 )
@@ -181,6 +189,7 @@ pub fn form_field(
                         .bordered(false)
                         .focus_bordered(false)
                         .text_size(rpx(FORM_FIELD_VALUE))
+                        .line_height(rpx(FORM_VALUE_LINE_H))
                         .text_color(c::FG())
                         .p_0(),
                 ),
@@ -190,6 +199,9 @@ pub fn form_field(
                 div()
                     .id(gpui::SharedString::from(format!("{id}-error")))
                     .role(gpui::Role::Alert)
+                    .px(rpx(FIELD_INSET_X))
+                    .py(rpx(SPACE_LG))
+                    .bg(c::ERROR_WASH())
                     .text_size(rpx(TEXT_BODY))
                     .text_color(c::FORM_ERROR())
                     .child(error.to_string()),
@@ -219,8 +231,6 @@ pub fn project_field_well(focused: bool, error: bool) -> Div {
         .border_1()
         .border_color(if error {
             c::FORM_ERROR()
-        } else if focused {
-            c::BORDER_STRONG()
         } else {
             c::BORDER_SOFT()
         })
@@ -235,56 +245,7 @@ pub fn project_form_field(
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> impl IntoElement {
-    use gpui::Focusable as _;
-    let focused = input.read(cx).focus_handle(cx).is_focused(window);
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .role(gpui::Role::Group)
-        .aria_label(label)
-        .when_some(error, |field, message| {
-            field.aria_description(message.to_string())
-        })
-        .w_full()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(
-            project_field_well(focused, error.is_some())
-                .child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(label),
-                )
-                .child(
-                    gpui_component::input::Input::new(input)
-                        .aria_label(label)
-                        .when_some(error, |input, message| {
-                            input.aria_description(message.to_string())
-                        })
-                        .appearance(false)
-                        .bordered(false)
-                        .focus_bordered(false)
-                        .font_family(crate::fonts::UI_FAMILY)
-                        .text_size(rpx(14.))
-                        .text_color(c::FG())
-                        .p_0(),
-                ),
-        )
-        .when_some(error, |field, message| {
-            field.child(motion::fast(
-                div()
-                    .id(gpui::SharedString::from(format!("{id}-error")))
-                    .role(gpui::Role::Alert)
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FORM_ERROR())
-                    .child(message.to_string()),
-                format!("project-form-error-{id}-{message}"),
-                cx,
-            ))
-        })
+    form_field(id, label, input, error, window, cx)
 }
 
 pub fn form_action(
@@ -294,7 +255,10 @@ pub fn form_action(
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> gpui_component::button::Button {
-    use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants};
+    use gpui_component::{
+        button::{Button, ButtonCustomVariant, ButtonVariants},
+        Sizable, Size,
+    };
     let (fill, foreground, hover) = if primary {
         (c::FG(), c::BG(), c::FG_DIM())
     } else {
@@ -302,6 +266,10 @@ pub fn form_action(
     };
     Button::new(id)
         .label(label)
+        .with_size(Size::Medium)
+        .h(rpx(FORM_BUTTON_H))
+        .px(rpx(FIELD_INSET_X))
+        .text_size(rpx(FORM_VALUE_SIZE))
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(fill)
@@ -323,14 +291,28 @@ pub fn transcript_action(
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> gpui_component::button::Button {
-    use gpui_component::{
-        button::{Button, ButtonCustomVariant, ButtonVariants},
-        Sizable, Size,
-    };
     let (fill, foreground, hover) = if primary {
         (c::FG(), c::BG(), c::FG_DIM())
     } else {
         (c::BG_RAIL(), c::FG_DIM(), c::BG_HOVER())
+    };
+    dense_action_with_colors(id, label, fill, foreground, hover, window, cx)
+}
+
+/// Full dense action recipe, including the vendor's inner label/icon/gap tier.
+/// Custom semantic colors do not create a new geometry variant.
+pub fn dense_action_with_colors(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+    fill: gpui::Hsla,
+    foreground: gpui::Hsla,
+    hover: gpui::Hsla,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> gpui_component::button::Button {
+    use gpui_component::{
+        button::{Button, ButtonCustomVariant, ButtonVariants},
+        Sizable, Size,
     };
     Button::new(id)
         .label(label)
@@ -495,6 +477,7 @@ pub fn settings_control(
         .h(rpx(CONTROL_H))
         .flex()
         .items_center()
+        .gap(rpx(SPACE_SM))
         .rounded(rpx(RADIUS_CONTROL))
         .bg(if selected {
             c::BG_HOVER()
@@ -695,4 +678,123 @@ pub(super) fn shimmer_highlights(
             )
         })
         .collect()
+}
+
+/// Shared visual switch track; the owning control supplies its accessible role and input.
+pub fn switch_track(enabled: bool) -> Div {
+    div()
+        .w(rpx(SWITCH_W))
+        .h(rpx(SWITCH_H))
+        .flex_shrink_0()
+        .p(rpx(SWITCH_INSET))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .bg(if enabled {
+            c::SWITCH_ON()
+        } else {
+            c::BORDER_STRONG()
+        })
+        .when(enabled, gpui::Styled::justify_end)
+        .child(
+            div()
+                .size(rpx(SWITCH_THUMB))
+                .rounded_full()
+                .bg(c::SWITCH_THUMB()),
+        )
+}
+
+/// Literal selectable readonly text; HTML escaping prevents paths becoming markup.
+pub fn readonly_value(id: impl Into<gpui::ElementId>, value: String) -> impl IntoElement {
+    let escaped = value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    gpui_component::text::TextView::html(id, escaped)
+        .selectable(true)
+        .font_family(crate::fonts::UI_FAMILY)
+        .text_size(rpx(FORM_VALUE_SIZE))
+        .line_height(rpx(FORM_VALUE_LINE_H))
+        .text_color(c::FG())
+        .min_w_0()
+}
+
+const TOOLTIP_TEXT_MAX_W: f32 = 304.0;
+const TOOLTIP_PADDING_Y: f32 = 5.0;
+const TOOLTIP_MAX_W: f32 = 320.0;
+
+/// Join a dynamic field well to its semantic validation in normal document flow.
+pub fn attached_validation(
+    id: impl Into<gpui::ElementId>,
+    well: impl IntoElement,
+    error: Option<&str>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(gpui::Role::Group)
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_0()
+        .when_some(error, |field, message| {
+            field
+                .aria_description(message.to_owned())
+                .rounded(rpx(RADIUS_PANEL))
+                .overflow_hidden()
+                .border_1()
+                .border_color(c::FORM_ERROR())
+        })
+        .child(well)
+        .when_some(error, |field, message| {
+            field.child(
+                div()
+                    .id("attached-validation-message")
+                    .role(gpui::Role::Alert)
+                    .px(rpx(FIELD_INSET_X))
+                    .py(rpx(SPACE_LG))
+                    .bg(c::ERROR_WASH())
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FORM_ERROR())
+                    .child(message.to_owned()),
+            )
+        })
+}
+
+#[cfg(test)]
+mod action_recipe_tests {
+    use super::*;
+    struct SettingsProbe;
+    impl gpui::Render for SettingsProbe {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            settings_control("settings-gap-probe", "Refresh now", false, true)
+                .child(
+                    div()
+                        .debug_selector(|| "settings-probe-glyph".into())
+                        .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM())),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "settings-probe-label".into())
+                        .child("Refresh now"),
+                )
+        }
+    }
+    #[gpui::test]
+    fn settings_action_keeps_positive_catalog_icon_label_gap(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|_, _| SettingsProbe);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let glyph = cx.debug_bounds("settings-probe-glyph").unwrap();
+        let label = cx.debug_bounds("settings-probe-label").unwrap();
+        assert_eq!(f32::from(label.left() - glyph.right()), SPACE_SM);
+        assert_eq!(f32::from(glyph.size.width), ICON_SM);
+    }
 }

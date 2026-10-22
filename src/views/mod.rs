@@ -31,3 +31,6 @@ pub mod sidebar;
 mod terminal_view;
 
 mod statusbar;
+
+#[cfg(test)]
+mod conformance;

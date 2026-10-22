@@ -488,11 +488,13 @@ pub(crate) trait FocusableExt<T: ParentElement + Styled + Sized> {
 
 impl<T: ParentElement + Styled + Sized> FocusableExt<T> for T {
     fn focus_ring(mut self, is_focused: bool, margins: Pixels, window: &Window, cx: &App) -> Self {
-        if !is_focused {
+        if !is_focused || !window.last_input_was_keyboard() {
             return self;
         }
 
-        const RING_BORDER_WIDTH: Pixels = px(1.5);
+        // One existing layout border plus one outer painted pixel. The overlay
+        // never changes layout geometry, and pointer focus leaves it hidden.
+        const RING_BORDER_WIDTH: Pixels = px(1.0);
         let rem_size = window.rem_size();
         let style = self.style();
 
@@ -560,7 +562,7 @@ impl<T: ParentElement + Styled + Sized> FocusableExt<T> for T {
                 .right(-(inset + border_widths.right))
                 .bottom(-(inset + border_widths.bottom))
                 .border(RING_BORDER_WIDTH)
-                .border_color(cx.theme().ring.alpha(0.2))
+                .border_color(cx.theme().ring)
                 .refine_style(&inner_style),
         )
     }

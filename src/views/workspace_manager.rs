@@ -12,7 +12,6 @@ const CREATE_W: f32 = 432.0;
 const MANAGER_W: f32 = 648.0;
 const ROW_H: f32 = 28.0;
 const FIELD_H: f32 = 60.0;
-const FIELD_VALUE: f32 = 16.0;
 const FIELD_INSET: f32 = 14.0;
 const SELECTOR_H: f32 = 32.0;
 const MENU_ROW_H: f32 = 28.0;
@@ -349,7 +348,7 @@ impl WorkspaceManager {
             .border_color(if self.error.is_some() {
                 c::FORM_ERROR()
             } else {
-                field_fill
+                c::BORDER_SOFT()
             })
             .child(
                 div()
@@ -360,7 +359,8 @@ impl WorkspaceManager {
                     .gap(rpx(SPACE_XS))
                     .child(
                         div()
-                            .text_size(rpx(TEXT_BODY))
+                            .text_size(rpx(TEXT_SMALL))
+                            .line_height(rpx(SPACE_3XL))
                             .text_color(c::FG_DIM())
                             .child(if deleting {
                                 "Confirm workspace name"
@@ -386,7 +386,8 @@ impl WorkspaceManager {
                                     .appearance(false)
                                     .bordered(false)
                                     .focus_bordered(false)
-                                    .text_size(rpx(FIELD_VALUE))
+                                    .text_size(rpx(FORM_VALUE_SIZE))
+                                    .line_height(rpx(FORM_VALUE_LINE_H))
                                     .text_color(c::FG())
                                     .p_0(),
                             ),
@@ -643,6 +644,20 @@ impl WorkspaceManager {
             if self.panel != Panel::Create {
                 for row in &self.state.rows {
                     let id = row.id;
+                    if matches!(self.panel, Panel::Delete(target) if target == id) {
+                        body = body.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(rpx(SPACE_LG))
+                                .child(format!(
+                                    "Delete {}? Type its exact name to confirm.",
+                                    row.name
+                                ))
+                                .child(self.field(window, cx)),
+                        );
+                        continue;
+                    }
                     let mut controls = div().flex().items_center().gap(rpx(SPACE_SM));
                     for (key, label, glyph) in [
                         ("rename", "Rename workspace", "edit"),
@@ -655,6 +670,10 @@ impl WorkspaceManager {
                                 .tab_index(0)
                                 .focus_visible(|s| s.bg(c::BG_HOVER()))
                                 .aria_label(format!("{} {}", label, row.name))
+                                .tooltip(move |window, cx| {
+                                    crate::views::components::tooltip(label, window)
+                                        .build(window, cx)
+                                })
                                 .size(rpx(CHROME_CONTROL_H))
                                 .flex()
                                 .items_center()
@@ -719,16 +738,7 @@ impl WorkspaceManager {
                     );
                 }
             }
-            if let Panel::Delete(id) = self.panel {
-                body = body.child(div().text_color(c::FG_DIM()).child(format!(
-                    "Delete {}? Type its exact name to confirm.",
-                    self.state.name(id)
-                )));
-            }
-            if matches!(
-                self.panel,
-                Panel::Create | Panel::Rename(_) | Panel::Delete(_)
-            ) {
+            if matches!(self.panel, Panel::Create | Panel::Rename(_)) {
                 body = body.child(self.field(window, cx));
             }
             if let Some(error) = &self.error {
@@ -896,6 +906,7 @@ impl Render for WorkspaceManager {
                             .left_0()
                             .size_full(),
                         )
+                        .child(icon("folder", ICON_MD, c::FG_DIM()))
                         .child(motion::fast(
                             div()
                                 .min_w_0()

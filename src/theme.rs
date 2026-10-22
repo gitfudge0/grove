@@ -117,7 +117,7 @@ pub fn BG_STRIP() -> Hsla {
 }
 
 pub fn BG_HOVER() -> Hsla {
-    chrome(0x333337, 0xededee)
+    chrome(0x232327, 0xededee)
 }
 
 /// Neutral fill for dense menu hover and keyboard navigation.
@@ -126,25 +126,33 @@ pub fn MENU_HOVER() -> Hsla {
 }
 
 pub fn BG_HL() -> Hsla {
-    theme::with_current(|t| ic(t.bg_highlight)).into()
+    chrome(0x232327, 0xededee)
 }
 
 pub fn BORDER() -> Hsla {
     chrome(0x34343a, 0xdedee0)
 }
 pub fn BORDER_SOFT() -> Hsla {
-    theme::with_current(|t| mix(ic(t.bg), ic(t.fg), 0.07)).into()
+    alpha(
+        FG(),
+        if CHROME_LIGHT.load(Ordering::Relaxed) {
+            0.09
+        } else {
+            0.08
+        },
+    )
 }
 
 /// Dark themes dim toward black; light themes dim toward the foreground so the wash stays visible on near-white backgrounds.
 pub fn SCRIM() -> Hsla {
-    theme::with_current(|t| {
-        let dark = is_dark_of(t);
-        let toward = if dark { BLACK } else { ic(t.fg) };
-        let alpha = if dark { 0.62 } else { 0.7 };
-        alpha_rgba(mix(ic(t.bg), toward, 0.9), alpha)
-    })
-    .into()
+    alpha(
+        chrome(0x0d0d0f, 0x141416),
+        if CHROME_LIGHT.load(Ordering::Relaxed) {
+            0.38
+        } else {
+            0.76
+        },
+    )
 }
 
 /// Black at an alpha, not a theme-color blend — a shadow tinted with the palette would read as a glow.
@@ -168,13 +176,13 @@ pub fn FG_MUTE() -> Hsla {
 }
 
 pub fn BLUE() -> Hsla {
-    theme::with_current(|t| ic(t.blue)).into()
+    chrome(0x79a9e8, 0x79a9e8)
 }
 pub fn CYAN() -> Hsla {
-    theme::with_current(|t| ic(t.cyan)).into()
+    BLUE()
 }
 pub fn MAGENTA() -> Hsla {
-    theme::with_current(|t| ic(t.magenta)).into()
+    chrome(0x8b5cf6, 0x7c3aed)
 }
 /// Keep native editor, Markdown and selection colors in Grove's single palette.
 /// Called at startup and on every appearance change.
@@ -203,6 +211,20 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     theme.accent_foreground = FG();
     theme.input = FIELD_FILL();
     theme.border = BORDER();
+    theme.ring = SEL_RING();
+    theme.danger = FORM_ERROR();
+    theme.button_danger = FORM_ERROR();
+    theme.button_danger_foreground = BG();
+    theme.button_danger_hover = FORM_ERROR();
+    theme.button_danger_active = FORM_ERROR();
+    theme.button_primary = FG();
+    theme.button_primary_hover = FG_DIM();
+    theme.button_primary_active = FG_DIM();
+    theme.button_primary_foreground = BG();
+    theme.button_secondary = FIELD_FILL();
+    theme.button_secondary_hover = BG_HOVER();
+    theme.button_secondary_active = BG_HOVER();
+    theme.button_secondary_foreground = FG();
     theme.caret = FG();
     theme.selection = TEXT_SELECTION();
     theme.link = BLUE();
@@ -210,11 +232,11 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
 }
 
 pub fn GREEN() -> Hsla {
-    theme::with_current(|t| ic(t.green)).into()
+    chrome(0x78d98b, 0x78d98b)
 }
 /// The "needs input" accent — warmer than YELLOW so it reads as a call to action next to green/working.
 pub fn AMBER() -> Hsla {
-    amber_rgba().into()
+    chrome(0xe0ad63, 0xe0ad63)
 }
 fn amber_rgba() -> Rgba {
     theme::with_current(|t| mix(ic(t.yellow), ic(t.red), 0.25))
@@ -224,15 +246,15 @@ pub fn AMBER_ROW_TINT() -> Hsla {
     alpha(AMBER(), 0.12)
 }
 pub fn YELLOW() -> Hsla {
-    theme::with_current(|t| ic(t.yellow)).into()
+    AMBER()
 }
 pub fn RED() -> Hsla {
-    theme::with_current(|t| ic(t.red)).into()
+    FORM_ERROR()
 }
 
 /// Active fill for a danger-flavored segmented control (e.g. "skip permissions"), distinct from the neutral `BG_HL()`.
 pub fn RED_WASH() -> Hsla {
-    theme::with_current(|t| mix(ic(t.red), ic(t.bg), 0.84)).into()
+    alpha(RED(), 0.16)
 }
 
 pub fn DIFF_ADD_BG() -> Hsla {
@@ -251,10 +273,17 @@ pub fn TEXT_SELECTION() -> Hsla {
     alpha_rgba(FG().into(), 0.22).into()
 }
 pub fn SEL_TINT_SOFT() -> Hsla {
-    alpha_rgba(cyan_rgba(), 0.10).into()
+    alpha(
+        MAGENTA(),
+        if CHROME_LIGHT.load(Ordering::Relaxed) {
+            0.10
+        } else {
+            0.14
+        },
+    )
 }
 pub fn SEL_RING() -> Hsla {
-    alpha_rgba(cyan_rgba(), 0.5).into()
+    FG()
 }
 
 // Palette helpers for PTY cells. Return Rgba (not Hsla) because these are blend inputs.
@@ -385,6 +414,34 @@ pub fn SURFACE_RAISED() -> Hsla {
 }
 pub fn FORM_ERROR() -> Hsla {
     chrome(0xef7d8e, 0xb6384c)
+}
+
+/// Semantic switch and attached validation paint roles.
+pub fn SWITCH_ON() -> Hsla {
+    chrome(0x39b76c, 0x39b76c)
+}
+pub fn SWITCH_THUMB() -> Hsla {
+    gpui::rgb(0xffffff).into()
+}
+pub fn ERROR_WASH() -> Hsla {
+    alpha(FORM_ERROR(), 0.09)
+}
+pub fn TOOLTIP_BG() -> Hsla {
+    gpui::rgb(0x1b1b1b).into()
+}
+pub fn TOOLTIP_FG() -> Hsla {
+    gpui::rgb(0xf7f7f8).into()
+}
+pub fn TOOLTIP_BORDER() -> Hsla {
+    gpui::rgb(0x34343a).into()
+}
+pub fn TOOLTIP_SHADOW() -> Hsla {
+    alpha(gpui::rgb(0).into(), 0.36)
+}
+
+/// Quiet source-attached confirmation veil (DESIGN.md overlay composition).
+pub fn QUIET_VEIL() -> Hsla {
+    SCRIM().opacity(0.14)
 }
 
 #[cfg(test)]
@@ -619,7 +676,7 @@ mod tests {
             (
                 false,
                 [
-                    0x111111, 0x171716, 0x111111, 0x333337, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
+                    0x111111, 0x171716, 0x111111, 0x232327, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
                     0x515158,
                 ],
             ),

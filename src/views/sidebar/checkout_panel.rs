@@ -58,6 +58,7 @@ pub(super) struct CheckoutPanel {
     return_focus: Option<FocusHandle>,
     confirmation_focus: Option<FocusHandle>,
     trigger_focus: HashMap<&'static str, FocusHandle>,
+    source_bounds: HashMap<&'static str, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
     popup: Option<Entity<PopupMenu>>,
     popup_position: Option<gpui::Point<gpui::Pixels>>,
     pub(super) narrow_content: Option<AnyElement>,
@@ -134,6 +135,22 @@ fn prepare_resolution_draft(
 }
 
 impl Sidebar {
+    pub(super) fn checkout_confirmation_bounds(&self) -> gpui::Bounds<gpui::Pixels> {
+        let source = if self.checkout_panel.pr_merge.is_some() {
+            "pr-merge"
+        } else {
+            "publish"
+        };
+        self.checkout_panel
+            .source_bounds
+            .get(source)
+            .map(|bounds| bounds.get())
+            .unwrap_or_default()
+    }
+    pub(super) fn checkout_confirmation_open(&self) -> bool {
+        self.checkout_panel.publish.is_some() || self.checkout_panel.pr_merge.is_some()
+    }
+
     fn checkout_targets(&self, cx: &App) -> Vec<(usize, String)> {
         if let Some(Selection::Session(id)) = self.selection {
             let registry = self.runtime.read(cx).registry.read(cx);
@@ -343,6 +360,11 @@ impl Sidebar {
                     let request = pr.clone();
                     metadata = metadata.child(
                         checkout_action("checkout-pr-resolve", "Resolve", false, window, cx)
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/git-branch.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
                             .debug_selector(|| "checkout-pr-resolve".into())
                             .disabled(self.checkout_panel.busy)
                             .tooltip("Prepare a new agent session with a conflict-resolution draft")
@@ -354,7 +376,19 @@ impl Sidebar {
                     let request = pr.clone();
                     metadata = metadata.child(
                         checkout_action("checkout-pr-merge", "Merge", false, window, cx)
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/check.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
                             .debug_selector(|| "checkout-pr-merge".into())
+                            .relative()
+                            .child({
+                                let bounds = self.checkout_panel.source_bounds["pr-merge"].clone();
+                                gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                                    .absolute()
+                                    .inset_0()
+                            })
                             .with_focus_handle(
                                 self.checkout_panel.trigger_focus["pr-merge"].clone(),
                             )
@@ -733,7 +767,11 @@ impl Sidebar {
         }
     }
 
-    fn checkout_cancel_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn checkout_cancel_confirmation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.checkout_panel.busy {
             return;
         }
@@ -746,7 +784,7 @@ impl Sidebar {
         cx.notify();
     }
 
-    fn render_checkout_confirmation(
+    pub(super) fn render_checkout_confirmation(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -788,6 +826,12 @@ impl Sidebar {
                         window,
                         cx,
                     )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/git-publish.svg")
+                            .size(rpx(ICON_MD)),
+                    )
+                    .with_focus_handle(self.confirm_focus.clone())
                     .disabled(busy)
                     .when(busy, |button| {
                         button
@@ -820,6 +864,8 @@ impl Sidebar {
                 .child("The exact PR head, checks, reviews and checkout will be revalidated. Repository protections apply.")
                 .child(form_action("checkout-confirm-merge", if busy { "Merging…" } else { "Create merge commit" }, true, window, cx)
                     .debug_selector(|| "checkout-confirm-merge".into())
+                    .icon(gpui_component::Icon::default().path("icons/check.svg").size(rpx(ICON_MD)))
+                    .with_focus_handle(self.confirm_focus.clone())
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.checkout_merge_pr(merge_path.clone(), pr.clone(), cx);
@@ -836,6 +882,12 @@ impl Sidebar {
         }
         form = form.child(
             form_action("checkout-cancel-confirmation", "Cancel", false, window, cx)
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/close.svg")
+                        .size(rpx(ICON_MD)),
+                )
+                .with_focus_handle(self.cancel_focus.clone())
                 .disabled(busy)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.checkout_cancel_confirmation(window, cx);
@@ -843,18 +895,25 @@ impl Sidebar {
         );
         div()
             .id("checkout-confirmation")
+            .debug_selector(|| "checkout-confirmation".into())
+            .role(gpui::Role::Dialog)
+            .aria_label("Confirm checkout operation")
             .when_some(
                 self.checkout_panel.confirmation_focus.as_ref(),
                 gpui::InteractiveElement::track_focus,
             )
-            .size_full()
+            .w(rpx(MODAL_W_SM))
+            .max_w_full()
+            .max_h(rpx(MODAL_SCROLL_MAX_H))
             .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
             .p(rpx(SPACE_3XL))
-            .pt(rpx(APPBAR_H + SPACE_3XL))
+            .bg(c::SURFACE_RAISED())
+            .border_1()
+            .border_color(c::BORDER_SOFT())
+            .rounded(rpx(RADIUS_PANEL))
             .flex()
-            .justify_center()
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     this.checkout_cancel_confirmation(window, cx);
@@ -876,6 +935,7 @@ impl Sidebar {
                 .trigger_focus
                 .entry(kind)
                 .or_insert_with(|| cx.focus_handle());
+            self.checkout_panel.source_bounds.entry(kind).or_default();
         }
         if self.checkout_panel.restore_focus {
             self.checkout_panel.restore_focus = false;
@@ -947,9 +1007,6 @@ impl Sidebar {
                 && !self.checkout_panel.loading
             {
                 self.checkout_load(path.clone(), cx);
-            }
-            if self.checkout_panel.publish.is_some() || self.checkout_panel.pr_merge.is_some() {
-                return self.render_checkout_confirmation(window, cx);
             }
             let project = cx.global::<SettingsState>().store.projects[idx].clone();
             let target = path.clone();
@@ -1086,6 +1143,9 @@ impl Sidebar {
             card = card.child(checkout_loading_row("checkout-commit-publish", label, glyph, loading, window, cx)
                 .disabled(!enabled)
                 .with_focus_handle(self.checkout_panel.trigger_focus[if publish { "publish" } else { "commit" }].clone())
+                .relative()
+                .child({ let bounds = self.checkout_panel.source_bounds["publish"].clone();
+                    gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {}).absolute().inset_0() })
                 .tooltip(self.checkout_panel.message.clone().unwrap_or_else(|| {
                     self.checkout_panel.state.as_ref().and_then(|state| state.as_ref().err()).cloned().unwrap_or_else(||
                         "Generate a commit message and commit staged changes, or all nonignored changes when nothing is staged.".into())
@@ -1885,6 +1945,14 @@ mod tests {
             let _ = window.draw(cx);
         });
         assert!(cx.debug_bounds("checkout-confirm-merge").is_some());
+        assert!(cx.debug_bounds("checkout-card").is_some());
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.confirmation_open()));
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| assert!(sidebar.read(cx).cancel_focus.is_focused(window)));
+        cx.simulate_keystrokes("tab");
+        cx.update(|window, cx| assert!(sidebar.read(cx).confirm_focus.is_focused(window)));
+        cx.simulate_keystrokes("shift-tab");
+        cx.update(|window, cx| assert!(sidebar.read(cx).cancel_focus.is_focused(window)));
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
         cx.update(|window, cx| {

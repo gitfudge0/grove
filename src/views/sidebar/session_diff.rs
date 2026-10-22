@@ -72,7 +72,7 @@ impl Sidebar {
                 .px(rpx(SPACE_LG))
                 .justify_start()
                 .gap(rpx(SPACE_SM))
-                .when(selected, |row| row.bg(c::SEL_TINT_SOFT()))
+                .when(selected, |row| row.bg(c::BG_HL()))
                 .child(status_letter(&file.status))
                 .child(div().flex_1().min_w_0().truncate().child(path))
                 .child(format!("+{} -{}", file.added, file.removed)),
@@ -185,6 +185,7 @@ impl Sidebar {
                             .w_auto()
                             .px(rpx(SPACE_LG))
                             .text_size(rpx(TEXT_SMALL))
+                            .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
                             .child("Refresh"),
                         )
                         .child(
@@ -192,6 +193,7 @@ impl Sidebar {
                                 .w_auto()
                                 .px(rpx(SPACE_LG))
                                 .text_size(rpx(TEXT_SMALL))
+                                .child(crate::icons::icon("close", ICON_SM, c::FG_DIM()))
                                 .child("Close"),
                         ),
                 )

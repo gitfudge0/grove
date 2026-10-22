@@ -5,6 +5,8 @@ pub(super) const COMPACT_ROW_H: f32 = 32.0;
 pub(super) const COMPACT_ITEM_W: f32 = 36.0;
 const DISCLOSURE_D: f32 = 8.0;
 const PROJECT_INITIAL_W: f32 = 10.0;
+const COMPACT_SEPARATOR_H: f32 = 1.0;
+const COMPACT_BADGE_EDGE: f32 = 1.0;
 // Variant A: 12px circular clearance around a 10px lower-right status glyph.
 const COMPACT_STATUS_LEFT: f32 = COMPACT_ITEM_W / 2.0;
 const COMPACT_STATUS_TOP: f32 = COMPACT_ROW_H / 2.0;
@@ -44,7 +46,7 @@ impl Sidebar {
             div()
                 .id("compact-glyph-sidebar-collapse-toggle")
                 .debug_selector(|| "compact-glyph-sidebar-collapse-toggle".into())
-                .size(rpx(16.0))
+                .size(rpx(ICON_LG))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -99,9 +101,9 @@ impl Sidebar {
                     div()
                         .absolute()
                         .left_0()
-                        .top(rpx(8.0))
-                        .w(rpx(2.0))
-                        .h(rpx(16.0))
+                        .top(rpx(SPACE_LG))
+                        .w(rpx(SPACE_XS))
+                        .h(rpx(ICON_LG))
                         .rounded_full()
                         .bg(c::FG()),
                 )
@@ -110,7 +112,7 @@ impl Sidebar {
                 div()
                     .id(SharedString::from(glyph_id.clone()))
                     .debug_selector(move || glyph_id.clone())
-                    .size(rpx(16.0))
+                    .size(rpx(ICON_LG))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -153,7 +155,7 @@ impl Sidebar {
             .flex_col()
             .items_center()
             .flex_shrink_0()
-            .gap(rpx(2.0))
+            .gap(rpx(SPACE_XS))
             .py(rpx(SPACE_SM))
             .mb(rpx(SPACE_SM))
             .border_b_1()
@@ -245,7 +247,7 @@ impl Sidebar {
             .flex_col()
             .items_center()
             .flex_shrink_0()
-            .gap(rpx(2.0))
+            .gap(rpx(SPACE_XS))
             .pt(rpx(SPACE_SM))
             .mt(rpx(SPACE_SM))
             .border_t_1()
@@ -355,10 +357,10 @@ impl Sidebar {
                     )
                     .debug_selector(move || format!("compact-close-session-{}", id.raw()))
                     .absolute()
-                    .right_0()
+                    // Preserve the central session target while keeping the full dense close target.
+                    .right(rpx(-SPACE_LG))
                     .top_0()
-                    .w(rpx(SPACE_20))
-                    .h(rpx(ICON_MD))
+                    .size(rpx(CONTROL_H))
                     .opacity(0.0)
                     .group_hover("compact-session-row", |button| button.opacity(1.0))
                     .focus_visible(|button| button.opacity(1.0))
@@ -414,15 +416,15 @@ impl Sidebar {
             .flex_col()
             .items_center()
             .flex_shrink_0()
-            .gap(rpx(2.0));
+            .gap(rpx(SPACE_XS));
         if self.mode == ViewMode::List {
             for (heading, ids) in self.list_session_groups(cx) {
                 body = body.child(
                     div()
                         .id(SharedString::from(format!("compact-group-{heading}")))
                         .aria_label(format!("{heading}, {} sessions", ids.len()))
-                        .w(rpx(24.0))
-                        .h(rpx(1.0))
+                        .w(rpx(CONTROL_H))
+                        .h(rpx(COMPACT_SEPARATOR_H))
                         .my(rpx(SPACE_SM))
                         .bg(c::BORDER()),
                 );
@@ -602,7 +604,7 @@ impl Sidebar {
             .flex_col()
             .items_center()
             .flex_shrink_0()
-            .gap(rpx(2.0))
+            .gap(rpx(SPACE_XS))
             .py(rpx(SPACE_SM))
             .border_t_1()
             .border_color(c::BORDER_SOFT())
@@ -624,7 +626,7 @@ impl Sidebar {
                 .child(
                     div()
                         .absolute()
-                        .right(rpx(1.0))
+                        .right(rpx(COMPACT_BADGE_EDGE))
                         .top_0()
                         .h_full()
                         .w(rpx(DISCLOSURE_D))

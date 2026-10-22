@@ -19,6 +19,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     rc::Rc,
+    sync::OnceLock,
     time::Duration,
 };
 
@@ -135,11 +136,60 @@ fn parse(node: &markdown_ast::Node, cx: &MarkdownParseContext<'_>) -> Option<Mar
     )
 }
 
-fn sandboxed(source: &str) -> String {
+/// Data fonts stay inside the document CSP and work identically in WebKit/WebView2.
+/// Encode once per process, never during a streaming transcript redraw.
+fn document_font_css() -> &'static str {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    static CSS: OnceLock<String> = OnceLock::new();
+    CSS.get_or_init(|| {
+        [("Regular", 400), ("Medium", 500), ("SemiBold", 600), ("Bold", 700)]
+            .into_iter().filter_map(|(name, weight)| {
+                let font = crate::assets::Assets::get(&format!("fonts/Geist-{name}.ttf"))?;
+                Some(format!("@font-face{{font-family:'{}';font-style:normal;font-weight:{weight};font-display:swap;src:url(data:font/ttf;base64,{}) format('truetype')}}", crate::fonts::UI_FAMILY, STANDARD.encode(font.data)))
+            }).collect()
+    })
+}
+
+/// App preference reaches ordinary HTML as well as integrated reports. CSS
+/// suppresses author animation/transition effects; matchMedia and an event let
+/// scripts react without replacing the document or losing input state.
+fn preference_script(reduced: bool) -> String {
+    format!(
+        r"(()=>{{
+const reduced={reduced};
+if(!window.__groveMotion){{
+ const native=window.matchMedia.bind(window), queries=new Map();
+ const state=window.__groveMotion={{reduced:false,queries}};
+ const rewrite=query=>state.reduced?query.replace(/\(prefers-reduced-motion:\s*(reduce|no-preference)\)/ig,(_,value)=>value.toLowerCase()==='reduce'?'(min-width: 0px)':'(width < 0px)'):query;
+ window.matchMedia=query=>{{
+  query=String(query);
+  if(!/\(prefers-reduced-motion:\s*(reduce|no-preference)\)/i.test(query))return native(query);
+  if(queries.has(query))return queries.get(query).result;
+  const result=new EventTarget();let current=native(rewrite(query));result.onchange=null;
+  Object.defineProperties(result,{{media:{{value:query}},matches:{{get:()=>current.matches}}}});
+  const notify=()=>{{const e=new MediaQueryListEvent('change',{{matches:result.matches,media:query}});result.dispatchEvent(e);result.onchange?.(e)}};
+  const refresh=()=>{{const before=current.matches;current.removeEventListener('change',notify);current=native(rewrite(query));current.addEventListener('change',notify);if(before!==current.matches)notify()}};
+  result.addListener=listener=>result.addEventListener('change',listener);
+  result.removeListener=listener=>result.removeEventListener('change',listener);
+  current.addEventListener('change',notify);queries.set(query,{{result,refresh}});return result;
+ }};
+}}
+const state=window.__groveMotion,changed=state.reduced!==reduced;state.reduced=reduced;
+let style=document.getElementById('grove-motion');if(!style){{style=document.createElement('style');style.id='grove-motion';document.head.append(style)}}
+style.textContent=reduced?'*,*::before,*::after{{animation:none!important;transition:none!important;scroll-behavior:auto!important}}':'';
+document.documentElement.dataset.groveReduceMotion=String(reduced);
+if(reduced)document.getAnimations().forEach(animation=>animation.cancel());
+if(changed){{for(const query of state.queries.values())query.refresh();window.dispatchEvent(new CustomEvent('grove:preferences',{{detail:{{reduceMotion:reduced}}}}))}}
+}})()"
+    )
+}
+
+fn sandboxed(source: &str, reduced: bool) -> String {
     // The first policy is parsed before ANY author bytes, including malformed
     // heads, base tags and author policies. Subsequent CSP policies only tighten it.
     format!(
-        "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">{source}"
+        "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\"><style>{}</style><script>{}</script>{source}",
+        document_font_css(), preference_script(reduced)
     )
 }
 
@@ -470,6 +520,11 @@ impl HtmlSession {
                                     window,
                                     cx,
                                 )
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path("icons/external-link.svg")
+                                        .size(rpx(ICON_SM)),
+                                )
                                 .disabled(plan.is_none())
                                 .on_click(move |_, window, cx| {
                                     if let Some(plan) = &plan {
@@ -500,6 +555,11 @@ impl HtmlSession {
                                             false,
                                             window,
                                             cx,
+                                        )
+                                        .icon(
+                                            gpui_component::Icon::default()
+                                                .path("icons/external-link.svg")
+                                                .size(rpx(ICON_SM)),
                                         )
                                         .on_click(
                                             move |_, _, cx| {
@@ -533,6 +593,11 @@ impl HtmlSession {
                                         false,
                                         window,
                                         cx,
+                                    )
+                                    .icon(
+                                        gpui_component::Icon::default()
+                                            .path("icons/zen.svg")
+                                            .size(rpx(ICON_SM)),
                                     )
                                     .on_click(
                                         move |_, window, cx| {
@@ -911,7 +976,9 @@ impl HtmlArtifact {
             self.error = Some("HTML document exceeds the preview limit".into());
             return;
         }
-        let Some(native) = NativeDocument::new(&sandboxed(&self.version.active)) else {
+        let Some(native) =
+            NativeDocument::new(&sandboxed(&self.version.active, cx.reduce_motion()))
+        else {
             self.error = Some("Native HTML preview is unavailable".into());
             return;
         };
@@ -1034,11 +1101,14 @@ impl Render for HtmlArtifact {
         }
         let expanded = expanded(&cx.entity(), cx);
         let report = self.report;
-        if report && self.last_status == Some(LoadStatus::Ready) {
-            let script = report_script(window, expanded);
+        if self.last_status == Some(LoadStatus::Ready) {
+            let mut script = preference_script(cx.reduce_motion());
+            if report {
+                script.push_str(&report_script(window, expanded));
+            }
             if script != self.report_theme {
                 if let Some(surface) = &self.surface {
-                    surface.native.report_theme(&script, !expanded);
+                    surface.native.report_theme(&script, report && !expanded);
                     self.report_theme = script;
                 }
             }
@@ -1170,6 +1240,11 @@ impl Render for HtmlArtifact {
                     )
                     .child(
                         transcript_action("html-retry", "Retry preview", false, window, cx)
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/restart.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if this.version.active.is_empty() && this.path.is_some() {
                                     this.read_file(cx);
@@ -1826,7 +1901,7 @@ mod tests {
     #[test]
     fn sandbox_policy_precedes_author_bytes_and_blocks_nested_and_transport_loads() {
         let hostile = "<html><head><meta http-equiv='Content-Security-Policy' content='default-src *'></head><body><iframe srcdoc=\"<script>fetch('https://example.com')</script>\"></iframe></body></html>";
-        let html = sandboxed(hostile);
+        let html = sandboxed(hostile, false);
         assert!(html.find(CSP).unwrap() < html.find(hostile).unwrap());
         for directive in [
             "connect-src 'none'",

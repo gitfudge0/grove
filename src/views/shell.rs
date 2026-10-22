@@ -102,6 +102,7 @@ pub struct Shell {
     switcher_error: Option<String>,
     switcher_scroll: gpui::ScrollHandle,
     backend_choice_open: bool,
+    backend_choice_source: gpui::Bounds<gpui::Pixels>,
     backend_choice_focus: FocusHandle,
     backend_choice_return_focus: Option<FocusHandle>,
     backend_choice_index: usize,
@@ -193,6 +194,14 @@ impl Shell {
             cx.subscribe_in(&runtime, window, |this, _, event, window, cx| match event {
                 RuntimeEvent::BackendChoiceRequested => {
                     this.backend_choice_return_focus = window.focused(cx);
+                    this.backend_choice_source = if this.launcher.read(cx).is_open() {
+                        this.launcher
+                            .read(cx)
+                            .launch_source_bounds()
+                            .unwrap_or_default()
+                    } else {
+                        this.sidebar.read(cx).action_source_bounds()
+                    };
                     this.backend_choice_open = true;
                     this.backend_choice_index = 0;
                     this.backend_selected_tmux = false;
@@ -224,6 +233,7 @@ impl Shell {
             switcher_error: None,
             switcher_scroll: gpui::ScrollHandle::new(),
             backend_choice_open: false,
+            backend_choice_source: gpui::Bounds::default(),
             backend_choice_focus,
             backend_choice_return_focus: None,
             backend_choice_index: 0,
@@ -364,7 +374,7 @@ impl Shell {
                     .h_full()
                     .px(rpx(SPACE_2XL))
                     .flex_shrink_0()
-                    .when(collapsed, |segment| segment.w(rpx(0.0)).px(rpx(0.0)))
+                    .when(collapsed, |segment| segment.w_0().px_0())
                     .when(!grid && !collapsed, |segment| {
                         segment
                             .w(rpx(self.sidebar.read(cx).rail_width(window, cx).max(
@@ -560,6 +570,7 @@ impl Shell {
             || self.switcher_open
             || self.workspaces.read(cx).is_open()
             || self.sidebar.read(cx).confirmation_open()
+            || self.sidebar.read(cx).edit_confirmation_open(cx)
     }
 
     fn switcher_rows(&self, cx: &App) -> Vec<SwitcherRow> {
@@ -926,20 +937,23 @@ impl Shell {
             .absolute()
             .inset_0()
             .occlude()
-            .bg(c::SCRIM())
-            .flex()
-            .items_center()
-            .justify_center()
+            .bg(c::QUIET_VEIL())
             .track_focus(&self.backend_choice_focus)
             .capture_key_down(cx.listener(Self::backend_choice_key))
             .child(
-                div()
+                gpui::anchored()
+                    .position_mode(gpui::AnchoredPositionMode::Window)
+                    .position(gpui::point(self.backend_choice_source.left(), self.backend_choice_source.bottom()))
+                    .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
+                    .child(div()
                     .id("backend-choice-dialog")
                     .debug_selector(|| "backend-choice-dialog".into())
                     .role(gpui::Role::Dialog)
                     .aria_label("Choose a terminal session backend")
                     .w(rpx(MODAL_W_SM))
                     .max_w_full()
+                    .max_h(rpx(MODAL_SCROLL_MAX_H))
+                    .overflow_y_scroll()
                     .p(rpx(SPACE_3XL))
                     .flex()
                     .flex_col()
@@ -1001,11 +1015,11 @@ impl Shell {
                                 .id("backend-choice-error")
                                 .role(gpui::Role::Alert)
                                 .text_size(rpx(TEXT_BODY))
-                                .text_color(c::RED())
+                                .text_color(c::FORM_ERROR())
                                 .child(error.clone()),
                         )
                     }),
-            );
+            ));
         motion::base(overlay, "backend-choice-enter", cx)
     }
 
@@ -1404,7 +1418,8 @@ impl Render for Shell {
             || self.launcher.read(cx).is_open()
             || self.settings.read(cx).is_open()
             || self.switcher_open
-            || self.sidebar.read(cx).confirmation_open();
+            || self.sidebar.read(cx).confirmation_open()
+            || self.sidebar.read(cx).edit_confirmation_open(cx);
         self.workspaces.update(cx, |manager, _| {
             manager.set_hover_blocked(workspace_hover_blocked);
             manager.set_compact(compact_workspace_picker);

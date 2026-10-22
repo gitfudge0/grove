@@ -23,12 +23,23 @@ use gpui_component::{
 };
 
 const HEADER_H: f32 = 36.;
-const ACTION_H: f32 = 44.;
+const SUGGESTION_PATH_MAX_W: f32 = 210.;
 const SUGGESTION_H: f32 = 38.;
 const MAX_SUGGESTIONS: usize = 8;
-const SWITCH_W: f32 = 48.;
-const SWITCH_H: f32 = 28.;
-const SWITCH_KNOB: f32 = 22.;
+
+/// Browse is a dense field action, sharing the complete compact recipe.
+pub(super) fn browse_action(window: &Window, cx: &App) -> gpui_component::button::Button {
+    crate::views::components::dense_action_with_colors(
+        "project-browse",
+        "Browse",
+        c::FIELD_FILL(),
+        c::FG(),
+        c::BG_HOVER(),
+        window,
+        cx,
+    )
+    .icon(gpui_component::Icon::default().path("icons/folder.svg"))
+}
 
 pub(super) enum ProjectSetupEvent {
     Completed { path: String, workspace: u64 },
@@ -347,14 +358,12 @@ impl Render for ProjectSetup {
                 })
                 .min_w_0()
                 .w_full()
-                .h(rpx(60.))
-                .px(rpx(14.))
+                .h(rpx(FIELD_H))
+                .px(rpx(FIELD_INSET_X))
                 .rounded(rpx(RADIUS_PANEL))
                 .border_1()
                 .border_color(if error.is_some() {
                     c::FORM_ERROR()
-                } else if path_focused {
-                    c::BORDER_STRONG()
                 } else {
                     c::BORDER_SOFT()
                 })
@@ -381,31 +390,18 @@ impl Render for ProjectSetup {
                                 .appearance(false)
                                 .bordered(false)
                                 .focus_bordered(false)
-                                .text_size(rpx(14.))
+                                .text_size(rpx(FORM_VALUE_SIZE))
                                 .text_color(c::FG())
                                 .p_0(),
                         ),
                 )
-                .child(
-                    form_action("project-browse", "Browse", false, window, cx)
-                        .icon(gpui_component::Icon::default().path("icons/folder.svg"))
-                        .h(rpx(30.))
-                        .on_click(cx.listener(Self::browse_click)),
-                );
-            fields = fields.child(path_field);
-            if let Some(message) = error {
-                let animation_id = format!("setup-path-error-{message}");
-                fields = fields.child(motion::fast(
-                    div()
-                        .id("setup-path-error")
-                        .role(gpui::Role::Alert)
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FORM_ERROR())
-                        .child(message.clone()),
-                    animation_id,
-                    cx,
-                ));
-            } else {
+                .child(browse_action(window, cx).on_click(cx.listener(Self::browse_click)));
+            fields = fields.child(crate::views::components::attached_validation(
+                "setup-path-validation",
+                path_field,
+                error.as_deref(),
+            ));
+            if error.is_none() {
                 fields = fields.child(
                     div()
                         .text_size(rpx(TEXT_SMALL))
@@ -458,7 +454,7 @@ impl Render for ProjectSetup {
                             .child(
                                 div()
                                     .min_w_0()
-                                    .max_w(rpx(210.))
+                                    .max_w(rpx(SUGGESTION_PATH_MAX_W))
                                     .truncate()
                                     .font_family(crate::fonts::UI_FAMILY)
                                     .text_size(rpx(TEXT_MICRO))
@@ -500,8 +496,8 @@ impl Render for ProjectSetup {
                 div()
                     .w_full()
                     .min_w_0()
-                    .h(rpx(60.))
-                    .px(rpx(14.))
+                    .h(rpx(FIELD_H))
+                    .px(rpx(FIELD_INSET_X))
                     .rounded(rpx(RADIUS_PANEL))
                     .bg(c::FIELD_FILL())
                     .border_1()
@@ -515,14 +511,10 @@ impl Render for ProjectSetup {
                             .text_color(c::FG_DIM())
                             .child("Project folder"),
                     )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_family(crate::fonts::UI_FAMILY)
-                            .text_size(rpx(TEXT_CODE))
-                            .child(self.state.path.clone()),
-                    ),
+                    .child(crate::views::components::readonly_value(
+                        "setup-folder-value",
+                        self.state.path.clone(),
+                    )),
             );
             match &self.probe {
                 GitProbe::Repo { branch } => {
@@ -565,19 +557,15 @@ impl Render for ProjectSetup {
                         .role(gpui::Role::Switch).aria_label("Initialize Git repository")
                         .aria_toggled(if self.state.init_git { gpui::Toggled::True } else { gpui::Toggled::False })
                         .tab_index(if self.busy { -1 } else { 0 })
-                        .w_full().min_h(rpx(60.)).py(rpx(SPACE_2XL))
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .w_full().min_h(rpx(FIELD_H)).py(rpx(SPACE_2XL))
                         .border_b_1().border_color(c::BORDER_SOFT())
                         .flex().items_center().gap(rpx(SPACE_2XL))
                         .child(div().flex_1().min_w_0().flex().flex_col().gap(rpx(SPACE_SM))
                             .child(div().font_weight(FontWeight::MEDIUM).child("Initialize Git repository"))
                             .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
                                 .child("Start sessions in the main checkout now. Make the first commit before adding another worktree.")))
-                        .child(div().w(rpx(SWITCH_W)).h(rpx(SWITCH_H)).flex_shrink_0()
-                            .p(rpx(3.)).rounded(rpx(RADIUS_FULL)).flex().items_center()
-                            .bg(if self.state.init_git { c::GREEN() } else { c::BORDER_STRONG() })
-                            .when(self.state.init_git, gpui::Styled::justify_end)
-                            .child(div().size(rpx(SWITCH_KNOB)).rounded(rpx(RADIUS_FULL))
-                                .bg(gpui::hsla(0., 0., 1., 1.))))
+                        .child(crate::views::components::switch_track(self.state.init_git))
                         .on_click(cx.listener(|this, _, _, cx| {
                             if !this.busy { this.state.init_git = !this.state.init_git; cx.notify(); }
                         }))
@@ -607,21 +595,19 @@ impl Render for ProjectSetup {
         }
         let secondary = if source {
             form_action("project-cancel", "Cancel", false, window, cx)
-                .h(rpx(ACTION_H))
+                .icon(gpui_component::Icon::default().path("icons/close.svg"))
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(ProjectSetupEvent::Cancelled)))
                 .into_any_element()
         } else {
             form_action("project-back", "Back", false, window, cx)
                 .icon(gpui_component::Icon::default().path("icons/arrow-left.svg"))
-                .h(rpx(ACTION_H))
                 .disabled(self.busy)
                 .on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))
                 .into_any_element()
         };
         let primary = if source {
             form_action("project-choose", "Continue", true, window, cx)
-                .icon(gpui_component::Icon::default().path("icons/arrow-right.svg"))
-                .h(rpx(ACTION_H))
+                .child(crate::icons::icon("arrow-right", ICON_MD, c::BG()))
                 .disabled(self.path_input.read(cx).value().trim().is_empty())
                 .on_click(cx.listener(|this, _, window, cx| this.choose(window, cx)))
                 .into_any_element()
@@ -638,7 +624,6 @@ impl Render for ProjectSetup {
                 cx,
             )
             .icon(gpui_component::Icon::default().path("icons/plus.svg"))
-            .h(rpx(ACTION_H))
             .disabled(self.busy)
             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
             .into_any_element()
@@ -710,29 +695,29 @@ impl Render for ProjectSetup {
                     .min_h_0()
                     .overflow_y_scrollbar()
                     .px(rpx(SPACE_3XL))
-                    .py(rpx(36.))
+                    .py(rpx(FORM_PAGE_PADDING_Y))
                     .flex()
                     .justify_center()
                     .child(
                         div()
                             .w_full()
-                            .max_w(rpx(620.))
+                            .max_w(rpx(FORM_CONTENT_MAX_W))
                             .min_w_0()
                             .flex()
                             .flex_col()
                             .child(
                                 div()
-                                    .mb(rpx(26.))
+                                    .mb(rpx(FORM_HEADING_MARGIN))
                                     .child(
                                         div()
-                                            .text_size(rpx(24.))
+                                            .text_size(rpx(CONTROL_H))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(body_heading),
                                     )
                                     .child(
                                         div()
                                             .mt(rpx(SPACE_LG))
-                                            .text_size(rpx(13.))
+                                            .text_size(rpx(TEXT_BODY))
                                             .text_color(c::FG_DIM())
                                             .child(body_description),
                                     ),
@@ -754,7 +739,7 @@ impl Render for ProjectSetup {
                     .child(
                         div()
                             .w_full()
-                            .max_w(rpx(620.))
+                            .max_w(rpx(FORM_CONTENT_MAX_W))
                             .min_w_0()
                             .flex()
                             .items_center()

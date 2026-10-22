@@ -58,7 +58,7 @@ const EDITOR_FULL_WIDTH_BREAKPOINT: f32 = 640.0;
 const HEAD_H: f32 = 36.0;
 const ROW_H: f32 = 28.0;
 // Expanded project navigation keeps session activity, identity and changes on one line.
-const HIERARCHY_INSET: f32 = 5.0;
+const HIERARCHY_INSET: f32 = SPACE_LG;
 const HIERARCHY_GAP: f32 = 7.0;
 const HIERARCHY_ICON_SLOT: f32 = 18.0;
 const HIERARCHY_ICON: f32 = 15.0;
@@ -71,7 +71,7 @@ const PROJECT_TEXT: f32 = TEXT_TITLE;
 const PROJECT_TITLE_LINE_H: f32 = 21.0;
 const WORKTREE_ROW_H: f32 = ROW_H;
 const WORKTREE_TITLE_LINE_H: f32 = 17.0;
-const WORKTREE_ACTION_W: f32 = 22.0;
+const WORKTREE_ACTION_W: f32 = CHROME_CONTROL_H;
 const SESSION_ROW_H: f32 = 43.0;
 const SESSION_TREE_ROW_H: f32 = 32.0;
 const SESSION_LAUNCHER_SIZE: f32 = ICON_SM;
@@ -89,11 +89,7 @@ fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
 }
 
 fn session_status_icon_sized(id: SessionId, status: &str, size: f32, cx: &App) -> AnyElement {
-    let working_color = if status == "Working" {
-        c::GREEN()
-    } else {
-        c::BLUE()
-    };
+    let working_color = c::BLUE();
     match status {
         "Working" | "Starting" if !cx.reduce_motion() => div()
             .id(("session-spinner-icon", id.raw()))
@@ -281,12 +277,12 @@ fn managed_session_status(
         return ("Failed", c::RED());
     }
     if pending_attach {
-        return ("Idle", c::FG_DIM());
+        return ("Starting", c::BLUE());
     }
     match activity {
-        ActivityState::WaitingForInput => ("Needs you", c::YELLOW()),
-        ActivityState::Working => ("Working", c::GREEN()),
-        ActivityState::Done => ("Done", c::FG_DIM()),
+        ActivityState::WaitingForInput => ("Needs you", c::AMBER()),
+        ActivityState::Working => ("Working", c::BLUE()),
+        ActivityState::Done => ("Done", c::GREEN()),
         ActivityState::Idle => ("Idle", c::FG_DIM()),
         ActivityState::Exited => ("Exited", c::FG_DIM()),
     }
@@ -393,6 +389,7 @@ fn effective_rail_width(preferred: f32, logical_width: f32) -> f32 {
 
 pub struct Sidebar {
     checkout_panel: checkout_panel::CheckoutPanel,
+    action_source_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     project_panel: Option<Entity<projects::ProjectPanel>>,
     project_setup: Option<Entity<project_setup::ProjectSetup>>,
     settings_panel: Option<Entity<super::settings_panel::SettingsPanel>>,
@@ -482,6 +479,8 @@ pub struct Sidebar {
     project_paths: HashMap<usize, String>,
     collapsed_projects: HashSet<String>,
     worktree_focus: HashMap<String, FocusHandle>,
+    worktree_diff_focus: HashMap<String, FocusHandle>,
+    hovered_worktree: Option<String>,
     session_diff_focus: HashMap<SessionId, FocusHandle>,
     session_diff_observers: HashMap<SessionId, (gpui::Subscription, gpui::Subscription)>,
     cache_warm: Option<(u64, u64)>,
@@ -584,6 +583,7 @@ impl Sidebar {
         }
         Self {
             checkout_panel: checkout_panel::CheckoutPanel::default(),
+            action_source_bounds: std::rc::Rc::default(),
             project_panel: None,
             project_setup: None,
             settings_panel: None,
@@ -671,6 +671,8 @@ impl Sidebar {
             project_paths: HashMap::new(),
             collapsed_projects: HashSet::new(),
             worktree_focus: HashMap::new(),
+            worktree_diff_focus: HashMap::new(),
+            hovered_worktree: None,
             session_diff_focus: HashMap::new(),
             session_diff_observers: HashMap::new(),
             cache_warm: None,
@@ -924,8 +926,16 @@ impl Sidebar {
             .iter()
             .flat_map(|p| p.worktrees.iter().map(|w| w.path.clone()))
         {
+            if !self.worktree_diff_focus.contains_key(&path) {
+                let handle = cx.focus_handle().tab_stop(true);
+                self.observers
+                    .push(cx.on_focus_in(&handle, window, |_, _, cx| cx.notify()));
+                self.observers
+                    .push(cx.on_focus_out(&handle, window, |_, _, _, cx| cx.notify()));
+                self.worktree_diff_focus.insert(path.clone(), handle);
+            }
             if !self.worktree_focus.contains_key(&path) {
-                let handle = cx.focus_handle();
+                let handle = cx.focus_handle().tab_stop(true);
                 self.observers
                     .push(cx.on_focus_in(&handle, window, |_, _, cx| cx.notify()));
                 self.observers
@@ -1366,12 +1376,21 @@ impl Sidebar {
             .into_any_element(),
         )
     }
+    pub(super) fn action_source_bounds(&self) -> gpui::Bounds<gpui::Pixels> {
+        self.action_source_bounds.get()
+    }
+    pub(super) fn edit_confirmation_open(&self, cx: &App) -> bool {
+        self.codex_views
+            .values()
+            .any(|view| view.read(cx).edit_confirmation_open())
+    }
     pub fn confirmation_open(&self) -> bool {
         self.project_decision
             || self.pending_close.is_some()
             || self.pending_home_close.is_some()
             || self.pending_remove.is_some()
             || self.pending_worktree_removal.is_some()
+            || self.checkout_confirmation_open()
     }
     fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
@@ -1594,7 +1613,7 @@ impl Sidebar {
                 cx,
             )
             .debug_selector(|| "sidebar-grid".into())
-            .child(icon("grid", ICON_SM, c::FG_DIM()));
+            .child(icon("grid", ICON_MD, c::FG_DIM()));
         div()
             .flex()
             .items_center()
@@ -1617,7 +1636,7 @@ impl Sidebar {
                     } else {
                         "folder"
                     },
-                    ICON_SM,
+                    ICON_MD,
                     c::FG_DIM(),
                 )),
             )
@@ -1742,25 +1761,11 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let label = label.into();
-        let tooltip_label = if let Action::Select(Selection::Session(id)) = &action {
-            let registry = self.runtime.read(cx).registry.read(cx);
-            registry.meta(*id).and_then(|meta| {
-                multi_project::project_names(meta)?;
-                let title = session_display_title(
-                    meta,
-                    registry
-                        .session(*id)
-                        .and_then(|session| session.read(cx).title()),
-                );
-                Some(SharedString::from(format!(
-                    "{title} · {}",
-                    multi_project::worktree_names(meta, &self.snapshot)
-                )))
-            })
-        } else {
-            None
-        }
-        .unwrap_or_else(|| label.clone());
+        // Callers provide the complete session identity, launcher, activity and checkout metadata.
+        let tooltip_label = label.clone();
+        let source_bounds = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
+        let click_bounds = source_bounds.clone();
+        let key_bounds = source_bounds.clone();
         let click = action.clone();
         let icon_rail = self.is_collapsed(cx);
         let hierarchy_row = !icon_rail
@@ -1785,11 +1790,7 @@ impl Sidebar {
             Action::ConfirmClose(_) | Action::ConfirmHome(_) | Action::ConfirmRemove(_)
         );
         let cancel = matches!(action, Action::Cancel);
-        let confirming = self.project_decision
-            || self.pending_close.is_some()
-            || self.pending_home_close.is_some()
-            || self.pending_remove.is_some()
-            || self.pending_worktree_removal.is_some();
+        let confirming = self.confirmation_open();
         let decision = matches!(
             action,
             Action::ConfirmClose(_)
@@ -1802,6 +1803,12 @@ impl Sidebar {
         );
         div()
             .id(id)
+            .relative()
+            .child(
+                gpui::canvas(move |rect, _, _| source_bounds.set(rect), |_, (), _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
             .role(gpui::Role::Button)
             .aria_label(label.clone())
             .tab_index(if confirming && !decision { -1 } else { 0 })
@@ -1873,12 +1880,38 @@ impl Sidebar {
             })
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
+                if matches!(
+                    &click,
+                    Action::Launch(..) | Action::RunScript(..) | Action::RemoveWorktree(..)
+                ) {
+                    this.action_source_bounds.set(click_bounds.get());
+                }
+                #[cfg(test)]
+                if matches!(
+                    &click,
+                    Action::OpenWorktreeDiff(_) | Action::Select(Selection::Worktree(..))
+                ) {
+                    eprintln!(
+                        "worktree diff click {}",
+                        if matches!(&click, Action::OpenWorktreeDiff(_)) {
+                            "diff"
+                        } else {
+                            "row"
+                        }
+                    );
+                }
                 this.act(click.clone(), window, cx);
             }))
             .on_key_down(
                 cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
+                        if matches!(
+                            &action,
+                            Action::Launch(..) | Action::RunScript(..) | Action::RemoveWorktree(..)
+                        ) {
+                            this.action_source_bounds.set(key_bounds.get());
+                        }
                         this.act(action.clone(), window, cx);
                     }
                 }),
@@ -2268,7 +2301,19 @@ impl Sidebar {
                 .is_some_and(|selector| selector.focus_handle(cx).is_focused(window))
     }
 
+    fn close_settings_for_session_navigation(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.settings_panel.clone() {
+            panel.update(cx, |panel, cx| panel.close(window, cx));
+        }
+    }
+
     fn navigate_to_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        // Close first: settings restores its prior focus, then navigation focuses the target.
+        self.close_settings_for_session_navigation(window, cx);
         self.select(Selection::Session(id), cx);
         if let Some(view) = self.codex_views.get(&id) {
             view.focus_handle(cx).focus(window, cx);
@@ -2677,6 +2722,9 @@ impl Sidebar {
                 if let Selection::Session(id) = s {
                     self.navigate_to_session(id, window, cx);
                     return;
+                }
+                if matches!(s, Selection::Home(_)) {
+                    self.close_settings_for_session_navigation(window, cx);
                 }
                 self.select(s.clone(), cx);
                 let view = match s {
@@ -3211,6 +3259,9 @@ impl Sidebar {
             .w_auto()
             .px(rpx(SPACE_LG))
             .text_color(c::RED())
+            .when(!session_close, |button| {
+                button.child(icon("check", ICON_XS, c::RED()))
+            })
             .when(session_close, |button| {
                 button
                     .text_size(rpx(TEXT_SMALL))
@@ -3227,6 +3278,9 @@ impl Sidebar {
             .debug_selector(|| "cancel-close".into())
             .w_auto()
             .px(rpx(SPACE_LG))
+            .when(!session_close, |button| {
+                button.child(icon("close", ICON_XS, c::FG_DIM()))
+            })
             .when(session_close, |button| {
                 button
                     .text_size(rpx(TEXT_SMALL))
@@ -3450,7 +3504,7 @@ impl Sidebar {
                 div()
                     .id(("session-number", id.raw()))
                     .debug_selector(move || format!("session-number-{}", id.raw()))
-                    .w(rpx(10.0))
+                    .w(rpx(ICON_XS))
                     .flex_shrink_0()
                     .text_size(rpx(TEXT_MICRO))
                     .line_height(rpx(SESSION_TITLE_LINE_H))
@@ -3579,7 +3633,7 @@ impl Sidebar {
                                     .w_full()
                                     .min_w_0()
                                     .h_auto()
-                                    .px(rpx(0.0))
+                                    .px_0()
                                     .justify_start()
                                     .text_color(c::GREEN())
                                     .child(
@@ -3678,7 +3732,8 @@ impl Sidebar {
             .relative()
             .group("session-row")
             .h(rpx(row_height))
-            .px(rpx(HIERARCHY_INSET))
+            .pl(rpx(HIERARCHY_INSET + SPACE_LG))
+            .pr(rpx(HIERARCHY_INSET))
             .gap(rpx(SPACE_SM))
             .items_center()
             .rounded(rpx(SESSION_ROW_RADIUS))
@@ -3754,7 +3809,7 @@ impl Sidebar {
                     .when_some(tasks.as_ref(), |slot, tasks| {
                         slot.child(
                             div()
-                                .group_hover("session-trailing", Styled::invisible)
+                                .group_hover("session-row", Styled::invisible)
                                 .child(task_glance::row_progress(id, tasks)),
                         )
                     })
@@ -3771,7 +3826,7 @@ impl Sidebar {
                         .h_full()
                         .debug_selector(move || format!("session-tree-close-{}", id.raw()))
                         .opacity(0.0)
-                        .group_hover("session-trailing", |button| button.opacity(1.0))
+                        .group_hover("session-row", |button| button.opacity(1.0))
                         .focus_visible(|button| button.opacity(1.0))
                         .when_some(
                             self.session_close_bounds.get(&id).cloned(),
@@ -3821,6 +3876,7 @@ impl Sidebar {
                 )
                 .w_auto()
                 .ml(rpx(SPACE_3XL))
+                .child(icon("reset", ICON_SM, c::FG_DIM()))
                 .child("Retry"),
             );
         }
@@ -4222,17 +4278,23 @@ impl Sidebar {
                     .worktree_focus
                     .get(&path)
                     .is_some_and(|f| f.contains_focused(window, cx));
+                let hovered = self.hovered_worktree.as_ref() == Some(&path);
+                let diff_focused = self
+                    .worktree_diff_focus
+                    .get(&path)
+                    .is_some_and(|focus| focus.is_focused(window));
+                let show_launchers = (focused || hovered) && !diff_focused;
                 let mut launches = div()
                     .absolute()
                     .right_0()
                     .top_0()
-                    .w(rpx(launch_width))
+                    .w(rpx(if show_launchers { launch_width } else { 0.0 }))
+                    .overflow_hidden()
                     .h(rpx(CHROME_CONTROL_H))
                     .flex()
                     .flex_shrink_0()
                     .items_center()
-                    .opacity(if focused { 1.0 } else { 0.0 })
-                    .group_hover("worktree-row", |s| s.opacity(1.0));
+                    .opacity(if show_launchers { 1.0 } else { 0.0 });
                 if let Some(project_path) = project_path.filter(|_| has_run_script) {
                     launches = launches.child(
                         self.control(
@@ -4325,11 +4387,22 @@ impl Sidebar {
                         )
                         .debug_selector({
                             let path = path.clone();
-                            move || format!("worktree-diff-{path}")
+                            move || {
+                                if show_launchers {
+                                    format!("worktree-diff-hidden-{path}")
+                                } else {
+                                    format!("worktree-diff-{path}")
+                                }
+                            }
                         })
-                        // Focus inside the row swaps this chip for the launchers,
-                        // so it must never take keyboard focus itself.
-                        .tab_index(-1)
+                        .when_some(
+                            self.worktree_diff_focus.get(&path),
+                            gpui::InteractiveElement::track_focus,
+                        )
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
                         .w_auto()
                         .h_auto()
                         .flex_shrink_0()
@@ -4353,12 +4426,7 @@ impl Sidebar {
                             chip.child(div().text_color(c::GREEN()).child("Changes"))
                         })
                         .into_any_element(),
-                    _ => div()
-                        .flex_shrink_0()
-                        .text_size(rpx(HIERARCHY_META_TEXT))
-                        .text_color(c::FG_DIM())
-                        .child(if diff.is_some() { "clean" } else { "—" })
-                        .into_any_element(),
+                    _ => div().into_any_element(),
                 };
                 group = group.child(
                     self.row(
@@ -4373,6 +4441,18 @@ impl Sidebar {
                     )
                     .relative()
                     .group("worktree-row")
+                    .tab_group()
+                    .on_hover(cx.listener({
+                        let path = path.clone();
+                        move |this, hovered: &bool, _, cx| {
+                            if *hovered {
+                                this.hovered_worktree = Some(path.clone());
+                            } else if this.hovered_worktree.as_ref() == Some(&path) {
+                                this.hovered_worktree = None;
+                            }
+                            cx.notify();
+                        }
+                    }))
                     .when_some(
                         self.worktree_focus.get(&path),
                         gpui::InteractiveElement::track_focus,
@@ -4383,7 +4463,7 @@ impl Sidebar {
                     } else {
                         SPACE_2XL
                     }))
-                    .pl(rpx(HIERARCHY_INSET))
+                    .pl(rpx(HIERARCHY_INSET + SPACE_LG))
                     .pr(rpx(HIERARCHY_INSET))
                     .gap(rpx(HIERARCHY_GAP))
                     .text_size(rpx(TEXT_SMALL))
@@ -4439,18 +4519,19 @@ impl Sidebar {
                             ),
                     )
                     .child(
-                        // Trailing metadata slot: diff stats rest right-aligned on the
-                        // trailing column and swap out for the launchers on hover or
-                        // keyboard focus. `invisible` (not opacity) skips paint, so the
-                        // hidden chip registers no click, hover, or tab stop beneath
-                        // the launchers.
+                        // Launch controls replace the checkout metadata; focusing changes reveals its keyboard target.
                         div()
                             .id(SharedString::from(format!("worktree-actions-{path}")))
                             .debug_selector({
                                 let path = path.clone();
                                 move || format!("worktree-actions-{path}")
                             })
-                            .min_w(rpx(HIERARCHY_TRAILING_W))
+                            .relative()
+                            .min_w(rpx(if show_launchers {
+                                launch_width
+                            } else {
+                                HIERARCHY_TRAILING_W
+                            }))
                             .h(rpx(CHROME_CONTROL_H))
                             .flex_shrink_0()
                             .flex()
@@ -4460,18 +4541,17 @@ impl Sidebar {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .when(focused, Styled::invisible)
-                                    .group_hover("worktree-row", Styled::invisible)
+                                    .opacity(if show_launchers { 0.0 } else { 1.0 })
                                     .child(diff_element),
-                            ),
-                    )
-                    .child(launches),
+                            )
+                            .child(launches),
+                    ),
                 );
                 if worktree.sessions.is_empty() {
                     group = group.child(
                         div()
                             .id(SharedString::from(format!("worktree-empty-{path}")))
-                            .pl(rpx(HIERARCHY_LABEL_INSET))
+                            .pl(rpx(HIERARCHY_LABEL_INSET + SPACE_LG))
                             .py(rpx(SPACE_SM))
                             .text_size(rpx(TEXT_MICRO))
                             .text_color(c::FG_DIM())
@@ -5047,7 +5127,11 @@ impl Render for Sidebar {
                         || this.menu.is_some()
                         || this.pending_new_worktree.is_some())
                 {
-                    this.act(Action::Cancel, window, cx);
+                    if this.checkout_confirmation_open() {
+                        this.checkout_cancel_confirmation(window, cx);
+                    } else {
+                        this.act(Action::Cancel, window, cx);
+                    }
                     cx.stop_propagation();
                 }
             }))
@@ -5087,21 +5171,18 @@ impl Render for Sidebar {
                                     ),
                             )
                         })
-                        .when(
-                            self.project_decision || self.pending_worktree_removal.is_some(),
-                            |d| {
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .inset_0()
-                                        .occlude()
-                                        .bg(c::alpha(c::BG(), 0.4))
-                                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                            cx.stop_propagation();
-                                        }),
-                                )
-                            },
-                        ),
+                        .when(self.project_decision, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .occlude()
+                                    .bg(c::QUIET_VEIL())
+                                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation();
+                                    }),
+                            )
+                        }),
                 )
             })
             .child(
@@ -5119,13 +5200,53 @@ impl Render for Sidebar {
                             div()
                                 .absolute()
                                 .inset_0()
-                                .bg(c::alpha(c::BG(), 0.4))
+                                .bg(c::QUIET_VEIL())
                                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation();
                                 }),
                         )
                     }),
             )
+            .when(self.checkout_confirmation_open(), |root| {
+                let source = self.checkout_confirmation_bounds();
+                root.child(gpui::deferred(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .bg(c::QUIET_VEIL())
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            gpui::anchored()
+                                .position_mode(gpui::AnchoredPositionMode::Window)
+                                .position(gpui::point(source.left(), source.bottom()))
+                                .snap_to_window_with_margin(
+                                    rpx(SPACE_LG).to_pixels(window.rem_size()),
+                                )
+                                .child(self.render_checkout_confirmation(window, cx)),
+                        ),
+                ))
+            })
+            .when_some(self.pending_worktree_removal.as_ref(), |root, removal| {
+                let source = self.action_source_bounds.get();
+                root.child(gpui::deferred(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .bg(c::QUIET_VEIL())
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            gpui::anchored()
+                                .position_mode(gpui::AnchoredPositionMode::Window)
+                                .position(gpui::point(source.left(), source.bottom()))
+                                .snap_to_window_with_margin(
+                                    rpx(SPACE_LG).to_pixels(window.rem_size()),
+                                )
+                                .child(self.render_worktree_removal(removal, cx)),
+                        ),
+                ))
+            })
             .when(self.diff_viewer.is_some(), |d| {
                 d.child(gpui::deferred(self.render_diff(cx)))
             })
@@ -5565,6 +5686,11 @@ mod tests {
         assert!(single.top() > project.top());
         assert!(cx.debug_bounds("session-3").is_none());
         for width in [220.0, 260.0, 320.0] {
+            cx.simulate_mouse_move(
+                gpui::point(gpui::px(900.0), gpui::px(740.0)),
+                None,
+                gpui::Modifiers::default(),
+            );
             cx.update(|window, cx| {
                 cx.global_mut::<SettingsState>().store.sidebar_width = Some(width);
                 sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
@@ -5617,6 +5743,11 @@ mod tests {
                 });
         });
         for width in [220.0, 260.0, 320.0] {
+            cx.simulate_mouse_move(
+                gpui::point(gpui::px(900.0), gpui::px(740.0)),
+                None,
+                gpui::Modifiers::default(),
+            );
             cx.update(|window, cx| {
                 cx.global_mut::<SettingsState>().store.sidebar_width = Some(width);
                 sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
@@ -7105,10 +7236,10 @@ mod tests {
     }
 
     #[test]
-    fn unpainted_reattached_session_is_idle_in_sidebar() {
+    fn pending_reattached_session_is_starting_in_sidebar() {
         assert_eq!(
             managed_session_status(false, true, ActivityState::Idle).0,
-            "Idle"
+            "Starting"
         );
         assert_eq!(
             managed_session_status(true, true, ActivityState::Idle).0,
@@ -7788,14 +7919,16 @@ mod tests {
         let worktree = cx.debug_bounds(worktree_selector).unwrap();
         let first = cx.debug_bounds("session-agent-1").unwrap();
         let second = cx.debug_bounds("session-agent-2").unwrap();
-        assert_eq!(project.left(), worktree.left());
+        assert_eq!(worktree.left() - project.left(), gpui::px(SPACE_LG));
         let status = cx.debug_bounds("session-tree-status-1").unwrap();
         assert!(status.right() <= first.left());
         assert!(first.right() <= cx.debug_bounds("session-tree-title-1").unwrap().left());
         assert_eq!(first.left(), second.left());
-        // Tree rows leave the diff to the worktree header.
+        // Expanded session items omit checkout metadata; only the worktree owns changes.
         assert!(cx.debug_bounds("diff-chip-open-1").is_none());
         assert!(cx.debug_bounds("diff-chip-open-2").is_none());
+        assert!(cx.debug_bounds("session-tree-diff-1").is_none());
+        assert!(cx.debug_bounds("session-tree-diff-2").is_none());
         let worktree_diff: &'static str =
             Box::leak(format!("worktree-diff-{path}").into_boxed_str());
         assert!(cx.debug_bounds(worktree_diff).is_some());
@@ -7893,34 +8026,87 @@ mod tests {
             diff.right(),
             cx.debug_bounds(actions_selector).unwrap().right()
         );
-        // Unavailable launchers still take the click (and report the missing CLI),
-        // so the click outcome proves which element owns that point.
-        sidebar.update(cx, |sidebar, _| sidebar.available = [false; 4]);
-        cx.simulate_mouse_move(diff.center(), None, gpui::Modifiers::default());
+        assert!(cx.debug_bounds("session-tree-diff-1").is_none());
+        let row_selector: &'static str = Box::leak(format!("worktree-{path}").into_boxed_str());
+        let row = cx.debug_bounds(row_selector).unwrap();
+        let session = cx.debug_bounds("session-1").unwrap();
+        let status = cx.debug_bounds("session-tree-status-1").unwrap();
+        assert_eq!(
+            status.left() - session.left(),
+            gpui::px(HIERARCHY_INSET + SPACE_LG)
+        );
+        let worktree_title: &'static str =
+            Box::leak(format!("worktree-title-{path}").into_boxed_str());
+        assert_eq!(
+            cx.debug_bounds(worktree_title).unwrap().left() - row.left(),
+            gpui::px(HIERARCHY_INSET + SPACE_LG + HIERARCHY_ICON_SLOT + HIERARCHY_GAP)
+        );
+        // Pointer hover replaces metadata with launch controls in the same trailing slot.
+        cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
         draw(cx);
-        // Hovering swaps the stats out: the hidden chip is not painted at all.
         assert!(cx.debug_bounds(selector).is_none());
-        assert!((0..WORKTREE_LAUNCH_AGENTS.len()).any(|n| {
-            let launcher: &'static str = Box::leak(format!("launch-{path}-{n}").into_boxed_str());
-            cx.debug_bounds(launcher)
-                .is_some_and(|bounds| bounds.contains(&diff.center()))
-        }));
-        cx.simulate_click(diff.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.diff_viewer.is_none()));
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
-            .content_error
-            .as_deref()
-            .is_some_and(|error| error.contains("CLI not found"))));
-        cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
-        draw(cx);
-        // The clicked launcher keeps focus inside the row, which keeps the swap.
-        assert!(cx.debug_bounds(selector).is_none());
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.focus.focus(window, cx));
-        });
+        let first_launcher: &'static str = Box::leak(format!("launch-{path}-0").into_boxed_str());
+        let launcher = cx.debug_bounds(first_launcher).unwrap();
+        assert!(row.contains(&launcher.center()));
+        cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds(selector).is_some());
+        // Row keyboard focus also shows launch controls, while the Git action stays in traversal.
+        let (row_focus, diff_focus) = sidebar.read_with(cx, |sidebar, _| {
+            (
+                sidebar.worktree_focus[&path].clone(),
+                sidebar.worktree_diff_focus[&path].clone(),
+            )
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, _| sidebar.available = [true; 4]);
+            row_focus.focus(window, cx);
+        });
+        draw(cx);
+        assert!(cx.debug_bounds(selector).is_none());
+        cx.update(Window::focus_next);
+        draw(cx);
+        cx.update(|window, _| assert!(diff_focus.is_focused(window)));
+        assert!(cx.debug_bounds(selector).is_some());
+        cx.update(Window::focus_next);
+        draw(cx);
+        assert!(
+            cx.debug_bounds(selector).is_none(),
+            "Tab from changes reveals the next launcher"
+        );
+        cx.update(Window::focus_prev);
+        draw(cx);
+        cx.update(|window, _| assert!(diff_focus.is_focused(window)));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.diff_viewer.is_some()));
+        // Clean and unavailable checkouts produce no visual metadata placeholder.
+        for state in [Some(grove_core::git::WorktreeGitState::default()), None] {
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.act(Action::CloseDiff, window, cx);
+                    sidebar.focus.focus(window, cx);
+                    let stale = if state.is_none() {
+                        vec![path.clone()]
+                    } else {
+                        Vec::new()
+                    };
+                    let states = state
+                        .map(|state| HashMap::from([(path.clone(), state)]))
+                        .unwrap_or_default();
+                    sidebar
+                        .runtime
+                        .read(cx)
+                        .tree
+                        .clone()
+                        .update(cx, |tree, _| tree.apply_git_poll(states, &stale));
+                    cx.notify();
+                });
+            });
+            draw(cx);
+            assert!(cx.debug_bounds(selector).is_none());
+            assert!(cx.debug_bounds("session-tree-diff-1").is_none());
+        }
     }
     #[gpui::test]
     fn session_status_spinner_advances_only_for_busy_states_and_respects_reduced_motion(
@@ -8681,6 +8867,138 @@ for line in sys.stdin:
     }
 
     #[gpui::test]
+    fn session_click_closes_settings_and_focuses_same_or_different_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let path = "/grove-settings-navigation-fixture";
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "demo".into(),
+                    path: path.into(),
+                    scripts: Default::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+            cx.set_global(crate::theme::ThemeState::new(
+                false,
+                "tokyonight".into(),
+                "tokyonight-day".into(),
+            ));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let registry = runtime.read(cx).registry.clone();
+            for (agent, provider) in [
+                (Agent::Codex, grove_core::codex::Provider::Codex),
+                (Agent::Claude, grove_core::codex::Provider::Claude),
+            ] {
+                let id = registry.update(cx, |registry, _| {
+                    registry.insert_meta("demo".into(), path.into(), agent)
+                });
+                let saved = grove_core::codex::SavedSession {
+                    rich_plans: Default::default(),
+                    claude_resume: None,
+                    edit_checkpoints: Vec::new(),
+                    pending_edit: None,
+                    provider,
+                    composer: Default::default(),
+                    context: None,
+                    key: format!("settings-navigation-{}", id.raw()),
+                    project: "demo".into(),
+                    cwd: path.into(),
+                    label: "Fixture".into(),
+                    title: None,
+                    title_generation: None,
+                    roots: Vec::new(),
+                    thread_id: None,
+                    items: Vec::new(),
+                    work_periods: Vec::new(),
+                    draft: String::new(),
+                    draft_images: Vec::new(),
+                    config_args: Vec::new(),
+                };
+                let (handle, _actions) = grove_core::codex::Handle::channel();
+                let (_updates, receive) = std::sync::mpsc::channel();
+                let session = cx.new(|cx| {
+                    crate::entities::codex_session::CodexSession::from_connection(
+                        grove_core::codex::Snapshot::new(saved),
+                        grove_core::codex::Connection {
+                            handle: handle.clone(),
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
+            }
+            let terminal = cx.new(|cx| {
+                crate::entities::terminal_session::TerminalSession::spawn_script("\0", path, cx)
+            });
+            registry.update(cx, |registry, _| {
+                let id = registry.insert_meta("demo".into(), path.into(), Agent::Terminal);
+                registry.attach(id, terminal, None);
+            });
+            let settings =
+                cx.new(|cx| super::super::settings_panel::SettingsPanel::new(runtime.clone(), cx));
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.set_settings_panel(settings, cx);
+            sidebar
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        for collapsed in [false, true] {
+            cx.update(|_, cx| {
+                cx.global_mut::<SettingsState>().store.sidebar_collapsed = collapsed;
+            });
+            draw(cx);
+            // Repeated targets exercise reopening settings on the already-selected session.
+            for raw in [1, 1, 2, 2, 3, 3, 1] {
+                let id = SessionId::from_raw(raw);
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar
+                            .settings_panel
+                            .clone()
+                            .unwrap()
+                            .update(cx, |panel, cx| {
+                                if raw == 3 {
+                                    panel.open_shortcuts(window, cx);
+                                } else {
+                                    panel.open(window, cx);
+                                }
+                            });
+                    });
+                });
+                draw(cx);
+                let selector: &'static str = Box::leak(format!("session-{raw}").into_boxed_str());
+                let target = cx
+                    .debug_bounds(selector)
+                    .expect("session is visible")
+                    .center();
+                cx.simulate_click(target, gpui::Modifiers::default());
+                draw(cx);
+                cx.update(|window, cx| {
+                    let sidebar = sidebar.read(cx);
+                    assert!(!sidebar.settings_panel.as_ref().unwrap().read(cx).is_open());
+                    assert_eq!(sidebar.selection, Some(Selection::Session(id)));
+                    let focus = if let Some(view) = sidebar.codex_views.get(&id) {
+                        view.focus_handle(cx)
+                    } else {
+                        sidebar.terminal_views[&id].focus_handle(cx)
+                    };
+                    assert!(focus.contains_focused(window, cx));
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
     fn project_hierarchy_spaces_worktree_groups_more_than_sibling_sessions(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -8690,7 +9008,10 @@ for line in sys.stdin:
                 projects: vec![grove_core::storage::Project {
                     name: "demo".into(),
                     path: "/grove-spacing-main".into(),
-                    scripts: grove_core::storage::ProjectScripts::default(),
+                    scripts: grove_core::storage::ProjectScripts {
+                        run: Some("echo fixture".into()),
+                        ..Default::default()
+                    },
                     archived: false,
                     worktree_dir: None,
                 }],
@@ -8837,6 +9158,11 @@ for line in sys.stdin:
                 > f32::from(second.top() - first.bottom())
         );
         for width in [220.0, 260.0, 320.0] {
+            cx.simulate_mouse_move(
+                gpui::point(gpui::px(900.0), gpui::px(740.0)),
+                None,
+                gpui::Modifiers::default(),
+            );
             cx.update(|window, cx| {
                 cx.global_mut::<SettingsState>().store.sidebar_width = Some(width);
                 sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
@@ -8864,7 +9190,10 @@ for line in sys.stdin:
             let worktree_title = cx
                 .debug_bounds("worktree-title-/grove-spacing-main")
                 .unwrap();
-            assert_eq!(project_title.left(), worktree_title.left());
+            assert_eq!(
+                worktree_title.left() - project_title.left(),
+                gpui::px(SPACE_LG)
+            );
             let row = cx.debug_bounds("session-1").unwrap();
             assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
             assert!(status.right() <= launcher.left());
@@ -8875,27 +9204,66 @@ for line in sys.stdin:
             assert_eq!(progress.right(), close.right());
             assert_eq!(f32::from(row.right() - close.right()), HIERARCHY_INSET);
             assert_eq!(close, trailing);
-            assert_eq!(f32::from(status.left() - row.left()), HIERARCHY_INSET);
-            // The progress shares the close target at the row's trailing inset.
-            // Hovering the title keeps progress visible and its geometry stable.
+            assert_eq!(
+                f32::from(status.left() - row.left()),
+                HIERARCHY_INSET + SPACE_LG
+            );
+            // Row hover reveals Close in its reserved slot and hides overlapping progress.
             cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
             draw(cx);
             assert_eq!(cx.debug_bounds("session-tree-title-1").unwrap(), title);
             assert_eq!(cx.debug_bounds("session-tree-close-1").unwrap(), close);
-            assert!(cx.debug_bounds("session-tasks-1").is_some());
+            assert!(cx.debug_bounds("session-tasks-1").is_none());
             cx.simulate_mouse_move(progress.center(), None, gpui::Modifiers::default());
             draw(cx);
             assert!(cx.debug_bounds("session-tasks-1").is_none());
             assert_eq!(cx.debug_bounds("session-tree-close-1").unwrap(), close);
             cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
             draw(cx);
-            assert!(cx.debug_bounds("session-tasks-1").is_some());
+            assert!(cx.debug_bounds("session-tasks-1").is_none());
             let empty_slot = cx.debug_bounds("session-tree-trailing-2").unwrap();
             assert_eq!(cx.debug_bounds("session-tree-close-2").unwrap(), empty_slot);
             assert_eq!(f32::from(empty_slot.size.width), CONTROL_H);
             assert!(status.top() >= row.top() && status.bottom() <= row.bottom());
             assert!(title.top() >= row.top() && title.bottom() <= row.bottom());
             assert!(close.bottom() <= row.bottom());
+            // The longest launcher row includes script, all agents, and Delete; dense controls
+            // retain their shared size without covering the truncated worktree title at narrow widths.
+            for path in ["/grove-spacing-main", "/grove-spacing-feature"] {
+                let selector = |prefix: &str| -> &'static str {
+                    Box::leak(format!("{prefix}{path}").into_boxed_str())
+                };
+                let worktree = cx.debug_bounds(selector("worktree-")).unwrap();
+                cx.simulate_mouse_move(worktree.center(), None, gpui::Modifiers::default());
+                draw(cx);
+                let actions = cx.debug_bounds(selector("worktree-actions-")).unwrap();
+                let worktree_title = cx.debug_bounds(selector("worktree-title-")).unwrap();
+                assert!(
+                    worktree_title.right() <= actions.left(),
+                    "worktree title overlaps controls at {width}px"
+                );
+                let mut controls: Vec<&'static str> = (0..WORKTREE_LAUNCH_AGENTS.len())
+                    .map(|index| -> &'static str {
+                        Box::leak(format!("launch-{path}-{index}").into_boxed_str())
+                    })
+                    .collect();
+                controls.push(selector("run-script-"));
+                if path.ends_with("feature") {
+                    controls.push(selector("delete-worktree-"));
+                }
+                for control in controls {
+                    let bounds = cx.debug_bounds(control).unwrap();
+                    assert_eq!(
+                        bounds.size,
+                        gpui::size(gpui::px(CHROME_CONTROL_H), gpui::px(CHROME_CONTROL_H))
+                    );
+                    assert!(
+                        bounds.left() >= worktree.left() && bounds.right() <= worktree.right(),
+                        "{control} clips at {width}px"
+                    );
+                    assert!(bounds.top() >= worktree.top() && bounds.bottom() <= worktree.bottom());
+                }
+            }
         }
         assert!(cx.debug_bounds("session-3").is_some());
         assert!(cx.debug_bounds("fold-/grove-spacing-feature").is_none());
@@ -8995,11 +9363,11 @@ for line in sys.stdin:
             sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
         });
         draw(cx);
+        let worktree = cx.debug_bounds(worktree_selector).unwrap();
+        cx.simulate_mouse_move(worktree.center(), None, gpui::Modifiers::default());
+        draw(cx);
         assert!(cx.debug_bounds(run_selector).is_some());
-        assert_eq!(
-            cx.debug_bounds(actions_selector).unwrap().right(),
-            actions_right
-        );
+        assert!(cx.debug_bounds(actions_selector).unwrap().right() <= actions_right);
         assert!(cx.debug_bounds(count_selector).is_none());
         assert!(cx
             .debug_bounds(worktree_selector)
@@ -9487,10 +9855,9 @@ for line in sys.stdin:
         for width in [1280.0, 768.0] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(640.0)));
             draw(cx);
-            let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
             let dialog = cx.debug_bounds("worktree-removal-decision").unwrap();
-            assert!(dialog.left() >= canvas.left() && dialog.right() <= canvas.right());
-            assert!(dialog.top() >= canvas.top() && dialog.bottom() <= canvas.bottom());
+            assert!(dialog.left() >= gpui::px(0.0) && dialog.right() <= gpui::px(width));
+            assert!(dialog.top() >= gpui::px(0.0) && dialog.bottom() <= gpui::px(640.0));
             for id in [
                 "worktree-removal-path",
                 "worktree-removal-path-value",
@@ -9532,9 +9899,8 @@ for line in sys.stdin:
         let dialog = cx.debug_bounds("worktree-removal-decision").unwrap();
         let error = cx.debug_bounds("worktree-removal-error").unwrap();
         let dismiss = cx.debug_bounds("dismiss-worktree-removal").unwrap();
-        let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
-        assert!(dialog.left() >= canvas.left() && dialog.right() <= canvas.right());
-        assert!(dialog.top() >= canvas.top() && dialog.bottom() <= canvas.bottom());
+        assert!(dialog.left() >= gpui::px(0.0) && dialog.right() <= gpui::px(768.0));
+        assert!(dialog.top() >= gpui::px(0.0) && dialog.bottom() <= gpui::px(640.0));
         for item in [error, dismiss] {
             assert!(item.left() >= dialog.left() && item.right() <= dialog.right());
             assert!(item.top() >= dialog.top() && item.bottom() <= dialog.bottom());
@@ -10325,8 +10691,11 @@ for line in sys.stdin:
         let project_title = cx.debug_bounds("project-title-0").unwrap();
         let worktree_title = cx.debug_bounds(selector("worktree-title-")).unwrap();
         let empty = cx.debug_bounds(selector("worktree-empty-")).unwrap();
-        assert_eq!(worktree_title.left(), project_title.left());
-        assert_eq!(empty.left(), project_title.left());
+        assert_eq!(
+            worktree_title.left() - project_title.left(),
+            gpui::px(SPACE_LG)
+        );
+        assert_eq!(empty.left(), worktree_title.left());
         assert!(cx.debug_bounds("projects-count").is_some());
         assert!(cx.debug_bounds(selector("worktree-count-")).is_none());
         assert!(cx.debug_bounds("tree-expand-cycle").is_none());

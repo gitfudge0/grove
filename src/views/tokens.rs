@@ -96,15 +96,6 @@ pub const DIVIDER_DRAG_HIT_W: f32 = 6.0;
 /// Ceiling on the diff file-list column so a deep path can't starve the body width into unified mode.
 pub const DIFF_FILE_LIST_MAX_FRAC: f32 = 0.4;
 
-/// The diff viewer's inset from the window edge — a viewport-filling surface, not a `MODAL_W_*` step.
-pub const DIFF_PANEL_INSET: f32 = SPACE_3XL;
-
-/// The diff body's line-number gutter width, right-aligned.
-pub const DIFF_GUTTER_W: f32 = 44.0;
-
-/// Below this window width, split mode is disabled and unified is forced.
-pub const DIFF_SPLIT_MIN_W: f32 = 900.0;
-
 /// A diff body line's fixed height, so split-mode fillers and unified rows/headers stay uniform for `uniform_list`.
 pub const DIFF_BODY_LINE_H: f32 = TEXT_CODE_SMALL + SPACE_SM;
 
@@ -130,13 +121,6 @@ pub const CARD_LINE_H: f32 = CONTROL_H;
 pub const CARD_LINE_SM_H: f32 = TEXT_SMALL + SPACE_MD;
 /// Number of [`CARD_LINE_SM_H`] lines under the headline.
 pub const CARD_SM_LINES: f32 = 2.0;
-/// A session card's rendered height, arithmetic on its real parts — this is what `TreeRow::height` returns.
-pub const SESSION_CARD_H: f32 = SPACE_LG * 2.0
-    + CARD_LINE_H
-    + ROW_LINE_GAP * CARD_SM_LINES
-    + CARD_LINE_SM_H * CARD_SM_LINES
-    + 1.0 * 2.0;
-
 /// The Settings cards' label indent: card hairline (1px) + row inset (`SPACE_2XL`) = 13px.
 pub const CARD_LABEL_INDENT: f32 = SPACE_2XL + 1.0;
 
@@ -155,3 +139,21 @@ pub const MOTION_BASE_MS: u64 = 140;
 pub const MOTION_SLOW_MS: u64 = 220;
 /// The reveal begins near the endpoint so controls and content remain legible immediately.
 pub const MOTION_FADE_FROM: f32 = 0.72;
+
+/// Shared form and preference geometry from DESIGN.md.
+pub const FIELD_H: f32 = 60.;
+pub const FIELD_INSET_X: f32 = 14.;
+pub const FORM_VALUE_SIZE: f32 = 16.;
+pub const FORM_VALUE_LINE_H: f32 = 22.;
+pub const FORM_BUTTON_H: f32 = 44.;
+pub const TEXTAREA_H: f32 = 130.;
+pub const SWITCH_W: f32 = 48.;
+pub const SWITCH_H: f32 = 28.;
+pub const SWITCH_THUMB: f32 = 22.;
+pub const SWITCH_INSET: f32 = 3.;
+pub const RADIUS_PREFERENCE: f32 = 16.;
+
+/// Shared project/setup page content geometry.
+pub const FORM_PAGE_PADDING_Y: f32 = 36.;
+pub const FORM_CONTENT_MAX_W: f32 = 620.;
+pub const FORM_HEADING_MARGIN: f32 = 26.;

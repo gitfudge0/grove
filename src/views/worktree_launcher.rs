@@ -67,6 +67,7 @@ pub struct WorktreeLauncher {
     launch_probe: Option<Vec<(Vec<String>, Agent)>>,
     error: Option<String>,
     scroll: ScrollHandle,
+    source_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 impl WorktreeLauncher {
@@ -106,7 +107,12 @@ impl WorktreeLauncher {
             launch_probe: None,
             error: None,
             scroll: ScrollHandle::new(),
+            source_bounds: std::rc::Rc::default(),
         }
+    }
+
+    pub fn launch_source_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.source_bounds.get()
     }
 
     pub fn is_open(&self) -> bool {
@@ -694,7 +700,7 @@ impl WorktreeLauncher {
                             .debug_selector(move || button_id.clone())
                             .role(gpui::Role::Button)
                             .aria_label(label.clone())
-                            .size(rpx(ICON_BTN_W))
+                            .size(rpx(CHROME_CONTROL_H))
                             .rounded(rpx(RADIUS_CONTROL))
                             .flex()
                             .items_center()
@@ -861,6 +867,8 @@ impl Render for WorktreeLauncher {
                 div()
                     .id("worktree-launcher-panel")
                     .debug_selector(|| "worktree-launcher-panel".into())
+                    .relative()
+                    .child({ let bounds = self.source_bounds.clone(); gpui::canvas(move |rect, _, _| bounds.set(Some(rect)), |_, (), _, _| {}).absolute().size_full() })
                     .track_focus(&self.focus)
                     .w(rpx(panel_w))
                     .max_h(rpx(panel_h))
@@ -895,11 +903,12 @@ impl Render for WorktreeLauncher {
                                     }))
                                     .px(rpx(SPACE_2XL))
                                     .rounded(rpx(RADIUS_PANEL))
-                                    .bg(c::FIELD_FILL())
+                                    .bg(if self.input.read(cx).focus_handle(cx).is_focused(window) { c::BG_HOVER() } else { c::FIELD_FILL() })
                                     .flex()
                                     .items_center()
                                     .child(
                                         Input::new(&self.input)
+                                            .aria_label("Search commands and worktrees")
                                             .appearance(false)
                                             .bordered(false)
                                             .focus_bordered(false)

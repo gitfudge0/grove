@@ -307,15 +307,23 @@ fn project_action(
     window: &Window,
     cx: &App,
 ) -> gpui_component::button::Button {
-    use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants};
+    use gpui_component::button::{ButtonCustomVariant, ButtonVariants};
     let (fill, fg, hover) = match style {
         ProjectActionStyle::Primary => (c::FG(), c::BG(), c::FG_DIM()),
         ProjectActionStyle::Danger => (c::RED(), c::BG(), c::RED()),
         ProjectActionStyle::Quiet => (c::BG(), c::FG_DIM(), c::BG_HOVER()),
         ProjectActionStyle::Mini => (c::FIELD_FILL(), c::FG(), c::BG_HOVER()),
     };
-    let button = Button::new(id)
-        .label(label)
+    let button = if matches!(style, ProjectActionStyle::Mini) {
+        crate::views::components::dense_action_with_colors(id, label, fill, fg, hover, window, cx)
+    } else {
+        crate::views::components::form_action(
+            id,
+            label,
+            matches!(style, ProjectActionStyle::Primary),
+            window,
+            cx,
+        )
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(fill)
@@ -324,18 +332,11 @@ fn project_action(
                 .active(hover)
                 .shadow(false),
         )
-        .h(rpx(if matches!(style, ProjectActionStyle::Mini) {
-            30.
-        } else {
-            44.
-        }))
-        .rounded(gpui::px(
-            RADIUS_PANEL * f32::from(window.rem_size()) / crate::zoom::REM_BASE,
-        ));
+    };
     if let Some(glyph) = glyph {
         button.icon(gpui_component::Icon::default().path(glyph))
     } else {
-        button
+        button.icon(gpui_component::Icon::default().path("icons/close.svg"))
     }
 }
 fn panel_section(label: &'static str) -> impl IntoElement {
@@ -362,16 +363,10 @@ fn readonly_path(label: &'static str, path: String) -> impl IntoElement {
                 .text_color(c::FG_DIM())
                 .child(label),
         )
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .font_family(crate::fonts::UI_FAMILY)
-                .font_weight(gpui::FontWeight::NORMAL)
-                .text_size(rpx(14.))
-                .text_color(c::FG())
-                .child(path),
-        )
+        .child(crate::views::components::readonly_value(
+            format!("readonly-{label}"),
+            path,
+        ))
 }
 fn script_field(
     label: &'static str,
@@ -383,20 +378,20 @@ fn script_field(
     div()
         .min_w_0()
         .w_full()
-        .h(rpx(130.))
-        .px(rpx(14.))
+        .h(rpx(TEXTAREA_H))
+        .px(rpx(FIELD_INSET_X))
         .py(rpx(SPACE_LG))
         .flex()
         .flex_col()
         .gap(rpx(SPACE_SM))
         .rounded(rpx(RADIUS_PANEL))
-        .bg(c::FIELD_FILL())
-        .border_1()
-        .border_color(if focused {
-            c::BORDER_STRONG()
+        .bg(if focused {
+            c::BG_HOVER()
         } else {
-            c::BORDER_SOFT()
+            c::FIELD_FILL()
         })
+        .border_1()
+        .border_color(c::BORDER_SOFT())
         .child(
             div()
                 .text_size(rpx(TEXT_SMALL))
@@ -409,7 +404,7 @@ fn script_field(
                 .appearance(false)
                 .bordered(false)
                 .focus_bordered(false)
-                .h(rpx(96.))
+                .h(rpx(SCRIPT_INPUT_H))
                 .font_family(crate::fonts::UI_FAMILY)
                 .text_size(rpx(TEXT_CODE))
                 .text_color(c::FG())
@@ -436,7 +431,7 @@ impl Render for ProjectPanel {
             .gap(rpx(SPACE_2XL));
         let mut footer = div()
             .w_full()
-            .max_w(rpx(620.))
+            .max_w(rpx(FORM_CONTENT_MAX_W))
             .min_w_0()
             .flex()
             .items_center()
@@ -747,7 +742,7 @@ impl Render for ProjectPanel {
                                 .tab_index(0)
                                 .w_full()
                                 .min_w_0()
-                                .h(rpx(44.))
+                                .h(rpx(FORM_BUTTON_H))
                                 .px(rpx(SPACE_2XL))
                                 .rounded(rpx(RADIUS_PANEL))
                                 .border_1()
@@ -758,11 +753,14 @@ impl Render for ProjectPanel {
                                 .flex()
                                 .items_center()
                                 .gap(rpx(SPACE_LG))
-                                .child(div().w(rpx(16.)).flex_shrink_0().child(if selected {
-                                    "✓"
-                                } else {
-                                    ""
-                                }))
+                                .child(
+                                    div()
+                                        .w(rpx(SPACE_3XL))
+                                        .flex_shrink_0()
+                                        .when(selected, |slot| {
+                                            slot.child(icon("check", ICON_MD, c::FG()))
+                                        }),
+                                )
                                 .child(
                                     div()
                                         .flex_1()
@@ -802,7 +800,7 @@ impl Render for ProjectPanel {
                             })
                             .tab_index(0)
                             .w_full()
-                            .min_h(rpx(70.))
+                            .min_h(rpx(PREFERENCE_ROW_MIN_H))
                             .py(rpx(SPACE_2XL))
                             .border_t_1()
                             .border_color(c::BORDER_SOFT())
@@ -816,28 +814,9 @@ impl Render for ProjectPanel {
                                     .min_w_0()
                                     .child("Open destination workspace after moving"),
                             )
-                            .child(
-                                div()
-                                    .w(rpx(48.))
-                                    .h(rpx(28.))
-                                    .flex_shrink_0()
-                                    .p(rpx(3.))
-                                    .rounded(rpx(RADIUS_FULL))
-                                    .flex()
-                                    .items_center()
-                                    .bg(if self.open_destination {
-                                        c::GREEN()
-                                    } else {
-                                        c::BORDER_STRONG()
-                                    })
-                                    .when(self.open_destination, gpui::Styled::justify_end)
-                                    .child(
-                                        div()
-                                            .size(rpx(22.))
-                                            .rounded(rpx(RADIUS_FULL))
-                                            .bg(gpui::hsla(0., 0., 1., 1.)),
-                                    ),
-                            )
+                            .child(crate::views::components::switch_track(
+                                self.open_destination,
+                            ))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.open_destination = !this.open_destination;
                                 cx.notify();
@@ -933,8 +912,9 @@ impl Render for ProjectPanel {
                                 gpui::Toggled::False
                             })
                             .tab_index(if self.worktree_count.is_some() { 0 } else { -1 })
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .w_full()
-                            .min_h(rpx(70.))
+                            .min_h(rpx(PREFERENCE_ROW_MIN_H))
                             .py(rpx(SPACE_2XL))
                             .border_y_1()
                             .border_color(c::BORDER_SOFT())
@@ -960,28 +940,9 @@ impl Render for ProjectPanel {
                                             .child(count),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .w(rpx(48.))
-                                    .h(rpx(28.))
-                                    .flex_shrink_0()
-                                    .p(rpx(3.))
-                                    .rounded(rpx(RADIUS_FULL))
-                                    .flex()
-                                    .items_center()
-                                    .bg(if self.delete_worktrees {
-                                        c::GREEN()
-                                    } else {
-                                        c::BORDER_STRONG()
-                                    })
-                                    .when(self.delete_worktrees, gpui::Styled::justify_end)
-                                    .child(
-                                        div()
-                                            .size(rpx(22.))
-                                            .rounded(rpx(RADIUS_FULL))
-                                            .bg(gpui::hsla(0., 0., 1., 1.)),
-                                    ),
-                            )
+                            .child(crate::views::components::switch_track(
+                                self.delete_worktrees,
+                            ))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if this.worktree_count.is_some() {
                                     this.delete_worktrees = !this.delete_worktrees;
@@ -1049,14 +1010,14 @@ impl Render for ProjectPanel {
                             .child(
                                 div()
                                     .w_full()
-                                    .max_w(rpx(300.))
-                                    .h(rpx(4.))
+                                    .max_w(rpx(REMOVAL_PROGRESS_W))
+                                    .h(rpx(SPACE_SM))
                                     .rounded(rpx(RADIUS_FULL))
                                     .bg(c::FIELD_FILL())
                                     .child(
                                         div()
                                             .h_full()
-                                            .w(rpx(300.
+                                            .w(rpx(REMOVAL_PROGRESS_W
                                                 * if status.total == 0 {
                                                     1.
                                                 } else {
@@ -1102,7 +1063,7 @@ impl Render for ProjectPanel {
                                 project_action(
                                     "project-removing".into(),
                                     "Removing…",
-                                    None,
+                                    Some("icons/trash.svg"),
                                     ProjectActionStyle::Primary,
                                     window,
                                     cx,
@@ -1125,11 +1086,11 @@ impl Render for ProjectPanel {
                         .cloned()
                         .collect();
                     if rows.is_empty() {
-                        content = content.child(div().min_h(rpx(220.)).w_full().flex().flex_col()
+                        content = content.child(div().min_h(rpx(EMPTY_STATE_MIN_H)).w_full().flex().flex_col()
                             .items_center().justify_center().text_center().gap(rpx(SPACE_LG))
                             .child(icon("archive", ICON_LG, c::FG_DIM()))
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("No archived projects"))
-                            .child(div().max_w(rpx(280.)).text_size(rpx(TEXT_BODY)).text_color(c::FG_DIM())
+                            .child(div().max_w(rpx(EMPTY_STATE_COPY_MAX_W)).text_size(rpx(TEXT_BODY)).text_color(c::FG_DIM())
                                 .child("Projects you archive appear here. Their files remain in their folders.")));
                     }
                     for (index, project) in rows.into_iter().enumerate() {
@@ -1321,7 +1282,7 @@ impl Render for ProjectPanel {
             }))
             .child(
                 div()
-                    .h(rpx(36.))
+                    .h(rpx(FORM_PAGE_PADDING_Y))
                     .flex_shrink_0()
                     .px(rpx(SPACE_3XL))
                     .border_b_1()
@@ -1339,27 +1300,27 @@ impl Render for ProjectPanel {
                     .min_h_0()
                     .overflow_y_scrollbar()
                     .px(rpx(SPACE_3XL))
-                    .py(rpx(36.))
+                    .py(rpx(FORM_PAGE_PADDING_Y))
                     .flex()
                     .justify_center()
                     .child(
                         div()
                             .w_full()
-                            .max_w(rpx(620.))
+                            .max_w(rpx(FORM_CONTENT_MAX_W))
                             .min_w_0()
                             .child(
                                 div()
-                                    .mb(rpx(26.))
+                                    .mb(rpx(FORM_HEADING_MARGIN))
                                     .child(
                                         div()
-                                            .text_size(rpx(24.))
+                                            .text_size(rpx(CONTROL_H))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(heading),
                                     )
                                     .child(
                                         div()
                                             .mt(rpx(SPACE_LG))
-                                            .text_size(rpx(13.))
+                                            .text_size(rpx(TEXT_BODY))
                                             .text_color(c::FG_DIM())
                                             .child(description),
                                     ),
@@ -1383,9 +1344,96 @@ impl Render for ProjectPanel {
     }
 }
 
+const SCRIPT_INPUT_H: f32 = 96.;
+const PREFERENCE_ROW_MIN_H: f32 = 70.;
+const REMOVAL_PROGRESS_W: f32 = 300.;
+const EMPTY_STATE_MIN_H: f32 = 220.;
+const EMPTY_STATE_COPY_MAX_W: f32 = 280.;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct ButtonRecipeProbe;
+    impl Render for ButtonRecipeProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().flex().flex_col().items_start().children([
+                div()
+                    .debug_selector(|| "recipe-mini".into())
+                    .child(project_action(
+                        "mini-probe".into(),
+                        "Browse",
+                        Some("icons/folder.svg"),
+                        ProjectActionStyle::Mini,
+                        window,
+                        cx,
+                    )),
+                div().debug_selector(|| "recipe-dense".into()).child(
+                    crate::views::components::transcript_action(
+                        "dense-probe",
+                        "Browse",
+                        false,
+                        window,
+                        cx,
+                    )
+                    .icon(gpui_component::Icon::default().path("icons/folder.svg")),
+                ),
+                div()
+                    .debug_selector(|| "recipe-browse".into())
+                    .child(super::super::project_setup::browse_action(window, cx)),
+                div().debug_selector(|| "recipe-height-only".into()).child(
+                    crate::views::components::form_action(
+                        "height-only-probe",
+                        "Browse",
+                        false,
+                        window,
+                        cx,
+                    )
+                    .h(rpx(CONTROL_H))
+                    .icon(gpui_component::Icon::default().path("icons/folder.svg")),
+                ),
+                div()
+                    .debug_selector(|| "recipe-form".into())
+                    .child(project_action(
+                        "form-probe".into(),
+                        "Browse",
+                        Some("icons/folder.svg"),
+                        ProjectActionStyle::Primary,
+                        window,
+                        cx,
+                    )),
+            ])
+        }
+    }
+    #[gpui::test]
+    fn mini_uses_complete_dense_recipe_not_shortened_form(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|_, _| ButtonRecipeProbe);
+        draw(cx);
+        let mini = cx.debug_bounds("recipe-mini").unwrap();
+        let dense = cx.debug_bounds("recipe-dense").unwrap();
+        let form = cx.debug_bounds("recipe-form").unwrap();
+        let browse = cx.debug_bounds("recipe-browse").unwrap();
+        let height_only = cx.debug_bounds("recipe-height-only").unwrap();
+        assert_eq!(
+            browse.size, dense.size,
+            "actual Browse builder must share full dense geometry"
+        );
+        assert_eq!(height_only.size.height, dense.size.height);
+        assert!(
+            height_only.size.width > dense.size.width,
+            "negative control: height-only form shrink keeps oversized internals"
+        );
+        assert_eq!(
+            mini.size, dense.size,
+            "Mini must share label/icon/gap/padding geometry with dense actions"
+        );
+        assert_eq!(f32::from(mini.size.height), CONTROL_H);
+        assert_eq!(f32::from(form.size.height), FORM_BUTTON_H);
+        assert!(
+            form.size.width > mini.size.width,
+            "form must retain its larger label, icon, gap and padding"
+        );
+    }
     fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
         cx.update(|window, cx| {

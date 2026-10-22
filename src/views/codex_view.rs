@@ -1,10 +1,10 @@
 //! Native conversation surface for a structured Codex session.
 use super::{
     components::{
-        form_action, header_control, header_control_frame, header_control_with_hover,
-        header_control_with_tooltip, project_field_well, question_choice, question_disclosure,
-        shimmer_label, task_mark, task_meter, tooltip, tooltip_content, transcript_action,
-        truncation_safe_label_width, TaskPhase,
+        attached_validation, form_action, header_control, header_control_frame,
+        header_control_with_hover, header_control_with_tooltip, project_field_well,
+        question_choice, question_disclosure, shimmer_label, task_mark, task_meter, tooltip,
+        tooltip_content, transcript_action, truncation_safe_label_width, TaskPhase,
     },
     rpx,
     tokens::*,
@@ -546,7 +546,7 @@ fn composer_tray(window: &Window) -> gpui::Div {
         .pb(rpx(SPACE_2XL + SPACE_MD))
         .px(rpx(SPACE_2XL))
         .pt(rpx(SPACE_LG))
-        .rounded_t(rpx(SPACE_20))
+        .rounded_t(rpx(RADIUS_PANEL))
         .border_1()
         .border_color(c::BORDER_SOFT())
         .bg(c::BG_RAIL())
@@ -612,6 +612,9 @@ struct MessageEditor {
     images: Vec<String>,
     restored: bool,
     accepted_prompts: Option<u64>,
+    thread_id: Option<String>,
+    send_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    source_anchor: gpui::ScrollAnchor,
 }
 
 pub struct CodexView {
@@ -658,6 +661,7 @@ pub struct CodexView {
     edited_messages: u64,
     edit_cancel_focus: FocusHandle,
     edit_confirm_focus: FocusHandle,
+    queue_resume_focus: FocusHandle,
     queue_selected: Option<u64>,
     queue_collapsed: bool,
     queue_editor: Option<QueueEditor>,
@@ -818,6 +822,7 @@ impl CodexView {
             edited_messages: 0,
             edit_cancel_focus: cx.focus_handle(),
             edit_confirm_focus: cx.focus_handle(),
+            queue_resume_focus: cx.focus_handle().tab_stop(true),
             queue_selected: None,
             queue_collapsed: false,
             queue_editor: None,
@@ -1467,6 +1472,8 @@ impl CodexView {
             .filter(|prompt| !steering_ids.contains(&prompt.id))
             .count();
         let pending_count = count;
+        let resume_enabled =
+            state.status != codex::Status::Disconnected && state.queue_uncertain.is_empty();
         let collapsed = self.queue_collapsed;
         let mut tray = composer_tray(window)
             .id("codex-queued-prompts")
@@ -1493,22 +1500,28 @@ impl CodexView {
                     .when(!state.status.busy() && count > 0, |header| {
                         header.child(
                             header_control("codex-resume-queue", "Send next queued message")
-                                .tab_index(0)
-                                .tab_stop(
-                                    state.status != codex::Status::Disconnected
-                                        && state.queue_uncertain.is_empty(),
+                                .debug_selector(|| "codex-resume-queue".into())
+                                .track_focus(
+                                    &self
+                                        .queue_resume_focus
+                                        .clone()
+                                        .tab_stop(resume_enabled)
+                                        .tab_index(0),
                                 )
+                                .focus_visible(|style| style.bg(c::BG_HOVER()))
                                 .child(crate::icons::icon("arrow-up", ICON_MD, c::FG_DIM()))
                                 .on_key_down(cx.listener(
-                                    |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if action_key(event) {
+                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        if resume_enabled && action_key(event) {
                                             this.queue_action(Action::ResumeQueue, cx);
                                             cx.stop_propagation();
                                         }
                                     },
                                 ))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.queue_action(Action::ResumeQueue, cx);
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if resume_enabled {
+                                        this.queue_action(Action::ResumeQueue, cx);
+                                    }
                                 })),
                         )
                     })
@@ -1606,7 +1619,7 @@ impl CodexView {
                             .child("Delivery unconfirmed"),
                     );
                     row = row.child(
-                        form_action("codex-dismiss-uncertain", "Dismiss", false, window, cx)
+                        form_action("codex-dismiss-uncertain", "Dismiss", false, window, cx).icon(gpui_component::Icon::default().path("icons/close.svg").size(rpx(ICON_SM)))
                             .tooltip("Check the conversation first. Dismiss removes this unconfirmed entry without sending it again.")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.queue_action(Action::DismissUncertainQueued(id), cx);
@@ -1899,7 +1912,7 @@ impl CodexView {
             (TaskSummary::Waiting(_), true) => Some(
                 div()
                     .flex_shrink_0()
-                    .text_color(c::AMBER())
+                    .text_color(c::FG())
                     .child("Waiting for you")
                     .into_any_element(),
             ),
@@ -1925,7 +1938,7 @@ impl CodexView {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .text_color(c::AMBER())
+                            .text_color(c::FG())
                             .child("Waiting for you"),
                     )
                     .child(separator())
@@ -2045,6 +2058,10 @@ impl CodexView {
                         .relative()
                         .role(gpui::Role::Button)
                         .aria_label(format!("Jump to start: {}", task.step))
+                        .tooltip({
+                            let step = task.step.clone();
+                            move |window, cx| tooltip(step.clone(), window).build(window, cx)
+                        })
                         .tab_index(0)
                         .min_h(rpx(TASK_ROW_H))
                         .flex()
@@ -2063,6 +2080,7 @@ impl CodexView {
                         ))
                         .child(
                             div()
+                                .debug_selector(move || format!("codex-task-title-{task_index}"))
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
@@ -2078,12 +2096,8 @@ impl CodexView {
                             div()
                                 .id(("codex-task-jump", task_index))
                                 .debug_selector(move || format!("codex-task-jump-{task_index}"))
-                                // Overlays the row's trailing edge on hover so the
-                                // resting title keeps the full width.
-                                .absolute()
-                                .top_0()
-                                .bottom_0()
-                                .right_0()
+                                // Reserve the action slot so revealing it never covers task text.
+                                .flex_shrink_0()
                                 .flex()
                                 .items_center()
                                 .gap(rpx(SPACE_SM))
@@ -2390,6 +2404,16 @@ impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.restore_image_tokens(window, cx);
         let state = self.session.read(cx).state.shared();
+        // Source geometry belongs to one editor in one conversation, never to a
+        // subsequently connected thread or another message at the same index.
+        if self
+            .message_editor
+            .as_ref()
+            .is_some_and(|editor| editor.thread_id != state.saved.thread_id)
+        {
+            self.message_editor = None;
+            self.edit_confirmation = None;
+        }
         if self
             .composer_menu_scope
             .as_ref()
@@ -2472,8 +2496,10 @@ impl Render for CodexView {
         // checkout_context contains chrome labels such as “Main checkout”, not
         // filesystem paths. Resolve document links against the saved worktree.
         let html_cwd = std::path::PathBuf::from(&state.saved.cwd);
-        let html_paused =
-            self.menu.is_some() || self.popup.is_some() || !self.file_suggestions.is_empty();
+        let html_paused = self.menu.is_some()
+            || self.popup.is_some()
+            || !self.file_suggestions.is_empty()
+            || self.edit_confirmation.is_some();
         self.html.update(cx, |html, cx| {
             html.sync(&state, html_cwd, html_paused, window, cx);
         });
@@ -2615,6 +2641,12 @@ impl Render for CodexView {
                 self.smooth_follow = true;
             }
         }
+        // A blocking edit confirmation owns the visible source. Session updates
+        // must not restart bottom-follow and pull that source out from its tray.
+        if self.edit_confirmation.is_some() {
+            self.smooth_follow = false;
+            self.follow_after_submit = false;
+        }
         if self.follow_after_submit {
             self.composer_pin_bottom = true;
             self.set_composer_collapsed(false, cx);
@@ -2641,10 +2673,11 @@ impl Render for CodexView {
             .motion_frame
             .replace(now)
             .map_or(0.0, |previous| now.duration_since(previous).as_secs_f32());
-        if self.follow_after_submit
-            || (content != self.last_content
-                && (near_bottom || self.smooth_follow)
-                && !self.composer_collapsed)
+        if self.edit_confirmation.is_none()
+            && (self.follow_after_submit
+                || (content != self.last_content
+                    && (near_bottom || self.smooth_follow)
+                    && !self.composer_collapsed))
         {
             self.smooth_follow = true;
             self.follow_after_submit = false;
@@ -2845,7 +2878,7 @@ impl Render for CodexView {
                                             header.child(
                                                 div()
                                                     .flex_shrink_0()
-                                                    .text_color(c::RED())
+                                                    .text_color(c::FORM_ERROR())
                                                     .child(format!("· {failed}")),
                                             )
                                         },
@@ -3435,7 +3468,7 @@ impl Render for CodexView {
                                     .flex_col()
                                     .gap(rpx(SPACE_LG))
                                     .p(rpx(SPACE_2XL))
-                                    .child(div().text_color(c::RED()).child(format!(
+                                    .child(div().text_color(c::FORM_ERROR()).child(format!(
                                         "Couldn’t open native plan: {}",
                                         error.error
                                     )))
@@ -3447,6 +3480,11 @@ impl Render for CodexView {
                                             false,
                                             window,
                                             cx,
+                                        )
+                                        .icon(
+                                            gpui_component::Icon::default()
+                                                .path("icons/restart.svg")
+                                                .size(rpx(ICON_SM)),
                                         )
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
@@ -3941,7 +3979,7 @@ impl Render for CodexView {
                     .debug_selector(|| "codex-error".into())
                     .role(gpui::Role::Alert)
                     .py(rpx(SPACE_SM))
-                    .text_color(c::RED())
+                    .text_color(c::FORM_ERROR())
                     .child(error.clone()),
             ));
         }
@@ -4252,7 +4290,7 @@ impl Render for CodexView {
         } else {
             body.into_any_element()
         };
-        let surface =
+        let mut surface =
             surface.child(
                 div()
                     // May shrink below its content so a short pane squeezes
@@ -4288,7 +4326,7 @@ impl Render for CodexView {
                             .px(rpx(SPACE_2XL))
                             .pt(rpx(SPACE_3XL))
                             .pb(rpx(SPACE_2XL))
-                            .rounded(rpx(SPACE_20))
+                            .rounded(rpx(RADIUS_PANEL))
                             .border_1()
                             .border_color(c::BORDER_SOFT())
                             .bg(c::BG_RAIL())
@@ -4315,7 +4353,7 @@ impl Render for CodexView {
                                                     .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx)))
                                             )
                                             .when(!busy && state.error.is_some(), |row| row.child(
-                                                form_action("codex-reconnect", "Reconnect", false, window, cx)
+                                                form_action("codex-reconnect", "Reconnect", false, window, cx).icon(gpui_component::Icon::default().path("icons/restart.svg").size(rpx(ICON_SM)))
                                                     .debug_selector(|| "codex-reconnect".into())
                                                     .on_click(cx.listener(|this, _, _, cx| {
                                                         this.session.update(cx, |session, cx| session.send(Action::Reconnect, cx));
@@ -4402,10 +4440,174 @@ impl Render for CodexView {
                     .into_any_element();
             }
         }
+        if self.edit_confirmation.is_some() {
+            surface = surface.child(self.render_edit_confirmation(window, cx));
+        }
         surface.into_any_element()
     }
 }
+/// Paint a visual source aperture without creating any pointer hit-test hole.
+fn paint_confirmation_veil(
+    pane: gpui::Bounds<gpui::Pixels>,
+    source: gpui::Bounds<gpui::Pixels>,
+    window: &mut Window,
+) {
+    if source.is_empty() {
+        window.paint_quad(gpui::fill(pane, c::QUIET_VEIL()));
+        return;
+    }
+    for (left, top, right, bottom) in [
+        (pane.left(), pane.top(), pane.right(), source.top()),
+        (pane.left(), source.bottom(), pane.right(), pane.bottom()),
+        (pane.left(), source.top(), source.left(), source.bottom()),
+        (source.right(), source.top(), pane.right(), source.bottom()),
+    ] {
+        if right > left && bottom > top {
+            window.paint_quad(gpui::fill(
+                gpui::Bounds::from_corners(gpui::point(left, top), gpui::point(right, bottom)),
+                c::QUIET_VEIL(),
+            ));
+        }
+    }
+    let mut outline = gpui::outline(source, c::BORDER_STRONG(), gpui::BorderStyle::default());
+    outline.corner_radii = rpx(RADIUS_PANEL).to_pixels(window.rem_size()).into();
+    window.paint_quad(outline);
+}
+
+/// Deferred after the editor's canvas, so resize and scrolling use this frame's
+/// source geometry. The independently constrained panel cannot leave the pane.
+struct EditConfirmationTray {
+    panel: Option<gpui::AnyElement>,
+    placed: Option<gpui::AnyElement>,
+    pane: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    source: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    scroll: gpui::ScrollHandle,
+    source_anchor: gpui::ScrollAnchor,
+    owner: gpui::WeakEntity<CodexView>,
+}
+impl gpui::Element for EditConfirmationTray {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+    fn request_layout(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (gpui::LayoutId, ()) {
+        (
+            window.request_layout(
+                gpui::Style {
+                    position: gpui::Position::Absolute,
+                    ..Default::default()
+                },
+                std::iter::empty(),
+                cx,
+            ),
+            (),
+        )
+    }
+    fn prepaint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let pane = self.pane.get();
+        let source = self
+            .source
+            .get()
+            .intersect(&self.scroll.bounds())
+            .intersect(&pane);
+        if source.is_empty() {
+            // Keep the blocker in place, reveal the initiating action, then
+            // attach on the next frame rather than showing a detached fallback.
+            self.source_anchor.scroll_to(window, cx);
+            let owner = self.owner.clone();
+            window.on_next_frame(move |_, cx| {
+                let _ = owner.update(cx, |_, cx| cx.notify());
+            });
+            return;
+        }
+        let margin = rpx(SPACE_LG).to_pixels(window.rem_size());
+        let above = source.center().y >= pane.center().y;
+        let available_height = if above {
+            source.top() - pane.top() - margin
+        } else {
+            pane.bottom() - source.bottom() - margin
+        };
+        let width = rpx(MODAL_W_SM)
+            .to_pixels(window.rem_size())
+            .min(source.right() - pane.left() - margin)
+            .max(gpui::px(0.));
+        let Some(panel) = self.panel.take() else {
+            return;
+        };
+        let panel = div()
+            .id("codex-edit-confirmation-scroll")
+            .w(width)
+            .max_h(available_height.max(gpui::px(0.)))
+            .overflow_y_scroll()
+            .child(panel);
+        let mut anchored = gpui::anchored()
+            .position_mode(gpui::AnchoredPositionMode::Window)
+            .anchor(if above {
+                gpui::Anchor::BottomRight
+            } else {
+                gpui::Anchor::TopRight
+            })
+            .position(gpui::point(
+                source.right(),
+                if above { source.top() } else { source.bottom() },
+            ))
+            .child(panel)
+            .into_any_element();
+        anchored.prepaint_as_root(
+            gpui::Point::default(),
+            gpui::size(
+                gpui::AvailableSpace::Definite(pane.size.width),
+                gpui::AvailableSpace::Definite(pane.size.height),
+            ),
+            window,
+            cx,
+        );
+        self.placed = Some(anchored);
+    }
+    fn paint(
+        &mut self,
+        _: Option<&gpui::GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        _: gpui::Bounds<gpui::Pixels>,
+        (): &mut (),
+        (): &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(panel) = &mut self.placed {
+            panel.paint(window, cx);
+        }
+    }
+}
+impl gpui::IntoElement for EditConfirmationTray {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
 impl CodexView {
+    pub(super) fn edit_confirmation_open(&self) -> bool {
+        self.edit_confirmation.is_some()
+    }
     fn focus_inline_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(editor) = &self.message_editor {
             window.focus(&editor.input.focus_handle(cx), cx);
@@ -4424,6 +4626,14 @@ impl CodexView {
         if editor.restored {
             self.send_inline_edit(cx);
             return;
+        }
+        self.smooth_follow = false;
+        if !self
+            .scroll
+            .bounds()
+            .contains(&editor.send_bounds.get().center())
+        {
+            editor.source_anchor.scroll_to(window, cx);
         }
         self.edit_confirmation = Some((editor.index, editor.message_id.clone()));
         window.focus(&self.edit_cancel_focus, cx);
@@ -4447,10 +4657,12 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let disabled = self.edit_request_pending || editor.accepted_prompts.is_some();
+        let disabled = self.edit_request_pending
+            || editor.accepted_prompts.is_some()
+            || self.edit_confirmation.is_some();
+        let send_bounds = editor.send_bounds.clone();
         let send_disabled = disabled
             || (editor.input.read(cx).value().trim().is_empty() && editor.images.is_empty());
-        let confirmation = self.render_edit_confirmation(window, cx);
         div()
             .id("codex-inline-editor")
             .debug_selector(|| "codex-inline-editor".into())
@@ -4492,6 +4704,7 @@ impl CodexView {
                 Input::new(&editor.input)
                     .disabled(disabled)
                     .aria_label("Edit sent message")
+                    .p_0()
                     .appearance(false)
                     .bordered(false)
                     .focus_bordered(false)
@@ -4499,11 +4712,18 @@ impl CodexView {
             )
             .child(
                 div()
+                    .id("codex-inline-editor-actions")
                     .flex()
                     .justify_end()
+                    .anchor_scroll(Some(editor.source_anchor.clone()))
                     .gap(rpx(SPACE_LG))
                     .child(
                         form_action("codex-cancel-message-edit", "Cancel", false, window, cx)
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/close.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
                             .disabled(disabled)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.message_editor = None;
@@ -4513,14 +4733,33 @@ impl CodexView {
                             })),
                     )
                     .child(
-                        form_action("codex-send-message-edit", "Send", true, window, cx)
-                            .disabled(send_disabled)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.confirm_inline_edit(window, cx);
-                            })),
+                        div()
+                            .relative()
+                            .flex_shrink_0()
+                            .child(
+                                form_action("codex-send-message-edit", "Send", true, window, cx)
+                                    .relative()
+                                    .debug_selector(|| "codex-send-message-edit".into())
+                                    .icon(
+                                        gpui_component::Icon::default()
+                                            .path("icons/arrow-up.svg")
+                                            .size(rpx(ICON_SM)),
+                                    )
+                                    .disabled(send_disabled)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.confirm_inline_edit(window, cx);
+                                    })),
+                            )
+                            .child(
+                                gpui::canvas(
+                                    move |bounds, _, _| send_bounds.set(bounds),
+                                    |_, (), _, _| {},
+                                )
+                                .absolute()
+                                .inset_0(),
+                            ),
                     ),
             )
-            .child(confirmation)
             .into_any_element()
     }
     fn render_edit_confirmation(
@@ -4528,10 +4767,22 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let edit_confirmation = self.edit_confirmation.clone();
-        div()
-            .when_some(edit_confirmation, |body, (index, message_id)| {
-                body.child(
+        let pane = Rc::new(Cell::new(gpui::Bounds::default()));
+        let measure_pane = pane.clone();
+        let Some((index, message_id)) = self.edit_confirmation.clone() else {
+            return div().into_any_element();
+        };
+        let Some(editor) = self
+            .message_editor
+            .as_ref()
+            .filter(|editor| editor.index == index && editor.message_id == message_id)
+        else {
+            return div().into_any_element();
+        };
+        let source = editor.send_bounds.clone();
+        let paint_source = source.clone();
+        let source_viewport = self.scroll.clone();
+        let dialog =
                     div()
                         .id("codex-edit-confirmation")
                         .debug_selector(|| "codex-edit-confirmation".into())
@@ -4548,22 +4799,22 @@ impl CodexView {
                             }
                         }))
                         .flex().flex_col().gap(rpx(SPACE_LG))
-                        .p(rpx(SPACE_2XL)).m(rpx(SPACE_LG))
+                        .p(rpx(SPACE_2XL))
                         .rounded(rpx(RADIUS_GROUP))
                         .border_1().border_color(c::BORDER()).bg(c::SURFACE_RAISED())
                         .child(div().text_size(rpx(TEXT_TITLE)).child("edit and restore changes?"))
                         .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(
                             "Restore tracked and untracked files in this session’s repositories to before this message. This message and all later replies will be removed. Ignored files, commits, and staged changes stay as they are."
                         ))
-                        .child(div().flex().justify_end().gap(rpx(SPACE_LG))
-                            .child(form_action("codex-cancel-edit", "Cancel", false, window, cx)
+                        .child(div().flex().flex_wrap().justify_end().gap(rpx(SPACE_LG))
+                            .child(form_action("codex-cancel-edit", "Cancel", false, window, cx).icon(gpui_component::Icon::default().path("icons/close.svg").size(rpx(ICON_SM)))
                                 .with_focus_handle(self.edit_cancel_focus.clone())
                                 .debug_selector(|| "codex-cancel-edit".into())
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.edit_confirmation = None;
                                     this.focus_inline_editor(window, cx); cx.notify();
                                 })))
-                            .child(form_action("codex-confirm-edit", "Edit and restore", true, window, cx)
+                            .child(form_action("codex-confirm-edit", "Edit and restore", true, window, cx).icon(gpui_component::Icon::default().path("icons/restore.svg").size(rpx(ICON_SM)))
                                 .with_focus_handle(self.edit_confirm_focus.clone())
                                 .debug_selector(|| "codex-confirm-edit".into())
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -4576,10 +4827,45 @@ impl CodexView {
                                     }
                                     cx.notify();
                                 })))
-                        )
+                        ).into_any_element();
+        gpui::deferred(
+            div()
+                .id("codex-edit-confirmation-overlay")
+                .debug_selector(|| "codex-edit-confirmation-overlay".into())
+                .absolute()
+                .inset_0()
+                .occlude()
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    gpui::canvas(
+                        move |bounds, _, _| {
+                            measure_pane.set(bounds);
+                        },
+                        move |bounds, (), window, _| {
+                            let aperture = paint_source
+                                .get()
+                                .intersect(&source_viewport.bounds())
+                                .intersect(&bounds);
+                            paint_confirmation_veil(bounds, aperture, window);
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
                 )
-            })
+                .child(gpui::deferred(EditConfirmationTray {
+                    panel: Some(dialog),
+                    placed: None,
+                    pane,
+                    source,
+                    scroll: self.scroll.clone(),
+                    source_anchor: editor.source_anchor.clone(),
+                    owner: cx.entity().downgrade(),
+                })),
+        )
+        .into_any_element()
     }
+
     fn response_footer(
         &mut self,
         group: &ResponseGroup,
@@ -4723,6 +5009,7 @@ impl CodexView {
                             .map(str::to_owned)
                     })
                     .collect();
+                let thread_id = state.saved.thread_id.clone();
                 let input = cx.new(|cx| {
                     InputState::new(window, cx)
                         .auto_grow(3, 10)
@@ -4744,6 +5031,9 @@ impl CodexView {
                     images,
                     restored: false,
                     accepted_prompts: None,
+                    thread_id,
+                    send_bounds: Rc::default(),
+                    source_anchor: gpui::ScrollAnchor::for_handle(self.scroll.clone()),
                 });
                 self.edit_confirmation = None;
                 self.close_menu(cx);
@@ -5291,7 +5581,7 @@ impl CodexView {
                             .child(
                                 div()
                                     .text_size(rpx(TEXT_TITLE))
-                                    .text_color(c::BLUE())
+                                    .text_color(c::FG())
                                     .child(effort),
                             )
                             .child(
@@ -6514,9 +6804,13 @@ fn subagent_status_label(status: codex::SubagentStatus) -> &'static str {
     }
 }
 
-fn subagent_row(agent: &codex::Subagent) -> gpui::Div {
+fn subagent_row(agent: &codex::Subagent) -> gpui::Stateful<gpui::Div> {
     let status = subagent_status_label(agent.status);
+    let detail = format!("{} · {} · {}", agent.name, agent.activity, status);
     div()
+        .id(gpui::SharedString::from(format!("subagent-{}", agent.id)))
+        .aria_label(detail.clone())
+        .tooltip(move |window, cx| tooltip(detail.clone(), window).build(window, cx))
         .flex()
         .items_center()
         .gap(rpx(SPACE_LG))
@@ -6542,8 +6836,10 @@ fn subagent_row(agent: &codex::Subagent) -> gpui::Div {
             div()
                 .flex_shrink_0()
                 .text_color(match agent.status {
-                    codex::SubagentStatus::Working | codex::SubagentStatus::Completed => c::GREEN(),
-                    codex::SubagentStatus::Failed => c::RED(),
+                    codex::SubagentStatus::Working | codex::SubagentStatus::Completed => {
+                        c::FG_DIM()
+                    }
+                    codex::SubagentStatus::Failed => c::FORM_ERROR(),
                     codex::SubagentStatus::Unknown => c::FG_MUTE(),
                 })
                 .child(status),
@@ -7440,6 +7736,70 @@ impl CodexView {
             );
         }
     }
+    fn elicitation_field_value(
+        field: &grove_core::elicitation::ElicitationField,
+        draft: &ElicitationFieldDraft,
+        cx: &App,
+    ) -> Result<serde_json::Value, String> {
+        let text = draft.input.read(cx).value().to_string();
+        let value = match &field.kind {
+            ElicitationKind::String { .. } => serde_json::Value::String(text),
+            ElicitationKind::Number { integer, .. } => {
+                let number = serde_json::from_str::<serde_json::Value>(text.trim())
+                    .ok()
+                    .filter(|v| {
+                        v.is_number() && (!integer || v.as_i64().is_some() || v.as_u64().is_some())
+                    });
+                number.ok_or_else(|| {
+                    format!(
+                        "{}: enter {}",
+                        field.title,
+                        if *integer {
+                            "a whole number"
+                        } else {
+                            "a number"
+                        }
+                    )
+                })?
+            }
+            ElicitationKind::Boolean => serde_json::Value::Bool(draft.boolean),
+            ElicitationKind::Select { options } => options
+                .iter()
+                .find(|option| draft.selected.contains(&option.value))
+                .map(|option| serde_json::Value::String(option.value.clone()))
+                .ok_or_else(|| format!("{}: choose an option", field.title))?,
+            ElicitationKind::MultiSelect { options, .. } => serde_json::Value::Array(
+                options
+                    .iter()
+                    .filter(|option| draft.selected.contains(&option.value))
+                    .map(|option| serde_json::Value::String(option.value.clone()))
+                    .collect(),
+            ),
+        };
+        Ok(value)
+    }
+    fn elicitation_field_error(
+        field: &grove_core::elicitation::ElicitationField,
+        draft: &ElicitationFieldDraft,
+        cx: &App,
+    ) -> Option<String> {
+        let mut content = serde_json::Map::new();
+        if draft.included {
+            match Self::elicitation_field_value(field, draft, cx) {
+                Ok(value) => {
+                    content.insert(field.name.clone(), value);
+                }
+                Err(error) => return Some(error),
+            }
+        }
+        grove_core::elicitation::ElicitationForm {
+            fields: vec![field.clone()],
+        }
+        .validate(&content)
+        .err()
+        .and_then(|errors| errors.into_iter().next())
+        .map(|error| error.message)
+    }
     fn elicitation_content(
         &self,
         key: &str,
@@ -7455,42 +7815,7 @@ impl CodexView {
             if !draft.included {
                 continue;
             }
-            let text = draft.input.read(cx).value().to_string();
-            let value = match &field.kind {
-                ElicitationKind::String { .. } => serde_json::Value::String(text),
-                ElicitationKind::Number { integer, .. } => {
-                    let number = serde_json::from_str::<serde_json::Value>(text.trim())
-                        .ok()
-                        .filter(|v| {
-                            v.is_number()
-                                && (!integer || v.as_i64().is_some() || v.as_u64().is_some())
-                        });
-                    number.ok_or_else(|| {
-                        format!(
-                            "{}: enter {}",
-                            field.title,
-                            if *integer {
-                                "a whole number"
-                            } else {
-                                "a number"
-                            }
-                        )
-                    })?
-                }
-                ElicitationKind::Boolean => serde_json::Value::Bool(draft.boolean),
-                ElicitationKind::Select { options } => options
-                    .iter()
-                    .find(|option| draft.selected.contains(&option.value))
-                    .map(|option| serde_json::Value::String(option.value.clone()))
-                    .ok_or_else(|| format!("{}: choose an option", field.title))?,
-                ElicitationKind::MultiSelect { options, .. } => serde_json::Value::Array(
-                    options
-                        .iter()
-                        .filter(|option| draft.selected.contains(&option.value))
-                        .map(|option| serde_json::Value::String(option.value.clone()))
-                        .collect(),
-                ),
-            };
+            let value = Self::elicitation_field_value(field, draft, cx)?;
             content.insert(field.name.clone(), value);
         }
         form.validate(&content).map_err(|errors| {
@@ -7605,7 +7930,7 @@ impl CodexView {
                 .gap(rpx(SPACE_LG))
                 .child(
                     div()
-                        .text_color(c::AMBER())
+                        .text_color(c::FG())
                         .child(format!("{} needs your input", request.server_name)),
                 )
                 .child(div().child(request.message.clone()));
@@ -7624,6 +7949,11 @@ impl CodexView {
                                 false,
                                 window,
                                 cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/external-link.svg")
+                                    .size(rpx(ICON_SM)),
                             )
                             .disabled(draft.submitting)
                             .on_click(move |_, _, cx| {
@@ -7646,6 +7976,7 @@ impl CodexView {
                 ElicitationMode::Form(form) => {
                     for (index, field) in form.fields.iter().enumerate() {
                         let field_draft = &draft.fields[index];
+                        let field_error = Self::elicitation_field_error(field, field_draft, cx);
                         let mut row = div()
                             .id(gpui::SharedString::from(format!(
                                 "elicitation-field-{request_index}-{index}"
@@ -7728,7 +8059,7 @@ impl CodexView {
                                     row = row.child(
                                         project_field_well(
                                             field_draft.input.focus_handle(cx).is_focused(window),
-                                            false,
+                                            field_error.is_some(),
                                         )
                                         .child(
                                             Input::new(&field_draft.input)
@@ -7743,7 +8074,13 @@ impl CodexView {
                                 }
                             }
                         }
-                        group = group.child(row);
+                        group = group.child(attached_validation(
+                            gpui::SharedString::from(format!(
+                                "elicitation-validation-field-{request_index}-{index}"
+                            )),
+                            row,
+                            field_error.as_deref(),
+                        ));
                     }
                     if let Err(error) = &valid {
                         group = group.child(
@@ -7753,7 +8090,7 @@ impl CodexView {
                                 )))
                                 .role(gpui::Role::Alert)
                                 .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
+                                .text_color(c::FORM_ERROR())
                                 .child(error.clone()),
                         );
                     }
@@ -7781,6 +8118,14 @@ impl CodexView {
                         action == "accept",
                         window,
                         cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path(gpui::SharedString::from(format!(
+                                "icons/{}.svg",
+                                if action == "accept" { "check" } else { "close" }
+                            )))
+                            .size(rpx(ICON_SM)),
                     )
                     .disabled(draft.submitting || (action == "accept" && valid.is_err()))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -8052,7 +8397,7 @@ impl CodexView {
                 .child(
                     div()
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(c::AMBER())
+                        .text_color(c::FG())
                         .child(format!(
                             "{} needs your permission · {}",
                             state.saved.provider.label(),
@@ -8120,7 +8465,7 @@ impl CodexView {
                                     "approval-validation-{index}"
                                 )))
                                 .role(gpui::Role::Alert)
-                                .text_color(c::RED())
+                                .text_color(c::FORM_ERROR())
                                 .child("Enter a valid JSON object before approving."),
                         );
                     }
@@ -8163,6 +8508,14 @@ impl CodexView {
                         false,
                         window,
                         cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path(gpui::SharedString::from(format!(
+                                "icons/{}.svg",
+                                if denying { "close" } else { "check" }
+                            )))
+                            .size(rpx(ICON_SM)),
                     )
                     .debug_selector(move || format!("approval-{index}-{choice_index}"))
                     .disabled(draft.submitting || (!denying && !valid_json))
@@ -8602,7 +8955,7 @@ impl CodexView {
                     .px(rpx(SPACE_3XL))
                     .py(rpx(SPACE_2XL))
                     .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::AMBER())
+                    .text_color(c::FG())
                     .child(format!(
                         "{} needs your input · {answered} of {} answered · draft",
                         state.saved.provider.label(),
@@ -8830,9 +9183,20 @@ impl CodexView {
                 );
             }
             if question_draft.custom {
+                let mut single = request.clone();
+                single.questions = vec![question.clone()];
+                let own_answers = answers
+                    .iter()
+                    .filter(|(id, _)| **id == question.id)
+                    .map(|(id, values)| (id.clone(), values.clone()))
+                    .collect();
+                let field_error = single.validate(&own_answers).err();
                 let focused = question_draft.input.focus_handle(cx).is_focused(window);
-                field = field.child(
-                    project_field_well(focused, false)
+                field = field.child(attached_validation(
+                    gpui::SharedString::from(format!(
+                        "question-validation-field-{request_index}-{question_index}"
+                    )),
+                    project_field_well(focused, field_error.is_some())
                         .debug_selector(move || {
                             format!("question-input-{request_index}-{question_index}")
                         })
@@ -8846,7 +9210,8 @@ impl CodexView {
                                 .text_color(c::FG())
                                 .p_0(),
                         ),
-                );
+                    field_error.as_deref(),
+                ));
             }
             group = group.child(field);
         }
@@ -8861,7 +9226,7 @@ impl CodexView {
                     .px(rpx(SPACE_3XL))
                     .pt(rpx(SPACE_2XL))
                     .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
+                    .text_color(c::FORM_ERROR())
                     .child(error),
             );
         }
@@ -8888,6 +9253,11 @@ impl CodexView {
                         window,
                         cx,
                     )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/close.svg")
+                            .size(rpx(ICON_SM)),
+                    )
                     .debug_selector(move || format!("questions-cancel-{request_index}"))
                     .disabled(submitting)
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -8905,6 +9275,11 @@ impl CodexView {
                         true,
                         window,
                         cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/check.svg")
+                            .size(rpx(ICON_SM)),
                     )
                     .debug_selector(move || format!("questions-submit-{request_index}"))
                     .disabled(!ready)
@@ -9555,7 +9930,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sent_message_editor_and_confirmation_stay_in_transcript_and_preserve_composer(
+    fn edit_confirmation_blocks_background_and_preserves_editor_and_composer(
         cx: &mut gpui::TestAppContext,
     ) {
         let (view, cx, actions, _) = fixture(cx);
@@ -9606,11 +9981,81 @@ mod tests {
         cx.simulate_keystrokes("enter");
         draw(cx);
         let confirmation = cx.debug_bounds("codex-edit-confirmation").unwrap();
-        let message = cx.debug_bounds("codex-message-anchor-0").unwrap();
+        let source = cx.debug_bounds("codex-send-message-edit").unwrap();
+        let overlay = cx.debug_bounds("codex-edit-confirmation-overlay").unwrap();
+        assert!(
+            (confirmation.right() - source.right()).abs() < gpui::px(1.),
+            "tray={confirmation:?}, source={source:?}"
+        );
+        assert!(
+            (confirmation.top() - source.bottom()).abs() < gpui::px(1.)
+                || (confirmation.bottom() - source.top()).abs() < gpui::px(1.)
+        );
+        assert!(confirmation.top() >= overlay.top());
+        assert!(confirmation.bottom() <= overlay.bottom());
+        // Resizing moves the initiating action; attachment must follow this
+        // frame's source instead of a captured window position or pane bottom.
+        cx.simulate_resize(gpui::size(gpui::px(420.), gpui::px(700.)));
+        draw(cx);
+        let moved_source = cx.debug_bounds("codex-send-message-edit").unwrap();
+        let moved_confirmation = cx.debug_bounds("codex-edit-confirmation").unwrap();
+        assert!((moved_source.right() - source.right()).abs() > gpui::px(100.));
+        assert!((moved_confirmation.right() - moved_source.right()).abs() < gpui::px(1.));
+        assert!(
+            (moved_confirmation.top() - moved_source.bottom()).abs() < gpui::px(1.)
+                || (moved_confirmation.bottom() - moved_source.top()).abs() < gpui::px(1.)
+        );
+        assert!(moved_confirmation.left() >= gpui::px(0.));
+        // A source scrolled entirely out of view is revealed before its tray
+        // is painted; it never borrows a previous source's cached position.
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.smooth_follow = false;
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.items[1]["text"] =
+                        json!("Long reply below the edited source.\n\n".repeat(50));
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(
+            !view.read_with(cx, |view, _| view.smooth_follow),
+            "content updates cannot restart following behind a source-owned confirmation"
+        );
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.scroll.scroll_to_bottom();
+                cx.notify();
+            });
+        });
+        draw(cx);
+        // Unlike a platform window, this fixture has no automatic display-frame
+        // loop. Deliver the scheduled ScrollAnchor and notification callbacks.
+        for _ in 0..3 {
+            if cx.debug_bounds("codex-edit-confirmation").is_some() {
+                break;
+            }
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
+        let revealed_source = cx.debug_bounds("codex-send-message-edit").unwrap();
+        let revealed_tray = cx.debug_bounds("codex-edit-confirmation").unwrap();
+        let viewport = view.read_with(cx, |view, _| view.scroll.bounds());
+        assert!(revealed_source.intersects(&viewport));
+        assert!((revealed_tray.right() - revealed_source.right()).abs() < gpui::px(1.));
+        assert!(
+            (revealed_tray.top() - revealed_source.bottom()).abs() < gpui::px(1.)
+                || (revealed_tray.bottom() - revealed_source.top()).abs() < gpui::px(1.)
+        );
+        // A pointer click on the veiled source cannot return ownership to an
+        // editor behind the dialog, and Tab stays on the two dialog actions.
         let composer = cx.debug_bounds("codex-composer").unwrap();
-        assert!(confirmation.top() >= message.top());
-        assert!(confirmation.bottom() <= message.bottom());
-        assert!(confirmation.bottom() <= composer.top());
+        cx.simulate_click(composer.center(), gpui::Modifiers::default());
+        cx.simulate_keystrokes("tab");
+        view.read_with(cx, |view, _| {
+            assert!(view.edit_confirmation.is_some());
+        });
         view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.input.read(cx).value().as_ref(),
@@ -9631,11 +10076,27 @@ mod tests {
                 "Edited inline request"
             );
         });
+        cx.update(|window, cx| {
+            view.read_with(cx, |view, _| {
+                assert!(view.edit_confirm_focus.is_focused(window));
+            });
+        });
         let cancel = cx.debug_bounds("codex-cancel-edit").unwrap();
         cx.simulate_click(cancel.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("codex-edit-confirmation").is_none());
         assert!(cx.debug_bounds("codex-inline-editor").is_some());
+        cx.update(|window, cx| {
+            view.read_with(cx, |view, cx| {
+                assert!(view
+                    .message_editor
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .focus_handle(cx)
+                    .is_focused(window));
+            });
+        });
         cx.simulate_keystrokes("escape");
         draw(cx);
         assert!(cx.debug_bounds("codex-inline-editor").is_none());
@@ -9921,6 +10382,90 @@ mod tests {
             assert!(view.queue_editor.is_none());
         });
     }
+    #[gpui::test]
+    fn queued_resume_is_keyboard_accessible_when_idle_and_absent_while_busy(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        fn tab_reaches_resume(view: &Entity<CodexView>, cx: &mut gpui::VisualTestContext) -> bool {
+            cx.update(|window, _| window.blur());
+            for _ in 0..32 {
+                // Shell routes unconsumed Tab to this production GPUI traversal
+                // boundary; the standalone conversation fixture has no Shell.
+                cx.update(gpui::Window::focus_next);
+                draw(cx);
+                if cx.update(|window, cx| {
+                    view.read_with(cx, |view, _| view.queue_resume_focus.is_focused(window))
+                }) {
+                    return true;
+                }
+            }
+            false
+        }
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Idle;
+                    session.state.queued_prompts.push(codex::QueuedPrompt {
+                        id: 1,
+                        text: "Queued request".into(),
+                        images: vec![],
+                    });
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-resume-queue").is_some());
+        assert!(
+            tab_reaches_resume(&view, cx),
+            "Tab traversal reaches the idle Send next control"
+        );
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::ResumeQueue)));
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Working;
+                    cx.notify();
+                });
+            });
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("codex-resume-queue").is_none());
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::ResumeQueue)));
+        for (status, uncertain) in [(Status::Disconnected, false), (Status::Idle, true)] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.status = status;
+                        session.state.queue_uncertain = if uncertain { vec![1] } else { vec![] };
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            assert!(
+                !tab_reaches_resume(&view, cx),
+                "unavailable queue actions are outside Tab order"
+            );
+            if let Some(control) = cx.debug_bounds("codex-resume-queue") {
+                cx.simulate_click(control.center(), gpui::Modifiers::default());
+                draw(cx);
+            }
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::ResumeQueue)));
+        }
+    }
+
     #[gpui::test]
     fn queue_keyboard_traverses_waiting_rows_and_returns_to_input(cx: &mut gpui::TestAppContext) {
         let (view, cx, _, _) = fixture(cx);
@@ -11582,7 +12127,12 @@ mod tests {
         );
         let row = cx.debug_bounds("codex-task-row-1").unwrap();
         let jump = cx.debug_bounds("codex-task-jump-1").unwrap();
-        assert!((jump.right() - row.right()).abs() < gpui::px(1.0));
+        let title = cx.debug_bounds("codex-task-title-1").unwrap();
+        assert!(jump.right() <= row.right());
+        assert!(
+            title.right() <= jump.left(),
+            "revealed jump action cannot cover the task title"
+        );
         cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
         draw(cx);
         cx.simulate_click(row.center(), gpui::Modifiers::default());

@@ -449,7 +449,8 @@ impl SettingsPanel {
             .justify_between()
             .gap(rpx(SPACE_3XL))
             .py(rpx(SPACE_XL))
-            .border_t_1()
+            .px(rpx(SPACE_2XL))
+            .border_b_1()
             .border_color(c::BORDER_SOFT())
             .child(
                 div()
@@ -555,7 +556,7 @@ impl SettingsPanel {
                     false,
                     zoom > zoom::ZOOM_MIN,
                 )
-                .child("−")
+                .child(crate::icons::icon("minus", ICON_MD, c::FG()))
                 .when(zoom > zoom::ZOOM_MIN, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| this.set_zoom(-ZOOM_STEP, cx)))
                 }),
@@ -567,7 +568,7 @@ impl SettingsPanel {
             )
             .child(
                 self.choice("settings-zoom-in", "Zoom in", false, zoom < zoom::ZOOM_MAX)
-                    .child("+")
+                    .child(crate::icons::icon("plus", ICON_MD, c::FG()))
                     .when(zoom < zoom::ZOOM_MAX, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| this.set_zoom(ZOOM_STEP, cx)))
                     }),
@@ -579,7 +580,17 @@ impl SettingsPanel {
                 reduce_motion,
                 true,
             )
-            .child(if reduce_motion { "On" } else { "Off" })
+            .role(gpui::Role::Switch)
+            .aria_toggled(if reduce_motion {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
+            .h(rpx(SWITCH_H))
+            .border_0()
+            .px_0()
+            .bg(c::BG())
+            .child(super::components::switch_track(reduce_motion))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_reduce_motion(cx)));
         body = body.when(self.category == Category::General, |body| {
             body.child(
@@ -695,6 +706,7 @@ impl SettingsPanel {
                     false,
                     refresh_enabled,
                 )
+                .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
                 .child(refresh_label)
                 .when(refresh_enabled, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| {
@@ -778,7 +790,17 @@ impl SettingsPanel {
                 telemetry,
                 true,
             )
-            .child(if telemetry { "On" } else { "Off" })
+            .role(gpui::Role::Switch)
+            .aria_toggled(if telemetry {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
+            .h(rpx(SWITCH_H))
+            .border_0()
+            .px_0()
+            .bg(c::BG())
+            .child(super::components::switch_track(telemetry))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_telemetry(cx)));
         body = body.when(self.category == Category::Privacy, |body| body.child(
             div().flex().flex_col()
@@ -809,6 +831,7 @@ impl SettingsPanel {
         if can_restart {
             actions = actions.child(
                 self.button("settings-update-restart", "Restart app", false, true)
+                    .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
                     .child("Restart app")
                     .on_click(cx.listener(|this, _, _, cx| {
                         if restart_available(this.runtime.read(cx).upgrade.read(cx).state()) {
@@ -821,6 +844,7 @@ impl SettingsPanel {
         if has_update {
             actions = actions.child(
                 self.button("settings-update-now", "Update now", false, can_update)
+                    .child(crate::icons::icon("arrow-up", ICON_SM, c::FG_DIM()))
                     .child("Update now")
                     .when(can_update, |el| {
                         el.on_click(cx.listener(|this, _, _, cx| {
@@ -831,6 +855,7 @@ impl SettingsPanel {
             );
             actions = actions.child(
                 self.button("settings-update-skip", "Skip this version", false, true)
+                    .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
                     .child("Skip version")
                     .on_click(cx.listener(|this, _, _, cx| {
                         let upgrade = this.runtime.read(cx).upgrade.clone();
@@ -839,6 +864,7 @@ impl SettingsPanel {
             );
             actions = actions.child(
                 self.button("settings-update-copy-url", "Copy release URL", false, true)
+                    .child(crate::icons::icon("copy", ICON_SM, c::FG_DIM()))
                     .child("Copy URL")
                     .on_click(cx.listener(|this, _, _, cx| {
                         let upgrade = this.runtime.read(cx).upgrade.clone();
@@ -860,6 +886,7 @@ impl SettingsPanel {
                     false,
                     !checking && !can_restart,
                 )
+                .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
                 .child("Check now")
                 .when(!checking && !can_restart, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| {
@@ -870,6 +897,7 @@ impl SettingsPanel {
             )
             .child(
                 self.button("settings-changelog", "View changelog", false, true)
+                    .child(crate::icons::icon("list", ICON_SM, c::FG_DIM()))
                     .child("Changelog")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_nested(Page::Changelog, window, cx);
@@ -894,6 +922,7 @@ impl SettingsPanel {
                         "Shortcuts",
                         "Commands for the current view",
                         self.button("settings-shortcuts", "View shortcuts", false, true)
+                            .child(crate::icons::icon("command", ICON_SM, c::FG_DIM()))
                             .child("View shortcuts")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_nested(Page::Shortcuts, window, cx);
@@ -985,6 +1014,7 @@ impl SettingsPanel {
         if super::release_highlights::selected(false).is_some() {
             body = body.child(
                 self.button("settings-view-highlights", "View highlights", false, true)
+                    .child(crate::icons::icon("sparkle", ICON_SM, c::FG_DIM()))
                     .child("View highlights")
                     .on_click(cx.listener(|_, _, _, cx| {
                         cx.emit(SettingsPanelEvent::OpenHighlights { debug: false });
@@ -999,6 +1029,7 @@ impl SettingsPanel {
                     false,
                     true,
                 )
+                .child(crate::icons::icon("play", ICON_SM, c::FG_DIM()))
                 .child("Preview release highlights")
                 .on_click(cx.listener(|_, _, _, cx| {
                     cx.emit(SettingsPanelEvent::OpenHighlights { debug: true });
@@ -1107,6 +1138,11 @@ impl Render for SettingsPanel {
                                                 false,
                                                 true,
                                             )
+                                            .child(crate::icons::icon(
+                                                "arrow-left",
+                                                ICON_SM,
+                                                c::FG_DIM(),
+                                            ))
                                             .child("Back")
                                             .on_click(
                                                 cx.listener(|this, _, window, cx| {

@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::{
     input::{Input, InputEvent, InputState},
     text::TextView,
-    Disableable,
+    Disableable, Selectable,
 };
 use grove_core::codex::Action;
 use serde_json::{json, Value};
@@ -466,6 +466,11 @@ impl NativePlan {
             window,
             cx,
         )
+        .icon(
+            gpui_component::Icon::default()
+                .path("icons/external-link.svg")
+                .size(rpx(ICON_SM)),
+        )
         .disabled(source.is_none())
         .on_click(cx.listener(move |this, _, window, cx| {
             if let Some(source) = source.clone() {
@@ -513,6 +518,11 @@ impl NativePlan {
                         window,
                         cx,
                     )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/plus.svg")
+                            .size(rpx(ICON_SM)),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.comments_open.remove(&show_lines) {
                             this.comments_open.insert(show_lines.clone());
@@ -554,6 +564,7 @@ impl NativePlan {
                                         cx,
                                     )
                                     .icon_only()
+                                    .tooltip("Comment on line")
                                     .child(crate::icons::icon("plus", ICON_MD, c::FG_DIM()))
                                     .on_click(cx.listener(
                                         move |this, _, _, cx| {
@@ -583,6 +594,11 @@ impl NativePlan {
                                     window,
                                     cx,
                                 )
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path("icons/arrow-left.svg")
+                                        .size(rpx(ICON_SM)),
+                                )
                                 .disabled(page == 0)
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -600,6 +616,7 @@ impl NativePlan {
                                     window,
                                     cx,
                                 )
+                                .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
                                 .disabled((page + 1) * LINES_PER_PAGE >= lines.len())
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -624,6 +641,18 @@ impl NativePlan {
                     let toggle = id.clone();
                     body = body.child(
                         transcript_action(id.clone(), string(&row, "title"), false, window, cx)
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path(gpui::SharedString::from(format!(
+                                        "icons/{}.svg",
+                                        if self.open.contains(&id) {
+                                            "chev-down"
+                                        } else {
+                                            "chev-right"
+                                        }
+                                    )))
+                                    .size(rpx(ICON_SM)),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle, cx))),
                     );
                     if self.open.contains(&id) {
@@ -651,10 +680,11 @@ impl NativePlan {
                         transcript_action(
                             format!("state-{target}-{id}"),
                             string(state, "label"),
-                            id == selected,
+                            false,
                             window,
                             cx,
                         )
+                        .selected(id == selected)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.selected_states.insert(key.clone(), pick.clone());
                             cx.notify();
@@ -738,6 +768,11 @@ impl NativePlan {
                         false,
                         window,
                         cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/zen.svg")
+                            .size(rpx(ICON_SM)),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.fit_images.remove(&fit) {
@@ -863,6 +898,7 @@ impl NativePlan {
                         cx,
                     )
                     .icon_only()
+                    .tooltip("Comment on claim")
                     .child(crate::icons::icon("plus", ICON_MD, c::FG_DIM()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.comments_open.remove(&comment) {
@@ -888,6 +924,11 @@ impl NativePlan {
                         false,
                         window,
                         cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/plus.svg")
+                            .size(rpx(ICON_SM)),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.comments_open.remove(&toggle) {
@@ -923,14 +964,9 @@ impl NativePlan {
                     let value = option_id.clone();
                     let default = decision["default"].as_str() == Some(&option_id);
                     let label = format!(
-                        "{}{}{}",
+                        "{}{}",
                         string(&option, "label"),
-                        if default { " (recommended)" } else { "" },
-                        if answer.as_deref() == Some(&option_id) {
-                            " ✓"
-                        } else {
-                            ""
-                        }
+                        if default { " (recommended)" } else { "" }
                     );
                     let keyboard_key = key.clone();
                     let keyboard_value = value.clone();
@@ -1056,6 +1092,14 @@ impl Render for NativePlan {
                         window,
                         cx,
                     )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path(gpui::SharedString::from(format!(
+                                "icons/{}.svg",
+                                if expanded { "unified" } else { "zen" }
+                            )))
+                            .size(rpx(ICON_SM)),
+                    )
                     .debug_selector(|| "native-plan-expand".into())
                     .with_focus_handle(if expanded {
                         self.return_focus.clone()
@@ -1081,6 +1125,11 @@ impl Render for NativePlan {
         let toggle_why = why.clone();
         body = body.child(
             transcript_action(why.clone(), "Why · original requests", false, window, cx)
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/question.svg")
+                        .size(rpx(ICON_SM)),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle_why, cx))),
         );
         if self.open.contains(&why) {
@@ -1111,7 +1160,7 @@ impl Render for NativePlan {
         }
         if !self.review_open {
             if let Some(error) = &self.error {
-                body = body.child(div().text_color(c::RED()).child(error.clone()));
+                body = body.child(div().text_color(c::FORM_ERROR()).child(error.clone()));
             }
         }
         body = body.child(
@@ -1121,15 +1170,24 @@ impl Render for NativePlan {
                 .justify_end()
                 .gap(rpx(SPACE_LG))
                 .child(
-                    transcript_action("plan-comment", "Comment", false, window, cx).on_click(
-                        cx.listener(|this, _, _, cx| {
+                    transcript_action("plan-comment", "Comment", false, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/plus.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
                             this.comments_open.insert(target_key("plan", ""));
                             cx.notify();
-                        }),
-                    ),
+                        })),
                 )
                 .child(
                     transcript_action("plan-review", "Review response", true, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/check.svg")
+                                .size(rpx(ICON_SM)),
+                        )
                         .debug_selector(|| "native-plan-review".into())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.review_open = !this.review_open;
@@ -1173,12 +1231,16 @@ impl Render for NativePlan {
                     body.child(
                         div()
                             .debug_selector(|| "native-plan-send-error".into())
-                            .text_color(c::RED())
+                            .text_color(c::FORM_ERROR())
                             .child(error),
                     )
                 })
                 .when(status == "failed", |body| {
-                    body.child(div().text_color(c::RED()).child(string(delivery, "error")))
+                    body.child(
+                        div()
+                            .text_color(c::FORM_ERROR())
+                            .child(string(delivery, "error")),
+                    )
                 })
                 .child(self.text(
                     "plan-response-text".into(),
@@ -1199,6 +1261,11 @@ impl Render for NativePlan {
                                 window,
                                 cx,
                             )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/copy.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
                             .on_click(move |_, _, cx| {
                                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                                     response.clone(),
@@ -1212,6 +1279,11 @@ impl Render for NativePlan {
                                 true,
                                 window,
                                 cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/arrow-up.svg")
+                                    .size(rpx(ICON_SM)),
                             )
                             .debug_selector(|| "native-plan-send".into())
                             .disabled(locked)

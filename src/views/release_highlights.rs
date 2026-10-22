@@ -179,7 +179,16 @@ fn button(
     window: &Window,
     cx: &App,
 ) -> gpui_component::button::Button {
-    super::components::form_action(id, label, id == "highlights-next", window, cx)
+    let button = super::components::form_action(id, label, id == "highlights-next", window, cx);
+    if id == "highlights-next" {
+        button.child(crate::icons::icon("arrow-right", ICON_MD, c::BG()))
+    } else {
+        button.icon(gpui_component::Icon::default().path(match id {
+            "highlights-back" => "icons/arrow-left.svg",
+            "highlights-video" | "highlights-gif" => "icons/play.svg",
+            _ => "icons/close.svg",
+        }))
+    }
 }
 fn unavailable() -> gpui::AnyElement {
     div()
@@ -252,7 +261,7 @@ impl Render for ReleaseCarousel {
                             let source = retry_source.clone(); let key_source = retry_source.clone(); let key_carousel = carousel.clone(); let carousel = carousel.clone();
                             div().size_full().flex().flex_col().gap(rpx(SPACE_LG)).items_center().justify_center().text_color(c::FG_DIM())
                                 .child("Preview could not be decoded. The highlight is still available below.")
-                                .child(div().id("highlights-retry").tab_index(0).aria_label("Retry media preview").child("Retry")
+                                .child(div().id("highlights-retry").role(gpui::Role::Button).hover(|style| style.bg(c::BG_HOVER())).focus_visible(|style| style.bg(c::BG_HOVER())).tab_index(0).aria_label("Retry media preview").child(crate::icons::icon("reset", ICON_MD, c::FG_DIM())).child("Retry")
                                     .on_click(move |_, _, cx| { source.remove_asset(cx); let _ = carousel.update(cx, |_, cx| cx.notify()); })
                                     .on_key_down(move |event, window, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { key_source.remove_asset(cx); let _ = key_carousel.update(cx, |_, cx| cx.notify()); window.prevent_default(); cx.stop_propagation(); } }))
                                 .into_any_element()
@@ -329,10 +338,14 @@ impl Render for ReleaseCarousel {
             dots = dots.child(
                 div()
                     .id(format!("highlights-dot-{index}"))
+                    .role(gpui::Role::RadioButton)
+                    .aria_selected(index == self.index)
+                    .hover(|style| style.bg(c::BG_HOVER()))
+                    .focus_visible(|style| style.bg(c::BG_HOVER()))
                     .tab_index(0)
                     .aria_label(format!("Go to highlight {}", index + 1))
-                    .w(rpx(24.0))
-                    .h(rpx(24.0))
+                    .w(rpx(CONTROL_H))
+                    .h(rpx(CONTROL_H))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -349,7 +362,7 @@ impl Render for ReleaseCarousel {
                             }
                         },
                     ))
-                    .child(div().w(rpx(6.0)).h(rpx(6.0)).rounded_full().bg(
+                    .child(div().w(rpx(DOT_SM)).h(rpx(DOT_SM)).rounded_full().bg(
                         if index == self.index {
                             c::FG()
                         } else {

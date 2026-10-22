@@ -36,7 +36,7 @@ const EMPTY_CARD_PAD: f32 = 24.;
 const EMPTY_TITLE_SIZE: f32 = 18.;
 
 impl Sidebar {
-    fn render_worktree_removal(
+    pub(super) fn render_worktree_removal(
         &self,
         removal: &super::PendingWorktreeRemoval,
         cx: &mut Context<Self>,
@@ -94,6 +94,7 @@ impl Sidebar {
                         .px(rpx(SPACE_3XL))
                         .rounded(rpx(RADIUS_PANEL))
                         .bg(c::FIELD_FILL())
+                        .child(icon("close", ICON_SM, c::FG_DIM()))
                         .child("Cancel"),
                 )
                 .child(
@@ -112,6 +113,7 @@ impl Sidebar {
                     .rounded(rpx(RADIUS_PANEL))
                     .bg(c::RED())
                     .text_color(c::BG())
+                    .child(icon("trash", ICON_SM, c::FG_DIM()))
                     .child("Delete worktree"),
                 );
         } else if finished {
@@ -131,6 +133,11 @@ impl Sidebar {
                 .rounded(rpx(RADIUS_PANEL))
                 .bg(c::FG())
                 .text_color(c::BG())
+                .child(icon(
+                    if success { "check" } else { "close" },
+                    ICON_SM,
+                    c::BG(),
+                ))
                 .child(if success { "Done" } else { "Dismiss" }),
             );
         } else if stage == Some(WorktreeRemovalStage::RunningScript) {
@@ -149,6 +156,7 @@ impl Sidebar {
                 .px(rpx(SPACE_3XL))
                 .rounded(rpx(RADIUS_PANEL))
                 .bg(c::FIELD_FILL())
+                .child(icon("arrow-right", ICON_SM, c::FG_DIM()))
                 .child("Skip script"),
             );
         }
@@ -166,17 +174,15 @@ impl Sidebar {
         let panel = div()
             .id("worktree-removal-scroll")
             .debug_selector(|| "worktree-removal-scroll".into())
-            .size_full()
+            .w(rpx(MODAL_W_SM))
+            .max_w_full()
+            .max_h(rpx(MODAL_SCROLL_MAX_H))
             .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
             .child(
                 div()
-                    .min_h_full()
-                    .p(rpx(SPACE_3XL))
                     .flex()
-                    .items_center()
-                    .justify_center()
                     .child(
                         div()
                             .id("worktree-removal-decision")
@@ -231,8 +237,8 @@ impl Sidebar {
                                     div()
                                         .p(rpx(SPACE_2XL))
                                         .rounded(rpx(RADIUS_CONTROL))
-                                        .bg(c::RED_WASH())
-                                        .text_color(c::RED())
+                                        .bg(c::ERROR_WASH())
+                                        .text_color(c::FORM_ERROR())
                                         .child("This deletes the additional worktree folder. The main project folder is protected."),
                                 )
                             })
@@ -284,8 +290,8 @@ impl Sidebar {
                                         .role(gpui::Role::Alert)
                                         .p(rpx(SPACE_2XL))
                                         .rounded(rpx(RADIUS_CONTROL))
-                                        .bg(c::RED_WASH())
-                                        .text_color(c::RED())
+                                        .bg(c::ERROR_WASH())
+                                        .text_color(c::FORM_ERROR())
                                         .child(motion::fast(
                                             div().child(error.clone()),
                                             format!("worktree-removal-error-{error}"),
@@ -1050,6 +1056,7 @@ impl Sidebar {
                         )
                         .w_auto()
                         .px(rpx(SPACE_LG))
+                        .child(icon("reset", ICON_SM, c::FG_DIM()))
                         .child("Retry"),
                     );
                 }
@@ -1206,10 +1213,10 @@ impl Sidebar {
             .w_full()
             .min_w_0()
             .flex_shrink_0()
-            .mt(rpx(20.))
+            .mt(rpx(SPACE_20))
             .border_1()
             .border_color(c::BORDER_SOFT())
-            .rounded(rpx(12.))
+            .rounded(rpx(RADIUS_PANEL))
             .overflow_hidden()
             .bg(c::FIELD_FILL())
             .flex()
@@ -1237,7 +1244,7 @@ impl Sidebar {
                             .icon(
                                 gpui_component::Icon::default()
                                     .path(format!("icons/{}.svg", agent.icon_name()))
-                                    .size(rpx(16.)),
+                                    .size(rpx(SPACE_3XL)),
                             )
                             .debug_selector(move || id.into())
                             .custom(
@@ -1251,13 +1258,13 @@ impl Sidebar {
                             .rounded(gpui_component::button::ButtonRounded::None)
                             .w_full()
                             .min_w_0()
-                            .h(rpx(50.))
-                            .px(rpx(16.))
+                            .h(rpx(ROW_MIN_H))
+                            .px(rpx(SPACE_3XL))
                             .cursor_pointer()
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .child(div().min_w_0().flex_1().flex().justify_end().child(icon(
                                 "arrow-right",
-                                14.,
+                                ICON_MD,
                                 c::FG_DIM(),
                             )))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1282,7 +1289,7 @@ impl Sidebar {
             .id("project-start-card")
             .debug_selector(|| "project-start-card".into())
             .w_full()
-            .max_w(rpx(420.))
+            .max_w(rpx(MODAL_W_SM))
             .min_w_0()
             .flex_shrink_0()
             .flex()
@@ -1292,7 +1299,7 @@ impl Sidebar {
                 div()
                     .w_full()
                     .min_w_0()
-                    .mb(rpx(28.))
+                    .mb(rpx(CONTROL_H + SPACE_SM))
                     .child(
                         div()
                             .w_full()
@@ -1300,14 +1307,14 @@ impl Sidebar {
                             .flex()
                             .flex_wrap()
                             .items_center()
-                            .gap(rpx(12.))
-                            .mb(rpx(7.))
+                            .gap(rpx(SPACE_2XL))
+                            .mb(rpx(SPACE_LG))
                             .child(
                                 div()
                                     .min_w_0()
                                     .max_w(gpui::relative(1.))
                                     .truncate()
-                                    .text_size(rpx(16.))
+                                    .text_size(rpx(FORM_VALUE_SIZE))
                                     .font_weight(FontWeight::BOLD)
                                     .child(project_name.to_string()),
                             )
@@ -1318,15 +1325,15 @@ impl Sidebar {
                                         .max_w(gpui::relative(1.))
                                         .flex()
                                         .items_center()
-                                        .gap(rpx(5.))
-                                        .px(rpx(8.))
-                                        .py(rpx(3.))
+                                        .gap(rpx(SPACE_SM))
+                                        .px(rpx(SPACE_LG))
+                                        .py(rpx(SPACE_XS))
                                         .border_1()
                                         .border_color(c::BORDER_SOFT())
-                                        .rounded(rpx(7.))
-                                        .text_size(rpx(12.))
+                                        .rounded(rpx(RADIUS_GROUP))
+                                        .text_size(rpx(TEXT_SMALL))
                                         .text_color(c::FG_DIM())
-                                        .child(icon("git-branch", 12., c::FG_DIM()))
+                                        .child(icon("git-branch", ICON_SM, c::FG_DIM()))
                                         .child(
                                             div().min_w_0().truncate().child(branch.to_string()),
                                         ),
@@ -1339,7 +1346,7 @@ impl Sidebar {
                             .w_full()
                             .min_w_0()
                             .whitespace_normal()
-                            .text_size(rpx(12.))
+                            .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
                             .child(path.replace('/', "/\u{200b}")),
                     ),
@@ -1349,7 +1356,7 @@ impl Sidebar {
                     .w_full()
                     .min_w_0()
                     .whitespace_normal()
-                    .text_size(rpx(22.))
+                    .text_size(rpx(TEXT_DISPLAY))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(if main {
                         "Start in this checkout"
@@ -1362,8 +1369,8 @@ impl Sidebar {
                     .w_full()
                     .min_w_0()
                     .whitespace_normal()
-                    .mt(rpx(8.))
-                    .text_size(rpx(14.))
+                    .mt(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_TITLE))
                     .text_color(c::FG_DIM())
                     .child(if main {
                         "Work in the existing checkout."
@@ -1374,7 +1381,7 @@ impl Sidebar {
             .child(actions);
         if !missing.is_empty() {
             let noun = if missing.len() == 1 { "CLI" } else { "CLIs" };
-            card = card.child(div().w_full().min_w_0().whitespace_normal().mt(rpx(14.)).id("missing-agent-guidance").role(gpui::Role::Status).text_size(rpx(TEXT_SMALL))
+            card = card.child(div().w_full().min_w_0().whitespace_normal().mt(rpx(TEXT_TITLE)).id("missing-agent-guidance").role(gpui::Role::Status).text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG_DIM())
                 .child(format!("{} {noun} unavailable. Install the CLI, check your PATH, then restart Grove. Terminal is ready now.", missing.join(", "))));
         }
@@ -1383,23 +1390,23 @@ impl Sidebar {
                 div()
                     .w_full()
                     .min_w_0()
-                    .mt(rpx(24.))
+                    .mt(rpx(CONTROL_H))
                     .border_t_1()
                     .border_color(c::BORDER_SOFT())
-                    .pt(rpx(20.))
+                    .pt(rpx(SPACE_20))
                     .flex()
                     .flex_col()
                     .items_start()
-                    .child(div().w_full().min_w_0().whitespace_normal().text_size(rpx(15.)).font_weight(FontWeight::SEMIBOLD).child("Work in isolation"))
-                    .child(div().w_full().min_w_0().whitespace_normal().mt(rpx(6.)).text_size(rpx(13.)).text_color(c::FG_DIM()).child(guidance))
+                    .child(div().w_full().min_w_0().whitespace_normal().text_size(rpx(TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).child("Work in isolation"))
+                    .child(div().w_full().min_w_0().whitespace_normal().mt(rpx(SPACE_MD)).text_size(rpx(TEXT_BODY)).text_color(c::FG_DIM()).child(guidance))
                     .when(readiness == Some(WorktreeReadiness::Ready), |row| {
                         row.child(
                             form_action("project-new-worktree", "Create worktree…", false, window, cx)
                                 .debug_selector(|| "project-new-worktree".into())
                                 .icon(gpui_component::Icon::default().path("icons/plus.svg"))
-                                .mt(rpx(12.))
-                                .h(rpx(42.))
-                                .rounded(rpx(12.).to_pixels(window.rem_size()))
+                                .mt(rpx(SPACE_2XL))
+                                .h(rpx(FORM_ACTION_H))
+                                .rounded(rpx(RADIUS_PANEL).to_pixels(window.rem_size()))
                                 .bg(c::BG())
                                 .border_1()
                                 .border_color(c::BORDER_STRONG())
@@ -1507,9 +1514,6 @@ impl Sidebar {
                 "project-panel-enter",
                 cx,
             );
-        }
-        if let Some(removal) = &self.pending_worktree_removal {
-            return self.render_worktree_removal(removal, cx);
         }
         if self.pending_new_worktree.is_some() {
             let errors = validate_worktree_fields(

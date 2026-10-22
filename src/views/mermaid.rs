@@ -168,12 +168,16 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
     }
     match result {
         Rendered::Ready(image, ratio, width) => div()
+            .id(("mermaid-diagram", diagram.offset))
             .debug_selector(|| "transcript-mermaid-chart".to_owned())
             .w_full()
             .min_w_0()
             .p(rpx(SPACE_2XL))
             .bg(c::FIELD_FILL())
             .rounded(rpx(RADIUS_GROUP))
+            .role(gpui::Role::Image)
+            .aria_label("Mermaid diagram")
+            .aria_description(diagram.source.clone())
             .child(img(image).w_full().max_w(rpx(width)).aspect_ratio(ratio))
             .into_any_element(),
         Rendered::Pending | Rendered::Failed => source_view(diagram, window),
