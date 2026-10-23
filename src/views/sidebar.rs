@@ -342,6 +342,7 @@ enum Action {
     RefreshDiff,
     AddTerminal,
     OpenSettings,
+    UpdateApp,
     NewMultiProjectSession,
     ToggleSidebar,
     OpenWorkspaces,
@@ -541,12 +542,13 @@ impl Sidebar {
     }
     pub fn new(runtime: Entity<Runtime>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let rt = runtime.read(cx);
-        let (registry, activity, tree, projects, shell_environment) = (
+        let (registry, activity, tree, projects, shell_environment, upgrade) = (
             rt.registry.clone(),
             rt.activity.clone(),
             rt.tree.clone(),
             rt.projects.clone(),
             rt.shell_environment.clone(),
+            rt.upgrade.clone(),
         );
         let worktree_name = cx.new(|cx| InputState::new(window, cx).placeholder("billing-retry"));
         let worktree_branch =
@@ -556,6 +558,7 @@ impl Sidebar {
             cx.observe(&runtime, |_, _, cx| cx.notify()),
             cx.observe(&registry, |_, _, cx| cx.notify()),
             cx.observe(&activity, |_, _, cx| cx.notify()),
+            cx.observe(&upgrade, |_, _, cx| cx.notify()),
             cx.observe(&shell_environment, |this, _, cx| {
                 this.available = WORKTREE_LAUNCH_AGENTS.map(Agent::available);
                 cx.notify();
@@ -2699,6 +2702,17 @@ impl Sidebar {
             Action::NewMultiProjectSession => {
                 if self.navigation_available() {
                     cx.emit(SidebarEvent::NewMultiProjectSessionRequested);
+                }
+            }
+            Action::UpdateApp => {
+                if self.navigation_available() {
+                    let upgrade = self.runtime.read(cx).upgrade.clone();
+                    if upgrade.read(cx).can_update() {
+                        if let Some(settings) = &self.settings_panel {
+                            settings.update(cx, |settings, cx| settings.open_updates(window, cx));
+                        }
+                        upgrade.update(cx, crate::entities::upgrade::Upgrade::start_update);
+                    }
                 }
             }
             Action::OpenSettings => {
@@ -4903,6 +4917,20 @@ impl Render for Sidebar {
             self.tree(window, cx)
         };
         let settings_control = self.settings_control(cx);
+        let update_available = self.runtime.read(cx).upgrade.read(cx).can_update();
+        let update_control = update_available.then(|| {
+            super::components::transcript_action("sidebar-update", "Update", false, window, cx)
+                .debug_selector(|| "sidebar-update".into())
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/arrow-up.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .flex_shrink_0()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.act(Action::UpdateApp, window, cx);
+                }))
+        });
         let terminals = (!collapsed).then(|| self.terminals(window, cx));
         let empty = self.snapshot.projects.is_empty();
         let rail = div()
@@ -4948,6 +4976,7 @@ impl Render for Sidebar {
                                 self.workspace_selector.clone(),
                                 gpui::ParentElement::child,
                             ))
+                            .when_some(update_control, gpui::ParentElement::child)
                             .child(settings_control)
                     })
                     .child(self.collapse_control(cx))
@@ -7476,6 +7505,127 @@ mod tests {
                 assert_eq!(sidebar.selection, Some(Selection::Home(second)));
             });
         });
+    }
+
+    /// Real native text shaping and Metal rendering without opening or installing the app.
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn update_header_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        for rem in [16.0, 20.0] {
+            for (label, width, collapsed) in [
+                ("narrow", 220.0, false),
+                ("default", 260.0, false),
+                ("collapsed", 260.0, true),
+            ] {
+                cx.update(|cx| {
+                    gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                    let mut store = grove_core::storage::Store {
+                        sidebar_width: Some(width),
+                        sidebar_collapsed: collapsed,
+                        ..Default::default()
+                    };
+                    let active = store.workspaces.active;
+                    store
+                        .workspaces
+                        .rename(active, "A very long workspace name for the update action")
+                        .unwrap();
+                    cx.set_global(SettingsState::new(store));
+                });
+                let window = cx.open_window(gpui::size(gpui::px(900.0), gpui::px(480.0)), |window, cx| {
+                    let runtime = cx.new(Runtime::new);
+                    runtime.read(cx).upgrade.clone().update(cx, |upgrade, cx| {
+                        upgrade.offer_for_test(grove_core::upgrade::InstallMethod::Dmg, grove_core::upgrade::Release {
+                            version: semver::Version::new(99, 0, 0), tag: "v99.0.0".into(),
+                            html_url: "https://github.com/gitfudge0/grove/releases/tag/v99.0.0".into(), body: String::new(),
+                            dmg_url: Some("https://github.com/gitfudge0/grove/releases/download/v99.0.0/Grove.dmg".into()),
+                            dmg_sha256_url: None, target_commitish: "main".into(),
+                        }, cx);
+                    });
+                    let picker = cx.new(|cx| super::super::workspace_manager::WorkspaceManager::new(window, cx));
+                    let sidebar = cx.new(|cx| {
+                        let mut sidebar = Sidebar::new(runtime, window, cx);
+                        sidebar.set_workspace_selector(picker);
+                        sidebar
+                    });
+                    cx.new(|cx| gpui_component::Root::new(sidebar, window, cx).bordered(false).bg(c::BG()))
+                }).unwrap();
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                    assert_eq!(window.rem_size(), gpui::px(rem));
+                })
+                .unwrap();
+                let path = format!("/tmp/grove-update-header-{label}-rem{rem:.0}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Update header native fixture: {path}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn update_header_requires_installable_release_and_preserves_collapsed_header(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-update").is_none());
+        let mut release = grove_core::upgrade::Release {
+            version: semver::Version::new(99, 0, 0),
+            tag: "v99.0.0".into(),
+            html_url: "https://github.com/gitfudge0/grove/releases/tag/v99.0.0".into(),
+            body: String::new(),
+            dmg_url: None,
+            dmg_sha256_url: None,
+            target_commitish: "main".into(),
+        };
+        let upgrade = sidebar.read_with(cx, |sidebar, cx| sidebar.runtime.read(cx).upgrade.clone());
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.offer_for_test(grove_core::upgrade::InstallMethod::Dmg, release.clone(), cx);
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-update").is_none());
+        release.dmg_url =
+            Some("https://github.com/gitfudge0/grove/releases/download/v99.0.0/Grove.dmg".into());
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.offer_for_test(grove_core::upgrade::InstallMethod::Dmg, release, cx);
+        });
+        draw(cx);
+        let update = cx.debug_bounds("sidebar-update").unwrap();
+        let settings = cx.debug_bounds("sidebar-settings").unwrap();
+        let collapse = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
+        assert!(update.right() <= settings.left());
+        assert!(settings.right() <= collapse.left());
+        cx.update(|_, cx| SettingsState::update(cx, |store| store.sidebar_collapsed = true));
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-update").is_none());
+        assert!(cx.debug_bounds("sidebar-collapse-toggle").is_some());
     }
 
     #[gpui::test]

@@ -36,6 +36,28 @@ use std::{
     sync::Arc,
 };
 
+/// Describe the session's actual bypass policy, not a preference for future sessions.
+fn session_has_yolo_access(state: &codex::Snapshot) -> bool {
+    let access = state.access.as_deref().or(state.resolved_access.as_deref());
+    match state.saved.provider {
+        codex::Provider::Claude => access == Some("bypassPermissions"),
+        codex::Provider::Codex => {
+            state.access.as_deref() == Some("full-access")
+                || (state.access.is_none()
+                    && state
+                        .sandbox
+                        .as_ref()
+                        .and_then(|value| value["type"].as_str())
+                        == Some("dangerFullAccess")
+                    && state
+                        .approval_policy
+                        .as_ref()
+                        .and_then(serde_json::Value::as_str)
+                        == Some("never"))
+        }
+    }
+}
+
 /// Fixed-size content comparison without serializing or retaining the transcript.
 /// Hash full values, including equal-length streaming edits and optimistic items.
 fn transcript_content_signature(items: &[serde_json::Value], thread: Option<&str>) -> [u64; 2] {
@@ -5546,6 +5568,10 @@ impl CodexView {
     }
     fn open_menu(&mut self, menu: ComposerMenu, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.session.read(cx).state.clone();
+        if menu == ComposerMenu::Access && session_has_yolo_access(&state) {
+            self.close_menu(cx);
+            return;
+        }
         self.composer_menu_scope = Some(composer_scope(&state));
         self.effort_drag = None;
         self.effort_visual = None;
@@ -6205,6 +6231,25 @@ impl CodexView {
                         .into_any_element(),
                 );
             }
+            if menu == ComposerMenu::Access && session_has_yolo_access(state) {
+                controls.push(
+                    div()
+                        .id("codex-yolo-access")
+                        .debug_selector(|| "codex-yolo-access".into())
+                        .flex()
+                        .items_center()
+                        .flex_shrink_0()
+                        .min_h(rpx(CHROME_CONTROL_H))
+                        .px(rpx(SPACE_SM))
+                        .gap(rpx(SPACE_SM))
+                        .text_color(c::FG_DIM())
+                        .text_size(rpx(TEXT_SMALL))
+                        .child(crate::icons::icon("lock-open", ICON_SM, c::FG_DIM()))
+                        .child("Yolo mode · change in Settings")
+                        .into_any_element(),
+                );
+                continue;
+            }
             let bounds = self.option_bounds[index].clone();
             let summary_id = if menu == ComposerMenu::Settings {
                 "codex-model-effort-summary"
@@ -6220,8 +6265,7 @@ impl CodexView {
                 rpx(TEXT_SMALL).to_pixels(window.rem_size()),
                 &label_run,
                 window.text_system(),
-            )
-            .min(rpx(MODEL_EFFORT_CARD_W).to_pixels(window.rem_size()));
+            );
             let detail = if menu == ComposerMenu::Access
                 && state.saved.provider == codex::Provider::Codex
                 && state.access.is_none()
@@ -6267,9 +6311,17 @@ impl CodexView {
                         |button| button.bg(c::BG_HOVER()),
                     )
                     .focus_visible(|style| style.bg(c::BG_HOVER()))
-                    .child(crate::icons::icon(icon, ICON_SM, c::FG_DIM()))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .size(rpx(ICON_SM))
+                            .child(crate::icons::icon(icon, ICON_SM, c::FG_DIM())),
+                    )
                     .when(menu == ComposerMenu::Settings, |button| {
                         button.max_w_full().min_h(rpx(CHROME_CONTROL_H))
+                    })
+                    .when(menu == ComposerMenu::Access, |button| {
+                        button.max_w_full().h_auto().min_h(rpx(CHROME_CONTROL_H))
                     })
                     .child(
                         div()
@@ -6277,17 +6329,35 @@ impl CodexView {
                             .debug_selector(move || summary_id.into())
                             .when(menu == ComposerMenu::Settings, |label| {
                                 label
-                                    .w(label_width)
+                                    .w(label_width
+                                        .min(rpx(MODEL_EFFORT_CARD_W).to_pixels(window.rem_size())))
                                     .max_w(rpx(MODEL_EFFORT_CARD_W))
                                     .flex_shrink_0()
                                     .truncate()
                             })
                             .when(menu != ComposerMenu::Settings, |label| {
-                                label.max_w(rpx(FIELD_LABEL_COL_W)).truncate()
+                                label
+                                    .w(label_width)
+                                    .min_w_0()
+                                    .flex_shrink_1()
+                                    .whitespace_normal()
                             })
                             .child(label),
                     )
-                    .child(crate::icons::icon("chev-down", ICON_SM, c::FG_DIM()))
+                    .child(
+                        div()
+                            .id(if menu == ComposerMenu::Access {
+                                "codex-access-indicator"
+                            } else {
+                                "codex-model-indicator"
+                            })
+                            .flex_shrink_0()
+                            .size(rpx(ICON_SM))
+                            .when(menu == ComposerMenu::Access, |indicator| {
+                                indicator.debug_selector(|| "codex-access-indicator".into())
+                            })
+                            .child(crate::icons::icon("chev-down", ICON_SM, c::FG_DIM())),
+                    )
                     .on_key_down(cx.listener(
                         move |this, event: &gpui::KeyDownEvent, window, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down")
@@ -10758,6 +10828,94 @@ mod tests {
             .iter()
             .any(|(value, label)| value == "workspace-write" || label.contains("sandbox")));
     }
+    #[test]
+    fn yolo_access_requires_actual_provider_bypass_policy() {
+        let mut state = snapshot();
+        state.resolved_access = Some("full-access".into());
+        state.sandbox = Some(json!({"type":"dangerFullAccess"}));
+        state.approval_policy = Some(json!("on-request"));
+        assert!(!session_has_yolo_access(&state));
+        state.approval_policy = Some(json!("never"));
+        assert!(session_has_yolo_access(&state));
+        state.access = Some("read-only".into());
+        assert!(!session_has_yolo_access(&state));
+        state.access = Some("full-access".into());
+        assert!(session_has_yolo_access(&state));
+        state.saved.provider = codex::Provider::Claude;
+        assert!(!session_has_yolo_access(&state));
+        state.access = Some("bypassPermissions".into());
+        assert!(session_has_yolo_access(&state));
+        state.access = None;
+        state.resolved_access = Some("default".into());
+        assert!(!session_has_yolo_access(&state));
+        state.resolved_access = Some("bypassPermissions".into());
+        assert!(session_has_yolo_access(&state));
+    }
+
+    #[gpui::test]
+    fn access_control_wraps_with_its_chevron_inside_composer(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        for (width, rem) in [(600.0, 16.0), (400.0, 16.0), (400.0, 20.0)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
+            cx.update(|_, cx| {
+                gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.sandbox = Some(json!({"type":"dangerFullAccess"}));
+                        session.state.approval_policy = Some(json!("untrusted"));
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            let composer = cx.debug_bounds("codex-composer").unwrap();
+            let label = cx.debug_bounds("codex-access-summary").unwrap();
+            let indicator = cx.debug_bounds("codex-access-indicator").unwrap();
+            let control = view.read_with(cx, |view, _| view.option_bounds[2].get());
+            let inset =
+                cx.update(|window, _| rpx(SPACE_2XL).to_pixels(window.rem_size()) + gpui::px(1.));
+            assert!(
+                control.left() >= composer.left() + inset
+                    && control.right() <= composer.right() - inset
+            );
+            assert!(label.right() <= indicator.left());
+            assert!(indicator.right() <= control.right());
+            assert!(indicator.top() >= control.top() && indicator.bottom() <= control.bottom());
+        }
+    }
+
+    #[gpui::test]
+    fn yolo_access_is_readonly_and_cannot_open_access_menu(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.access = Some(
+                            if provider == codex::Provider::Codex {
+                                "full-access"
+                            } else {
+                                "bypassPermissions"
+                            }
+                            .into(),
+                        );
+                        cx.notify();
+                    });
+                    view.open_menu(ComposerMenu::Access, window, cx);
+                    assert!(view.popup.is_none());
+                    assert!(view.menu.is_none());
+                });
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("codex-yolo-access").is_some());
+            assert!(cx.debug_bounds("codex-access-summary").is_none());
+        }
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Configure { .. })));
+    }
+
     fn test_image(format: image::ImageFormat) -> Vec<u8> {
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(2, 2)
@@ -10844,6 +11002,123 @@ mod tests {
         });
         (view.unwrap(), cx, actions, updates)
     }
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn composer_access_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            c::sync_component_theme(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        let mut baseline_heights = HashMap::new();
+        for (width, rem) in [
+            (1024.0, 16.0),
+            (600.0, 16.0),
+            (600.0, 20.0),
+            (400.0, 16.0),
+            (400.0, 20.0),
+        ] {
+            // Root reapplies the component theme's font size on every render.
+            // Set its source of truth rather than a rem value Root will overwrite.
+            cx.update(|cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
+            for kind in ["configured", "codex-yolo", "claude-yolo"] {
+                let mut state = snapshot();
+                state.sandbox = Some(json!({"type":"dangerFullAccess"}));
+                state.approval_policy = Some(json!("untrusted"));
+                if kind == "codex-yolo" {
+                    state.access = Some("full-access".into());
+                } else if kind == "claude-yolo" {
+                    state.saved.provider = codex::Provider::Claude;
+                    state.access = Some("bypassPermissions".into());
+                }
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let connection = Connection {
+                    handle,
+                    updates: receive.into(),
+                };
+                let mut retained = None;
+                let window = cx
+                    .open_window(
+                        gpui::size(gpui::px(width), gpui::px(800.0)),
+                        |window, cx| {
+                            let session =
+                                cx.new(|cx| CodexSession::from_connection(state, connection, cx));
+                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                            retained = Some(chat.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(chat, window, cx)
+                                    .bordered(false)
+                                    .bg(c::BG())
+                            })
+                        },
+                    )
+                    .unwrap();
+                for _ in 0..12 {
+                    cx.advance_clock(std::time::Duration::from_millis(16));
+                    cx.run_until_parked();
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.simulate_next_frame(cx);
+                        let _ = window.draw(cx);
+                    })
+                    .unwrap();
+                }
+                cx.update_window(window.into(), |_, window, cx| {
+                    assert_eq!(
+                        window.rem_size(),
+                        gpui::px(rem),
+                        "Root must retain requested zoom"
+                    );
+                    let view = retained.as_ref().unwrap().read(cx);
+                    let model = view.option_bounds[0].get();
+                    assert!(model.left() >= gpui::px(0.) && model.right() <= gpui::px(width));
+                    if rem == 16.0 {
+                        baseline_heights.insert((kind, width as u32), model.size.height);
+                    } else {
+                        let baseline = baseline_heights[&(kind, width as u32)];
+                        assert!(
+                            model.size.height > baseline,
+                            "zoom must change actual control geometry: {model:?} vs {baseline:?}"
+                        );
+                    }
+                    if kind == "configured" {
+                        let access = view.option_bounds[2].get();
+                        assert!(
+                            access.left() >= rpx(SPACE_20 + SPACE_2XL).to_pixels(window.rem_size()) + gpui::px(1.)
+                                && access.right() <= gpui::px(width) - rpx(SPACE_20 + SPACE_2XL).to_pixels(window.rem_size()) - gpui::px(1.),
+                            "entire access button, including its reserved chevron, must fit composer content: {access:?}"
+                        );
+                        assert!(
+                            access.left() >= model.right() || access.top() >= model.bottom(),
+                            "wrapping controls must not overlap: {model:?}, {access:?}"
+                        );
+                    }
+                    eprintln!(
+                        "Native composer geometry {kind}/{width}/{rem}: model={model:?}, rem={:?}",
+                        window.rem_size()
+                    );
+                })
+                .unwrap();
+                let path = format!("/tmp/grove-composer-access-{kind}-{width:.0}-{rem:.0}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Native composer access fixture: {path}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+
     /// Opt-in real text shaping / Metal snapshots, independent of installed Grove.
     #[test]
     #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
@@ -15483,8 +15758,8 @@ mod tests {
                     session.state.status = Status::Waiting;
                     session.state.approvals = vec![approval.clone()];
                     cx.notify();
-                })
-            })
+                });
+            });
         });
         draw(cx);
         assert!(cx.debug_bounds("approval-0-2").is_none());

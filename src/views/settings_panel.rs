@@ -19,7 +19,6 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use grove_core::{
     agent::Agent,
     storage::{SidebarAppearance, Store},
-    upgrade::InstallMethod,
 };
 use grove_core::{app_theme, theme::ThemeKind};
 use std::collections::HashSet;
@@ -189,6 +188,11 @@ impl SettingsPanel {
         self.scroll.set_offset(gpui::Point::default());
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    pub(crate) fn open_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open(window, cx);
+        self.select_category(Category::About, cx);
     }
 
     pub fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1019,11 +1023,7 @@ impl SettingsPanel {
                 .child(Self::section("New sessions"))
                 .child(Self::setting_row("Default agent", "Start new sessions with this agent.", agents))
                 .child(Self::setting_row("Run agents in terminal", "Use the Codex and Claude Code command-line interfaces instead of Grove’s conversation view. Applies to new sessions.", terminal_agents_control))
-                .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(if cfg!(windows) {
-                    "Windows supports terminal agents only."
-                } else {
-                    "Conversation view is experimental. OpenCode always uses a terminal. Open and saved conversations are preserved."
-                }))
+                .when(cfg!(windows), |body| body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Windows supports terminal agents only.")))
                 .child(Self::section("Agent access"))
                 .child(Self::setting_row("Yolo mode", "Launch new CLI and native sessions with bypass permissions. When off, agents use their defaults. OpenCode uses its own permissions.", permissions))
                 .child(Self::section("Browser access"))
@@ -1073,8 +1073,7 @@ impl SettingsPanel {
             UpgradeState::Updated => ("Update installed".to_string(), false),
             UpgradeState::UpdateFailed(error) => (format!("Update failed: {error}"), false),
         };
-        let can_update =
-            upgrade.available().is_some() && upgrade.method() != InstallMethod::Unknown;
+        let can_update = upgrade.can_update();
         let has_update = upgrade.available().is_some();
         let can_restart = restart_available(upgrade.state());
         let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_SM));

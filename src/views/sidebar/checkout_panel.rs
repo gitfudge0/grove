@@ -23,7 +23,6 @@ const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const STAT_COL_W: f32 = 48.;
 const AGENT_STATUS_W: f32 = 64.;
 const AGENT_LINE_H: f32 = 18.;
-const AGENT_TASK_LINES: usize = 2;
 
 /// Reuse compact shared actions on the card's neutral field surface.
 fn checkout_action(
@@ -1809,7 +1808,6 @@ fn checkout_divider(id: &'static str) -> gpui::Stateful<gpui::Div> {
 /// Presentation uses only observed provider text; terminal activity is not an outcome.
 #[derive(Debug, PartialEq, Eq)]
 struct AgentPresentation {
-    heading: String,
     name: String,
     activity: Option<String>,
     status: &'static str,
@@ -1845,11 +1843,7 @@ fn checkout_agent_presentation(agent: &grove_core::codex::Subagent) -> AgentPres
         .map(normalized_agent_text)
         .filter(|s| !s.is_empty());
     let observed = informative_agent_activity(&agent.activity);
-    let heading = task
-        .clone()
-        .or_else(|| observed.clone())
-        .unwrap_or_else(|| name.clone());
-    let activity = observed.filter(|text| !text.eq_ignore_ascii_case(&heading));
+    let activity = observed.or_else(|| task.clone());
     let mut detail = format!("{name} · {status}");
     if let Some(task) = task {
         detail.push_str(" · Task: ");
@@ -1860,7 +1854,6 @@ fn checkout_agent_presentation(agent: &grove_core::codex::Subagent) -> AgentPres
         detail.push_str(&observed);
     }
     AgentPresentation {
-        heading,
         name,
         activity,
         status,
@@ -1875,7 +1868,6 @@ fn checkout_agent_row(
     use grove_core::codex::SubagentStatus;
     let presentation = checkout_agent_presentation(agent);
     let name_id = agent.id.clone();
-    let task_id = agent.id.clone();
     let activity_id = agent.id.clone();
     let status_id = agent.id.clone();
     let provider_label = if provider == Agent::Claude.icon_name() {
@@ -1892,26 +1884,24 @@ fn checkout_agent_row(
         .aria_label(detail.clone())
         .tooltip(move |window, cx| tooltip(detail.clone(), window).build(window, cx))
         .px(rpx(SPACE_2XL))
-        .py(rpx(SPACE_MD))
+        .py(rpx(SPACE_SM))
         .flex()
         .flex_col()
         .min_w_0()
-        .text_size(rpx(TEXT_SMALL))
+        .text_size(rpx(TEXT_BODY))
         .font_weight(gpui::FontWeight::NORMAL)
-        .text_color(c::FG_DIM())
+        .text_color(c::FG())
         .line_height(rpx(AGENT_LINE_H))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap(rpx(SPACE_SM))
-                .mb(rpx(SPACE_SM))
                 .min_w_0()
-                .line_height(rpx(SPACE_3XL))
                 .child(
                     div()
                         .flex_shrink_0()
-                        .child(icon(provider, ICON_SM, c::FG_DIM())),
+                        .child(icon(provider, ICON_SM, c::FG())),
                 )
                 .child(
                     div()
@@ -1919,27 +1909,7 @@ fn checkout_agent_row(
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(rpx(TEXT_MICRO))
                         .child(presentation.name),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .gap(rpx(SPACE_LG))
-                .min_w_0()
-                .text_size(rpx(TEXT_BODY))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(
-                    div()
-                        .debug_selector(move || format!("checkout-agent-task-{task_id}"))
-                        .flex_1()
-                        .min_w_0()
-                        .whitespace_normal()
-                        .line_clamp(AGENT_TASK_LINES)
-                        .text_color(c::FG())
-                        .child(presentation.heading),
                 )
                 .child(
                     div()
@@ -1956,16 +1926,16 @@ fn checkout_agent_row(
                         .child(presentation.status),
                 ),
         )
-        // Reserve one supporting line so activity updates do not move following rows.
+        // Reserve one compact supporting line so activity updates keep rows stable.
         .child(
             div()
                 .debug_selector(move || format!("checkout-agent-activity-{activity_id}"))
-                .mt(rpx(SPACE_XS))
                 .h(rpx(AGENT_LINE_H))
                 .w_full()
                 .min_w_0()
                 .truncate()
                 .text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG_DIM())
                 .child(presentation.activity.unwrap_or_default()),
         )
 }
@@ -2557,7 +2527,7 @@ mod tests {
                     for label in ["Working", "Done", "Failed", "Unknown"] {
                         let mut run = window.text_style().to_run(label.len());
                         run.font.family = crate::fonts::UI_FAMILY.into();
-                        run.font.weight = gpui::FontWeight::SEMIBOLD;
+                        run.font.weight = gpui::FontWeight::NORMAL;
                         let width = window
                             .text_system()
                             .shape_line(
@@ -2580,26 +2550,25 @@ mod tests {
                     .debug_bounds("checkout-agent-status-old-running")
                     .unwrap();
                 assert!(status.right() < card.right());
-                let task = cx.debug_bounds("checkout-agent-task-old-running").unwrap();
                 let activity = cx
                     .debug_bounds("checkout-agent-activity-old-running")
                     .unwrap();
-                // Native layout rounds fractional zoom dimensions to device pixels.
-                assert!(
-                    task.size.height
-                        <= gpui::px((AGENT_LINE_H * AGENT_TASK_LINES as f32 * scale).ceil())
-                );
-                assert!(name.bottom() < task.top());
-                assert!(task.right() <= status.left());
-                assert_eq!(task.top(), status.top());
-                assert!(
-                    (activity.top() - task.bottom() - gpui::px(SPACE_XS * scale)).abs()
-                        < gpui::px(0.5)
-                );
+                assert_eq!(name.top(), status.top());
+                assert!(name.right() <= status.left());
+                // One foreground identity/status line, then one smaller activity line.
+                assert!((activity.top() - name.bottom()).abs() < gpui::px(0.5));
                 assert!(
                     (activity.size.height - gpui::px(AGENT_LINE_H * scale)).abs() < gpui::px(0.5)
                 );
-                assert!(task.left() >= card.left() && task.right() < card.right());
+                let next_name = cx.debug_bounds("checkout-agent-name-updated").unwrap();
+                assert!(
+                    (next_name.top()
+                        - name.top()
+                        - gpui::px((AGENT_LINE_H * 2. + SPACE_SM * 2.) * scale))
+                    .abs()
+                        < gpui::px(1.)
+                );
+                assert!(activity.left() >= card.left());
                 assert!(activity.right() < card.right());
             }
             cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
@@ -2711,7 +2680,7 @@ mod tests {
             status: SubagentStatus::Working,
         };
         let working = checkout_agent_presentation(&agent);
-        assert_eq!(working.heading, "Fix retries");
+        assert_eq!(working.name, "Agent 1");
         assert_eq!(working.activity.as_deref(), Some("Inspecting tests"));
         assert!(working.detail.contains("Task: Fix retries"));
         for (status, label) in [
@@ -2725,23 +2694,31 @@ mod tests {
             assert_eq!(row.activity.as_deref(), Some("Inspecting tests"));
         }
         agent.activity = "fix RETRIES".into();
-        assert_eq!(checkout_agent_presentation(&agent).activity, None);
+        assert_eq!(
+            checkout_agent_presentation(&agent).activity.as_deref(),
+            Some("fix RETRIES")
+        );
+        agent.activity = "Activity unavailable".into();
+        assert_eq!(
+            checkout_agent_presentation(&agent).activity.as_deref(),
+            Some("Fix retries")
+        );
+        agent.activity = "fix RETRIES".into();
         agent.task = Some(" \n ".into());
         let fallback = checkout_agent_presentation(&agent);
-        assert_eq!(fallback.heading, "fix RETRIES");
-        assert_eq!(fallback.activity, None);
+        assert_eq!(fallback.activity.as_deref(), Some("fix RETRIES"));
         for placeholder in ["", " \n ", " Activity unavailable ", "ACTIVITY UNAVAILABLE"] {
             agent.activity = placeholder.into();
-            assert_eq!(checkout_agent_presentation(&agent).heading, "Agent 1");
+            assert_eq!(checkout_agent_presentation(&agent).name, "Agent 1");
             assert_eq!(checkout_agent_presentation(&agent).activity, None);
         }
         agent.name.clear();
-        assert_eq!(checkout_agent_presentation(&agent).heading, "Agent");
+        assert_eq!(checkout_agent_presentation(&agent).name, "Agent");
         agent.task = Some("Long task ".repeat(100));
         agent.activity = "Long observation ".repeat(100);
         let long = checkout_agent_presentation(&agent);
-        assert!(long.heading.len() > 900);
-        assert!(long.detail.contains(long.heading.as_str()));
+        assert!(long.activity.as_ref().unwrap().len() > 900);
+        assert!(long.detail.contains(agent.task.as_deref().unwrap().trim()));
         assert!(long.detail.contains(agent.activity.trim()));
     }
 

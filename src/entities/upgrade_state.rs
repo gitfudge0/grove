@@ -35,7 +35,7 @@ pub fn check_due(last_update_check: Option<i64>, now: i64, state: &UpgradeState)
         Some(ts) => now.saturating_sub(ts) >= CHECK_INTERVAL_SECS,
         None => false,
     };
-    due && matches!(state, UpgradeState::Idle | UpgradeState::UpToDate)
+    due && begin_check(state)
 }
 
 /// Checks must not interrupt an install or clear its pending restart.
@@ -149,12 +149,22 @@ mod tests {
     }
 
     #[test]
-    fn due_after_24h_only_when_idle_or_up_to_date() {
+    fn due_after_24h_in_all_nonbusy_states() {
         assert!(check_due(Some(0), DAY, &UpgradeState::Idle));
         assert!(check_due(Some(0), DAY, &UpgradeState::UpToDate));
         assert!(!check_due(Some(0), DAY - 1, &UpgradeState::Idle));
         assert!(!check_due(Some(0), DAY, &UpgradeState::Checking));
-        assert!(!check_due(
+        assert!(check_due(
+            Some(0),
+            DAY,
+            &UpgradeState::Error("offline".into())
+        ));
+        assert!(check_due(
+            Some(0),
+            DAY,
+            &UpgradeState::UpdateFailed("failed".into())
+        ));
+        assert!(check_due(
             Some(0),
             DAY,
             &UpgradeState::Available(release("v9.9.9"))

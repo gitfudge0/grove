@@ -1717,8 +1717,8 @@ mod tests {
                         let baseline =
                             format!("/tmp/grove-native-plan-{appearance}-{mode}-{width:.0}.png");
                         assert_ne!(
-                            std::fs::read(&path).unwrap(),
-                            std::fs::read(&baseline).unwrap(),
+                            fs_err::read(&path).unwrap(),
+                            fs_err::read(&baseline).unwrap(),
                             "zoom capture must visibly differ from its baseline"
                         );
                     }

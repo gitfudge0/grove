@@ -55,6 +55,18 @@ impl Upgrade {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn offer_for_test(
+        &mut self,
+        method: InstallMethod,
+        release: Release,
+        cx: &mut Context<Self>,
+    ) {
+        self.method = method;
+        self.state = UpgradeState::Available(release);
+        cx.notify();
+    }
+
     pub fn state(&self) -> &UpgradeState {
         &self.state
     }
@@ -125,6 +137,11 @@ impl Upgrade {
         }
     }
 
+    pub fn can_update(&self) -> bool {
+        self.available()
+            .is_some_and(|release| upgrade::release_installable(self.method, release))
+    }
+
     pub fn skip(&mut self, cx: &mut Context<Self>) {
         let (tag, next) = skip_version(&self.state);
         if let Some(tag) = tag {
@@ -151,7 +168,7 @@ impl Upgrade {
         install: impl FnOnce(&mut Self, Release, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) {
-        if self.available().is_none() {
+        if !self.can_update() {
             return;
         }
         self.state = UpgradeState::Checking;
@@ -163,7 +180,12 @@ impl Upgrade {
                 SettingsState::update(cx, |store| store.last_update_check = Some(now_unix()));
                 this.state = apply_check_result(result, true, env!("CARGO_PKG_VERSION"), None);
                 if let Some(release) = this.available().cloned() {
-                    install(this, release, cx);
+                    if upgrade::release_installable(this.method, &release) {
+                        install(this, release, cx);
+                    } else {
+                        this.state = UpgradeState::Error("The release is missing a compatible installation file. Check again after the release files finish uploading.".into());
+                        cx.notify();
+                    }
                 } else {
                     cx.notify();
                 }
@@ -241,12 +263,32 @@ mod tests {
         cx.new(|_| Upgrade {
             state: UpgradeState::Available(release("v98.0.0")),
             changelog: ChangelogState::Idle,
-            method: InstallMethod::Unknown,
+            method: InstallMethod::Source,
             _timers: vec![],
             check_task: None,
             changelog_task: None,
             apply_task: None,
         })
+    }
+
+    #[gpui::test]
+    fn fresh_release_missing_package_cannot_start_install(cx: &mut gpui::TestAppContext) {
+        let upgrade = offered_upgrade(cx);
+        upgrade.update(cx, |upgrade, cx| {
+            upgrade.method = InstallMethod::Dmg;
+            let mut offered = release("v98.0.0");
+            offered.dmg_url = Some("https://github.com/x/Grove.dmg".into());
+            upgrade.state = UpgradeState::Available(offered);
+            upgrade.start_update_with(
+                async { Ok(release("v99.0.0")) },
+                |_, _, _| panic!("an incomplete refreshed release must not install"),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        upgrade.read_with(cx, |upgrade, _| {
+            assert!(matches!(upgrade.state(), UpgradeState::Error(_)));
+        });
     }
 
     #[gpui::test]

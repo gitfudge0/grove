@@ -149,6 +149,10 @@ pub fn detect() -> InstallMethod {
 }
 
 fn parse_release(json: &str) -> Result<Release> {
+    parse_release_for_arch(json, std::env::consts::ARCH)
+}
+
+fn parse_release_for_arch(json: &str, arch: &str) -> Result<Release> {
     let v: serde_json::Value =
         serde_json::from_str(json).map_err(UpgradeError::ParseReleaseJson)?;
     let tag = v
@@ -188,10 +192,23 @@ fn parse_release(json: &str) -> Result<Release> {
                 .map(String::from)
         })
     };
-    let dmg_name = assets.iter().find_map(|asset| {
-        let name = asset.get("name").and_then(|n| n.as_str())?;
-        name.ends_with(".dmg").then(|| name.to_string())
-    });
+    // Prefer the current CPU's package; never offer the other architecture's DMG.
+    let arch_suffix = match arch {
+        "aarch64" => "-macos-arm64.dmg",
+        "x86_64" => "-macos-x86_64.dmg",
+        _ => "-unsupported-architecture.dmg",
+    };
+    let dmg_name = assets
+        .iter()
+        .filter_map(|asset| asset.get("name").and_then(|name| name.as_str()))
+        .find(|name| name.ends_with(arch_suffix))
+        .or_else(|| {
+            assets
+                .iter()
+                .filter_map(|asset| asset.get("name").and_then(|name| name.as_str()))
+                .find(|name| name.ends_with(".dmg") && !name.contains("-macos-"))
+        })
+        .map(String::from);
     let dmg_url = dmg_name.as_deref().and_then(url_of);
     // Only counts when it sits beside the exact file we're about to download.
     let dmg_sha256_url = dmg_name
@@ -206,6 +223,19 @@ fn parse_release(json: &str) -> Result<Release> {
         dmg_sha256_url,
         target_commitish,
     })
+}
+
+/// Whether this install can apply the attached assets through its existing update path.
+pub fn release_installable(method: InstallMethod, release: &Release) -> bool {
+    match method {
+        InstallMethod::Dmg => release
+            .dmg_url
+            .as_deref()
+            .is_some_and(|url| check_asset_url(url).is_ok()),
+        // These methods rebuild the tagged source instead of downloading a package.
+        InstallMethod::Source | InstallMethod::Deb => true,
+        InstallMethod::Unknown => false,
+    }
 }
 
 pub fn update_available(current: &str, release: &Release, skipped: Option<&str>) -> bool {
@@ -852,6 +882,37 @@ mod tests {
         let json = r#"{"tag_name":"v0.25.0","html_url":"","body":"","assets":[]}"#;
         let r = parse_release(json).unwrap();
         assert!(r.dmg_url.is_none());
+    }
+
+    #[test]
+    fn release_assets_match_current_cpu_before_update_is_offered() {
+        let json = r#"{"tag_name":"v99.0.0","assets":[
+            {"name":"Grove-99.0.0-macos-x86_64.dmg","browser_download_url":"https://github.com/x/intel.dmg"},
+            {"name":"Grove-99.0.0-macos-arm64.dmg","browser_download_url":"https://github.com/x/arm.dmg"}
+        ]}"#;
+        let arm = parse_release_for_arch(json, "aarch64").unwrap();
+        assert_eq!(arm.dmg_url.as_deref(), Some("https://github.com/x/arm.dmg"));
+        assert!(release_installable(InstallMethod::Dmg, &arm));
+        let intel = parse_release_for_arch(json, "x86_64").unwrap();
+        assert_eq!(
+            intel.dmg_url.as_deref(),
+            Some("https://github.com/x/intel.dmg")
+        );
+        let unsupported = parse_release_for_arch(json, "other").unwrap();
+        assert!(!release_installable(InstallMethod::Dmg, &unsupported));
+    }
+
+    #[test]
+    fn incomplete_or_untrusted_package_is_not_installable() {
+        let mut release = parse_release(r#"{"tag_name":"v99.0.0","assets":[]}"#).unwrap();
+        assert!(!release_installable(InstallMethod::Dmg, &release));
+        assert!(!release_installable(InstallMethod::Unknown, &release));
+        assert!(release_installable(InstallMethod::Source, &release));
+        assert!(release_installable(InstallMethod::Deb, &release));
+        release.dmg_url = Some("https://evil.example/package.dmg".into());
+        assert!(!release_installable(InstallMethod::Dmg, &release));
+        release.dmg_url = Some("https://github.com/x/package.dmg".into());
+        assert!(release_installable(InstallMethod::Dmg, &release));
     }
 
     #[test]
