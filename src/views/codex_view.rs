@@ -15482,6 +15482,54 @@ mod tests {
     }
 
     #[gpui::test]
+    fn claude_restore_defaults_row_and_later_access_selection_dispatch_with_pointer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = codex::Provider::Claude;
+                    session.state.saved.thread_id = None;
+                    session.state.permission_modes =
+                        ["default", "auto", "acceptEdits", "plan", "dontAsk"]
+                            .map(str::to_owned)
+                            .to_vec();
+                    session.state.access = Some("dontAsk".into());
+                    session.state.resolved_access = Some("dontAsk".into());
+                    session.state.saved.composer.access = Some("dontAsk".into());
+                    cx.notify();
+                });
+            });
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1800.), gpui::px(1430.)));
+        draw(cx);
+        let trigger = view.read_with(cx, |view, _| view.option_bounds[2].get());
+        cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+        draw(cx);
+        let popup = cx.debug_bounds("codex-options-popup").unwrap();
+        let reset = gpui::point(popup.left() + gpui::px(45.), popup.bottom() - gpui::px(17.));
+        cx.simulate_mouse_move(reset, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_click(reset, gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::ResetConfiguration)));
+        assert!(view.read_with(cx, |view, _| view.popup.is_none()));
+        cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+        draw(cx);
+        let popup = cx.debug_bounds("codex-options-popup").unwrap();
+        let first = gpui::point(popup.left() + gpui::px(45.), popup.top() + gpui::px(17.));
+        cx.simulate_mouse_move(first, None, gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_click(first, gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions.try_iter().any(|action| matches!(action, Action::Configure { access: Some(access), .. } if access == "default")));
+        assert!(view.read_with(cx, |view, _| view.popup.is_none()));
+    }
+
+    #[gpui::test]
     fn option_popup_is_anchored_without_resizing_composer_and_handles_keyboard_and_outside_click(
         cx: &mut gpui::TestAppContext,
     ) {

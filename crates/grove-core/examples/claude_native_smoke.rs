@@ -31,11 +31,12 @@ fn main() -> Result<(), String> {
     if !std::path::Path::new(&cwd).is_dir() {
         return Err("Smoke directory does not exist".into());
     }
+    let permissions_only = std::env::args().any(|arg| arg == "--permissions-only");
     let image_test = std::env::args().any(|arg| arg == "--image");
     let startup_queue = std::env::args().any(|arg| arg == "--startup-queue");
     let extra_root = std::env::args()
         .skip(2)
-        .find(|arg| arg != "--image" && arg != "--startup-queue");
+        .find(|arg| arg != "--image" && arg != "--startup-queue" && arg != "--permissions-only");
     if extra_root
         .as_ref()
         .is_some_and(|path| !std::path::Path::new(path).is_dir())
@@ -75,6 +76,45 @@ fn main() -> Result<(), String> {
         native_config_version: 1,
     };
     let connection = codex::connect(saved, Vec::new());
+    if permissions_only {
+        let outcome = (|| -> Result<(), String> {
+            wait(&connection, |s| s.status == Status::Idle)?;
+            for mode in ["dontAsk", "plan", "dontAsk"] {
+                connection.handle.send(Action::Configure {
+                    model: None,
+                    effort: None,
+                    access: Some(mode.into()),
+                })?;
+                let selected = wait(&connection, |s| {
+                    s.access.as_deref() == Some(mode)
+                        && s.saved.composer.access.as_deref() == Some(mode)
+                })?;
+                if selected.resolved_access.as_deref() != Some(mode)
+                    || !selected.saved.items.is_empty()
+                    || selected.accepted_prompts != 0
+                {
+                    return Err(
+                        "Permission selection changed turns or did not become effective".into(),
+                    );
+                }
+                println!("PASS acknowledged permission mode {mode} without a prompt");
+                connection.handle.send(Action::ResetConfiguration)?;
+                wait(&connection, |s| {
+                    s.access.is_none() && s.saved.composer.access.is_none()
+                })?;
+                println!("PASS restored configured defaults without a prompt");
+            }
+            Ok(())
+        })();
+        let stopped = connection
+            .handle
+            .stop_completion(true)
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|e| e.to_string());
+        outcome?;
+        stopped?;
+        return Ok(());
+    }
     let ready = if startup_queue {
         // Submit immediately, before waiting for any initialize snapshot. This
         // exercises the production actor and installed CLI, without a UI fixture.

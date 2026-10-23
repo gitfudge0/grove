@@ -1152,7 +1152,10 @@ impl Actor {
         Ok(())
     }
     fn configure_pending_access(&mut self) -> Result<(), String> {
-        if !self.initialized || self.reset_configuration || !self.permission_changes.is_empty() {
+        // Model/default restoration may still require a restart on the next
+        // prompt. A later explicit access choice must reach the live process
+        // now; its ACK also persists the choice for that eventual restart.
+        if !self.initialized || !self.permission_changes.is_empty() {
             return Ok(());
         }
         if let Some(access) = self.pending_access.take() {
@@ -3369,6 +3372,58 @@ mod tests {
     }
 
     #[test]
+    fn permission_selection_after_restoring_defaults_dispatches_without_a_prompt() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.state.access = Some("dontAsk".into());
+        actor.state.resolved_access = Some("dontAsk".into());
+        actor.state.saved.composer.access = Some("dontAsk".into());
+        actor.action(Action::ResetConfiguration).unwrap();
+        assert!(actor.reset_configuration);
+        for (mode, success) in [("plan", false), ("acceptEdits", true)] {
+            actor
+                .action(Action::Configure {
+                    model: None,
+                    effort: None,
+                    access: Some(mode.into()),
+                })
+                .unwrap();
+            assert_eq!(
+                actor.permission_changes.len(),
+                1,
+                "restoring defaults must not block later live permission selections"
+            );
+            let request = read(&mut reader);
+            assert_eq!(
+                request["request"],
+                json!({"subtype":"set_permission_mode","mode":mode})
+            );
+            assert_eq!(actor.state.resolved_access.as_deref(), Some("dontAsk"));
+            assert!(actor.state.saved.composer.access.is_none());
+            actor
+                .message(json!({"type":"control_response","response":{
+                    "subtype":if success { "success" } else { "error" },
+                    "request_id":request["request_id"], "error":"mode unavailable"
+                }}))
+                .unwrap();
+        }
+        assert_eq!(actor.state.access.as_deref(), Some("acceptEdits"));
+        assert_eq!(
+            actor.state.saved.composer.access.as_deref(),
+            Some("acceptEdits")
+        );
+        assert!(actor.state.error.is_none());
+        assert!(
+            actor.reset_configuration,
+            "model/default restoration still requires restart"
+        );
+        assert!(actor.in_flight.is_none());
+        assert!(actor.deferred.is_none());
+    }
+
+    #[test]
     fn permission_selection_requires_launch_capability_for_bypass() {
         let mut actor = actor();
         actor.state.permission_modes = vec!["default".into(), "bypassPermissions".into()];
@@ -3612,6 +3667,7 @@ mod tests {
     #[test]
     fn pending_access_selection_survives_model_reset_without_claiming_acknowledgement() {
         let mut actor = actor();
+        let mut reader = transport(&mut actor);
         actor.state.resolved_access = Some("default".into());
         actor
             .action(Action::Configure {
@@ -3631,8 +3687,25 @@ mod tests {
             .insert("initialize".into(), "initialize".into());
         actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"current_permission_mode":"default"}}})).unwrap();
         assert!(actor.reconfigure);
-        assert_eq!(actor.pending_access.as_deref(), Some("plan"));
+        assert!(actor.pending_access.is_none());
+        let request = read(&mut reader);
+        assert_eq!(
+            request["request"],
+            json!({"subtype":"set_permission_mode","mode":"plan"})
+        );
+        assert_eq!(actor.permission_changes.len(), 1);
         assert_eq!(actor.state.resolved_access.as_deref(), Some("default"));
+        assert_eq!(
+            actor.state.saved.composer.access.as_deref(),
+            Some("default")
+        );
+        actor
+            .message(json!({"type":"control_response","response":{
+                "subtype":"success", "request_id":request["request_id"]
+            }}))
+            .unwrap();
+        assert_eq!(actor.state.resolved_access.as_deref(), Some("plan"));
+        assert_eq!(actor.state.saved.composer.access.as_deref(), Some("plan"));
     }
     #[test]
     fn permission_status_before_ack_preserves_acknowledged_explicit_mode_and_fallback() {
