@@ -90,21 +90,25 @@ fn session_status_icon(id: SessionId, status: &str, cx: &App) -> AnyElement {
 }
 
 fn session_status_icon_sized(id: SessionId, status: &str, size: f32, cx: &App) -> AnyElement {
+    status_icon_sized(id.raw().to_string().into(), status, size, cx)
+}
+
+/// Shared status marks keep session and child-agent semantics and motion identical.
+fn status_icon_sized(id: SharedString, status: &str, size: f32, cx: &App) -> AnyElement {
     let working_color = c::BLUE();
     match status {
         "Working" | "Starting" if !cx.reduce_motion() => div()
-            .id(("session-spinner-icon", id.raw()))
+            .id(SharedString::from(format!("session-spinner-icon-{id}")))
             .size(rpx(size))
             .with_animation(
-                ("session-spinner", id.raw()),
+                SharedString::from(format!("session-spinner-{id}")),
                 gpui::Animation::new(SESSION_SPINNER_PERIOD).repeat(),
                 move |element, progress| {
                     let frame =
                         (progress * crate::entities::animation_clock::SPINNER_FRAMES as f32) as u64;
+                    let id = id.clone();
                     element
-                        .debug_selector(move || {
-                            format!("session-spinner-phase-{}-{frame}", id.raw())
-                        })
+                        .debug_selector(move || format!("session-spinner-phase-{id}-{frame}"))
                         .child(
                             crate::icons::spinner(size, working_color, 0).with_transformation(
                                 gpui::Transformation::rotate(gpui::percentage(progress)),
@@ -114,8 +118,8 @@ fn session_status_icon_sized(id: SessionId, status: &str, size: f32, cx: &App) -
             )
             .into_any_element(),
         "Working" | "Starting" => div()
-            .id(("session-spinner-icon", id.raw()))
-            .debug_selector(move || format!("session-spinner-phase-{}-0", id.raw()))
+            .id(SharedString::from(format!("session-spinner-icon-{id}")))
+            .debug_selector(move || format!("session-spinner-phase-{id}-0"))
             .size(rpx(size))
             .child(crate::icons::spinner(size, working_color, 0))
             .into_any_element(),

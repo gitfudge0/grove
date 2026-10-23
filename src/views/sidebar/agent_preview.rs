@@ -166,7 +166,7 @@ impl Sidebar {
         let hover_child = agent.id.clone();
         let click_child = agent.id.clone();
         let key_child = agent.id.clone();
-        checkout_agent_row(agent, provider)
+        checkout_agent_row(agent, provider, cx)
             .role(gpui::Role::Button)
             .aria_expanded(
                 self.checkout_panel

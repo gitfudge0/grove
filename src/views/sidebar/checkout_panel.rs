@@ -19,7 +19,7 @@ const NARROW_HEIGHT_FRACTION: f32 = 0.5;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Minimum count-column width; wider values expand the shared columns together.
 const STAT_COL_W: f32 = 48.;
-const AGENT_STATUS_W: f32 = 64.;
+const AGENT_STATUS_W: f32 = ICON_MD;
 const AGENT_LINE_H: f32 = 18.;
 
 /// Reuse compact shared actions on the card's neutral field surface.
@@ -1910,8 +1910,8 @@ pub(super) fn checkout_agent_presentation(
 pub(super) fn checkout_agent_row(
     agent: &grove_core::codex::Subagent,
     provider: &'static str,
+    cx: &App,
 ) -> gpui::Stateful<gpui::Div> {
-    use grove_core::codex::SubagentStatus;
     let presentation = checkout_agent_presentation(agent);
     let name_id = agent.id.clone();
     let activity_id = agent.id.clone();
@@ -1962,14 +1962,16 @@ pub(super) fn checkout_agent_row(
                         .debug_selector(move || format!("checkout-agent-status-{status_id}"))
                         .w(rpx(AGENT_STATUS_W))
                         .flex_shrink_0()
-                        .text_right()
-                        .text_color(match agent.status {
-                            SubagentStatus::Working => c::BLUE(),
-                            SubagentStatus::Completed => c::GREEN(),
-                            SubagentStatus::Failed => c::FORM_ERROR(),
-                            SubagentStatus::Unknown => c::FG_DIM(),
-                        })
-                        .child(presentation.status),
+                        .h(rpx(AGENT_LINE_H))
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .child(status_icon_sized(
+                            format!("checkout-agent-{}", agent.id).into(),
+                            presentation.status,
+                            ICON_MD,
+                            cx,
+                        )),
                 ),
         )
         // Reserve one compact supporting line so activity updates keep rows stable.
@@ -2469,6 +2471,16 @@ mod tests {
                 let mut snapshot = grove_core::codex::Snapshot::new(saved);
                 snapshot.saved.items = vec![serde_json::json!({"type":"userMessage", "text":"Investigate authentication retries"}), serde_json::json!({"type":"reasoning", "text":"Thinking"})];
                 snapshot.saved.work_periods = vec![grove_core::codex::WorkPeriod { start_item: 0, end_item: None, duration_ms: None, subagents: vec![grove_core::codex::Subagent { id: "explorer".into(), name: "Explorer".into(), role: Some("Investigation".into()), task: Some("Investigate authentication retry failures and report the owning layer".into()), activity: "Reading authentication tests".into(), status: grove_core::codex::SubagentStatus::Working }] }];
+                for (id, name, status) in [
+                    ("done", "Completed agent", grove_core::codex::SubagentStatus::Completed),
+                    ("failed", "Failed agent", grove_core::codex::SubagentStatus::Failed),
+                    ("unknown", "Unknown agent with a long name that must truncate", grove_core::codex::SubagentStatus::Unknown),
+                ] {
+                    snapshot.saved.work_periods[0].subagents.push(grove_core::codex::Subagent {
+                        id: id.into(), name: name.into(), role: None, task: None,
+                        activity: "Observed activity".into(), status,
+                    });
+                }
                 snapshot.status = grove_core::codex::Status::Working;
                 let observed = Instant::now();
                 let mut activity = grove_core::codex::SubagentActivity::default();
@@ -2850,24 +2862,6 @@ mod tests {
                 cx.run_until_parked();
                 cx.update(|window, cx| {
                     let _ = window.draw(cx);
-                    for label in ["Working", "Done", "Failed", "Unknown"] {
-                        let mut run = window.text_style().to_run(label.len());
-                        run.font.family = crate::fonts::UI_FAMILY.into();
-                        run.font.weight = gpui::FontWeight::NORMAL;
-                        let width = window
-                            .text_system()
-                            .shape_line(
-                                label.into(),
-                                rpx(TEXT_BODY).to_pixels(window.rem_size()),
-                                &[run],
-                                None,
-                            )
-                            .width;
-                        assert!(
-                            width <= rpx(AGENT_STATUS_W).to_pixels(window.rem_size()),
-                            "{label} must fit the fixed status slot"
-                        );
-                    }
                 });
                 assert!(cx.debug_bounds("checkout-agents").is_some());
                 let card = cx.debug_bounds("checkout-card").unwrap();
@@ -2876,6 +2870,9 @@ mod tests {
                     .debug_bounds("checkout-agent-status-old-running")
                     .unwrap();
                 assert!(status.right() < card.right());
+                assert!(
+                    (status.size.width - gpui::px(AGENT_STATUS_W * scale)).abs() < gpui::px(0.5)
+                );
                 let activity = cx
                     .debug_bounds("checkout-agent-activity-old-running")
                     .unwrap();

@@ -1,0 +1,139 @@
+<!doctype html>
+<!-- grove:integrated-report -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grove checkout panel · agent session states</title>
+<style>
+:root {
+  color-scheme: light dark;
+  font-family: var(--grove-font, Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  color: var(--grove-fg, CanvasText);
+  --border: var(--grove-border, color-mix(in srgb, CanvasText 18%, transparent));
+  --muted: var(--grove-muted, color-mix(in srgb, CanvasText 58%, transparent));
+  --info: var(--grove-info, #4285f4);
+  --success: var(--grove-success, #2e9d62);
+  --error: var(--grove-error, #d65353);
+  --radius: var(--grove-radius, 9px);
+}
+* { box-sizing:border-box; }
+body { margin:0; padding:20px; font-size:13px; line-height:1.45; }
+.variants { max-width:800px; margin:0 auto; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px 28px; }
+.variant { min-width:0; }
+.state-label { margin:0 2px 8px; color:var(--muted); font-size:11px; }
+.panel { width:100%; overflow:hidden; border:1px solid var(--border); border-radius:var(--radius); }
+.panel-title { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; font-size:12px; font-weight:600; }
+.dots { color:var(--muted); font-size:16px; letter-spacing:1px; }
+.action { min-height:35px; display:flex; align-items:center; gap:9px; padding:0 11px; }
+.ico { width:16px; text-align:center; color:var(--muted); }
+.trail { margin-left:auto; color:var(--muted); }
+.rule { height:0; border-top:1px solid var(--border); }
+.change { display:flex; align-items:center; gap:8px; padding:9px 11px; color:var(--muted); font-size:12px; }
+.change strong { color:var(--grove-fg, CanvasText); font-weight:500; }
+.counts { margin-left:auto; font-variant-numeric:tabular-nums; }
+.plus { color:var(--success); } .minus { color:var(--error); }
+.agents { padding:9px 11px 8px; }
+.agents-head { display:flex; align-items:center; gap:6px; margin:0 0 4px; color:var(--muted); font-size:11px; }
+.pulse { color:var(--info); }
+.agent { min-width:0; display:grid; grid-template-columns:minmax(0,1fr) 56px; column-gap:8px; padding:7px 0; }
+.agent + .agent { border-top:1px solid color-mix(in srgb, var(--border) 72%, transparent); }
+.identity { min-width:0; display:flex; align-items:center; gap:7px; white-space:nowrap; }
+.provider { width:14px; flex:0 0 14px; text-align:center; color:var(--grove-fg, CanvasText); font-size:14px; }
+.name { min-width:0; overflow:hidden; text-overflow:ellipsis; font-weight:500; }
+.activity { grid-column:1; min-width:0; padding-left:21px; overflow:hidden; color:var(--muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+.status { grid-column:2; grid-row:1 / span 2; align-self:center; justify-self:end; width:56px; text-align:right; font-size:11px; }
+.working { color:var(--info); } .done { color:var(--success); } .failed { color:var(--error); }
+.show { margin:3px 0 0 21px; color:var(--muted); font-size:11px; }
+.previous { display:flex; align-items:center; gap:7px; padding:10px 11px; color:var(--muted); font-size:11px; }
+.previous b { margin-left:auto; font-weight:400; }
+@media (max-width:640px) { body { padding:14px; } .variants { grid-template-columns:1fr; gap:18px; max-width:360px; } }
+</style>
+</head>
+<body>
+<main class="variants" aria-label="Grove checkout panel state comparisons">
+  <section class="variant" aria-label="Active and mixed activity state">
+    <div class="state-label">Active · mixed activity</div>
+    <div class="panel">
+      <div class="panel-title"><span>Checkout</span><span class="dots">···</span></div>
+      <div class="action"><span class="ico">▱</span><span>Open in Finder</span><span class="trail">↗</span></div>
+      <div class="action"><span class="ico">＋</span><span>Add project script</span><span class="trail">›</span></div>
+      <div class="rule"></div>
+      <div class="action"><span class="ico">↗</span><span>Pull request</span><span class="trail">#284</span></div>
+      <div class="action"><span class="ico">⌁</span><span>Commit</span><span class="trail">›</span></div>
+      <div class="rule"></div>
+      <div class="change"><span>▤</span><strong>Changes</strong><span class="counts"><span class="plus">+128</span>&nbsp; <span class="minus">−36</span></span></div>
+      <div class="rule"></div>
+      <section class="agents" aria-label="Agent sessions">
+        <div class="agents-head"><span class="pulse">●</span><span>Agents</span><span>·</span><span>2 running</span></div>
+        <div class="agent"><div class="identity"><span class="provider">✳</span><span class="name">Codex · Index adapter</span></div><span class="status working">Working</span><div class="activity">Updating provider session mapping</div></div>
+        <div class="agent"><div class="identity"><span class="provider">✺</span><span class="name">Claude · Ordering review</span></div><span class="status working">Working</span><div class="activity">Checking completion and retry paths</div></div>
+        <div class="agent"><div class="identity"><span class="provider">✳</span><span class="name">Codex · Test fixtures</span></div><span class="status done">Done</span><div class="activity">Added out-of-order completion cases</div></div>
+        <div class="show">Show 2 more</div>
+      </section>
+      <div class="rule"></div><div class="previous"><span>›</span><span>Previous agents</span><b>3</b></div>
+    </div>
+  </section>
+
+  <section class="variant" aria-label="All completed state">
+    <div class="state-label">All completed</div>
+    <div class="panel">
+      <div class="panel-title"><span>Checkout</span><span class="dots">···</span></div>
+      <div class="action"><span class="ico">▱</span><span>Open in Finder</span><span class="trail">↗</span></div>
+      <div class="action"><span class="ico">＋</span><span>Add project script</span><span class="trail">›</span></div>
+      <div class="rule"></div>
+      <div class="action"><span class="ico">↗</span><span>Pull request</span><span class="trail">#284</span></div>
+      <div class="action"><span class="ico">⌁</span><span>Commit</span><span class="trail">›</span></div>
+      <div class="rule"></div>
+      <div class="change"><span>▤</span><strong>Changes</strong><span class="counts"><span class="plus">+128</span>&nbsp; <span class="minus">−36</span></span></div>
+      <div class="rule"></div>
+      <section class="agents" aria-label="Completed agent sessions">
+        <div class="agents-head"><span>Agents</span><span>·</span><span>0 running</span></div>
+        <div class="agent"><div class="identity"><span class="provider">✳</span><span class="name">Codex · Index adapter</span></div><span class="status done">Done</span><div class="activity">Updated provider session mapping</div></div>
+        <div class="agent"><div class="identity"><span class="provider">✺</span><span class="name">Claude · Ordering review</span></div><span class="status done">Done</span><div class="activity">Reviewed completion and retry paths</div></div>
+        <div class="agent"><div class="identity"><span class="provider">✳</span><span class="name">Codex · Test fixtures</span></div><span class="status done">Done</span><div class="activity">Added out-of-order completion cases</div></div>
+      </section>
+      <div class="rule"></div><div class="previous"><span>›</span><span>Previous agents</span><b>3</b></div>
+    </div>
+  </section>
+
+  <section class="variant" aria-label="Failed agent state">
+    <div class="state-label">Failure · one agent stopped with an error</div>
+    <div class="panel">
+      <div class="panel-title"><span>Checkout</span><span class="dots">···</span></div>
+      <div class="action"><span class="ico">▱</span><span>Open in Finder</span><span class="trail">↗</span></div>
+      <div class="action"><span class="ico">＋</span><span>Add project script</span><span class="trail">›</span></div>
+      <div class="rule"></div>
+      <div class="action"><span class="ico">↗</span><span>Pull request</span><span class="trail">#284</span></div>
+      <div class="action"><span class="ico">⌁</span><span>Commit</span><span class="trail">›</span></div>
+      <div class="rule"></div>
+      <div class="change"><span>▤</span><strong>Changes</strong><span class="counts"><span class="plus">+128</span>&nbsp; <span class="minus">−36</span></span></div>
+      <div class="rule"></div>
+      <section class="agents" aria-label="Agent sessions including a failure">
+        <div class="agents-head"><span class="pulse">●</span><span>Agents</span><span>·</span><span>1 running</span></div>
+        <div class="agent"><div class="identity"><span class="provider">✳</span><span class="name">Codex · Index adapter</span></div><span class="status working">Working</span><div class="activity">Updating provider session mapping</div></div>
+        <div class="agent"><div class="identity"><span class="provider">✺</span><span class="name">Claude · Ordering review</span></div><span class="status failed">Failed</span><div class="activity">Could not read provider session state</div></div>
+        <div class="agent"><div class="identity"><span class="provider">✳</span><span class="name">Codex · Test fixtures</span></div><span class="status done">Done</span><div class="activity">Added out-of-order completion cases</div></div>
+      </section>
+      <div class="rule"></div><div class="previous"><span>›</span><span>Previous agents</span><b>3</b></div>
+    </div>
+  </section>
+
+  <section class="variant" aria-label="No observed agents state">
+    <div class="state-label">No observed agents · section omitted</div>
+    <div class="panel">
+      <div class="panel-title"><span>Checkout</span><span class="dots">···</span></div>
+      <div class="action"><span class="ico">▱</span><span>Open in Finder</span><span class="trail">↗</span></div>
+      <div class="action"><span class="ico">＋</span><span>Add project script</span><span class="trail">›</span></div>
+      <div class="rule"></div>
+      <div class="action"><span class="ico">↗</span><span>Pull request</span><span class="trail">#284</span></div>
+      <div class="action"><span class="ico">⌁</span><span>Commit</span><span class="trail">›</span></div>
+      <div class="rule"></div>
+      <div class="change"><span>▤</span><strong>Changes</strong><span class="counts"><span class="plus">+128</span>&nbsp; <span class="minus">−36</span></span></div>
+      <div class="rule"></div>
+      <div class="previous"><span>›</span><span>Previous agents</span><b>3</b></div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,312 @@
+{
+  "schema_version": 1,
+  "plan_id": "subagent-right-panel-peek",
+  "revision_id": "r1-20261023",
+  "title": "Subagent Activity in the Right Panel",
+  "summary": "Keep subagents out of the Working row and let people inspect observed child activity from their right-panel rows.",
+  "sources": [
+    {
+      "attribution": "User request",
+      "text": "When subagents are involved, we should show them only in the right panel, not in the \"Working.. row\". Also, let's also add the ability to peek into what the subagents are doing. Hovering over them should show a window into what's happening. Plan this"
+    },
+    {
+      "attribution": "Working-tree source inspection",
+      "text": "src/views/codex_view.rs:3208–3295 duplicates agent counts in the work header and child rows as a fallback. src/views/sidebar/checkout_panel.rs:992 and :1864 owns panel rows and their tooltip. DESIGN.md:115 and :127 currently bind agents to the checkout card and omit it in Zen."
+    },
+    {
+      "attribution": "Provider data inspection",
+      "text": "crates/grove-core/src/codex.rs:74 Subagent stores task, role, status and a latest activity string, not a child transcript. :1271/:1306 reduce child notifications/read results to summary observations; :4448 polls active children read-only. crates/grove-core/src/claude.rs:1751/:1796 routes child frames separately and reduces blocks to latest activity. Neither inspection establishes live provider behavior."
+    }
+  ],
+  "changes": {
+    "files": 6,
+    "changed": 6,
+    "new": 0,
+    "deleted": 0
+  },
+  "claims": [
+    {
+      "id": "panel-only",
+      "text": "Subagents appear only in the right panel.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "placement",
+            "kind": "row",
+            "text": "Illustrative placement",
+            "children": [
+              {
+                "id": "main",
+                "kind": "surface",
+                "text": "Conversation",
+                "children": [
+                  {
+                    "id": "working",
+                    "kind": "text",
+                    "text": "Working…  ›  [parent work only]"
+                  }
+                ]
+              },
+              {
+                "id": "right",
+                "kind": "surface",
+                "text": "Right panel",
+                "children": [
+                  {
+                    "id": "agent",
+                    "kind": "text",
+                    "text": "◉ Explorer                 Working"
+                  },
+                  {
+                    "id": "activity",
+                    "kind": "text",
+                    "text": "Reading authentication tests"
+                  },
+                  {
+                    "id": "old",
+                    "kind": "control",
+                    "text": "Previous agents"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "remove-duplicate",
+          "text": "The Working row contains only parent work.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "header",
+                "title": "Remove child summaries and accessibility counts",
+                "detail": "Keep the work disclosure and parent work content; remove subagent_summary from visible and accessible header text and remove the expanded fallback child list.",
+                "source": "src/views/codex_view.rs:3208"
+              },
+              {
+                "id": "panel",
+                "title": "Render session agents independently of checkout actions",
+                "detail": "Extract the agent section from the checkout-only condition; preserve current/previous grouping, ordering, Show more, status and fixed columns.",
+                "source": "src/views/sidebar/checkout_panel.rs:992"
+              }
+            ]
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "id": "panel-reachability",
+          "prompt": "How should agents remain reachable when the right panel is unavailable?",
+          "options": [
+            {
+              "id": "independent",
+              "label": "Session agents panel (Recommended)",
+              "description": "Keep agent access independent of registered checkouts. Narrow/Zen layouts offer an Agents disclosure in shared chrome that opens the same right-side panel; never restore agent content in Working."
+            },
+            {
+              "id": "existing-only",
+              "label": "Existing panel visibility",
+              "description": "Show agents only where the existing checkout panel is visible; no access in sessions without a checkout or hidden-panel modes."
+            }
+          ],
+          "default": "independent"
+        }
+      ]
+    },
+    {
+      "id": "peek",
+      "text": "Hovering an agent reveals its observed recent work.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "peek-layout",
+            "kind": "row",
+            "text": "Illustrative hover preview",
+            "children": [
+              {
+                "id": "trigger",
+                "kind": "surface",
+                "text": "Explorer · Working\nReading authentication tests"
+              },
+              {
+                "id": "preview",
+                "kind": "surface",
+                "text": "Explorer · Codex · Working",
+                "children": [
+                  {
+                    "id": "task",
+                    "kind": "text",
+                    "text": "Task: Investigate authentication retry failures"
+                  },
+                  {
+                    "id": "recent",
+                    "kind": "text",
+                    "text": "Recent activity · latest first\nReading authentication tests\nTool: read source file\nCommentary: Found the retry entry point"
+                  },
+                  {
+                    "id": "freshness",
+                    "kind": "text",
+                    "text": "Observed moments ago · 3 retained events"
+                  },
+                  {
+                    "id": "close",
+                    "kind": "control",
+                    "text": "Close preview"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "peek-content",
+          "text": "The preview separates assignment, status and recent observations.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Show full available task, provider/name, role when present, explicit status, latest observed activity and a short recent event list. Do not call a stored activity current when freshness is unknown. Completed and failed agents stay inspectable in Previous agents. Unavailable: “No child activity received yet”; loading: cached content plus “Updating…”; read error: cached content plus “Activity could not be refreshed”; completed/failed: terminal label plus last observed content. A preview read failure never fails or blocks the parent."
+          }
+        }
+      ],
+      "decisions": [
+        {
+          "id": "peek-detail",
+          "prompt": "How much work should the preview expose?",
+          "options": [
+            {
+              "id": "recent",
+              "label": "Recent activity (Recommended)",
+              "description": "Retain bounded provider-visible commentary and tool/progress events. Gives a real window into work; requires a child event buffer in both adapters."
+            },
+            {
+              "id": "summary",
+              "label": "Latest activity only",
+              "description": "Expand the current task and latest activity text. Smaller change, but no sequence of what the agent has been doing."
+            }
+          ],
+          "default": "recent"
+        }
+      ]
+    },
+    {
+      "id": "interaction",
+      "text": "The preview remains usable beyond pointer hover.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Open after a short hover intent delay; cancel pending opens when the pointer leaves. Keep open while moving from row into preview with a brief close grace period. One preview per window. Hover never steals keyboard focus. Focused row Enter/Space or pointer/touch activation opens the same preview explicitly; Escape or outside activation closes it and restores focus to its source when focus entered the preview. Hover dismissal must not dismiss explicitly opened previews. Text remains selectable and copying is read-only. Clamp/flip the preview within the pane, with bounded content and clear truncation rather than covering the composer. Session switch, source removal, panel dismissal or owner disposal cancels timers and closes the preview."
+      },
+      "children": [
+        {
+          "id": "native-owner",
+          "text": "A session-owned overlay controls opening and dismissal.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "row",
+                "title": "Replace the static tooltip with the shared preview trigger",
+                "detail": "Use a stable provider/session/child identity, existing row focus and accessible metadata; avoid competing tooltip and preview surfaces.",
+                "source": "src/views/sidebar/checkout_panel.rs:1864"
+              },
+              {
+                "id": "overlay",
+                "title": "Reuse native anchored overlay and focus recipes",
+                "detail": "Inspect controlled Popover support, Escape and dismissal; implement hover intent/transit in the owning view using real GPUI events. Do not assume the click popover already supplies hover behavior.",
+                "source": "vendor/gpui-component/ui/src/popover.rs:21"
+              },
+              {
+                "id": "contract",
+                "title": "Record the approved placement and preview invariant",
+                "detail": "Update checkout/agent placement and Working-row rules together. Use tokens/theme/components for geometry, colors and controls; local constants for preview-only dimensions.",
+                "source": "DESIGN.md:115"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "observations",
+      "text": "The preview shows child events without controlling the child.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Proposed default: an in-memory buffer of at most 20 events and 16 KiB per child; cap each display excerpt at 1 KiB and mark truncation. Retain at most 100 child buffers / 1 MiB per session and evict oldest terminal buffers first; an evicted agent retains its existing summary with “Recent activity is no longer retained”. Clear on session disposal; after reload use saved summary until new observations arrive. This is a preview, not a persisted full transcript. Never retain raw reasoning or hidden thought text; a generic Thinking label is sufficient. Tool names/progress and provider-visible assistant commentary may be displayed. Updates are deduplicated by provider event identity, or stable child/turn/item identity when polling; partial deltas update a single event rather than append repeatedly."
+      },
+      "children": [
+        {
+          "id": "isolation",
+          "text": "Each event belongs to one session and child generation.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Key buffers and preview state by provider, session, child and work-period/turn generation. Reject inherited parent turns/items, old read results and reused child generations. Preserve existing Codex fork-history checks and Claude parent_tool_use_id routing; map nested children to their own identities. Peek never resumes, interrupts, submits or approves anything. Observations use existing notification/read flows; hover does not start uncontrolled polling. Read timeout/backoff and bounded pending requests remain independent of parent success."
+          }
+        },
+        {
+          "id": "adapter-work",
+          "text": "Both adapters need event retention beyond their current summaries.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "model",
+                "title": "Add a bounded shared observation buffer",
+                "detail": "Existing Subagent fields hold only a summary; introduce explicit observation/read-state types without inserting child frames into saved parent transcript or usage. Old saved sessions deserialize with empty preview state.",
+                "source": "crates/grove-core/src/codex.rs:74"
+              },
+              {
+                "id": "codex",
+                "title": "Retain eligible child events from notifications and reads",
+                "detail": "Extend apply_subagent_notification/apply_subagent_read, deduplicate snapshots, reject parent fork history and preserve bounded read-only polling/failure handling.",
+                "source": "crates/grove-core/src/codex.rs:1271"
+              },
+              {
+                "id": "claude",
+                "title": "Retain eligible child commentary and tool progress",
+                "detail": "Extend subagent_message/subagent_block/system routing while preserving child isolation. Label lack of usable events honestly; do not manufacture a transcript from the 240-character activity field.",
+                "source": "crates/grove-core/src/claude.rs:1751"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "checks",
+      "text": "Codex and Claude are verified separately before delivery.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Current status: Codex UNTESTED live; Claude UNTESTED live. Evidence so far is source inspection only. Implementation acceptance: for each provider, observe real spawn → tool/commentary updates → completion, failure and follow-up/reuse; test nested children, session switching, reload and unavailable/read-error behavior. Record verified/unsupported/untested with the actual method and blocker. Fixtures establish local reducers and rendering, never live provider-boundary behavior."
+      },
+      "children": [
+        {
+          "id": "focused-checks",
+          "text": "Focused checks guard ownership, bounds and parent isolation.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Check no visible or accessible child counts/rows in Working; agents reachable with and without checkout; buffer/event byte caps and eviction; snapshot/delta deduplication; inherited-parent filtering; late results after session/turn change; completion/failure tombstones; terminal previews; no parent transcript/usage/approval changes. Run relevant core/view tests and conformance; orchestrator independently reads raw results."
+          }
+        },
+        {
+          "id": "native-qa",
+          "text": "Native inspection checks reachability, input and geometry.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Record exact app build/worktree and native screenshots plus interactions. Exercise wide/narrow, no checkout, collapsed panel and Zen; current/previous/show-more; long names and text; hover delay/transit, rapid row changes, text selection/copy, click/touch activation, keyboard Enter/Space/Escape and focus restoration; source removal during updates. Check dark/light, default/changed rem zoom, reduced motion, pane edge flipping and composer visibility. Verify macOS native behavior; mark Linux/Windows untested unless exercised, and cover any platform-specific changes explicitly."
+          }
+        }
+      ]
+    }
+  ],
+  "scope": [
+    "Plan only: no product code, build, test or installation. Review response and Send response resolve choices; review feedback does not authorize implementation.",
+    "Estimated implementation touches six owning files: src/views/codex_view.rs, src/views/sidebar/checkout_panel.rs, src/views/sidebar.rs, crates/grove-core/src/codex.rs, crates/grove-core/src/claude.rs and DESIGN.md. A small shared preview component may be extracted if needed; revise the estimate then.",
+    "No child control, messaging, restart, raw reasoning, extra model calls or full transcript viewer. Existing parent approvals/questions retain their current owner and behavior.",
+    "After separate implementation authorization, run relevant checks and native QA, then ./install.sh once at the selected endpoint unless installation is deferred. No release is included."
+  ]
+}
