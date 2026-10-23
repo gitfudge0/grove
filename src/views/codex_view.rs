@@ -825,6 +825,7 @@ pub struct CodexView {
     previews: HashMap<String, Arc<gpui::Image>>,
     pending_image_pastes: usize,
     scroll: gpui::ScrollHandle,
+    preview_follow_latest: bool,
     last_content: Option<[u64; 2]>,
     smooth_follow: bool,
     last_follow_offset: Option<gpui::Pixels>,
@@ -1017,6 +1018,7 @@ impl CodexView {
             previews,
             pending_image_pastes: 0,
             scroll,
+            preview_follow_latest: true,
             last_content: None,
             smooth_follow: false,
             last_follow_offset: None,
@@ -2658,6 +2660,15 @@ impl CodexView {
         // The next render observes the final offset after native wheel dispatch.
         // Keep this separate from layout/content updates, which never enter browse mode.
         self.smooth_follow = false;
+        if self.preview_child.is_some() {
+            self.preview_follow_latest = toward_bottom
+                && self.scroll.max_offset().y + self.scroll.offset().y <= gpui::px(1.);
+            // Native dispatch applies the wheel delta after this listener. Recheck
+            // the resulting offset next render without routing into composer browse.
+            self.pending_composer_scroll = Some(toward_bottom);
+            cx.notify();
+            return;
+        }
         self.pending_composer_scroll = Some(toward_bottom);
         self.composer_pin_bottom = false;
         cx.notify();
@@ -3050,15 +3061,20 @@ impl Render for CodexView {
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
             <= rpx(SPACE_20).to_pixels(window.rem_size());
         if let Some(toward_bottom) = self.pending_composer_scroll.take() {
-            // Collapsing enlarges the transcript viewport and can clamp its offset to
-            // the new bottom. That layout change must not reverse an upward gesture.
-            let restoring_bottom = toward_bottom && near_bottom && self.composer_collapsed;
-            if restoring_bottom || (!toward_bottom && !near_bottom) {
-                self.set_composer_collapsed(!restoring_bottom, cx);
-            }
-            if restoring_bottom {
-                self.composer_pin_bottom = true;
-                self.smooth_follow = true;
+            if self.preview_child.is_some() {
+                self.preview_follow_latest = toward_bottom
+                    && self.scroll.max_offset().y + self.scroll.offset().y <= gpui::px(1.);
+            } else {
+                // Collapsing enlarges the transcript viewport and can clamp its offset to
+                // the new bottom. That layout change must not reverse an upward gesture.
+                let restoring_bottom = toward_bottom && near_bottom && self.composer_collapsed;
+                if restoring_bottom || (!toward_bottom && !near_bottom) {
+                    self.set_composer_collapsed(!restoring_bottom, cx);
+                }
+                if restoring_bottom {
+                    self.composer_pin_bottom = true;
+                    self.smooth_follow = true;
+                }
             }
         }
         // A blocking edit confirmation owns the visible source. Session updates
@@ -3103,7 +3119,8 @@ impl Render for CodexView {
             .motion_frame
             .replace(now)
             .map_or(0.0, |previous| now.duration_since(previous).as_secs_f32());
-        if self.edit_confirmation.is_none()
+        if self.preview_child.is_none()
+            && self.edit_confirmation.is_none()
             && (self.follow_after_submit
                 || (content != self.last_content
                     && (near_bottom || self.smooth_follow)
@@ -4264,9 +4281,11 @@ impl Render for CodexView {
             );
         }
         if self.preview_child.is_some() {
-            // Preview follows every layout, including streamed output and disclosure
-            // growth. Its scroll/caches/expansion state never touch the parent view.
-            self.scroll.scroll_to_bottom();
+            // Stay pinned through layout growth until a wheel gesture starts browsing.
+            // Returning to the bottom resumes following without affecting the composer.
+            if self.preview_follow_latest {
+                self.scroll.scroll_to_bottom();
+            }
             return div()
                 .size_full()
                 .min_h_0()
@@ -10726,6 +10745,103 @@ mod tests {
         state.saved.provider = codex::Provider::Codex;
         assert!(!tool_is_running(&state, 0));
     }
+    #[gpui::test]
+    fn child_preview_wheel_browsing_survives_updates_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.preview_child = Some("child".into());
+                    view.preview_follow_latest = true;
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.status = Status::Working;
+                        let mut activity = codex::SubagentActivity::default();
+                        activity.items = (0..32).map(|index| json!({
+                            "id": format!("child-{index}"), "type": "agentMessage",
+                            "text": format!("Step {index}\n\nDetailed child response.\n\nMore details.")
+                        })).collect();
+                        session.state.subagent_activity.insert("child".into(), activity);
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
+                assert!(view.scroll.max_offset().y > gpui::px(500.));
+            });
+            let wheel = |delta, cx: &mut gpui::VisualTestContext| {
+                let bounds = cx.debug_bounds("codex-messages").unwrap();
+                cx.simulate_event(gpui::ScrollWheelEvent {
+                    position: bounds.center(),
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(delta))),
+                    modifiers: gpui::Modifiers::default(),
+                    touch_phase: gpui::TouchPhase::Moved,
+                });
+                draw(cx);
+                draw(cx);
+            };
+            wheel(300., cx);
+            let browsing = view.read_with(cx, |view, _| {
+                assert!(
+                    view.scroll.offset().y > -view.scroll.max_offset().y + gpui::px(200.),
+                    "{provider:?}: wheel must reveal older content"
+                );
+                assert!(!view.composer_collapsed);
+                view.scroll.offset().y
+            });
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(2));
+            cx.update(|_, cx| view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.subagent_activity.get_mut("child").unwrap().items.push(json!({
+                        "id": "incoming", "type": "agentMessage", "text": "Incoming child update.\n\nMore streamed content."
+                    }));
+                    cx.notify();
+                });
+            }));
+            draw(cx);
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.scroll.offset().y,
+                    browsing,
+                    "{provider:?}: updates must preserve browsing"
+                );
+            });
+            wheel(-100000., cx);
+            view.read_with(cx, |view, _| {
+                assert!(
+                    view.preview_follow_latest,
+                    "{provider:?}: returning to bottom resumes follow"
+                );
+                assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
+            });
+            cx.update(|_, cx| view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.subagent_activity.get_mut("child").unwrap().items.push(json!({
+                        "id": "latest", "type": "agentMessage", "text": "Latest response.\n\nFollowing again."
+                    }));
+                    cx.notify();
+                });
+            }));
+            draw(cx);
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.scroll.offset().y,
+                    -view.scroll.max_offset().y,
+                    "{provider:?}: new items follow after returning to bottom"
+                );
+            });
+        }
+    }
+
     #[gpui::test]
     fn child_preview_uses_transcript_tools_and_follows_incoming_items(
         cx: &mut gpui::TestAppContext,

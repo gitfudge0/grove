@@ -720,12 +720,13 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(!preview.contains("session.send("));
     assert!(transcript.contains("view.preview_child = Some(child)"));
     let preview_return = transcript
-        .split("if self.preview_child.is_some() {")
-        .nth(1)
+        .rsplit("if self.preview_child.is_some() {")
+        .next()
         .expect("child preview uses the common transcript rendering path")
         .split("if let Some(editor) = self")
         .next()
         .expect("preview returns before editable conversation controls");
+    assert!(preview_return.contains("if self.preview_follow_latest {"));
     assert!(preview_return.contains("self.scroll.scroll_to_bottom()"));
     assert!(preview_return.contains(".child(messages.px("));
     assert!(!preview_return.contains("session.send("));
