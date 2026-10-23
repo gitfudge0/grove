@@ -439,7 +439,7 @@ impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let style: ButtonVariant = self.variant;
         let clickable = self.clickable();
-        let is_disabled = self.disabled;
+        let is_disabled = self.disabled || self.loading;
         let hoverable = self.hoverable();
         let normal_style = style.normal(self.outline, cx);
         let icon_size = match self.size {
@@ -482,16 +482,10 @@ impl RenderOnce for Button {
                         .tab_stop(self.tab_stop),
                 )
             })
-            .cursor_default()
             .flex()
             .flex_shrink_0()
             .items_center()
             .justify_center()
-            .cursor_default()
-            .when(
-                !self.disabled && (self.variant.is_link() || self.variant.is_text()),
-                |this| this.cursor_pointer(),
-            )
             .when(cx.theme().shadow && normal_style.shadow, |this| {
                 this.shadow_xs()
             })
@@ -574,6 +568,13 @@ impl RenderOnce for Button {
                     .shadow_none()
             })
             .refine_style(&self.style)
+            .map(|this| {
+                if is_disabled {
+                    this.cursor_default()
+                } else {
+                    this.cursor_pointer()
+                }
+            })
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 // Stop handle any click event when disabled. To avoid handle dropdown menu open when button is disabled.
                 if is_disabled {
@@ -1242,6 +1243,13 @@ mod tests {
         assert!(!disabled.clickable());
 
         let loading = Button::new("test").loading(true).on_click(|_, _, _| {});
+        assert!(!loading.clickable());
+
+        // Clearing the explicit disabled state must not re-enable a loading button.
+        let loading = Button::new("test")
+            .loading(true)
+            .disabled(false)
+            .on_click(|_, _, _| {});
         assert!(!loading.clickable());
     }
 

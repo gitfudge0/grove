@@ -107,6 +107,7 @@ pub(super) fn header_control_frame(
     div()
         .id(id)
         .role(gpui::Role::Button)
+        .cursor_pointer()
         .aria_label(label)
         .size(rpx(CHROME_CONTROL_H))
         .flex_shrink_0()
@@ -321,6 +322,7 @@ pub fn question_choice(
 ) -> Stateful<Div> {
     div()
         .id(id)
+        .cursor_pointer()
         .role(if multiple {
             gpui::Role::CheckBox
         } else {
@@ -397,6 +399,7 @@ pub fn question_disclosure(
     div()
         .id(id)
         .role(gpui::Role::Button)
+        .cursor_pointer()
         .aria_label(label.clone())
         .aria_expanded(expanded)
         .aria_description(if expanded {
@@ -473,7 +476,7 @@ pub fn settings_control(
                 .hover(|style| style.bg(c::BG_HOVER()))
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
         })
-        .when(!enabled, |el| el.opacity(OPACITY_DISABLED))
+        .when(!enabled, |el| el.cursor_default().opacity(OPACITY_DISABLED))
 }
 
 /// How an in-progress task's mark reads, from the owning session's state.

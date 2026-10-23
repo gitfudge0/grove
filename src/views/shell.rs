@@ -886,6 +886,7 @@ impl Shell {
                     .id(("backend-choice-option", index))
                     .debug_selector(move || format!("backend-choice-option-{index}"))
                     .role(gpui::Role::Button)
+                    .cursor_pointer()
                     .aria_label(format!(
                         "{label}: {detail}{}",
                         if self.backend_selected_tmux == (index == 1) {
@@ -1041,6 +1042,7 @@ impl Shell {
             .id(("session-switcher-row", index))
             .debug_selector(move || debug_id.clone())
             .role(gpui::Role::Button)
+            .cursor_pointer()
             .aria_label(row.title.clone())
             .min_w_0()
             .px(rpx(ROW_PX))
@@ -1185,6 +1187,7 @@ impl Shell {
                             .id("session-switcher-new-session")
                             .debug_selector(|| "session-switcher-new-session".into())
                             .role(gpui::Role::Button)
+                            .cursor_pointer()
                             .track_focus(&self.switcher_new_session_focus)
                             .tab_index(0)
                             .focus_visible(|style| style.bg(c::BG_HOVER()))

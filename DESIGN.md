@@ -28,6 +28,8 @@ Use the [project UI skill](.agents/skills/grove-ui/SKILL.md) for implementation 
 | Preferences/readonly/errors | `switch_track`, `readonly_value`, `attached_validation` | Owner supplies accessible role/input; readonly content remains literal and selectable; validation joins its field in normal flow. |
 | Task/status content | `task_mark`, `task_meter`, shared status primitives | Reuse the same semantic status and progress representation across owning views. |
 
+Enabled buttons use a pointer cursor across their entire hit target, including padding, icons, labels, and nested content. Disabled and loading buttons use the default arrow and reject activation. This includes custom action rows, disclosures, switches, selectors, and app-owned HTML actions; editable/selectable text and resize handles retain their purpose-specific cursors. Ordinary authored HTML retains its own styling.
+
 A shared visual helper does not necessarily supply a complete interactive control. Where the helper does not provide them, the owner supplies a stable ID, focus/tab behavior, keyboard activation, action handling, and enabled/disabled semantics.
 
 Full form geometry uses `FIELD_H`, `FIELD_INSET_X`, `FORM_VALUE_SIZE`, `FORM_VALUE_LINE_H`, and `TEXTAREA_H`. Form fields use `RADIUS_PANEL`; grouped preferences use `RADIUS_PREFERENCE`; action buttons use `CONTROL_H` and `RADIUS_CONTROL`, except the taller start-list rows below; compact menus use `RADIUS_CHROME`. Labels use supporting text contrast, not quiet metadata contrast. Split fields represent semantic pairs. Textareas grow vertically. Disabled opacity does not itself disable input: disabled controls must reject interaction while enabled and readonly labels retain normal contrast.

@@ -364,6 +364,7 @@ impl Sidebar {
                 .track_focus(&focus)
                 .relative()
                 .role(gpui::Role::Button)
+                .cursor_pointer()
                 .tab_index(0)
                 .aria_label(name)
                 .aria_expanded(self.header_tasks.open == Some(id))

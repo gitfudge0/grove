@@ -341,6 +341,83 @@ fn r8_dense_controls_share_geometry() {
         .unwrap()
         .contains(".gap(rpx(SPACE_SM))"));
 }
+/// The recipe and vendor owner must agree, including caller styling and loading.
+#[test]
+fn button_cursor_policy_covers_shared_recipes_and_vendor_states() {
+    let components = source("src/views/components.rs");
+    for name in [
+        "header_control_frame",
+        "question_choice",
+        "question_disclosure",
+    ] {
+        let body = components
+            .split(&format!("fn {name}("))
+            .nth(1)
+            .unwrap()
+            .split("\npub ")
+            .next()
+            .unwrap();
+        assert!(
+            body.contains(".cursor_pointer()"),
+            "{name}: full target pointer"
+        );
+    }
+    let settings = components
+        .split("pub fn settings_control(")
+        .nth(1)
+        .unwrap()
+        .split("\npub ")
+        .next()
+        .unwrap();
+    assert!(settings.contains("el.cursor_pointer()"));
+    assert!(settings.contains("el.cursor_default().opacity(OPACITY_DISABLED)"));
+
+    let menu = source("vendor/gpui-component/ui/src/menu/menu_item.rs");
+    let menu_render = menu
+        .split("impl RenderOnce for MenuItemElement")
+        .nth(1)
+        .unwrap();
+    let style = menu_render.find(".refine_style(&self.style)").unwrap();
+    let arrow = menu_render.find("this.cursor_default()").unwrap();
+    let pointer = menu_render.find("this.cursor_pointer()").unwrap();
+    assert!(
+        style < arrow && arrow < pointer,
+        "menu cursor state must override caller styling"
+    );
+    assert!(menu_render[style..arrow].contains("if self.disabled"));
+    let enabled = menu_render
+        .split(".when(!self.disabled, |this|")
+        .nth(1)
+        .unwrap();
+    assert!(
+        enabled
+            .split(".when(self.disabled")
+            .next()
+            .unwrap()
+            .contains(".on_click(on_click)"),
+        "disabled menu items cannot activate"
+    );
+
+    let vendor = source("vendor/gpui-component/ui/src/button/button.rs");
+    let render = vendor
+        .split("let clickable = self.clickable();")
+        .nth(1)
+        .unwrap()
+        .split("fn test_")
+        .next()
+        .unwrap();
+    assert!(render.contains("let is_disabled = self.disabled || self.loading;"));
+    let cursor = render.find("this.cursor_default()").unwrap();
+    assert!(
+        render.find(".refine_style(&self.style)").unwrap() < cursor,
+        "disabled/loading cursor must override caller styling"
+    );
+    assert!(render[cursor..].contains("this.cursor_pointer()"));
+    assert!(
+        vendor.contains("!(self.disabled || self.loading) && self.on_click.is_some()"),
+        "disabled/loading cannot activate"
+    );
+}
 /// Guard the known dense-action regressions without treating fields, metadata,
 /// menu rows, or icon-only children as text-and-icon action buttons.
 #[test]

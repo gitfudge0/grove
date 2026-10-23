@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "plan_id": "button-pointer-cursors",
+  "revision_id": "r2-20261023-enabled-buttons",
+  "title": "Pointer Cursors Across Grove Buttons",
+  "sources": [
+    {
+      "attribution": "User request",
+      "text": "All buttons in the application need to have the cursor as pointer. Make a plan"
+    },
+    {
+      "attribution": "Native UI contract and procedure",
+      "text": "DESIGN.md:21; .agents/skills/grove-ui/SKILL.md. Use shared control recipes and verify actual native interactions."
+    },
+    {
+      "attribution": "Shared control inspection",
+      "text": "src/views/components.rs:102 header_control_frame and :391 question_disclosure lack a pointer cursor; :286 dense_action_with_colors uses the vendor Button; :445 settings_control applies pointer only when enabled."
+    },
+    {
+      "attribution": "Vendor button rendering",
+      "text": "vendor/gpui-component/ui/src/button/button.rs:485,490 applies cursor_default unconditionally; :491–494 applies cursor_pointer only for enabled link/text variants. clickable() at :378 excludes disabled and loading states."
+    },
+    {
+      "attribution": "Existing regression checks",
+      "text": "src/views/conformance.rs:293 control conformance and :424 disclosure checks provide existing semantic check locations."
+    },
+    {
+      "attribution": "Reader decision",
+      "text": "Plan feedback selects disabled-cursor = enabled-only: enabled buttons use pointer; disabled and loading buttons retain the default arrow. Feedback does not authorize implementation."
+    }
+  ],
+  "changes": {
+    "files": 4,
+    "changed": 4,
+    "new": 0,
+    "deleted": 0
+  },
+  "claims": [
+    {
+      "id": "all-states",
+      "text": "Every enabled button shows a pointer across its entire hit target.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Approved policy: enabled buttons show the pointer; disabled and loading buttons retain the default arrow. Icon, label, padding and nested content must resolve to the same state-appropriate cursor. Disabled and loading actions remain blocked. Keyboard, focus, activation, accessibility and visual styling retain their existing contracts."
+      },
+      "decisions": [
+        {
+          "id": "disabled-cursor",
+          "prompt": "Should disabled and loading buttons also show a pointer?",
+          "options": [
+            {
+              "id": "all-states",
+              "label": "All states",
+              "description": "Apply the request literally: enabled, disabled and loading buttons all use a pointer; blocked actions remain blocked."
+            },
+            {
+              "id": "enabled-only",
+              "label": "Enabled buttons only (Recommended)",
+              "description": "Use pointer for enabled buttons; disabled and loading buttons retain the default arrow."
+            }
+          ],
+          "default": "enabled-only"
+        }
+      ],
+      "children": [
+        {
+          "id": "shared-controls",
+          "text": "Shared control recipes establish the cursor before local repairs.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "header-disclosure",
+                "title": "Header and disclosure controls",
+                "detail": "Set pointer on the complete enabled button target in header_control_frame and question_disclosure; disabled and loading targets retain the default arrow.",
+                "source": "src/views/components.rs:102"
+              },
+              {
+                "id": "settings-control",
+                "title": "Settings and dense actions",
+                "detail": "Preserve the enabled-only policy in settings_control and align any loading state with the default arrow. Verify dense_action_with_colors through the rendered vendor Button rather than assuming wrapper styling wins.",
+                "source": "src/views/components.rs:286"
+              },
+              {
+                "id": "vendor-owner",
+                "title": "Vendor Button owning default",
+                "detail": "Inspect render precedence and choose the smallest owning change. Current unconditional default cursors defeat enabled-button pointer intent; a minimal vendor render fix may be necessary for all variants. Keep disabled/loading cursors as default arrows and preserve activation guards.",
+                "source": "vendor/gpui-component/ui/src/button/button.rs:485"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "all-surfaces",
+      "text": "Bespoke buttons follow the same rule throughout the application.",
+      "exhibit": {
+        "kind": "calls",
+        "entries": [
+          {
+            "id": "native-surfaces",
+            "title": "Audit native button surfaces",
+            "detail": "Inventory semantic button targets across sidebar submodules, shell/window controls, codex_view, native_plan, settings, workspace/worktree and release highlights. Include icon buttons, disclosure controls, action rows and menu items acting as buttons.",
+            "source": "src/views"
+          },
+          {
+            "id": "direct-targets",
+            "title": "Audit direct constructors and handlers",
+            "detail": "Inspect direct Button constructors and on_click targets; classify their purpose before changing cursors. Do not indiscriminately convert all click handlers. Audit child cursor overrides and the full rendered target.",
+            "source": "src/views"
+          },
+          {
+            "id": "html-host",
+            "title": "Audit app-owned HTML actions",
+            "detail": "Cover inline report host actions and app-owned embedded HTML buttons. Keep ordinary authored reports under their own styling; do not rewrite user-authored HTML.",
+            "source": "src/views"
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "preserve-nonbuttons",
+          "text": "Text selection and resizing keep their purpose-specific cursors.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Retain text cursors on editable/selectable content, resize cursors on splitters and window edges, and the appropriate cursor on non-button surfaces. Preserve existing action handlers and disabled guards; this task changes cursor presentation."
+          }
+        }
+      ]
+    },
+    {
+      "id": "contract",
+      "text": "The design contract and conformance checks enforce consistent button cursors.",
+      "exhibit": {
+        "kind": "calls",
+        "entries": [
+          {
+            "id": "design-invariant",
+            "title": "Record the approved invariant",
+            "detail": "Add an explicit full-hit-target cursor rule: pointer for enabled buttons, default arrow for disabled/loading buttons, alongside existing control interaction requirements.",
+            "source": "DESIGN.md:21"
+          },
+          {
+            "id": "semantic-regressions",
+            "title": "Extend meaningful conformance coverage",
+            "detail": "Cover shared recipes and the vendor default/variant behavior, plus meaningful bespoke escape hatches. Assert the semantic cursor policy and preserved disabled activation rather than exhaustive call counts or brittle file inventories.",
+            "source": "src/views/conformance.rs:293"
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "estimated-files",
+          "text": "The final file set follows the button inventory.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Estimate: four known files—DESIGN.md, src/views/components.rs, src/views/conformance.rs and vendor/gpui-component/ui/src/button/button.rs—plus only owning view/HTML files with actual gaps. The four-file change count is an initial estimate, not a fixed scope. Reuse shared helpers where they own the target; avoid unrelated refactors."
+          }
+        }
+      ]
+    },
+    {
+      "id": "verification",
+      "text": "Native interaction checks verify the cursor across every button target.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Observe the actual cursor on background, padding, icon, text and nested children. Verify pointer for enabled buttons and default arrow for disabled/loading buttons. Exercise normal, hover, keyboard focus, selected/open, disabled, loading and release transitions, including cursor updates when enabled state changes. Confirm blocked activation remains blocked and text selection/resize cursors remain correct. Screenshots document layout but cannot alone prove cursor behavior; record interaction evidence, exact build and worktree."
+      },
+      "children": [
+        {
+          "id": "provider-platform-checks",
+          "text": "Codex, Claude and affected platforms receive explicit verification status.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Current plan-only status: Codex UNTESTED; Claude UNTESTED; macOS UNTESTED; Linux UNTESTED; Windows UNTESTED. After implementation, exercise real shared questions, approvals, tasks, subagents and transcript buttons for both providers. Report each provider and affected platform as verified, unsupported or untested with method or reason. Fixtures establish local presentation behavior only and do not establish live provider-boundary behavior. Do not infer platform parity from shared source."
+          }
+        },
+        {
+          "id": "delivery-checks",
+          "text": "Checks precede the final implementation installation.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "After implementation authorization, run formatting and the relevant repository tests, conformance checks and build/check commands. The orchestrator independently reruns required checks and reads raw output rather than accepting worker claims. Complete native interaction QA, then run ./install.sh once at the selected final delivery endpoint unless deferred. No release is included. This plan creates no application changes, builds, tests or installation."
+          }
+        }
+      ]
+    }
+  ],
+  "scope": [
+    "Plan only. Reader feedback resolves the cursor-state decision to enabled-only. Review response and Send response can provide further plan feedback; sending feedback does not authorize implementation.",
+    "Covers shared native controls, bespoke semantic button targets, app-owned HTML controls and report host actions. Authored HTML retains its own styling.",
+    "Implementation will preserve geometry, themes, action semantics, keyboard behavior and non-button cursors. The estimated file count will be revised after the semantic button inventory."
+  ]
+}

@@ -735,6 +735,7 @@ impl Render for ProjectPanel {
                                 .id(("project-move-destination", id))
                                 .debug_selector(move || format!("project-move-destination-{id}"))
                                 .role(gpui::Role::Button)
+                                .cursor_pointer()
                                 .aria_label(full_name.clone())
                                 .aria_selected(selected)
                                 .tooltip(move |window, cx| {
@@ -792,6 +793,7 @@ impl Render for ProjectPanel {
                     content = content.child(
                         div()
                             .id("project-move-open-destination")
+                            .cursor_pointer()
                             .debug_selector(|| "project-move-open-destination".into())
                             .role(gpui::Role::Switch)
                             .aria_label("Open destination workspace after moving")
@@ -906,6 +908,8 @@ impl Render for ProjectPanel {
                         );
                         let switch = div()
                             .id("remove-worktrees")
+                            .when(self.worktree_count.is_some(), gpui::Styled::cursor_pointer)
+                            .when(self.worktree_count.is_none(), gpui::Styled::cursor_default)
                             .role(gpui::Role::Switch)
                             .aria_label("Delete non-main worktrees from disk")
                             .aria_toggled(if self.delete_worktrees {

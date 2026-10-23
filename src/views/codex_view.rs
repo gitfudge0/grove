@@ -346,7 +346,9 @@ fn composer_icon(
     .when(!disabled, |button| {
         button.focus_visible(|style| style.border_1().border_color(c::SEL_RING()))
     })
-    .when(disabled, |button| button.opacity(OPACITY_DISABLED))
+    .when(disabled, |button| {
+        button.cursor_default().opacity(OPACITY_DISABLED)
+    })
     .child(crate::icons::icon(
         icon,
         ICON_SM,
@@ -1650,6 +1652,7 @@ impl CodexView {
                         header.child(
                             header_control("codex-resume-queue", "Send next queued message")
                                 .debug_selector(|| "codex-resume-queue".into())
+                                .when(!resume_enabled, gpui::Styled::cursor_default)
                                 .track_focus(
                                     &self
                                         .queue_resume_focus
@@ -1791,6 +1794,7 @@ impl CodexView {
                         header_control("codex-edit-queued", "Edit queued message")
                             .tab_index(0)
                             .tab_stop(!locked)
+                            .when(locked, gpui::Styled::cursor_default)
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .child(crate::icons::icon(
                                 "edit",
@@ -1817,6 +1821,7 @@ impl CodexView {
                             .px(rpx(SPACE_SM))
                             .tab_index(0)
                             .tab_stop(steer)
+                            .when(!steer, gpui::Styled::cursor_default)
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .flex()
                             .items_center()
@@ -1850,6 +1855,7 @@ impl CodexView {
                         header_control("codex-remove-queued", "Remove queued message")
                             .tab_index(0)
                             .tab_stop(!locked)
+                            .when(locked, gpui::Styled::cursor_default)
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .child(crate::icons::icon(
                                 "close",
@@ -1931,6 +1937,7 @@ impl CodexView {
                             .debug_selector(|| "codex-cancel-queue-edit".into())
                             .tab_index(0)
                             .tab_stop(!saving)
+                            .when(saving, gpui::Styled::cursor_default)
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .child(crate::icons::icon(
                                 "close",
@@ -1956,6 +1963,7 @@ impl CodexView {
                             .debug_selector(|| "codex-save-queue-edit".into())
                             .tab_index(0)
                             .tab_stop(!saving)
+                            .when(saving, gpui::Styled::cursor_default)
                             .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .child(crate::icons::icon(
                                 "check",
@@ -2327,6 +2335,7 @@ impl CodexView {
             .id("codex-task-strip")
             .debug_selector(|| "codex-task-strip".into())
             .role(gpui::Role::Button)
+            .cursor_pointer()
             .aria_label(format!("Tasks, {progress}"))
             .aria_description(summary.text())
             .aria_expanded(expanded)
@@ -2386,6 +2395,7 @@ impl CodexView {
                         .group("codex-task-row")
                         .relative()
                         .role(gpui::Role::Button)
+                        .cursor_pointer()
                         .aria_label(format!("Jump to start: {}", task.step))
                         .tooltip({
                             let step = task.step.clone();
@@ -2566,6 +2576,7 @@ impl CodexView {
                     },
                 )
                 .id(("codex-minimap-message", index))
+                .cursor_pointer()
                 .debug_selector(move || format!("codex-minimap-message-{index}"))
                 .w_full()
                 .h(rpx(SPACE_LG))
@@ -4718,6 +4729,7 @@ impl Render for CodexView {
                                         .id("codex-composer-preview")
                                         .debug_selector(|| "codex-composer-preview".into())
                                         .role(gpui::Role::Button)
+                                        .cursor_pointer()
                                         .aria_label("Expand message input")
                                         .absolute()
                                         .inset_0()
@@ -9265,7 +9277,9 @@ impl CodexView {
             selected,
         )
         .when_some(focus, |row, focus| row.track_focus(&focus))
-        .when(submitting, |row| row.opacity(OPACITY_DISABLED))
+        .when(submitting, |row| {
+            row.cursor_default().opacity(OPACITY_DISABLED)
+        })
         .on_click(cx.listener(move |this, _, _, cx| {
             this.change_elicitation(&click_key, index, value.clone(), multiple, include, cx);
         }))
@@ -9511,7 +9525,9 @@ impl CodexView {
                         true,
                         draft.editing,
                     )
-                    .when(draft.submitting, |row| row.opacity(OPACITY_DISABLED))
+                    .when(draft.submitting, |row| {
+                        row.cursor_default().opacity(OPACITY_DISABLED)
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_approval_edit(&click_key, cx);
                     }))
@@ -10152,6 +10168,7 @@ impl CodexView {
                 )
                 .debug_selector(move || format!("question-row-{request_index}-{question_index}"))
                 .track_focus(&draft.row_focus[question_index])
+                .when(submitting, gpui::Styled::cursor_default)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.toggle_question(&click_key, question_index, window, cx);
                 }))
@@ -10250,7 +10267,9 @@ impl CodexView {
                     .debug_selector(move || {
                         format!("question-option-{request_index}-{question_index}-{option_index}")
                     })
-                    .when(submitting, |row| row.opacity(OPACITY_DISABLED))
+                    .when(submitting, |row| {
+                        row.cursor_default().opacity(OPACITY_DISABLED)
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_question_choice(
                             &click_key,
@@ -10307,7 +10326,9 @@ impl CodexView {
                         question_draft.custom,
                     )
                     .track_focus(&question_draft.choice_focus[question.options.len()])
-                    .when(submitting, |row| row.opacity(OPACITY_DISABLED))
+                    .when(submitting, |row| {
+                        row.cursor_default().opacity(OPACITY_DISABLED)
+                    })
                     .debug_selector(move || {
                         format!("question-other-{request_index}-{question_index}")
                     })

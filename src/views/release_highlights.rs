@@ -337,6 +337,7 @@ impl Render for ReleaseCarousel {
                 div()
                     .id(format!("highlights-dot-{index}"))
                     .role(gpui::Role::RadioButton)
+                    .cursor_pointer()
                     .aria_selected(index == self.index)
                     .hover(|style| style.bg(c::BG_HOVER()))
                     .focus_visible(|style| style.bg(c::BG_HOVER()))

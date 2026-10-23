@@ -699,6 +699,7 @@ impl WorktreeLauncher {
                             .id(gpui::SharedString::from(button_id.clone()))
                             .debug_selector(move || button_id.clone())
                             .role(gpui::Role::Button)
+                            .cursor_pointer()
                             .aria_label(label.clone())
                             .size(rpx(CHROME_CONTROL_H))
                             .rounded(rpx(RADIUS_CONTROL))
@@ -967,6 +968,7 @@ impl Render for WorktreeLauncher {
                                     .id(gpui::SharedString::from(format!("launcher-row-{index}")))
                                     .debug_selector(move || format!("launcher-row-{index}"))
                                     .role(gpui::Role::Button)
+                                    .cursor_pointer()
                                     .aria_label(if self.mode == PaletteMode::Multi && is_worktree_row {
                                         format!("{label}, {}", if checked { "selected" } else { "not selected" })
                                     } else {
@@ -1054,6 +1056,8 @@ impl Render for WorktreeLauncher {
                                 .id("worktree-launcher-launch-selected")
                                 .debug_selector(|| "worktree-launcher-launch-selected".into())
                                 .role(gpui::Role::Button)
+                                .when(selected_count > 0, gpui::Styled::cursor_pointer)
+                                .when(selected_count == 0, gpui::Styled::cursor_default)
                                 .aria_label(format!("Launch {selected_count} selected worktrees"))
                                 .tab_index(-1)
                                 .px(rpx(SPACE_2XL))

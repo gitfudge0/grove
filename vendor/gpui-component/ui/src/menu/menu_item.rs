@@ -101,6 +101,13 @@ impl RenderOnce for MenuItemElement {
             .items_center()
             .justify_between()
             .refine_style(&self.style)
+            .map(|this| {
+                if self.disabled {
+                    this.cursor_default()
+                } else {
+                    this.cursor_pointer()
+                }
+            })
             .when_some(self.on_hover, |this, on_hover| {
                 this.on_hover(move |hovered, window, cx| (on_hover)(hovered, window, cx))
             })

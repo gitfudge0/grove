@@ -554,6 +554,8 @@ impl Render for ProjectSetup {
                 }
                 GitProbe::NotRepo => {
                     fields = fields.child(div().id("initialize-project-git")
+                        .when(!self.busy, gpui::Styled::cursor_pointer)
+                        .when(self.busy, gpui::Styled::cursor_default)
                         .role(gpui::Role::Switch).aria_label("Initialize Git repository")
                         .aria_toggled(if self.state.init_git { gpui::Toggled::True } else { gpui::Toggled::False })
                         .tab_index(if self.busy { -1 } else { 0 })

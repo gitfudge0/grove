@@ -1813,6 +1813,8 @@ impl Sidebar {
                     .inset_0(),
             )
             .role(gpui::Role::Button)
+            .when(!confirming || decision, gpui::Styled::cursor_pointer)
+            .when(confirming && !decision, gpui::Styled::cursor_default)
             .aria_label(label.clone())
             .tab_index(if confirming && !decision { -1 } else { 0 })
             .when(confirm, |d| d.track_focus(&self.confirm_focus))

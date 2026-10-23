@@ -1136,6 +1136,7 @@ impl Sidebar {
             })
             .track_focus(&focus)
             .role(gpui::Role::Button)
+            .cursor_pointer()
             .aria_label(label.clone())
             .tab_index(0)
             .size(rpx(CHROME_CONTROL_H))
