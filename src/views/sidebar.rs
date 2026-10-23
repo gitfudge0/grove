@@ -3540,7 +3540,7 @@ impl Sidebar {
                                         format!("session-list-status-{}", id.raw())
                                     })
                                     .text_color(super::status::session_kind(status).color())
-                                    .child(session_status_icon_sized(id, status, ICON_LG, cx))
+                                    .child(session_status_icon_sized(id, status, ICON_MD, cx))
                                     .child(status),
                                 format!("session-status-list-{}-{status}", id.raw()),
                                 cx,
@@ -3622,12 +3622,7 @@ impl Sidebar {
                                             .child(diff.0.clone()),
                                     ),
                                 )
-                            })
-                            .child(div().flex_shrink_0().child(icon(
-                                meta.agent.icon_name(),
-                                ICON_MD,
-                                c::FG_MUTE(),
-                            ))),
+                            }),
                     )
                     .child(
                         self.control(
