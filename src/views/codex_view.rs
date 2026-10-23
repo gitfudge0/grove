@@ -194,7 +194,6 @@ impl TranscriptRenderCache {
 
 const STOP_HOVER_OPACITY: f32 = 0.8;
 const CHAT_MAX_W: f32 = 760.0;
-const SUBAGENT_NAME_W: f32 = 120.0;
 const COMPOSER_MENU_W: f32 = 320.0;
 /// Compact reference card, kept local rather than adding a one-use scale tier.
 const MODEL_EFFORT_CARD_W: f32 = 256.0;
@@ -759,6 +758,7 @@ struct MessageEditor {
 }
 
 pub struct CodexView {
+    preview_child: Option<String>,
     session: Entity<CodexSession>,
     pub(super) html: Entity<super::inline_html::HtmlSession>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
@@ -773,7 +773,7 @@ pub struct CodexView {
     selection_root_observed: bool,
     selection_reply_focus: FocusHandle,
     submitted_images: Vec<String>,
-    transcript_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    pub(super) transcript_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
     checkout_context: Option<(String, String)>,
     expanded: HashSet<String>,
     pub(super) agents_in_checkout: bool,
@@ -854,6 +854,17 @@ pub struct CodexView {
     subscriptions: Vec<Subscription>,
 }
 impl CodexView {
+    pub(super) fn child_preview(
+        session: Entity<CodexSession>,
+        child: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::new(session, window, cx);
+        view.preview_child = Some(child);
+        view
+    }
+
     pub fn new(session: Entity<CodexSession>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let stream_thread = session.read(cx).state.saved.thread_id.clone();
         let draft = session.read(cx).state.saved.draft.clone();
@@ -880,41 +891,48 @@ impl CodexView {
                 this.refresh_files(cx);
                 cx.notify();
             }),
-            cx.subscribe_in(&input, window, |this, _, event, window, cx| match event {
-                InputEvent::PressEnter {
-                    secondary: true,
-                    shift: false,
-                } => {
-                    if this.session.read(cx).state.status.busy() {
-                        this.submit_mode(SubmissionMode::Steer, window, cx);
-                    } else {
-                        this.submit(window, cx);
+            cx.subscribe_in(&input, window, |this, _, event, window, cx| {
+                if this.preview_child.is_some() {
+                    return;
+                }
+                match event {
+                    InputEvent::PressEnter {
+                        secondary: true,
+                        shift: false,
+                    } => {
+                        if this.session.read(cx).state.status.busy() {
+                            this.submit_mode(SubmissionMode::Steer, window, cx);
+                        } else {
+                            this.submit(window, cx);
+                        }
                     }
-                }
-                InputEvent::PressEnter {
-                    secondary: false,
-                    shift: false,
-                } => this.submit(window, cx),
-                InputEvent::PasteImages(images) => this.paste_images(images.clone(), window, cx),
-                InputEvent::Focus => {
-                    crate::platform::inline_html::NativeDocument::focus_host(window);
-                    this.set_composer_collapsed(false, cx);
-                }
-                InputEvent::Change => {
-                    this.set_composer_collapsed(false, cx);
-                    let text = this.input.read(cx).value().to_string();
-                    if this.queue_editor.is_none() {
-                        this.queue_selected = None;
-                        this.session
-                            .update(cx, |session, cx| session.send(Action::Draft(text), cx));
+                    InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false,
+                    } => this.submit(window, cx),
+                    InputEvent::PasteImages(images) => {
+                        this.paste_images(images.clone(), window, cx);
                     }
-                    this.dismissed_suggestions = None;
-                    this.suggestion_index = 0;
-                    this.validate_picked_tokens(cx);
-                    this.refresh_files(cx);
-                    cx.notify();
+                    InputEvent::Focus => {
+                        crate::platform::inline_html::NativeDocument::focus_host(window);
+                        this.set_composer_collapsed(false, cx);
+                    }
+                    InputEvent::Change => {
+                        this.set_composer_collapsed(false, cx);
+                        let text = this.input.read(cx).value().to_string();
+                        if this.preview_child.is_none() && this.queue_editor.is_none() {
+                            this.queue_selected = None;
+                            this.session
+                                .update(cx, |session, cx| session.send(Action::Draft(text), cx));
+                        }
+                        this.dismissed_suggestions = None;
+                        this.suggestion_index = 0;
+                        this.validate_picked_tokens(cx);
+                        this.refresh_files(cx);
+                        cx.notify();
+                    }
+                    _ => {}
                 }
-                _ => {}
             }),
         ];
         let scroll = gpui::ScrollHandle::new();
@@ -933,6 +951,7 @@ impl CodexView {
             }
         }));
         Self {
+            preview_child: None,
             session,
             html,
             native_plans: HashMap::new(),
@@ -2790,7 +2809,11 @@ impl Render for CodexView {
             }
         }
         self.restore_image_tokens(window, cx);
-        let state = self.session.read(cx).state.shared();
+        let state = if let Some(child) = &self.preview_child {
+            Rc::new(self.session.read(cx).state.subagent_snapshot(child))
+        } else {
+            self.session.read(cx).state.shared()
+        };
         // Source geometry belongs to one editor in one conversation, never to a
         // subsequently connected thread or another message at the same index.
         if self
@@ -3232,19 +3255,6 @@ impl Render for CodexView {
                 message_child += 1;
                 let expanded = self.expanded.contains(&key);
                 let keyboard_key = key.clone();
-                let subagents = work_subagents_at(&state, index);
-                let summary = subagent_summary(subagents);
-                let accessible_label = summary.as_ref().map_or_else(
-                    || label.clone(),
-                    |(counts, failed)| {
-                        format!(
-                            "{label}, {counts}{}",
-                            failed
-                                .as_ref()
-                                .map_or(String::new(), |failed| format!(", {failed}"))
-                        )
-                    },
-                );
                 messages = messages.child(
                     div()
                         .w_full()
@@ -3267,7 +3277,7 @@ impl Render for CodexView {
                                 .focus_visible(|style| style.bg(c::BG_HOVER()))
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
-                                .aria_label(accessible_label)
+                                .aria_label(label.clone())
                                 .child(shimmer_label(
                                     ("codex-work-shimmer", index).into(),
                                     label,
@@ -3279,19 +3289,6 @@ impl Render for CodexView {
                                     ICON_SM,
                                     c::FG_DIM(),
                                 ))
-                                .when_some(summary, |header, (counts, failed)| {
-                                    header.child(div().flex_shrink_0().child(counts)).when_some(
-                                        failed,
-                                        |header, failed| {
-                                            header.child(
-                                                div()
-                                                    .flex_shrink_0()
-                                                    .text_color(c::FORM_ERROR())
-                                                    .child(format!("· {failed}")),
-                                            )
-                                        },
-                                    )
-                                })
                                 .on_key_down(cx.listener(
                                     move |this, event: &gpui::KeyDownEvent, _, cx| {
                                         if action_key(event) {
@@ -3303,19 +3300,6 @@ impl Render for CodexView {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.toggle_expansion(&key, cx);
                                 })),
-                        )
-                        .when(
-                            expanded && !self.agents_in_checkout && !subagents.is_empty(),
-                            |section| {
-                                section.child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(rpx(SPACE_SM))
-                                        .py(rpx(SPACE_LG))
-                                        .children(subagents.iter().map(subagent_row)),
-                                )
-                            },
                         ),
                 );
                 if active && state.work_started.is_some() && !self.work_tick_pending.replace(true) {
@@ -3940,7 +3924,7 @@ impl Render for CodexView {
                         let key = (plan_id, revision_id);
                         row = row.child(super::native_plan::inline(&self.native_plans[&key], cx));
                     }
-                    let errors = self.session.read(cx).state.saved.rich_plans.errors.clone();
+                    let errors = state.saved.rich_plans.errors.clone();
                     for error in errors
                         .into_iter()
                         .filter(|error| error.message_id == html_message)
@@ -4165,28 +4149,30 @@ impl Render for CodexView {
                     );
                 }
                 let unavailable = state.editable_message(index).err();
-                actions = actions.child(
-                    header_control("codex-edit-message", "Edit sent message")
-                        .aria_description(
-                            unavailable
-                                .unwrap_or_else(|| "Edit message and restore workspace".into()),
-                        )
-                        .debug_selector(move || format!("codex-edit-message-{index}"))
-                        .tab_index(0)
-                        .focus_visible(|style| style.bg(c::BG_HOVER()))
-                        .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                if action_key(event) {
-                                    this.request_edit(index, window, cx);
-                                    cx.stop_propagation();
-                                }
-                            },
-                        ))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.request_edit(index, window, cx);
-                        })),
-                );
+                if self.preview_child.is_none() {
+                    actions = actions.child(
+                        header_control("codex-edit-message", "Edit sent message")
+                            .aria_description(
+                                unavailable
+                                    .unwrap_or_else(|| "Edit message and restore workspace".into()),
+                            )
+                            .debug_selector(move || format!("codex-edit-message-{index}"))
+                            .tab_index(0)
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if action_key(event) {
+                                        this.request_edit(index, window, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.request_edit(index, window, cx);
+                            })),
+                    );
+                }
                 let keyboard_key = key.clone();
                 let keyboard_text = copy.clone();
                 let icon =
@@ -4276,6 +4262,21 @@ impl Render for CodexView {
                     .when(kind == "agentMessage", |anchor| anchor.mb(rpx(-SPACE_LG)))
                     .child(row),
             );
+        }
+        if self.preview_child.is_some() {
+            // Preview follows every layout, including streamed output and disclosure
+            // growth. Its scroll/caches/expansion state never touch the parent view.
+            self.scroll.scroll_to_bottom();
+            return div()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .font_family(crate::fonts::UI_FAMILY)
+                .text_color(c::FG())
+                .child(messages.px(rpx(SPACE_SM)))
+                .into_any_element();
         }
         if let Some(editor) = self
             .message_editor
@@ -6474,10 +6475,11 @@ impl CodexView {
                     ]
                     .into_iter()
                     .filter(|(mode, _)| {
-                        state
-                            .permission_modes
-                            .iter()
-                            .any(|supported| supported == mode)
+                        grove_core::claude::can_select_permission_mode(&state.saved, mode)
+                            && state
+                                .permission_modes
+                                .iter()
+                                .any(|supported| supported == mode)
                     })
                     .collect()
                 } else {
@@ -7753,84 +7755,6 @@ fn work_period_at(state: &codex::Snapshot, index: usize) -> Option<&codex::WorkP
         .iter()
         .rev()
         .find(|period| period.start_item <= index && period.end_item.is_none_or(|end| index < end))
-}
-
-fn work_subagents_at(state: &codex::Snapshot, index: usize) -> &[codex::Subagent] {
-    work_period_at(state, index).map_or(&[], |period| period.subagents.as_slice())
-}
-
-fn subagent_summary(subagents: &[codex::Subagent]) -> Option<(String, Option<String>)> {
-    if subagents.is_empty() {
-        return None;
-    }
-    let working = subagents
-        .iter()
-        .filter(|agent| agent.status == codex::SubagentStatus::Working)
-        .count();
-    let failed = subagents
-        .iter()
-        .filter(|agent| agent.status == codex::SubagentStatus::Failed)
-        .count();
-    let noun = if subagents.len() == 1 {
-        "subagent"
-    } else {
-        "subagents"
-    };
-    Some((
-        format!("{} {noun} · {working} working", subagents.len()),
-        (failed > 0).then(|| format!("{failed} failed")),
-    ))
-}
-
-fn subagent_status_label(status: codex::SubagentStatus) -> &'static str {
-    match status {
-        codex::SubagentStatus::Working => "Working",
-        codex::SubagentStatus::Completed => "Completed",
-        codex::SubagentStatus::Failed => "Failed",
-        codex::SubagentStatus::Unknown => "Unknown",
-    }
-}
-
-fn subagent_row(agent: &codex::Subagent) -> gpui::Stateful<gpui::Div> {
-    let status = subagent_status_label(agent.status);
-    let detail = format!("{} · {} · {}", agent.name, agent.activity, status);
-    div()
-        .id(gpui::SharedString::from(format!("subagent-{}", agent.id)))
-        .aria_label(detail.clone())
-        .tooltip(move |window, cx| tooltip(detail.clone(), window).build(window, cx))
-        .flex()
-        .items_center()
-        .gap(rpx(SPACE_LG))
-        .min_w_0()
-        .text_size(rpx(TEXT_SMALL))
-        .text_color(c::FG_DIM())
-        .child(
-            div()
-                .w(rpx(SUBAGENT_NAME_W))
-                .flex_shrink_0()
-                .truncate()
-                .text_color(c::FG())
-                .child(agent.name.clone()),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(agent.activity.clone()),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .text_color(match agent.status {
-                    codex::SubagentStatus::Working | codex::SubagentStatus::Completed => {
-                        c::FG_DIM()
-                    }
-                    codex::SubagentStatus::Failed => c::FORM_ERROR(),
-                    codex::SubagentStatus::Unknown => c::FG_MUTE(),
-                })
-                .child(status),
-        )
 }
 
 /// Place work metadata after the user prompt, keeping the answer outside disclosure.
@@ -10803,6 +10727,64 @@ mod tests {
         assert!(!tool_is_running(&state, 0));
     }
     #[gpui::test]
+    fn child_preview_uses_transcript_tools_and_follows_incoming_items(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.preview_child = Some("child".into());
+            view.session.update(cx, |session, cx| {
+                session.state.status = Status::Working;
+                let mut activity = codex::SubagentActivity::default();
+                activity.items = (0..24).map(|index| json!({"id":format!("child-{index}"),"type":"agentMessage","text":format!("## Step {index}\n\nDetailed investigation with **markdown** and `code`.\n\nAnother paragraph to exercise transcript scrolling.")})).collect();
+                activity.items.push(json!({"id":"child-command","type":"commandExecution","command":"cargo test retry","status":"inProgress","aggregatedOutput":"running tests"}));
+                session.state.subagent_activity.insert("child".into(), activity);
+                cx.notify();
+            });
+        }));
+        draw(cx);
+        draw(cx);
+        assert!(cx.debug_bounds("codex-composer").is_none());
+        assert!(cx.debug_bounds("codex-edit-message-0").is_none());
+        let toggle = cx
+            .debug_bounds("codex-toggle-tool-24")
+            .expect("child uses the shared tool disclosure");
+        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            let state = view.session.read(cx).state.subagent_snapshot("child");
+            assert!(
+                tool_is_running(&state, 24),
+                "shared shimmer predicate sees the active child tool"
+            );
+            assert!(view
+                .expanded
+                .contains(&tool_expansion_key(&state.saved.items[24], 24)));
+            assert!(view.scroll.offset().y < gpui::Pixels::ZERO);
+        });
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                let activity = session.state.subagent_activity.get_mut("child").unwrap();
+                activity.items[24]["status"] = json!("completed");
+                activity.items.push(json!({"id":"child-latest","type":"agentMessage","text":"Latest child response after the completed command."}));
+                cx.notify();
+            });
+        }));
+        draw(cx);
+        draw(cx);
+        let latest = cx
+            .debug_bounds("codex-message-anchor-25")
+            .expect("incoming child item rendered");
+        let transcript = cx.debug_bounds("codex-messages").unwrap();
+        assert!(latest.bottom() <= transcript.bottom() + gpui::px(1.));
+        assert!(latest.bottom() > transcript.top());
+        view.read_with(cx, |view, cx| {
+            let state = view.session.read(cx).state.subagent_snapshot("child");
+            assert!(!tool_is_running(&state, 24));
+        });
+    }
+
+    #[gpui::test]
     fn initialized_claude_accepts_first_prompt_before_session_id(cx: &mut gpui::TestAppContext) {
         let (handle, actions) = Handle::channel();
         let (_updates, receive) = mpsc::channel();
@@ -10866,12 +10848,22 @@ mod tests {
         .collect();
         let (choices, _) = CodexView::menu_choices(&state, ComposerMenu::Access);
         assert!(choices.iter().any(|(value, _)| value == "default"));
-        assert!(choices
+        assert!(!choices
             .iter()
             .any(|(value, _)| value == "bypassPermissions"));
         assert!(!choices
             .iter()
             .any(|(value, label)| value == "workspace-write" || label.contains("sandbox")));
+        for flag in [
+            "--dangerously-skip-permissions",
+            "--allow-dangerously-skip-permissions",
+        ] {
+            state.saved.config_args = vec![flag.into()];
+            let (choices, _) = CodexView::menu_choices(&state, ComposerMenu::Access);
+            assert!(choices
+                .iter()
+                .any(|(value, _)| value == "bypassPermissions"));
+        }
     }
     #[test]
     fn yolo_identity_comes_from_saved_native_launch_options() {
@@ -15324,38 +15316,52 @@ mod tests {
                 });
             });
             draw(cx);
-            let trigger = view.read_with(cx, |view, _| view.option_bounds[2].get());
-            cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
-            draw(cx);
-            cx.executor()
-                .advance_clock(std::time::Duration::from_secs(1));
-            draw(cx);
-            cx.simulate_click(trigger.center(), gpui::Modifiers::default());
-            draw(cx);
-            let popup = cx.debug_bounds("codex-options-popup").unwrap();
-            // Both fixtures have four rows; use the rendered menu's second row.
-            let second_row = gpui::point(popup.center().x, popup.top() + popup.size.height * 0.375);
-            cx.simulate_mouse_move(second_row, None, gpui::Modifiers::default());
-            draw(cx);
-            cx.simulate_mouse_down(
-                second_row,
-                gpui::MouseButton::Left,
-                gpui::Modifiers::default(),
-            );
-            draw(cx);
-            cx.simulate_mouse_up(
-                second_row,
-                gpui::MouseButton::Left,
-                gpui::Modifiers::default(),
-            );
-            draw(cx);
-            let expected = if provider == codex::Provider::Claude {
-                "acceptEdits"
-            } else {
-                "workspace-write"
-            };
-            assert!(actions.try_iter().any(|action| matches!(action, Action::Configure { access: Some(access), model: None, effort: None } if access == expected)));
-            assert!(view.read_with(cx, |view, _| view.popup.is_none()));
+            for rejected in [false, true] {
+                if rejected {
+                    cx.update(|_, cx| {
+                        view.update(cx, |view, cx| {
+                            view.session.update(cx, |session, cx| {
+                                session.state.error = Some("mode unavailable".into());
+                                cx.notify();
+                            });
+                        });
+                    });
+                    draw(cx);
+                }
+                let trigger = view.read_with(cx, |view, _| view.option_bounds[2].get());
+                cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
+                draw(cx);
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_secs(1));
+                draw(cx);
+                cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+                draw(cx);
+                let popup = cx.debug_bounds("codex-options-popup").unwrap();
+                // Both fixtures have four rows; use the rendered menu's second row.
+                let second_row =
+                    gpui::point(popup.center().x, popup.top() + popup.size.height * 0.375);
+                cx.simulate_mouse_move(second_row, None, gpui::Modifiers::default());
+                draw(cx);
+                cx.simulate_mouse_down(
+                    second_row,
+                    gpui::MouseButton::Left,
+                    gpui::Modifiers::default(),
+                );
+                draw(cx);
+                cx.simulate_mouse_up(
+                    second_row,
+                    gpui::MouseButton::Left,
+                    gpui::Modifiers::default(),
+                );
+                draw(cx);
+                let expected = if provider == codex::Provider::Claude {
+                    "acceptEdits"
+                } else {
+                    "workspace-write"
+                };
+                assert!(actions.try_iter().any(|action| matches!(action, Action::Configure { access: Some(access), model: None, effort: None } if access == expected)));
+                assert!(view.read_with(cx, |view, _| view.popup.is_none()));
+            }
         }
     }
 
@@ -16446,88 +16452,6 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(work_header_at(&state, 1).unwrap().1, "Working for 2m");
-    }
-
-    #[test]
-    fn subagent_summary_counts_only_matching_states_and_hides_empty_failure_count() {
-        let agent = |status| codex::Subagent {
-            id: "child".into(),
-            role: None,
-            task: None,
-            name: "Explorer".into(),
-            activity: "Reading files".into(),
-            status,
-        };
-        assert_eq!(subagent_summary(&[]), None);
-        assert_eq!(
-            subagent_summary(&[agent(codex::SubagentStatus::Working)]),
-            Some(("1 subagent · 1 working".into(), None))
-        );
-        let agents = vec![
-            agent(codex::SubagentStatus::Working),
-            agent(codex::SubagentStatus::Failed),
-            agent(codex::SubagentStatus::Completed),
-            agent(codex::SubagentStatus::Unknown),
-        ];
-        assert_eq!(
-            subagent_summary(&agents),
-            Some(("4 subagents · 1 working".into(), Some("1 failed".into())))
-        );
-        assert_eq!(
-            subagent_status_label(codex::SubagentStatus::Unknown),
-            "Unknown"
-        );
-        assert_eq!(
-            subagent_status_label(codex::SubagentStatus::Completed),
-            "Completed"
-        );
-    }
-
-    #[test]
-    fn subagent_rows_and_summary_stay_with_their_work_header_period() {
-        let mut state = snapshot();
-        state.saved.items = vec![
-            serde_json::json!({"type":"userMessage"}),
-            serde_json::json!({"type":"reasoning"}),
-            serde_json::json!({"type":"userMessage"}),
-            serde_json::json!({"type":"reasoning"}),
-        ];
-        let period = |start_item, end_item, name: &str, status| codex::WorkPeriod {
-            start_item,
-            end_item,
-            duration_ms: None,
-            subagents: vec![codex::Subagent {
-                id: name.into(),
-                name: name.into(),
-                role: None,
-                task: None,
-                activity: format!("Activity for {name}"),
-                status,
-            }],
-        };
-        state.saved.work_periods = vec![
-            period(0, Some(2), "Past", codex::SubagentStatus::Failed),
-            period(2, None, "Current", codex::SubagentStatus::Working),
-        ];
-        state.status = Status::Working;
-        assert!(!work_header_at(&state, 1).unwrap().2);
-        assert!(work_header_at(&state, 3).unwrap().2);
-        assert_eq!(work_subagents_at(&state, 1)[0].name, "Past");
-        assert_eq!(
-            work_subagents_at(&state, 3)[0].activity,
-            "Activity for Current"
-        );
-        assert_eq!(
-            subagent_summary(work_subagents_at(&state, 1))
-                .unwrap()
-                .1
-                .as_deref(),
-            Some("1 failed")
-        );
-        assert_eq!(
-            subagent_summary(work_subagents_at(&state, 3)).unwrap().0,
-            "1 subagent · 1 working"
-        );
     }
 
     #[test]

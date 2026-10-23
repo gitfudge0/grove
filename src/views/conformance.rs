@@ -699,3 +699,38 @@ fn source_guards_detect_regressions_without_borrowing_neighbor_contracts() {
     let adjacent = "Input::new(&first)), child(Input::new(&second).aria_label(\"Name\").appearance(false).bordered(false).focus_bordered(false).p_0())";
     assert!(!missing_input_contract(constructor_chain(adjacent)).is_empty());
 }
+
+#[test]
+fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
+    let transcript = source("src/views/codex_view.rs");
+    assert!(!transcript.contains("subagent_summary("));
+    assert!(!transcript.contains("subagent_row("));
+    let panel = source("src/views/sidebar/checkout_panel.rs");
+    assert!(panel.contains("selected_session_has_agents"));
+    assert!(panel.contains("let agents_only = self.is_zen() || targets.is_empty()"));
+    let preview = source("src/views/sidebar/agent_preview.rs");
+    assert!(preview
+        .split_whitespace()
+        .collect::<String>()
+        .contains("transcript_bounds.get()"));
+    assert!(preview.contains("CodexView::child_preview("));
+    assert!(preview.contains(".child(transcript)"));
+    assert!(!preview.contains("SubagentActivityKind::"));
+    assert!(!preview.contains("TextView::markdown("));
+    assert!(!preview.contains("session.send("));
+    assert!(transcript.contains("view.preview_child = Some(child)"));
+    let preview_return = transcript
+        .split("if self.preview_child.is_some() {")
+        .nth(1)
+        .expect("child preview uses the common transcript rendering path")
+        .split("if let Some(editor) = self")
+        .next()
+        .expect("preview returns before editable conversation controls");
+    assert!(preview_return.contains("self.scroll.scroll_to_bottom()"));
+    assert!(preview_return.contains(".child(messages.px("));
+    assert!(!preview_return.contains("session.send("));
+    assert!(transcript.contains("if this.preview_child.is_some() {\n                    return;"));
+    assert!(transcript.contains(
+        "if self.preview_child.is_none() {\n                    actions = actions.child("
+    ));
+}

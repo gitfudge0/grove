@@ -388,6 +388,29 @@ fn permission_mode(access: &str) -> Result<&str, String> {
         _ => Err(format!("Unsupported Claude Code permission mode: {access}")),
     }
 }
+
+/// Bypass is a process launch capability, not a permission the live picker can grant.
+pub fn can_select_permission_mode(saved: &SavedSession, mode: &str) -> bool {
+    if mode != "bypassPermissions" {
+        return true;
+    }
+    let Ok((options, _)) = launch_options(&saved.config_args) else {
+        return false;
+    };
+    let mut index = 0;
+    while let Some(option) = options.get(index) {
+        match option.as_str() {
+            "--dangerously-skip-permissions" | "--allow-dangerously-skip-permissions" => {
+                return true
+            }
+            "--strict-mcp-config" | "--disable-slash-commands" | "--chrome" | "--no-chrome" => {
+                index += 1;
+            }
+            _ => index += 2, // The remaining accepted launch options take a value.
+        }
+    }
+    false
+}
 /// Claude Code's own compaction command, submitted for the host `/compact`.
 const COMPACT_COMMAND: &str = "/compact";
 fn nonce() -> String {
@@ -425,6 +448,267 @@ fn user_content(text: &str, images: &[String]) -> Vec<Value> {
     }
     content
 }
+#[derive(Default)]
+struct ChildTranscript {
+    transcript: crate::claude_transcript::ClaudeTranscriptState,
+    items: Vec<Value>,
+    message_id: String,
+    blocks: HashMap<u64, String>,
+}
+impl ChildTranscript {
+    fn assistant_block_id(
+        &self,
+        message: &str,
+        index: usize,
+        block: &Value,
+        claimed: &[String],
+    ) -> String {
+        let fallback = format!("{message}-{index}");
+        let kind = match block["type"].as_str() {
+            Some("text") => "agentMessage",
+            _ => return fallback,
+        };
+        if self.message_id != message {
+            return fallback;
+        }
+        let text = block[if kind == "reasoning" {
+            "thinking"
+        } else {
+            "text"
+        }]
+        .as_str()
+        .unwrap_or_default();
+        let mut candidates = self
+            .blocks
+            .iter()
+            .filter_map(|(stream_index, id)| {
+                if claimed.contains(id) {
+                    return None;
+                }
+                self.items
+                    .iter()
+                    .find(|item| item["id"] == *id && item["type"] == kind)
+                    .map(|item| (*stream_index, id, item))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(stream_index, _, _)| *stream_index);
+        let content = |item: &Value| -> String {
+            if kind == "reasoning" {
+                item["content"][0].as_str().unwrap_or_default().to_owned()
+            } else {
+                item["text"].as_str().unwrap_or_default().to_owned()
+            }
+        };
+        if let Some((_, id, _)) = candidates.iter().find(|(_, _, item)| content(item) == text) {
+            return (*id).clone();
+        }
+        if let Some((_, id, _)) = candidates.iter().find(|(_, _, item)| {
+            let streamed = content(item);
+            !streamed.is_empty() && (text.starts_with(&streamed) || streamed.starts_with(text))
+        }) {
+            return (*id).clone();
+        }
+        if let Some((_, id, _)) = candidates
+            .iter()
+            .find(|(stream_index, _, _)| *stream_index == index as u64)
+        {
+            return (*id).clone();
+        }
+        if candidates.len() == 1 {
+            return candidates[0].1.clone();
+        }
+        fallback
+    }
+    fn upsert(&mut self, item: Value) {
+        if let Some(old) = self.items.iter_mut().find(|old| old["id"] == item["id"]) {
+            *old = item;
+        } else {
+            self.items.push(item);
+        }
+    }
+    fn report(&mut self, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .rev()
+            .find(|item| item["type"] == "agentMessage" && item["text"].as_str() == Some(text))
+        {
+            item["phase"] = json!("final_answer");
+        } else {
+            self.upsert(json!({"id":format!("child-final-report-{}", self.items.len()),"type":"agentMessage","phase":"final_answer","text":text}));
+        }
+    }
+    fn block(&mut self, id: &str, block: &Value, cwd: &str) {
+        match block["type"].as_str() {
+            Some("text") => {
+                self.upsert(json!({"id":id,"type":"agentMessage","text":block["text"]}));
+            }
+            Some("tool_use") => {
+                let id = block["id"].as_str().unwrap_or(id);
+                let mut item = if block["name"] == "Bash" {
+                    json!({"id":id,"type":"commandExecution","command":block["input"]["command"],"cwd":cwd,"status":"inProgress","aggregatedOutput":""})
+                } else {
+                    json!({"id":id,"type":"mcpToolCall","server":"Claude Code","tool":block["name"],"arguments":block["input"],"status":"inProgress"})
+                };
+                if let Some(old) = self.items.iter().find(|old| old["id"] == id) {
+                    for key in [
+                        "status",
+                        "result",
+                        "error",
+                        "aggregatedOutput",
+                        "progress",
+                        "structuredResult",
+                        "plan",
+                        "text",
+                        "detached",
+                    ] {
+                        if let Some(value) = old.get(key) {
+                            item[key] = value.clone();
+                        }
+                    }
+                }
+                self.transcript.normalize_tool_item(&mut item);
+                self.upsert(item);
+            }
+            _ => {} // Private reasoning is never a child transcript message.
+        }
+    }
+    fn message(&mut self, value: &Value, cwd: &str) {
+        match value["type"].as_str() {
+            Some("assistant") => {
+                let message = value["message"]["id"]
+                    .as_str()
+                    .or(value["uuid"].as_str())
+                    .unwrap_or(&self.message_id)
+                    .to_owned();
+                if let Some(blocks) = value["message"]["content"].as_array() {
+                    let mut claimed = Vec::new();
+                    for (index, block) in blocks.iter().enumerate() {
+                        let id = self.assistant_block_id(&message, index, block, &claimed);
+                        self.block(&id, block, cwd);
+                        claimed.push(id);
+                    }
+                }
+            }
+            Some("stream_event") => {
+                let event = &value["event"];
+                let index = event["index"].as_u64().unwrap_or(0);
+                match event["type"].as_str() {
+                    Some("message_start") => {
+                        self.message_id = event["message"]["id"]
+                            .as_str()
+                            .unwrap_or("child-stream")
+                            .into();
+                        self.blocks.clear();
+                    }
+                    Some("content_block_start") => {
+                        let block = &event["content_block"];
+                        let id = block["id"]
+                            .as_str()
+                            .map_or_else(|| format!("{}-{index}", self.message_id), str::to_owned);
+                        self.block(&id, block, cwd);
+                        self.blocks.insert(index, id);
+                    }
+                    Some("content_block_delta") => {
+                        if let Some(text) = event["delta"]["text"].as_str() {
+                            if let Some(item) = self
+                                .blocks
+                                .get(&index)
+                                .and_then(|id| self.items.iter_mut().find(|item| item["id"] == *id))
+                            {
+                                let mut full = item["text"].as_str().unwrap_or_default().to_owned();
+                                full.push_str(text);
+                                item["text"] = json!(full);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("user") => {
+                let content = &value["message"]["content"];
+                let blocks = content.as_array().cloned().unwrap_or_else(|| {
+                    content
+                        .as_str()
+                        .map(|text| vec![json!({"type":"text","text":text})])
+                        .unwrap_or_default()
+                });
+                let visible: Vec<Value> = blocks
+                    .iter()
+                    .filter(|block| {
+                        block["type"] != "tool_result"
+                            && block["type"] != "thinking"
+                            && block["type"] != "redacted_thinking"
+                    })
+                    .cloned()
+                    .collect();
+                if !visible.is_empty() {
+                    let id = value["uuid"]
+                        .as_str()
+                        .or(value["message"]["id"].as_str())
+                        .map_or_else(|| format!("child-user-{}", self.items.len()), str::to_owned);
+                    self.upsert(json!({"id":id,"type":"userMessage","content":visible}));
+                }
+                for block in blocks.iter().filter(|block| block["type"] == "tool_result") {
+                    if let Some(item) = self
+                        .items
+                        .iter_mut()
+                        .find(|item| item["id"] == block["tool_use_id"])
+                    {
+                        self.transcript.apply_tool_result(
+                            item,
+                            &block["content"],
+                            value.get("tool_use_result"),
+                            block["is_error"] == true,
+                        );
+                        if item["type"] == "commandExecution" {
+                            item["aggregatedOutput"] =
+                                json!(block["content"].as_str().map_or_else(
+                                    || block["content"]
+                                        .as_array()
+                                        .into_iter()
+                                        .flatten()
+                                        .filter_map(|part| part["text"].as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                    str::to_owned
+                                ));
+                        }
+                    }
+                }
+            }
+            Some("tool_progress") => {
+                if let Some(item) = self
+                    .items
+                    .iter_mut()
+                    .find(|item| item["id"] == value["tool_use_id"])
+                {
+                    item["progress"] =
+                        json!(format!("Running for {}s", value["elapsed_time_seconds"]));
+                }
+            }
+            Some("result") => {
+                if let Some(text) = value["result"].as_str() {
+                    self.report(text);
+                }
+
+                for item in &mut self.items {
+                    if item["status"] == "inProgress" && item["detached"] != true {
+                        item["status"] = json!(if value["is_error"] == true {
+                            "failed"
+                        } else {
+                            "completed"
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
 struct Actor {
     state: Snapshot,
     args: Vec<String>,
@@ -441,6 +725,7 @@ struct Actor {
     configuring: bool,
     pending_access: Option<String>,
     permission_changes: HashMap<String, (String, u64)>,
+    permission_error: Option<String>,
     permission_mode_revision: u64,
     interaction_children: crate::interaction::Children,
     tracks_session_state: bool,
@@ -465,6 +750,7 @@ struct Actor {
     pending: HashMap<String, String>,
     blocks: HashMap<u64, String>,
     subagent_tasks: HashMap<String, String>,
+    child_transcripts: HashMap<String, ChildTranscript>,
     message_id: String,
     title_generator: crate::session_title::Generator,
     last_persist: Instant,
@@ -512,6 +798,7 @@ impl Actor {
             configuring: false,
             pending_access: None,
             permission_changes: HashMap::new(),
+            permission_error: None,
             permission_mode_revision: 0,
             interaction_children: crate::interaction::Children::default(),
             tracks_session_state: false,
@@ -534,6 +821,7 @@ impl Actor {
             pending: HashMap::new(),
             blocks: HashMap::new(),
             subagent_tasks: HashMap::new(),
+            child_transcripts: HashMap::new(),
             message_id: String::new(),
             title_generator: crate::session_title::Generator::default(),
             last_persist: Instant::now(),
@@ -826,6 +1114,7 @@ impl Actor {
         self.pending_completion = None;
         self.pending.clear();
         self.permission_changes.clear();
+        self.permission_error = None;
         self.blocks.clear();
         self.state.status = Status::Starting;
         self.state.clear_error();
@@ -1466,6 +1755,9 @@ impl Actor {
                 }
                 if let Some(access) = &access {
                     let mode = permission_mode(access)?;
+                    if !can_select_permission_mode(&self.state.saved, mode) {
+                        return Err("Bypass permissions is unavailable for this Claude Code session because it was launched without bypass permission support".into());
+                    }
                     if !self.state.permission_modes.is_empty()
                         && !self
                             .state
@@ -1753,6 +2045,16 @@ impl Actor {
         self.state
             .upsert_subagent(parent, None, None, SubagentStatus::Unknown);
         self.subagent_system_message(value);
+        let child = self.child_transcripts.entry(parent.to_owned()).or_default();
+        child.message(value, &self.state.saved.cwd);
+        for item in &child.items {
+            self.state.upsert_subagent_item(parent, item.clone());
+        }
+        if value["type"] == "result" {
+            if let Some(report) = value["result"].as_str() {
+                self.subagent_report(parent, report);
+            }
+        }
         if value["type"] == "result" {
             if let Some(expired) = self.interaction_children.finish(parent, None) {
                 self.state.expire_interactions(&expired);
@@ -1762,15 +2064,19 @@ impl Actor {
         match value["type"].as_str() {
             Some("assistant") => {
                 if let Some(blocks) = value["message"]["content"].as_array() {
-                    for block in blocks {
-                        self.subagent_block(parent, block);
+                    for (index, block) in blocks.iter().enumerate() {
+                        let key = value["message"]["id"]
+                            .as_str()
+                            .or_else(|| value["uuid"].as_str())
+                            .map(|id| format!("{id}:{index}"));
+                        self.subagent_block_with_key(parent, block, key.as_deref(), true);
                     }
                 }
             }
             Some("stream_event") => {
                 let event = &value["event"];
                 if event["type"] == "content_block_start" {
-                    self.subagent_block(parent, &event["content_block"]);
+                    self.subagent_block_with_key(parent, &event["content_block"], None, false);
                 }
             }
             Some("user") => {
@@ -1793,7 +2099,37 @@ impl Actor {
             _ => {}
         }
     }
+    #[cfg(test)]
     fn subagent_block(&mut self, parent: &str, block: &Value) {
+        self.subagent_block_with_key(parent, block, None, true);
+    }
+    fn subagent_block_with_key(
+        &mut self,
+        parent: &str,
+        block: &Value,
+        event_key: Option<&str>,
+        observe: bool,
+    ) {
+        if observe {
+            if let Some(text) = match block["type"].as_str() {
+                Some("tool_use") => block["name"]
+                    .as_str()
+                    .map(|name| format!("Using {name}\n{}", block["input"])),
+                Some("text") => block["text"].as_str().map(str::to_owned),
+                _ => None,
+            } {
+                let kind = if block["type"] == "text" {
+                    crate::codex::SubagentActivityKind::Commentary
+                } else {
+                    crate::codex::SubagentActivityKind::Tool
+                };
+                let key = block["id"]
+                    .as_str()
+                    .or(event_key)
+                    .map_or_else(|| format!("text:{text}"), str::to_owned);
+                self.state.observe_subagent(parent, &key, kind, &text);
+            }
+        }
         match block["type"].as_str() {
             Some("tool_use") => {
                 self.register_subagent_from(block, Some(parent));
@@ -1822,6 +2158,22 @@ impl Actor {
             _ => {}
         }
     }
+    fn subagent_report(&mut self, id: &str, text: &str) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let child = self.child_transcripts.entry(id.into()).or_default();
+        child.report(text);
+        for item in &child.items {
+            self.state.upsert_subagent_item(id, item.clone());
+        }
+        self.state.observe_subagent(
+            id,
+            &format!("child-final-report:{text}"),
+            crate::codex::SubagentActivityKind::Commentary,
+            text,
+        );
+    }
     fn subagent_tool_result(&mut self, block: &Value, structured: Option<&Value>) {
         if structured
             .is_some_and(|result| result["isAsync"] == true || result["status"] == "async_launched")
@@ -1839,6 +2191,11 @@ impl Actor {
             .any(|period| period.subagents.iter().any(|agent| agent.id == id))
         {
             return;
+        }
+        if let Some(report) =
+            structured.and_then(|result| result["handbackReport"]["text"].as_str())
+        {
+            self.subagent_report(id, report);
         }
         if let Some(expired) = self.interaction_children.finish(id, None) {
             self.state.expire_interactions(&expired);
@@ -2038,17 +2395,21 @@ impl Actor {
                 } else if response["subtype"] == "error"
                     && pending.as_deref() == Some("set_permission_mode")
                 {
+                    // A startup selection is sent before the launch prompt is
+                    // drained into `deferred`. Cancel it on rejection as well;
+                    // it must never run under the previous permission mode.
+                    self.initial = None;
                     if let Some(prompt) = self.deferred.take() {
                         self.state.rejected_submission = Some(prompt.id);
                         self.state.queue_sending.retain(|id| *id != prompt.id);
                     }
                     self.queue_ready = false;
-                    self.state.error = Some(
-                        response["error"]
-                            .as_str()
-                            .unwrap_or("Claude Code rejected the permission mode")
-                            .into(),
-                    );
+                    let error = response["error"]
+                        .as_str()
+                        .unwrap_or("Claude Code rejected the permission mode")
+                        .to_owned();
+                    self.state.error = Some(error.clone());
+                    self.permission_error = Some(error);
                 } else if response["subtype"] == "error" {
                     return Err(response["error"]
                         .as_str()
@@ -2069,6 +2430,13 @@ impl Actor {
                         self.state.resolved_access = Some(access.clone());
                         self.state.access = Some(access.clone());
                         self.state.saved.composer.access = Some(access);
+                        if self
+                            .permission_error
+                            .take()
+                            .is_some_and(|error| self.state.error.as_ref() == Some(&error))
+                        {
+                            self.state.clear_error();
+                        }
                     }
                 }
                 if self.configuring && self.pending.is_empty() {
@@ -3001,9 +3369,100 @@ mod tests {
     }
 
     #[test]
+    fn permission_selection_requires_launch_capability_for_bypass() {
+        let mut actor = actor();
+        actor.state.permission_modes = vec!["default".into(), "bypassPermissions".into()];
+        let selection = || Action::Configure {
+            model: None,
+            effort: None,
+            access: Some("bypassPermissions".into()),
+        };
+        assert!(actor.action(selection()).is_err());
+        assert!(actor.pending_access.is_none());
+        for args in [
+            vec!["--append-system-prompt=--dangerously-skip-permissions".into()],
+            vec![
+                "--append-system-prompt".into(),
+                "--allow-dangerously-skip-permissions".into(),
+            ],
+        ] {
+            actor.state.saved.config_args = args;
+            assert!(actor.action(selection()).is_err());
+        }
+        for flag in [
+            "--dangerously-skip-permissions",
+            "--allow-dangerously-skip-permissions",
+        ] {
+            actor.state.saved.config_args = vec![flag.into()];
+            actor.action(selection()).unwrap();
+            assert_eq!(actor.pending_access.as_deref(), Some("bypassPermissions"));
+        }
+    }
+
+    #[test]
+    fn rejected_permission_selection_allows_acknowledged_recovery() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.state.resolved_access = Some("default".into());
+        for (mode, success) in [("plan", false), ("acceptEdits", true)] {
+            actor
+                .action(Action::Configure {
+                    model: None,
+                    effort: None,
+                    access: Some(mode.into()),
+                })
+                .unwrap();
+            let request = read(&mut reader);
+            assert_eq!(request["request"]["mode"], mode);
+            assert_eq!(actor.state.resolved_access.as_deref(), Some("default"));
+            actor
+                .message(json!({"type":"control_response","response":{
+                    "subtype":if success { "success" } else { "error" },
+                    "request_id":request["request_id"], "error":"mode unavailable"
+                }}))
+                .unwrap();
+        }
+        assert_eq!(actor.state.resolved_access.as_deref(), Some("acceptEdits"));
+        assert_eq!(
+            actor.state.saved.composer.access.as_deref(),
+            Some("acceptEdits")
+        );
+        assert!(actor.state.error.is_none());
+        assert!(actor.permission_changes.is_empty());
+        assert_eq!(actor.state.status, Status::Idle);
+    }
+
+    #[test]
+    fn permission_ack_preserves_a_newer_unrelated_error() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.permission_error = Some("mode unavailable".into());
+        actor.state.error = Some("authentication expired".into());
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("plan".into()),
+            })
+            .unwrap();
+        let request = read(&mut reader);
+        actor
+            .message(json!({"type":"control_response","response":{
+                "subtype":"success", "request_id":request["request_id"]
+            }}))
+            .unwrap();
+        assert_eq!(actor.state.error.as_deref(), Some("authentication expired"));
+        assert_eq!(actor.state.resolved_access.as_deref(), Some("plan"));
+    }
+
+    #[test]
     fn permission_selection_survives_initialization_and_rejection_keeps_effective_access() {
         let mut actor = actor();
         let mut reader = transport(&mut actor);
+        actor.initial = Some("perform the launch task".into());
         actor
             .action(Action::Configure {
                 model: None,
@@ -3026,9 +3485,44 @@ mod tests {
         assert_eq!(actor.state.resolved_access.as_deref(), Some("default"));
         assert!(actor.state.saved.composer.access.is_none());
         assert_eq!(actor.state.error.as_deref(), Some("mode unavailable"));
+        assert!(actor.initial.is_none());
         assert!(actor.deferred.is_none());
         assert!(actor.in_flight.is_none());
         assert_eq!(actor.state.status, Status::Idle);
+        assert!(!actor.drain_queue());
+        assert_eq!(actor.state.error.as_deref(), Some("mode unavailable"));
+    }
+
+    #[test]
+    fn startup_launch_prompt_waits_for_successful_permission_selection() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initial = Some("perform the launch task".into());
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("plan".into()),
+            })
+            .unwrap();
+        actor
+            .pending
+            .insert("initialize".into(), "initialize".into());
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"current_permission_mode":"default"}}})).unwrap();
+        let request = read(&mut reader);
+        assert!(!actor.drain_queue());
+        assert_eq!(actor.initial.as_deref(), Some("perform the launch task"));
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"]}})).unwrap();
+        assert!(actor.drain_queue());
+        let prompt = read(&mut reader);
+        assert_eq!(prompt["type"], "user");
+        assert_eq!(
+            prompt["message"]["content"][0]["text"],
+            "perform the launch task"
+        );
+        assert_eq!(actor.state.access.as_deref(), Some("plan"));
+        assert!(actor.initial.is_none());
+        assert!(!actor.drain_queue());
     }
 
     #[test]
@@ -3206,6 +3700,72 @@ mod tests {
         assert_eq!(actor.state.status, Status::Idle);
     }
     #[test]
+    fn child_authoritative_handback_report_is_visible_and_deduplicated() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.register_subagent(&json!({"id":"child","name":"Agent","input":{"prompt":"Inspect"}}));
+        let report = "Full child final report. ".repeat(100);
+        let structured = json!({"agentId":"provider-child","status":"completed","handback":"send","handbackReport":{"text":report},"content":[{"type":"text","text":"Report delivered elsewhere, not repeated here"}]});
+        let result = json!({"type":"tool_result","tool_use_id":"child","content":"Report delivered elsewhere, not repeated here"});
+        actor.subagent_tool_result(&result, Some(&structured));
+        actor.subagent_tool_result(&result, Some(&structured));
+        let items = &actor.state.subagent_activity["child"].items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["type"], "agentMessage");
+        assert_eq!(items[0]["phase"], "final_answer");
+        assert_eq!(items[0]["text"], report);
+        assert_eq!(actor.state.subagent_activity["child"].events.len(), 1);
+        let mut child = ChildTranscript::default();
+        child.message(&json!({"type":"assistant","message":{"id":"message","content":[{"type":"text","text":report}]}}), "/repo");
+        child.message(&json!({"type":"result","result":report}), "/repo");
+        assert_eq!(child.items.len(), 1);
+        assert_eq!(child.items[0]["phase"], "final_answer");
+    }
+
+    #[test]
+    fn child_fragmented_final_frames_preserve_stream_block_identity() {
+        let mut child = ChildTranscript::default();
+        child.message(&json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"fragmented"}}}), "/repo");
+        for (index, text) in [(0, "First response"), (2, "Second response")] {
+            child.message(&json!({"type":"stream_event","event":{"type":"content_block_start","index":index,"content_block":{"type":"text","text":""}}}), "/repo");
+            child.message(&json!({"type":"stream_event","event":{"type":"content_block_delta","index":index,"delta":{"type":"text_delta","text":text}}}), "/repo");
+        }
+        for text in ["First response", "Second response"] {
+            child.message(&json!({"type":"assistant","message":{"id":"fragmented","content":[{"type":"text","text":text}]}}), "/repo");
+        }
+        assert_eq!(child.items.len(), 2);
+        assert_eq!(child.items[0]["id"], "fragmented-0");
+        assert_eq!(child.items[0]["text"], "First response");
+        assert_eq!(child.items[1]["id"], "fragmented-2");
+        assert_eq!(child.items[1]["text"], "Second response");
+    }
+
+    #[test]
+    fn child_transcript_preserves_full_streamed_messages_and_tool_results() {
+        let mut child = ChildTranscript::default();
+        let text = "Detailed child output. ".repeat(160);
+        child.message(&json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"message"}}}), "/repo");
+        child.message(&json!({"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}), "/repo");
+        child.message(&json!({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}}), "/repo");
+        assert_eq!(child.items[0]["text"], text);
+        child.message(&json!({"type":"assistant","message":{"id":"message","content":[{"type":"text","text":text},{"type":"tool_use","id":"bash","name":"Bash","input":{"command":"cat file"}},{"type":"thinking","thinking":"private"}]}}), "/repo");
+        assert_eq!(child.items.len(), 2);
+        assert_eq!(child.items[1]["type"], "commandExecution");
+        assert_eq!(child.items[1]["status"], "inProgress");
+        child.message(&json!({"type":"user","uuid":"user","message":{"content":[{"type":"text","text":text},{"type":"tool_result","tool_use_id":"bash","content":text,"is_error":true}]}}), "/repo");
+        assert_eq!(child.items.len(), 3);
+        assert_eq!(child.items[1]["aggregatedOutput"], text);
+        assert_eq!(child.items[1]["result"]["content"][0]["text"], text);
+        assert_eq!(child.items[1]["status"], "failed");
+        assert_eq!(child.items[2]["content"][0]["text"], text);
+        child.message(&json!({"type":"assistant","message":{"id":"edit","content":[{"type":"tool_use","id":"write","name":"Write","input":{"file_path":"/repo/file","content":"new"}}]}}), "/repo");
+        child.message(&json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"write","content":"written"}]},"tool_use_result":{"type":"create","filePath":"/repo/file","content":"new"}}), "/repo");
+        assert_eq!(child.items[3]["type"], "fileChange");
+        assert_eq!(child.items[3]["changes"][0]["diff"], "+new\n");
+        assert_eq!(child.items[3]["status"], "completed");
+    }
+
+    #[test]
     fn subagent_prompt_is_task_fallback_and_activity_does_not_replace_it() {
         let mut actor = actor();
         actor.state.begin_work();
@@ -3253,6 +3813,39 @@ mod tests {
             actor.state.saved.work_periods[0].subagents[0].status,
             SubagentStatus::Completed
         );
+    }
+    #[test]
+    fn subagent_recent_activity_claude_attribution_dedup_and_reasoning_exclusion() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.register_subagent(
+            &json!({"id":"child", "name":"Agent", "input":{"description":"Inspect"}}),
+        );
+        let message = json!({"type":"assistant","parent_tool_use_id":"child","message":{"id":"message-1","content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":"src/main.rs"}},{"type":"text","text":"Found the entry point"},{"type":"thinking","thinking":"private chain"}]}});
+        actor.message(message.clone()).unwrap();
+        actor.message(message).unwrap();
+        let activity = &actor.state.subagent_activity["child"];
+        assert_eq!(activity.events.len(), 2);
+        assert_eq!(
+            activity.events[0].kind,
+            crate::codex::SubagentActivityKind::Tool
+        );
+        assert!(activity.events[0].text.contains("src/main.rs"));
+        assert_eq!(
+            activity.events[1].kind,
+            crate::codex::SubagentActivityKind::Commentary
+        );
+        assert!(!activity
+            .events
+            .iter()
+            .any(|e| e.text.contains("private chain")));
+        assert_eq!(actor.state.subagent_activity.len(), 1);
+        actor.message(json!({"type":"assistant","parent_tool_use_id":"child","message":{"id":"message-2","content":[{"type":"text","text":"Found the entry point"}]}})).unwrap();
+        assert_eq!(actor.state.subagent_activity["child"].events.len(), 3);
+        actor
+            .message(json!({"type":"result","parent_tool_use_id":"child","is_error":false}))
+            .unwrap();
+        assert_eq!(actor.state.subagent_activity["child"].events.len(), 3);
     }
     #[test]
     fn claude_task_notifications_deduplicate_tool_lifecycle_and_ignore_shell_tasks() {

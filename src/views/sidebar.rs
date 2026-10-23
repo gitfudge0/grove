@@ -1,4 +1,5 @@
 //! Workspace-scoped navigation. UI state is kept per workspace while processes keep running.
+mod agent_preview;
 mod checkout_panel;
 mod collapsed;
 mod content;
@@ -5054,6 +5055,15 @@ impl Render for Sidebar {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && this.checkout_panel.peek.is_some()
+                    && !this.confirmation_open()
+                {
+                    this.dismiss_agent_peek(window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "tab" && this.header_tasks.open.is_some() {
                     this.focus_header_task_disclosure(window, cx);
                     cx.stop_propagation();
@@ -5241,6 +5251,9 @@ impl Render for Sidebar {
                         )
                     }),
             )
+            .when_some(self.render_agent_peek(window, cx), |root, peek| {
+                root.child(peek)
+            })
             .when(self.checkout_confirmation_open(), |root| {
                 let source = self.checkout_confirmation_bounds();
                 root.child(gpui::deferred(

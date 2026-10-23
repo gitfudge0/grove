@@ -81,6 +81,43 @@ pub struct Subagent {
     pub task: Option<String>,
     pub status: SubagentStatus,
 }
+/// Provider-visible observations only; deliberately excluded from saved sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentActivityKind {
+    Tool,
+    Commentary,
+}
+#[derive(Clone, Debug)]
+pub struct SubagentActivityEvent {
+    pub id: String,
+    pub text: String,
+    pub kind: SubagentActivityKind,
+    pub observed_at: Instant,
+}
+#[derive(Clone, Debug, Default)]
+pub struct SubagentActivity {
+    /// Full provider-visible transcript items, in chronological order.
+    pub items: Vec<Value>,
+    pub events: Vec<SubagentActivityEvent>,
+    pub observed_at: Option<Instant>,
+    pub refreshing: bool,
+    pub refresh_error: bool,
+    pub truncated: bool,
+    poll_cursor: Option<(u64, u64)>,
+}
+fn activity_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+fn bounded_excerpt(text: &str, limit: usize) -> String {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
 /// Latest observation per child in this session, including terminal tombstones.
 /// Work-period closure describes the parent and does not complete its children.
 pub fn active_subagents(periods: &[WorkPeriod]) -> Vec<Subagent> {
@@ -734,6 +771,8 @@ pub struct SessionNotice {
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub saved: SavedSession,
+    pub subagent_activity: HashMap<String, SubagentActivity>,
+    pub subagent_activity_evicted: HashSet<String>,
     pub status: Status,
     pub turn_id: Option<String>,
     pub work_started: Option<Instant>,
@@ -780,6 +819,7 @@ pub struct Snapshot {
     pub(crate) context_tokens: Option<u64>,
     settled_turns: Vec<String>,
     subagent_restart_calls: Vec<String>,
+    subagent_observation_generation: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -1152,6 +1192,9 @@ impl Snapshot {
             context_tokens,
             settled_turns: Vec::new(),
             subagent_restart_calls: Vec::new(),
+            subagent_observation_generation: 0,
+            subagent_activity: HashMap::new(),
+            subagent_activity_evicted: HashSet::new(),
         }
     }
     pub(crate) fn begin_work(&mut self) {
@@ -1165,6 +1208,167 @@ impl Snapshot {
             duration_ms: None,
             subagents: Vec::new(),
         });
+    }
+    fn subagent_terminal(&self, id: &str) -> bool {
+        self.saved
+            .work_periods
+            .iter()
+            .rev()
+            .flat_map(|p| p.subagents.iter().rev())
+            .find(|a| a.id == id)
+            .is_some_and(|a| matches!(a.status, SubagentStatus::Completed | SubagentStatus::Failed))
+    }
+    fn ensure_subagent_activity(&mut self, id: &str) {
+        if !self.subagent_activity.contains_key(id) && self.subagent_activity.len() >= 100 {
+            if let Some(oldest) = self
+                .subagent_activity
+                .iter()
+                .filter(|(_, activity)| activity.items.is_empty())
+                .min_by_key(|(id, a)| (!self.subagent_terminal(id), a.observed_at))
+                .map(|(id, _)| id.clone())
+            {
+                self.subagent_activity.remove(&oldest);
+                if self.subagent_activity_evicted.len() >= 100 {
+                    self.subagent_activity_evicted.clear();
+                }
+                self.subagent_activity_evicted.insert(oldest);
+            }
+        }
+        let evicted = self.subagent_activity_evicted.contains(id);
+        self.subagent_activity
+            .entry(id.into())
+            .or_default()
+            .truncated |= evicted;
+        self.enforce_subagent_activity_budget();
+    }
+    pub(crate) fn upsert_subagent_item(&mut self, id: &str, item: Value) {
+        if item["type"] == "reasoning" || self.subagent_period(id).is_none() {
+            return;
+        }
+        self.ensure_subagent_activity(id);
+        let Some(activity) = self.subagent_activity.get_mut(id) else {
+            return;
+        };
+        let items = &mut activity.items;
+        if let Some(existing) = items
+            .iter_mut()
+            .find(|old| !item["id"].is_null() && old["id"] == item["id"])
+        {
+            if *existing == item {
+                return;
+            }
+            *existing = item;
+        } else {
+            items.push(item);
+        }
+        activity.observed_at = Some(Instant::now());
+    }
+
+    /// An isolated projection lets the native transcript reuse its normal renderer.
+    #[must_use]
+    pub fn subagent_snapshot(&self, id: &str) -> Self {
+        let mut saved = self.saved.clone();
+        saved.items = self
+            .subagent_activity
+            .get(id)
+            .map(|a| a.items.clone())
+            .unwrap_or_default();
+        saved.thread_id = Some(id.into());
+        saved.work_periods.clear();
+        saved.rich_plans = crate::rich_plan::PlanStore::default();
+        saved.draft.clear();
+        saved.draft_images.clear();
+        saved.draft_reference = None;
+        let mut state = Self::new(saved);
+        state.status = if self.subagent_terminal(id) {
+            Status::Idle
+        } else {
+            Status::Working
+        };
+        state.work_started = self.work_started;
+        state
+    }
+
+    pub(crate) fn observe_subagent(
+        &mut self,
+        id: &str,
+        key: &str,
+        kind: SubagentActivityKind,
+        text: &str,
+    ) {
+        if id.len() > 1024 || self.subagent_period(id).is_none() || text.trim().is_empty() {
+            return;
+        }
+        self.ensure_subagent_activity(id);
+        let Some(activity) = self.subagent_activity.get_mut(id) else {
+            return;
+        };
+        let key = format!("{:016x}", activity_hash(key));
+        activity.truncated |= text.len() > 1024;
+        let text = bounded_excerpt(text, 1024);
+        let now = Instant::now();
+        if let Some(event) = activity.events.iter_mut().find(|event| event.id == key) {
+            if event.text == text {
+                return;
+            }
+            event.text = text;
+            event.observed_at = now;
+        } else {
+            activity.events.push(SubagentActivityEvent {
+                id: key,
+                text,
+                kind,
+                observed_at: now,
+            });
+        }
+        activity.observed_at = Some(now);
+        while activity.events.len() > 20
+            || activity
+                .events
+                .iter()
+                .map(|e| e.text.len() + e.id.len())
+                .sum::<usize>()
+                > 16 * 1024
+        {
+            activity.events.remove(0);
+            activity.truncated = true;
+        }
+        self.enforce_subagent_activity_budget();
+    }
+    fn subagent_activity_bytes(&self) -> usize {
+        self.subagent_activity
+            .iter()
+            .map(|(id, a)| {
+                id.len()
+                    + a.events
+                        .iter()
+                        .map(|e| e.id.len() + e.text.len())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+            + self
+                .subagent_activity_evicted
+                .iter()
+                .map(String::len)
+                .sum::<usize>()
+    }
+    fn enforce_subagent_activity_budget(&mut self) {
+        while self.subagent_activity_bytes() > 1024 * 1024 {
+            let oldest = self
+                .subagent_activity
+                .iter()
+                .filter(|(_, a)| !a.events.is_empty())
+                .min_by_key(|(id, a)| (!self.subagent_terminal(id), a.events[0].observed_at))
+                .map(|(id, _)| id.clone());
+            let Some(oldest) = oldest else {
+                break;
+            };
+            let Some(activity) = self.subagent_activity.get_mut(&oldest) else {
+                break;
+            };
+            activity.events.remove(0);
+            activity.truncated = true;
+        }
     }
     pub(crate) fn upsert_subagent(
         &mut self,
@@ -1223,8 +1427,21 @@ impl Snapshot {
                     })
                 });
         if restart {
+            self.subagent_observation_generation =
+                self.subagent_observation_generation.wrapping_add(1);
             if let Some(id) = item["id"].as_str() {
                 self.subagent_restart_calls.push(id.into());
+            }
+        }
+        if restart {
+            if let Some(receivers) = item["receiverThreadIds"].as_array() {
+                for id in receivers
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|id| id.len() <= 1024)
+                {
+                    self.ensure_subagent_activity(id);
+                }
             }
         }
         let Some(period) = self.saved.work_periods.get_mut(period_index) else {
@@ -1257,6 +1474,11 @@ impl Snapshot {
                 );
             }
             if restart && status == SubagentStatus::Working {
+                let Some(observation) = self.subagent_activity.get_mut(receiver) else {
+                    continue;
+                };
+                observation.refreshing = false;
+                observation.poll_cursor = None;
                 if let Some(agent) = period.subagents.iter_mut().find(|a| a.id == receiver) {
                     agent.status = status;
                 }
@@ -1274,6 +1496,20 @@ impl Snapshot {
             return false;
         };
         let method = message["method"].as_str().unwrap_or_default();
+        let mut transcript_changed = false;
+        if p["item"]["type"] != "reasoning" && !method.starts_with("item/reasoning") {
+            let mut child = self.subagent_snapshot(id);
+            child.saved.work_periods.clear();
+            child.apply(message);
+            self.ensure_subagent_activity(id);
+            if let Some(activity) = self.subagent_activity.get_mut(id) {
+                if activity.items != child.saved.items {
+                    transcript_changed = true;
+                    activity.items = child.saved.items;
+                    activity.observed_at = Some(Instant::now());
+                }
+            }
+        }
         if matches!(method, "item/started" | "item/completed")
             && p["item"]["type"] == "collabAgentToolCall"
         {
@@ -1291,7 +1527,26 @@ impl Snapshot {
             _ => SubagentStatus::Unknown,
         };
         if activity.is_none() && status == SubagentStatus::Unknown && method != "turn/completed" {
-            return false;
+            return transcript_changed;
+        }
+        if let Some(text) = activity
+            .as_deref()
+            .filter(|_| p["item"]["type"] != "reasoning")
+        {
+            let kind = if p["item"]["type"] == "agentMessage" {
+                SubagentActivityKind::Commentary
+            } else {
+                SubagentActivityKind::Tool
+            };
+            let key = format!(
+                "{}:{}",
+                p["turnId"].as_str().unwrap_or_default(),
+                p["item"]["id"]
+                    .as_str()
+                    .or_else(|| p["itemId"].as_str())
+                    .unwrap_or(method)
+            );
+            self.observe_subagent(id, &key, kind, text);
         }
         let work = &mut self.saved.work_periods[period];
         record_subagent(work, id, None, activity.as_deref(), status);
@@ -1325,6 +1580,49 @@ impl Snapshot {
             SubagentStatus::Unknown,
         );
         self.set_subagent_metadata(id, thread["agentRole"].as_str(), None);
+        if let Some(turns) = thread["turns"].as_array() {
+            let mut chronological = Vec::new();
+            for turn in turns {
+                let inherited = turn["id"].as_str().is_some_and(|turn| {
+                    self.turn_id.as_deref() == Some(turn)
+                        || self.settled_turns.iter().any(|old| old == turn)
+                        || self
+                            .saved
+                            .edit_checkpoints
+                            .iter()
+                            .any(|checkpoint| checkpoint.turn_id.as_deref() == Some(turn))
+                });
+                if inherited {
+                    continue;
+                }
+                if let Some(items) = turn["items"].as_array() {
+                    for item in items {
+                        if item["type"] != "reasoning"
+                            && !self
+                                .saved
+                                .items
+                                .iter()
+                                .any(|parent| !item["id"].is_null() && parent["id"] == item["id"])
+                        {
+                            chronological.push(item.clone());
+                        }
+                    }
+                }
+            }
+            if !chronological.is_empty() {
+                self.ensure_subagent_activity(id);
+                if let Some(activity) = self.subagent_activity.get_mut(id) {
+                    // A read can introduce older history after live notifications.
+                    // Keep the read's provider order and append only unseen live items.
+                    for item in std::mem::take(&mut activity.items) {
+                        if !chronological.iter().any(|old| old["id"] == item["id"]) {
+                            chronological.push(item);
+                        }
+                    }
+                    activity.items = chronological;
+                }
+            }
+        }
         let Some(turn) = thread["turns"].as_array().and_then(|turns| turns.last()) else {
             return;
         };
@@ -1348,6 +1646,56 @@ impl Snapshot {
                     && item["senderThreadId"].as_str() == Some(id)
                 {
                     self.record_collab(item, period);
+                }
+            }
+            let turn_hash = activity_hash(turn["id"].as_str().unwrap_or_default());
+            let cursor = self.subagent_activity.get(id).and_then(|a| a.poll_cursor);
+            let item_key = |index: usize, item: &Value| {
+                item["id"]
+                    .as_str()
+                    .map_or_else(|| index.to_string(), str::to_owned)
+            };
+            let start = cursor
+                .filter(|(old_turn, _)| *old_turn == turn_hash)
+                .and_then(|(_, old_item)| {
+                    items
+                        .iter()
+                        .enumerate()
+                        .position(|(i, item)| activity_hash(&item_key(i, item)) == old_item)
+                })
+                .unwrap_or_else(|| items.len().saturating_sub(20));
+            // Retained tools may keep changing after later items appear. Revisit
+            // bounded recent history without resurrecting evicted observations.
+            let revisit_start = start.min(items.len().saturating_sub(20));
+            for (index, item) in items.iter().enumerate().skip(revisit_start) {
+                if item["type"] == "reasoning" {
+                    continue;
+                }
+                if let Some(text) = subagent_activity(item) {
+                    let key = format!(
+                        "{}:{}",
+                        turn["id"].as_str().unwrap_or_default(),
+                        item_key(index, item)
+                    );
+                    if index < start {
+                        let event_id = format!("{:016x}", activity_hash(&key));
+                        if !self.subagent_activity.get(id).is_some_and(|activity| {
+                            activity.events.iter().any(|event| event.id == event_id)
+                        }) {
+                            continue;
+                        }
+                    }
+                    let kind = if item["type"] == "agentMessage" {
+                        SubagentActivityKind::Commentary
+                    } else {
+                        SubagentActivityKind::Tool
+                    };
+                    self.observe_subagent(id, &key, kind, &text);
+                }
+            }
+            if let Some((index, item)) = items.iter().enumerate().next_back() {
+                if let Some(activity) = self.subagent_activity.get_mut(id) {
+                    activity.poll_cursor = Some((turn_hash, activity_hash(&item_key(index, item))));
                 }
             }
             if let Some(activity) = items.iter().rev().find_map(subagent_activity) {
@@ -2494,6 +2842,7 @@ enum Pending {
     ChildRead {
         thread: String,
         period_start: usize,
+        generation: u64,
     },
     Skills,
     Config,
@@ -3881,7 +4230,17 @@ impl Actor {
                 );
                 return Ok(());
             }
-            if let Pending::ChildRead { thread, .. } = &request.kind {
+            if let Pending::ChildRead {
+                thread, generation, ..
+            } = &request.kind
+            {
+                if self.state.subagent_observation_generation != *generation {
+                    return Ok(());
+                }
+                if let Some(a) = self.state.subagent_activity.get_mut(thread) {
+                    a.refreshing = false;
+                    a.refresh_error = true;
+                }
                 let failures = self.child_read_failures.entry(thread.clone()).or_default();
                 *failures = failures.saturating_add(1);
                 return Ok(());
@@ -4418,7 +4777,15 @@ impl Actor {
             Pending::ChildRead {
                 thread,
                 period_start,
+                generation,
             } => {
+                if self.state.subagent_observation_generation != generation {
+                    return Ok(());
+                }
+                if let Some(a) = self.state.subagent_activity.get_mut(&thread) {
+                    a.refreshing = false;
+                    a.refresh_error = false;
+                }
                 self.child_read_failures.remove(&thread);
                 self.state
                     .apply_subagent_read(&thread, period_start, &result["thread"]);
@@ -4433,14 +4800,26 @@ impl Actor {
             .pending
             .iter()
             .filter_map(|(id, request)| match &request.kind {
-                Pending::ChildRead { thread, .. } if request.deadline < Instant::now() => {
-                    Some((*id, thread.clone()))
-                }
+                Pending::ChildRead { thread, .. } if request.deadline < Instant::now() => Some((
+                    *id,
+                    thread.clone(),
+                    match &request.kind {
+                        Pending::ChildRead { generation, .. } => *generation,
+                        _ => 0,
+                    },
+                )),
                 _ => None,
             })
             .collect();
-        for (id, thread) in expired {
+        for (id, thread, generation) in expired {
             self.pending.remove(&id);
+            if self.state.subagent_observation_generation != generation {
+                continue;
+            }
+            if let Some(a) = self.state.subagent_activity.get_mut(&thread) {
+                a.refreshing = false;
+                a.refresh_error = true;
+            }
             let failures = self.child_read_failures.entry(thread).or_default();
             *failures = failures.saturating_add(1);
         }
@@ -4471,6 +4850,9 @@ impl Actor {
             })
             .collect();
         for (thread, period_start) in children {
+            if thread.len() > 1024 {
+                continue;
+            }
             if self.child_read_failures.get(&thread).copied().unwrap_or(0) >= 3 {
                 continue;
             }
@@ -4482,12 +4864,19 @@ impl Actor {
                 continue;
             }
             if self.pending.values().any(|request| matches!(&request.kind, Pending::ChildRead { thread: pending, .. } if pending == &thread)) { continue; }
+            let generation = self.state.subagent_observation_generation;
+            self.state.ensure_subagent_activity(&thread);
+            let Some(activity) = self.state.subagent_activity.get_mut(&thread) else {
+                continue;
+            };
+            activity.refreshing = true;
             let _ = self.request(
                 "thread/read",
                 json!({"threadId":thread,"includeTurns":true}),
                 Pending::ChildRead {
                     thread,
                     period_start,
+                    generation,
                 },
             );
         }
@@ -5232,6 +5621,187 @@ mod tests {
         );
     }
     #[test]
+    fn subagent_recent_activity_bounds_dedup_and_poll_delta() {
+        let mut state = state();
+        state.begin_work();
+        state.upsert_subagent("child", None, None, SubagentStatus::Working);
+        for i in 0..40 {
+            state.observe_subagent(
+                "child",
+                &format!("item-{i}"),
+                SubagentActivityKind::Tool,
+                &"é".repeat(900),
+            );
+        }
+        let activity = &state.subagent_activity["child"];
+        assert!(activity.truncated);
+        assert!(activity.events.len() <= 20);
+        assert!(activity.events.iter().all(|e| e.text.len() <= 1024));
+        assert!(
+            activity
+                .events
+                .iter()
+                .map(|e| e.id.len() + e.text.len())
+                .sum::<usize>()
+                <= 16 * 1024
+        );
+        let thread = json!({"id":"child","turns":[{"id":"child-turn","status":"inProgress","items":[{"id":"a","type":"agentMessage","text":"First"},{"id":"b","type":"commandExecution","command":"cargo check"}]}]});
+        state.apply_subagent_read("child", 0, &thread);
+        let before = state.subagent_activity["child"].events.clone();
+        state.apply_subagent_read("child", 0, &thread);
+        let after = &state.subagent_activity["child"].events;
+        assert_eq!(before.len(), after.len());
+        assert_eq!(
+            before.last().unwrap().observed_at,
+            after.last().unwrap().observed_at
+        );
+        assert_eq!(after.last().unwrap().kind, SubagentActivityKind::Tool);
+        state.apply_subagent_read("child", 0, &json!({"id":"child","turns":[{"id":"turn-1","items":[{"id":"p","type":"agentMessage","text":"Parent secret"}]}]}));
+        assert!(!state.subagent_activity["child"]
+            .events
+            .iter()
+            .any(|e| e.text == "Parent secret"));
+    }
+    #[test]
+    fn subagent_recent_activity_poll_refreshes_earlier_retained_tool() {
+        let mut state = state();
+        state.begin_work();
+        state.upsert_subagent("child", None, None, SubagentStatus::Working);
+        let mut thread = json!({"id":"child","turns":[{"id":"child-turn","status":"inProgress","items":[{"id":"a","type":"mcpToolCall","tool":"read","progress":"Opening source"},{"id":"b","type":"commandExecution","command":"cargo check"}]}]});
+        state.apply_subagent_read("child", 0, &thread);
+        let original_b = state.subagent_activity["child"].events[1].observed_at;
+        thread["turns"][0]["items"][0]["progress"] = json!("Reading source");
+        state.apply_subagent_read("child", 0, &thread);
+        let activity = &state.subagent_activity["child"];
+        assert_eq!(activity.events.len(), 2);
+        assert_eq!(activity.events[0].text, "Reading source");
+        assert_eq!(activity.events[1].observed_at, original_b);
+        let observed = activity.observed_at;
+        let times: Vec<_> = activity.events.iter().map(|e| e.observed_at).collect();
+        state.apply_subagent_read("child", 0, &thread);
+        assert_eq!(state.subagent_activity["child"].observed_at, observed);
+        assert_eq!(
+            state.subagent_activity["child"]
+                .events
+                .iter()
+                .map(|e| e.observed_at)
+                .collect::<Vec<_>>(),
+            times
+        );
+    }
+    #[test]
+    fn subagent_recent_activity_session_bound_and_reasoning_exclusion() {
+        let mut state = state();
+        state.begin_work();
+        for i in 0..120 {
+            let id = format!("child-{i}");
+            state.upsert_subagent(&id, None, None, SubagentStatus::Working);
+            for j in 0..20 {
+                state.observe_subagent(
+                    &id,
+                    &format!("item-{j}"),
+                    SubagentActivityKind::Commentary,
+                    &"x".repeat(1024),
+                );
+            }
+        }
+        assert_eq!(state.subagent_activity.len(), 100);
+        assert!(state.subagent_activity_bytes() <= 1024 * 1024);
+        assert!(
+            state
+                .subagent_activity
+                .values()
+                .flat_map(|a| &a.events)
+                .map(|e| e.id.len() + e.text.len())
+                .sum::<usize>()
+                <= 1024 * 1024
+        );
+        state.apply_subagent_notification(&json!({"method":"item/completed","params":{"threadId":"child-119","item":{"id":"reason","type":"reasoning","text":"private"}}}), 0);
+        assert!(!state.subagent_activity["child-119"]
+            .events
+            .iter()
+            .any(|e| e.text.contains("private")));
+    }
+    #[test]
+    fn subagent_recent_activity_replacement_and_terminal_eviction() {
+        let mut state = state();
+        state.begin_work();
+        state.upsert_subagent("child", None, None, SubagentStatus::Working);
+        for i in 0..20 {
+            state.observe_subagent(
+                "child",
+                &format!("item-{i}"),
+                SubagentActivityKind::Tool,
+                "small",
+            );
+        }
+        for i in 0..20 {
+            state.observe_subagent(
+                "child",
+                &format!("item-{i}"),
+                SubagentActivityKind::Tool,
+                &"x".repeat(1024),
+            );
+        }
+        assert!(
+            state.subagent_activity["child"]
+                .events
+                .iter()
+                .map(|e| e.id.len() + e.text.len())
+                .sum::<usize>()
+                <= 16 * 1024
+        );
+        state.upsert_subagent("terminal", None, None, SubagentStatus::Completed);
+        state.observe_subagent(
+            "terminal",
+            "event",
+            SubagentActivityKind::Commentary,
+            "Done",
+        );
+        for i in 0..99 {
+            let id = format!("new-{i}");
+            state.upsert_subagent(&id, None, None, SubagentStatus::Working);
+            state.observe_subagent(&id, "event", SubagentActivityKind::Tool, "Read");
+        }
+        assert!(!state.subagent_activity.contains_key("terminal"));
+        assert!(state.subagent_activity_evicted.contains("terminal"));
+        assert!(state.subagent_activity.contains_key("child"));
+    }
+    #[test]
+    fn subagent_recent_activity_rejects_stale_generation_success_and_failure() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor
+            .state
+            .upsert_subagent("child", None, None, SubagentStatus::Working);
+        actor.state.ensure_subagent_activity("child");
+        actor.state.subagent_observation_generation = 1;
+        for id in 1..=2 {
+            actor.pending.insert(
+                id,
+                Request {
+                    kind: Pending::ChildRead {
+                        thread: "child".into(),
+                        period_start: 0,
+                        generation: 0,
+                    },
+                    deadline: Instant::now(),
+                },
+            );
+        }
+        actor.message(json!({"id":1,"result":{"thread":{"id":"child","turns":[{"id":"old-child-turn","status":"completed","items":[{"type":"agentMessage","text":"Stale"}]}]}}})).unwrap();
+        actor
+            .message(json!({"id":2,"error":{"message":"Stale failure"}}))
+            .unwrap();
+        assert!(actor.state.subagent_activity["child"].events.is_empty());
+        assert!(!actor.state.subagent_activity["child"].refresh_error);
+        assert!(actor.child_read_failures.is_empty());
+        assert_eq!(
+            actor.state.saved.work_periods.last().unwrap().subagents[0].status,
+            SubagentStatus::Working
+        );
+    }
+    #[test]
     fn optional_subagent_read_errors_do_not_fail_parent_or_pause_queue() {
         let mut actor = actor();
         actor.queue_ready = true;
@@ -5241,6 +5811,7 @@ mod tests {
                 kind: Pending::ChildRead {
                     thread: "child".into(),
                     period_start: 0,
+                    generation: 0,
                 },
                 deadline: Instant::now(),
             },
@@ -5258,6 +5829,7 @@ mod tests {
                 kind: Pending::ChildRead {
                     thread: "child".into(),
                     period_start: 0,
+                    generation: 0,
                 },
                 deadline: Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
             },
@@ -5280,6 +5852,49 @@ mod tests {
         assert_eq!(restored.provider, Provider::Claude);
         assert_eq!(restored.provider.agent(), crate::agent::Agent::Claude);
     }
+    #[test]
+    fn child_read_orders_older_history_before_live_items() {
+        let mut state = state();
+        state.begin_work();
+        state.upsert_subagent("child", None, None, SubagentStatus::Working);
+        state.upsert_subagent_item("child", json!({"id":"b","type":"agentMessage","text":"B"}));
+        state.upsert_subagent_item("child", json!({"id":"c","type":"agentMessage","text":"C"}));
+        state.apply_subagent_read("child", 0, &json!({"id":"child","turns":[{"id":"child-turn","status":"inProgress","items":[{"id":"a","type":"agentMessage","text":"A"},{"id":"b","type":"agentMessage","text":"B"}]}]}));
+        assert_eq!(
+            state.subagent_activity["child"]
+                .items
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn child_transcript_retains_complete_items_and_streams_without_parent_mutation() {
+        let mut state = state();
+        state.begin_work();
+        state.upsert_subagent("child", Some("Ada"), None, SubagentStatus::Working);
+        let parent = state.saved.items.clone();
+        let text = "full visible commentary ".repeat(150);
+        let items: Vec<_> = (0..30)
+            .map(|i| json!({"id":format!("item-{i}"),"type":"agentMessage","text":text}))
+            .collect();
+        state.apply_subagent_read("child", 0, &json!({"id":"child","turns":[{"id":"child-turn","status":"inProgress","items":items}]}));
+        assert_eq!(state.subagent_activity["child"].items.len(), 30);
+        assert_eq!(state.subagent_activity["child"].items[0]["text"], text);
+        state.apply(&json!({"method":"item/started","params":{"threadId":"child","turnId":"child-turn","item":{"id":"cmd","type":"commandExecution","command":"pwd","status":"inProgress"}}}));
+        assert!(state.apply(&json!({"method":"item/commandExecution/outputDelta","params":{"threadId":"child","turnId":"child-turn","itemId":"cmd","delta":"full output"}})));
+        let projection = state.subagent_snapshot("child");
+        assert_eq!(
+            projection.saved.items.last().unwrap()["aggregatedOutput"],
+            "full output"
+        );
+        assert_eq!(projection.saved.items.len(), 31);
+        assert_eq!(state.saved.items, parent);
+        assert!(projection.subagent_activity.is_empty());
+    }
+
     fn state() -> Snapshot {
         let mut state = Snapshot::new(saved());
         state.status = Status::Working;

@@ -1,8 +1,6 @@
 //! Checkout actions live beside the selected canvas, outside its scroll region.
 use super::*;
-use crate::views::components::{
-    form_action, project_field_well, shimmer_label, tooltip, transcript_action,
-};
+use crate::views::components::{form_action, project_field_well, shimmer_label, transcript_action};
 use gpui_component::{
     menu::{PopupMenu, PopupMenuItem},
     Disableable,
@@ -41,7 +39,12 @@ fn checkout_action(
 pub(super) struct CheckoutPanel {
     pub(super) agents_visible: bool,
     agent_disclosures: HashMap<SessionId, AgentDisclosure>,
-    agent_observer: Option<(gpui::EntityId, gpui::Subscription)>,
+    pub(super) agent_observer: Option<(gpui::EntityId, gpui::Subscription)>,
+    pub(super) peek: Option<AgentPeek>,
+    pub(super) peek_task: Option<gpui::Task<()>>,
+    pub(super) agent_focus: HashMap<String, FocusHandle>,
+    pub(super) agent_bounds:
+        HashMap<String, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
     path: Option<String>,
     state: Option<Result<CheckoutGitState, String>>,
     summary: Option<ChangeSummary>,
@@ -71,6 +74,15 @@ pub(super) struct CheckoutPanel {
     restore_focus: bool,
     operation: CheckoutOperation,
     operations: HashMap<String, CheckoutOperation>,
+}
+
+pub(super) struct AgentPeek {
+    pub(super) session: SessionId,
+    pub(super) child: String,
+    pub(super) explicit: bool,
+    pub(super) focus: FocusHandle,
+    pub(super) transcript: Entity<super::super::codex_view::CodexView>,
+    pub(super) _tick: gpui::Task<()>,
 }
 
 #[derive(Default)]
@@ -1002,18 +1014,10 @@ impl Sidebar {
             self.checkout_panel.agent_observer = None;
             return None;
         };
-        if self
-            .checkout_panel
-            .agent_observer
-            .as_ref()
-            .is_none_or(|(owner, _)| *owner != session.entity_id())
-        {
-            let observer = cx.observe(&session, |_, _, cx| cx.notify());
-            self.checkout_panel.agent_observer = Some((session.entity_id(), observer));
-        }
         let saved = &session.read(cx).state.saved;
         let provider = saved.provider.agent().icon_name();
-        let agents = checkout_agents(&saved.work_periods);
+        let periods = saved.work_periods.clone();
+        let agents = checkout_agents(&periods);
         if agents.is_empty() {
             return None;
         }
@@ -1021,7 +1025,7 @@ impl Sidebar {
             .iter()
             .filter(|agent| agent.status == grove_core::codex::SubagentStatus::Working)
             .count();
-        let (active, previous) = checkout_agent_groups(&agents, &saved.work_periods);
+        let (active, previous) = checkout_agent_groups(&agents, &periods);
         let disclosure = self.checkout_panel.agent_disclosures.entry(id).or_default();
         let show_all = disclosure.show_all;
         let show_previous = disclosure.previous;
@@ -1046,7 +1050,7 @@ impl Sidebar {
                 active
                     .iter()
                     .take(if show_all { usize::MAX } else { AGENTS_VISIBLE })
-                    .map(|agent| checkout_agent_row(agent, provider)),
+                    .map(|agent| self.agent_peek_row(id, agent, provider, cx)),
             );
         if active.len() > AGENTS_VISIBLE {
             section = section.child(
@@ -1122,9 +1126,24 @@ impl Sidebar {
                 section = section.children(
                     previous
                         .iter()
-                        .map(|agent| checkout_agent_row(agent, provider)),
+                        .map(|agent| self.agent_peek_row(id, agent, provider, cx)),
                 );
             }
+        }
+        let visible: std::collections::HashSet<_> = active
+            .iter()
+            .take(if show_all { usize::MAX } else { AGENTS_VISIBLE })
+            .chain(previous.iter().filter(|_| show_previous))
+            .map(|agent| agent.id.as_str())
+            .collect();
+        if self
+            .checkout_panel
+            .peek
+            .as_ref()
+            .is_some_and(|peek| !visible.contains(peek.child.as_str()))
+        {
+            self.checkout_panel.peek = None;
+            self.checkout_panel.peek_task = None;
         }
         Some(section.into_any_element())
     }
@@ -1151,6 +1170,10 @@ impl Sidebar {
         }
         let targets = self.checkout_targets(cx);
         if self.checkout_panel.root_owner != self.selection {
+            self.checkout_panel.peek = None;
+            self.checkout_panel.peek_task = None;
+            self.checkout_panel.agent_focus.clear();
+            self.checkout_panel.agent_bounds.clear();
             self.checkout_panel.root_owner = self.selection.clone();
             self.checkout_panel.chosen_root = None;
             self.checkout_panel.select_path(None);
@@ -1159,8 +1182,9 @@ impl Sidebar {
             self.checkout_panel.popup_subscription = None;
             self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
         }
-        if self.mode == ViewMode::Grid
-            || self.is_zen()
+        let has_agents = self.selected_session_has_agents(cx);
+        let agents_only = self.is_zen() || targets.is_empty();
+        if self.mode == ViewMode::Grid && !self.is_zen()
             || self.project_panel.is_some()
             || self.project_setup.is_some()
             || self.pending_new_worktree.is_some()
@@ -1169,12 +1193,12 @@ impl Sidebar {
                 .settings_panel
                 .as_ref()
                 .is_some_and(|panel| panel.read(cx).is_open())
-            || targets.is_empty()
+            || (targets.is_empty() && !has_agents)
+            || (self.is_zen() && !has_agents)
         {
-            self.checkout_panel.agent_observer = None;
             return self.render_content_body(window, cx);
         }
-        let wide = Self::logical_window_width(window) >= WIDE_VIEWPORT;
+        let wide = !self.is_zen() && Self::logical_window_width(window) >= WIDE_VIEWPORT;
         self.checkout_panel.agents_visible = wide || self.checkout_panel.expanded;
         let selected = selected_checkout(&targets, self.checkout_panel.chosen_root.as_deref());
         let mut card = project_field_well(false, false)
@@ -1186,153 +1210,156 @@ impl Sidebar {
             .px_0()
             .py(rpx(SPACE_SM))
             .gap(rpx(SPACE_XS));
-        if let Some((idx, path)) = selected {
-            if self.checkout_panel.path.as_ref() != Some(&path) {
-                self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
-                self.checkout_panel.select_path(Some(path.clone()));
-                self.checkout_panel.checked_at = None;
-                self.checkout_panel.state = None;
-                self.checkout_panel.pr_state = None;
-                self.checkout_panel.pr_identity = None;
-                self.checkout_panel.pr_loading = false;
-                self.checkout_panel.pr_checked_at = None;
-                self.checkout_panel.pr_expanded = false;
-                self.checkout_panel.pr_composing = false;
-                self.checkout_panel.pr_merge = None;
-                self.checkout_panel.summary = None;
-                self.checkout_panel.expanded_categories.clear();
-                self.checkout_panel.loading = false;
-                self.checkout_panel.publish = None;
-            }
-            if (self.checkout_panel.state.is_none()
-                || self
-                    .checkout_panel
-                    .checked_at
-                    .is_some_and(|checked| checked.elapsed() >= STATUS_REFRESH_INTERVAL))
-                && !self.checkout_panel.loading
-            {
-                self.checkout_load(path.clone(), cx);
-            }
-            let project = cx.global::<SettingsState>().store.projects[idx].clone();
-            let target = path.clone();
-            card = card.child(
-                checkout_row("checkout-finder", "Open in Finder", "folder", window, cx).on_click(
-                    cx.listener(move |this, _, window, cx| {
-                        this.act(Action::Reveal(target.clone()), window, cx);
-                    }),
-                ),
-            );
-            let target = path.clone();
-            let project_path = project.path.clone();
-            let has_script = project
-                .scripts
-                .run
-                .as_deref()
-                .is_some_and(|script| !script.trim().is_empty());
-            card = card
-                .child(
-                    checkout_row(
-                        "checkout-script",
-                        if has_script {
-                            "Run script"
-                        } else {
-                            "Add project script"
-                        },
-                        if has_script { "play" } else { "plus" },
-                        window,
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.act(
-                            if has_script {
-                                Action::RunScript(project_path.clone(), target.clone())
-                            } else {
-                                Action::EditProject(project_path.clone())
-                            },
-                            window,
-                            cx,
-                        );
-                    })),
-                )
-                .child(checkout_divider("checkout-divider"));
-            let state = self.checkout_panel.state.clone().and_then(Result::ok);
-            if let Some(state) = state.as_ref() {
-                let identity = state.target_identity();
-                if self.checkout_panel.pr_identity.as_ref() != Some(&identity) {
-                    self.checkout_panel.pr_identity = Some(identity);
+        if !agents_only {
+            if let Some((idx, path)) = selected {
+                if self.checkout_panel.path.as_ref() != Some(&path) {
+                    self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
+                    self.checkout_panel.select_path(Some(path.clone()));
+                    self.checkout_panel.checked_at = None;
+                    self.checkout_panel.state = None;
                     self.checkout_panel.pr_state = None;
+                    self.checkout_panel.pr_identity = None;
+                    self.checkout_panel.pr_loading = false;
                     self.checkout_panel.pr_checked_at = None;
                     self.checkout_panel.pr_expanded = false;
+                    self.checkout_panel.pr_composing = false;
+                    self.checkout_panel.pr_merge = None;
+                    self.checkout_panel.summary = None;
+                    self.checkout_panel.expanded_categories.clear();
+                    self.checkout_panel.loading = false;
+                    self.checkout_panel.publish = None;
                 }
-                if !self.checkout_panel.pr_loading
-                    && self
+                if (self.checkout_panel.state.is_none()
+                    || self
                         .checkout_panel
-                        .pr_checked_at
-                        .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+                        .checked_at
+                        .is_some_and(|checked| checked.elapsed() >= STATUS_REFRESH_INTERVAL))
+                    && !self.checkout_panel.loading
                 {
-                    self.checkout_load_pr(path.clone(), state.clone(), cx);
+                    self.checkout_load(path.clone(), cx);
                 }
-            }
-            card = card.child(self.render_checkout_pr(&path, state.as_ref(), window, cx));
-            let target = path.clone();
-            let busy = self.checkout_panel.operation.busy;
-            let same_job = self.checkout_panel.operation.commit_job_path.as_ref() == Some(&path);
-            let same_network = self.checkout_panel.operation.network_target.is_some();
-            let (base_label, base_glyph, base_enabled) = commit_row_state(state.as_ref());
-            let initial_loading =
-                self.checkout_panel.loading && self.checkout_panel.state.is_none();
-            let (label, glyph, enabled, loading) = if let Some((label, glyph)) = self
-                .checkout_panel
-                .operation
-                .network_action
-                .filter(|_| busy && same_network)
-            {
-                (label, glyph, false, true)
-            } else if initial_loading {
-                ("Checking status…", "git", false, true)
-            } else {
-                match self.checkout_panel.operation.commit_status {
-                    CommitUi::Generating if same_job => {
-                        ("Generating… Cancel", "sparkle", true, true)
-                    }
-                    CommitUi::Canceling if same_job => ("Canceling…", "stop", false, true),
-                    CommitUi::Committing if same_job => ("Committing…", "git", false, true),
-                    CommitUi::Succeeded => ("Committed", "check", false, false),
-                    CommitUi::Failed => ("Retry commit", "git", !busy, false),
-                    _ => (base_label, base_glyph, base_enabled && !busy, false),
-                }
-            };
-            let label = if !loading && base_label == "Push commits" && label == base_label {
-                format!(
-                    "Push {} commit{}",
-                    state.as_ref().and_then(|s| s.ahead).unwrap_or_default(),
-                    if state.as_ref().and_then(|s| s.ahead) == Some(1) {
-                        ""
-                    } else {
-                        "s"
-                    }
-                )
-            } else {
-                label.to_string()
-            };
-            let publish = state.as_ref().is_some_and(|state| {
-                !state.dirty
-                    && state.upstream.is_none()
-                    && state.branch.is_some()
-                    && state.head.is_some()
-                    && !state.remotes.is_empty()
-            });
-            let dirty = state.as_ref().is_some_and(|state| state.dirty);
-            let retry = matches!(
-                self.checkout_panel.operation.commit_status,
-                CommitUi::Failed
-            );
-            let cancel = same_job
-                && matches!(
-                    self.checkout_panel.operation.commit_status,
-                    CommitUi::Generating
+                let project = cx.global::<SettingsState>().store.projects[idx].clone();
+                let target = path.clone();
+                card = card.child(
+                    checkout_row("checkout-finder", "Open in Finder", "folder", window, cx)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.act(Action::Reveal(target.clone()), window, cx);
+                        })),
                 );
-            card = card.child(checkout_loading_row("checkout-commit-publish", label, glyph, loading, window, cx)
+                let target = path.clone();
+                let project_path = project.path.clone();
+                let has_script = project
+                    .scripts
+                    .run
+                    .as_deref()
+                    .is_some_and(|script| !script.trim().is_empty());
+                card = card
+                    .child(
+                        checkout_row(
+                            "checkout-script",
+                            if has_script {
+                                "Run script"
+                            } else {
+                                "Add project script"
+                            },
+                            if has_script { "play" } else { "plus" },
+                            window,
+                            cx,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.act(
+                                    if has_script {
+                                        Action::RunScript(project_path.clone(), target.clone())
+                                    } else {
+                                        Action::EditProject(project_path.clone())
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
+                    )
+                    .child(checkout_divider("checkout-divider"));
+                let state = self.checkout_panel.state.clone().and_then(Result::ok);
+                if let Some(state) = state.as_ref() {
+                    let identity = state.target_identity();
+                    if self.checkout_panel.pr_identity.as_ref() != Some(&identity) {
+                        self.checkout_panel.pr_identity = Some(identity);
+                        self.checkout_panel.pr_state = None;
+                        self.checkout_panel.pr_checked_at = None;
+                        self.checkout_panel.pr_expanded = false;
+                    }
+                    if !self.checkout_panel.pr_loading
+                        && self
+                            .checkout_panel
+                            .pr_checked_at
+                            .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+                    {
+                        self.checkout_load_pr(path.clone(), state.clone(), cx);
+                    }
+                }
+                card = card.child(self.render_checkout_pr(&path, state.as_ref(), window, cx));
+                let target = path.clone();
+                let busy = self.checkout_panel.operation.busy;
+                let same_job =
+                    self.checkout_panel.operation.commit_job_path.as_ref() == Some(&path);
+                let same_network = self.checkout_panel.operation.network_target.is_some();
+                let (base_label, base_glyph, base_enabled) = commit_row_state(state.as_ref());
+                let initial_loading =
+                    self.checkout_panel.loading && self.checkout_panel.state.is_none();
+                let (label, glyph, enabled, loading) = if let Some((label, glyph)) = self
+                    .checkout_panel
+                    .operation
+                    .network_action
+                    .filter(|_| busy && same_network)
+                {
+                    (label, glyph, false, true)
+                } else if initial_loading {
+                    ("Checking status…", "git", false, true)
+                } else {
+                    match self.checkout_panel.operation.commit_status {
+                        CommitUi::Generating if same_job => {
+                            ("Generating… Cancel", "sparkle", true, true)
+                        }
+                        CommitUi::Canceling if same_job => ("Canceling…", "stop", false, true),
+                        CommitUi::Committing if same_job => ("Committing…", "git", false, true),
+                        CommitUi::Succeeded => ("Committed", "check", false, false),
+                        CommitUi::Failed => ("Retry commit", "git", !busy, false),
+                        _ => (base_label, base_glyph, base_enabled && !busy, false),
+                    }
+                };
+                let label = if !loading && base_label == "Push commits" && label == base_label {
+                    format!(
+                        "Push {} commit{}",
+                        state.as_ref().and_then(|s| s.ahead).unwrap_or_default(),
+                        if state.as_ref().and_then(|s| s.ahead) == Some(1) {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    )
+                } else {
+                    label.to_string()
+                };
+                let publish = state.as_ref().is_some_and(|state| {
+                    !state.dirty
+                        && state.upstream.is_none()
+                        && state.branch.is_some()
+                        && state.head.is_some()
+                        && !state.remotes.is_empty()
+                });
+                let dirty = state.as_ref().is_some_and(|state| state.dirty);
+                let retry = matches!(
+                    self.checkout_panel.operation.commit_status,
+                    CommitUi::Failed
+                );
+                let cancel = same_job
+                    && matches!(
+                        self.checkout_panel.operation.commit_status,
+                        CommitUi::Generating
+                    );
+                card = card.child(checkout_loading_row("checkout-commit-publish", label, glyph, loading, window, cx)
                 .disabled(!enabled)
                 .with_focus_handle(self.checkout_panel.trigger_focus[if publish { "publish" } else { "commit" }].clone())
                 .relative()
@@ -1348,232 +1375,243 @@ impl Sidebar {
                     else if publish { this.checkout_menu(true, idx, target.clone(), event.position(), window, cx); }
                     else { this.checkout_run(target.clone(), GitAction::Push, cx); }
                 })));
-            let summary = self
-                .checkout_panel
-                .summary
-                .clone()
-                .filter(|summary| dirty && summary.files > 0);
-            let totals = match &summary {
-                Some(summary) => Some(summary.groups.iter().fold((0u32, 0u32), |(a, r), g| {
-                    (a.saturating_add(g.1), r.saturating_add(g.2))
-                })),
-                None => {
-                    let git = self.runtime.read(cx).tree.read(cx).git_states();
-                    git.get(crate::paths::normalize_wt_path(&path))
-                        .filter(|changes| changes.dirty || changes.added > 0 || changes.removed > 0)
-                        .map(|changes| (changes.added, changes.removed))
-                }
-            };
-            let stat_widths = change_stat_widths(totals, summary.as_ref(), window);
-            let changes_label = match &summary {
-                Some(summary) if summary.files == 1 => "1 file".to_owned(),
-                Some(summary) => format!("{} files", summary.files),
-                None => "Changes".to_owned(),
-            };
-            let mut changes_row = checkout_loading_row(
-                "checkout-changes",
-                changes_label,
-                "unified",
-                initial_loading,
-                window,
-                cx,
-            )
-            .disabled(state.is_none());
-            if let Some((added, removed)) = totals {
-                changes_row = changes_row.child(change_stat_counts(added, removed, stat_widths));
-            }
-            let target = path.clone();
-            card = card.child(
-                changes_row.on_click(cx.listener(move |this, _, window, cx| {
-                    this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
-                })),
-            );
-            if let Some(summary) = summary {
-                for &(group, added, removed) in &summary.groups {
-                    let children: Vec<_> = summary
-                        .subgroups
-                        .iter()
-                        .filter(|(parent, _, _, _)| *parent == group)
-                        .collect();
-                    let expanded = self.checkout_panel.expanded_categories.contains(&group);
-                    let target = path.clone();
-                    let classifier = summary.classifier.clone();
-                    let mut row = div().flex().items_center().px(rpx(SPACE_2XL));
-                    if !children.is_empty() {
-                        row = row.child(
-                            checkout_action(
-                                format!("checkout-category-toggle-{}", group.label()),
-                                format!(
-                                    "{} {} subcategories",
-                                    if expanded { "Hide" } else { "Show" },
-                                    group.label()
-                                ),
-                                false,
-                                window,
-                                cx,
-                            )
-                            .debug_selector(move || {
-                                format!("checkout-category-toggle-{}", group.label())
+                let summary = self
+                    .checkout_panel
+                    .summary
+                    .clone()
+                    .filter(|summary| dirty && summary.files > 0);
+                let totals = match &summary {
+                    Some(summary) => Some(summary.groups.iter().fold((0u32, 0u32), |(a, r), g| {
+                        (a.saturating_add(g.1), r.saturating_add(g.2))
+                    })),
+                    None => {
+                        let git = self.runtime.read(cx).tree.read(cx).git_states();
+                        git.get(crate::paths::normalize_wt_path(&path))
+                            .filter(|changes| {
+                                changes.dirty || changes.added > 0 || changes.removed > 0
                             })
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path(if expanded {
-                                        "icons/chev-down.svg"
-                                    } else {
-                                        "icons/chev-right.svg"
-                                    })
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .icon_only()
-                            .w(rpx(CONTROL_H))
-                            .h(rpx(CARD_LINE_SM_H))
-                            .flex_shrink_0()
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    if !this.checkout_panel.expanded_categories.remove(&group) {
-                                        this.checkout_panel.expanded_categories.insert(group);
-                                    }
-                                    cx.notify();
-                                },
-                            )),
-                        );
-                    } else {
-                        row = row.child(div().w(rpx(CONTROL_H)).flex_shrink_0());
+                            .map(|changes| (changes.added, changes.removed))
                     }
-                    row = row.child(
-                        checkout_action(
-                            format!("checkout-category-{}", group.label()),
-                            format!("Show {} changes", group.label()),
-                            false,
-                            window,
-                            cx,
-                        )
-                        .debug_selector(move || group.label().into())
-                        .icon_only()
-                        .flex_1()
-                        .min_w_0()
-                        .h(rpx(CARD_LINE_SM_H))
-                        .px(rpx(SPACE_XS))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .child(group.label()),
-                        )
-                        .child(change_stat_counts(added, removed, stat_widths))
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
-                                if let Some(viewer) = &this.diff_viewer {
-                                    viewer.update(cx, |viewer, cx| {
-                                        viewer.set_category(group, None, classifier.clone(), cx);
-                                    });
-                                }
-                            },
-                        )),
-                    );
-                    card = card.child(row);
-                    if expanded {
-                        for (_, child, added, removed) in children {
-                            let target = path.clone();
-                            let child = child.clone();
-                            let label = child.clone();
-                            let selector =
-                                format!("checkout-subcategory-{}-{child}", group.label());
-                            let classifier = summary.classifier.clone();
-                            card = card.child(
+                };
+                let stat_widths = change_stat_widths(totals, summary.as_ref(), window);
+                let changes_label = match &summary {
+                    Some(summary) if summary.files == 1 => "1 file".to_owned(),
+                    Some(summary) => format!("{} files", summary.files),
+                    None => "Changes".to_owned(),
+                };
+                let mut changes_row = checkout_loading_row(
+                    "checkout-changes",
+                    changes_label,
+                    "unified",
+                    initial_loading,
+                    window,
+                    cx,
+                )
+                .disabled(state.is_none());
+                if let Some((added, removed)) = totals {
+                    changes_row =
+                        changes_row.child(change_stat_counts(added, removed, stat_widths));
+                }
+                let target = path.clone();
+                card = card.child(
+                    changes_row.on_click(cx.listener(move |this, _, window, cx| {
+                        this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
+                    })),
+                );
+                if let Some(summary) = summary {
+                    for &(group, added, removed) in &summary.groups {
+                        let children: Vec<_> = summary
+                            .subgroups
+                            .iter()
+                            .filter(|(parent, _, _, _)| *parent == group)
+                            .collect();
+                        let expanded = self.checkout_panel.expanded_categories.contains(&group);
+                        let target = path.clone();
+                        let classifier = summary.classifier.clone();
+                        let mut row = div().flex().items_center().px(rpx(SPACE_2XL));
+                        if !children.is_empty() {
+                            row = row.child(
                                 checkout_action(
-                                    selector.clone(),
-                                    format!("Show {}: {child} changes", group.label()),
+                                    format!("checkout-category-toggle-{}", group.label()),
+                                    format!(
+                                        "{} {} subcategories",
+                                        if expanded { "Hide" } else { "Show" },
+                                        group.label()
+                                    ),
                                     false,
                                     window,
                                     cx,
                                 )
-                                .debug_selector(move || selector.clone())
-                                .icon_only()
-                                .w_full()
-                                .h(rpx(CARD_LINE_SM_H))
-                                .px(rpx(SPACE_2XL))
-                                .tooltip(label.clone())
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .pl(rpx(CONTROL_H + SPACE_LG))
-                                        .truncate()
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM())
-                                        .child(label),
+                                .debug_selector(move || {
+                                    format!("checkout-category-toggle-{}", group.label())
+                                })
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path(if expanded {
+                                            "icons/chev-down.svg"
+                                        } else {
+                                            "icons/chev-right.svg"
+                                        })
+                                        .size(rpx(ICON_SM)),
                                 )
-                                .child(change_stat_counts(*added, *removed, stat_widths))
+                                .icon_only()
+                                .w(rpx(CONTROL_H))
+                                .h(rpx(CARD_LINE_SM_H))
+                                .flex_shrink_0()
                                 .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.act(
-                                            Action::OpenWorktreeDiff(target.clone()),
-                                            window,
-                                            cx,
-                                        );
-                                        if let Some(viewer) = &this.diff_viewer {
-                                            viewer.update(cx, |viewer, cx| {
-                                                viewer.set_category(
-                                                    group,
-                                                    Some(child.clone()),
-                                                    classifier.clone(),
-                                                    cx,
-                                                );
-                                            });
+                                    move |this, _, _, cx| {
+                                        if !this.checkout_panel.expanded_categories.remove(&group) {
+                                            this.checkout_panel.expanded_categories.insert(group);
                                         }
+                                        cx.notify();
                                     },
                                 )),
                             );
+                        } else {
+                            row = row.child(div().w(rpx(CONTROL_H)).flex_shrink_0());
+                        }
+                        row = row.child(
+                            checkout_action(
+                                format!("checkout-category-{}", group.label()),
+                                format!("Show {} changes", group.label()),
+                                false,
+                                window,
+                                cx,
+                            )
+                            .debug_selector(move || group.label().into())
+                            .icon_only()
+                            .flex_1()
+                            .min_w_0()
+                            .h(rpx(CARD_LINE_SM_H))
+                            .px(rpx(SPACE_XS))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child(group.label()),
+                            )
+                            .child(change_stat_counts(added, removed, stat_widths))
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
+                                    if let Some(viewer) = &this.diff_viewer {
+                                        viewer.update(cx, |viewer, cx| {
+                                            viewer.set_category(
+                                                group,
+                                                None,
+                                                classifier.clone(),
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                },
+                            )),
+                        );
+                        card = card.child(row);
+                        if expanded {
+                            for (_, child, added, removed) in children {
+                                let target = path.clone();
+                                let child = child.clone();
+                                let label = child.clone();
+                                let selector =
+                                    format!("checkout-subcategory-{}-{child}", group.label());
+                                let classifier = summary.classifier.clone();
+                                card = card.child(
+                                    checkout_action(
+                                        selector.clone(),
+                                        format!("Show {}: {child} changes", group.label()),
+                                        false,
+                                        window,
+                                        cx,
+                                    )
+                                    .debug_selector(move || selector.clone())
+                                    .icon_only()
+                                    .w_full()
+                                    .h(rpx(CARD_LINE_SM_H))
+                                    .px(rpx(SPACE_2XL))
+                                    .tooltip(label.clone())
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .pl(rpx(CONTROL_H + SPACE_LG))
+                                            .truncate()
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .text_color(c::FG_DIM())
+                                            .child(label),
+                                    )
+                                    .child(change_stat_counts(*added, *removed, stat_widths))
+                                    .on_click(cx.listener(
+                                        move |this, _, window, cx| {
+                                            this.act(
+                                                Action::OpenWorktreeDiff(target.clone()),
+                                                window,
+                                                cx,
+                                            );
+                                            if let Some(viewer) = &this.diff_viewer {
+                                                viewer.update(cx, |viewer, cx| {
+                                                    viewer.set_category(
+                                                        group,
+                                                        Some(child.clone()),
+                                                        classifier.clone(),
+                                                        cx,
+                                                    );
+                                                });
+                                            }
+                                        },
+                                    )),
+                                );
+                            }
                         }
                     }
                 }
-            }
-        } else {
-            let target = targets.first().cloned();
-            card = card
-                .child(
-                    checkout_row("checkout-finder", "Choose checkout", "folder", window, cx)
-                        .with_focus_handle(self.checkout_panel.trigger_focus["checkout"].clone())
-                        .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                        .on_click(cx.listener(
-                            move |this, event: &gpui::ClickEvent, window, cx| {
-                                if let Some((idx, path)) = &target {
-                                    this.checkout_menu(
-                                        false,
-                                        *idx,
-                                        path.clone(),
-                                        event.position(),
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            },
-                        )),
-                )
-                .child(
-                    checkout_row("checkout-script", "Add project script", "plus", window, cx)
-                        .disabled(true),
-                )
-                .child(checkout_divider("checkout-divider"))
-                .child(
-                    checkout_row(
-                        "checkout-commit-publish",
-                        "Commit changes",
-                        "git",
-                        window,
-                        cx,
+            } else {
+                let target = targets.first().cloned();
+                card = card
+                    .child(
+                        checkout_row("checkout-finder", "Choose checkout", "folder", window, cx)
+                            .with_focus_handle(
+                                self.checkout_panel.trigger_focus["checkout"].clone(),
+                            )
+                            .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                            .on_click(cx.listener(
+                                move |this, event: &gpui::ClickEvent, window, cx| {
+                                    if let Some((idx, path)) = &target {
+                                        this.checkout_menu(
+                                            false,
+                                            *idx,
+                                            path.clone(),
+                                            event.position(),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                },
+                            )),
                     )
-                    .disabled(true),
-                )
-                .child(
-                    checkout_row("checkout-changes", "Changes", "unified", window, cx)
+                    .child(
+                        checkout_row("checkout-script", "Add project script", "plus", window, cx)
+                            .disabled(true),
+                    )
+                    .child(checkout_divider("checkout-divider"))
+                    .child(
+                        checkout_row(
+                            "checkout-commit-publish",
+                            "Commit changes",
+                            "git",
+                            window,
+                            cx,
+                        )
                         .disabled(true),
-                );
+                    )
+                    .child(
+                        checkout_row("checkout-changes", "Changes", "unified", window, cx)
+                            .disabled(true),
+                    );
+            }
         }
         if let Some(agents) = self.render_checkout_agents(window, cx) {
             card = card
@@ -1605,14 +1643,20 @@ impl Sidebar {
             }));
         if !wide {
             panel = panel.child(
-                transcript_action("checkout-summary", "Checkout", false, window, cx)
-                    .debug_selector(|| "checkout-summary".into())
-                    .with_focus_handle(self.checkout_panel.trigger_focus["summary"].clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.checkout_panel.expanded = !this.checkout_panel.expanded;
-                        this.checkout_panel.trigger_focus["summary"].focus(window, cx);
-                        cx.notify();
-                    })),
+                transcript_action(
+                    "checkout-summary",
+                    if has_agents { "Agents" } else { "Checkout" },
+                    false,
+                    window,
+                    cx,
+                )
+                .debug_selector(|| "checkout-summary".into())
+                .with_focus_handle(self.checkout_panel.trigger_focus["summary"].clone())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.checkout_panel.expanded = !this.checkout_panel.expanded;
+                    this.checkout_panel.trigger_focus["summary"].focus(window, cx);
+                    cx.notify();
+                })),
             );
         }
         if wide || self.checkout_panel.expanded {
@@ -1807,10 +1851,10 @@ fn checkout_divider(id: &'static str) -> gpui::Stateful<gpui::Div> {
 
 /// Presentation uses only observed provider text; terminal activity is not an outcome.
 #[derive(Debug, PartialEq, Eq)]
-struct AgentPresentation {
-    name: String,
-    activity: Option<String>,
-    status: &'static str,
+pub(super) struct AgentPresentation {
+    pub(super) name: String,
+    pub(super) activity: Option<String>,
+    pub(super) status: &'static str,
     detail: String,
 }
 
@@ -1823,7 +1867,9 @@ fn informative_agent_activity(text: &str) -> Option<String> {
     (!text.is_empty() && !text.eq_ignore_ascii_case("Activity unavailable")).then_some(text)
 }
 
-fn checkout_agent_presentation(agent: &grove_core::codex::Subagent) -> AgentPresentation {
+pub(super) fn checkout_agent_presentation(
+    agent: &grove_core::codex::Subagent,
+) -> AgentPresentation {
     use grove_core::codex::SubagentStatus;
     let status = match agent.status {
         SubagentStatus::Working => "Working",
@@ -1861,7 +1907,7 @@ fn checkout_agent_presentation(agent: &grove_core::codex::Subagent) -> AgentPres
     }
 }
 
-fn checkout_agent_row(
+pub(super) fn checkout_agent_row(
     agent: &grove_core::codex::Subagent,
     provider: &'static str,
 ) -> gpui::Stateful<gpui::Div> {
@@ -1878,11 +1924,11 @@ fn checkout_agent_row(
     let detail = format!("{provider_label} · {}", presentation.detail);
     div()
         .id(SharedString::from(format!("checkout-agent-{}", agent.id)))
-        .role(gpui::Role::Group)
+        .role(gpui::Role::Button)
         .tab_index(0)
         .focus_visible(|style| style.bg(c::BG_HOVER()))
+        .hover(|style| style.bg(c::BG_HOVER()))
         .aria_label(detail.clone())
-        .tooltip(move |window, cx| tooltip(detail.clone(), window).build(window, cx))
         .px(rpx(SPACE_2XL))
         .py(rpx(SPACE_SM))
         .flex()
@@ -2326,6 +2372,286 @@ mod tests {
         assert!(!panel.accepts_result("/two", 3));
         assert!(!panel.accepts_result("/one", 1));
     }
+
+    /// Native Metal screenshots with channel-backed provider fixtures; no model calls.
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn checkout_agents_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Preview fixture".into(),
+                    path: "/tmp/grove-agent-preview-project".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        for (provider, label, width, rem, light) in [
+            (
+                grove_core::codex::Provider::Codex,
+                "codex-wide",
+                1280.,
+                16.,
+                false,
+            ),
+            (
+                grove_core::codex::Provider::Claude,
+                "claude-narrow",
+                760.,
+                16.,
+                false,
+            ),
+            (
+                grove_core::codex::Provider::Claude,
+                "claude-light-zoom",
+                1280.,
+                20.,
+                true,
+            ),
+        ] {
+            cx.update(|cx| {
+                assert!(grove_core::theme::set_by_name(if light {
+                    c::DEFAULT_LIGHT_THEME
+                } else {
+                    c::DEFAULT_DARK_THEME
+                }));
+                c::sync_component_theme(cx);
+                gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+            });
+            let owner = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let owner_for_window = owner.clone();
+            let window = cx.open_window(gpui::size(gpui::px(width), gpui::px(900.)), |window, cx| {
+                let runtime = cx.new(crate::runtime::Runtime::new);
+                let id = runtime.read(cx).registry.clone().update(cx, |registry, _| registry.insert_meta("Preview fixture".into(), "/tmp/grove-agent-preview-fixture".into(), provider.agent()));
+                let (handle, _actions) = grove_core::codex::Handle::channel();
+                let (_updates, receive) = std::sync::mpsc::channel();
+            let saved = grove_core::codex::SavedSession {
+                rich_plans: grove_core::rich_plan::PlanStore::default(),
+                claude_resume: None,
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
+                provider,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+                key: "agents-fixture".into(),
+                project: "Preview fixture".into(),
+                cwd: "/tmp/grove-agent-preview-fixture".into(),
+                label: provider.label().into(),
+                title: None,
+                title_generation: None,
+                roots: Vec::new(),
+                thread_id: None,
+                items: Vec::new(),
+                work_periods: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                draft_reference: None,
+                config_args: Vec::new(),
+                native_config_version: 1,
+            };
+
+                let mut snapshot = grove_core::codex::Snapshot::new(saved);
+                snapshot.saved.items = vec![serde_json::json!({"type":"userMessage", "text":"Investigate authentication retries"}), serde_json::json!({"type":"reasoning", "text":"Thinking"})];
+                snapshot.saved.work_periods = vec![grove_core::codex::WorkPeriod { start_item: 0, end_item: None, duration_ms: None, subagents: vec![grove_core::codex::Subagent { id: "explorer".into(), name: "Explorer".into(), role: Some("Investigation".into()), task: Some("Investigate authentication retry failures and report the owning layer".into()), activity: "Reading authentication tests".into(), status: grove_core::codex::SubagentStatus::Working }] }];
+                snapshot.status = grove_core::codex::Status::Working;
+                let observed = Instant::now();
+                let mut activity = grove_core::codex::SubagentActivity::default();
+                activity.items = (0..24).map(|index| serde_json::json!({"id":format!("comment-{index}"),"type":"agentMessage","text":format!("### Investigation step {index}\n\nFollowing the authentication retry path and checking the owning layer.\n\n- Preserve the request identifier\n- Inspect retry status and cancellation")})).collect();
+                activity.items.push(serde_json::json!({"id":"tool-completed","type":"commandExecution","command":"rg retry tests/auth","status":"completed","aggregatedOutput":"tests/auth/retry.rs:42: retry_after_rejection\ntests/auth/retry.rs:87: cancellation_preserves_request"}));
+                activity.items.push(serde_json::json!({"id":"latest-comment","type":"agentMessage","text":"## Retry entry point found\n\nThe request reaches **the authentication owner** before retrying. This detailed investigation preserves markdown, `request_id`, and the complete visible message.\n\n```rust\nassert_eq!(retry.request_id, original.request_id);\n```\n\nNext I will run the focused regression and inspect its full output."}));
+                activity.items.push(serde_json::json!({"id":"tool-active","type":"commandExecution","command":"cargo test authentication_retry -- --nocapture","status":"inProgress","aggregatedOutput":"running 3 tests\ntest retry_after_rejection ... ok\ntest cancellation_preserves_request ... ok"}));
+                activity.observed_at = Some(observed);
+                snapshot.subagent_activity.insert("explorer".into(), activity);
+                let session = cx.new(|cx| crate::entities::codex_session::CodexSession::from_connection(snapshot, grove_core::codex::Connection { handle:handle.clone(), updates:receive.into() },cx));
+                runtime.read(cx).registry.clone().update(cx, |registry,_| registry.attach_codex(id,session,handle));
+                let sidebar = cx.new(|cx| { let mut sidebar=Sidebar::new(runtime,window,cx); sidebar.selection=Some(Selection::Session(id)); sidebar.initial_selection_pending=false; sidebar.checkout_panel.expanded=true; sidebar });
+                *owner_for_window.borrow_mut()=Some((sidebar.clone(),id));
+                cx.new(|cx| gpui_component::Root::new(sidebar,window,cx).bordered(false).bg(c::BG()))
+            }).unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            let (sidebar, id) = owner.borrow().as_ref().unwrap().clone();
+            cx.update_window(window.into(), |_, window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    assert_eq!(
+                        sidebar.selection,
+                        Some(Selection::Session(id)),
+                        "fixture session remains selected"
+                    );
+                    assert!(
+                        sidebar.checkout_targets(cx).is_empty(),
+                        "fixture has no registered checkout"
+                    );
+                    assert!(
+                        sidebar
+                            .checkout_panel
+                            .agent_bounds
+                            .get("explorer")
+                            .is_some_and(|bounds| bounds.get().size.width > gpui::px(0.)),
+                        "fixture agent row was actually rendered"
+                    );
+                    sidebar.open_agent_peek(id, "explorer".into(), true, window, cx);
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            let path = format!("/tmp/grove-agent-preview-{label}.png");
+            cx.capture_screenshot(window.into())
+                .unwrap()
+                .save(&path)
+                .unwrap();
+            eprintln!("Native fixture (provider channels, not live): {path}");
+            cx.update_window(window.into(), |_, window, _| window.remove_window())
+                .unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn codex_and_claude_first_child_appears_without_registered_checkout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Unregistered fixture".into(),
+                    path: "/tmp/grove-unregistered-project".into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            let saved = grove_core::codex::SavedSession {
+                rich_plans: grove_core::rich_plan::PlanStore::default(),
+                claude_resume: None,
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
+                provider,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+                key: "agents-fixture".into(),
+                project: "Unregistered fixture".into(),
+                cwd: "/tmp/grove-unregistered-agent-fixture".into(),
+                label: provider.label().into(),
+                title: None,
+                title_generation: None,
+                roots: Vec::new(),
+                thread_id: None,
+                items: Vec::new(),
+                work_periods: Vec::new(),
+                draft: String::new(),
+                draft_images: Vec::new(),
+                draft_reference: None,
+                config_args: Vec::new(),
+                native_config_version: 1,
+            };
+
+            let mut initial = grove_core::codex::Snapshot::new(saved.clone());
+            initial.status = grove_core::codex::Status::Working;
+            let (handle, _actions) = grove_core::codex::Handle::channel();
+            let (updates, receive) = std::sync::mpsc::channel();
+            let (sidebar, cx) = cx.add_window_view(|window, cx| {
+                let runtime = cx.new(crate::runtime::Runtime::new);
+                let id = runtime.read(cx).registry.clone().update(cx, |registry, _| {
+                    registry.insert_meta(
+                        "Unregistered fixture".into(),
+                        "/tmp/grove-unregistered-agent-fixture".into(),
+                        provider.agent(),
+                    )
+                });
+                let session = cx.new(|cx| {
+                    crate::entities::codex_session::CodexSession::from_connection(
+                        initial,
+                        grove_core::codex::Connection {
+                            handle: handle.clone(),
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                runtime
+                    .read(cx)
+                    .registry
+                    .clone()
+                    .update(cx, |registry, _| registry.attach_codex(id, session, handle));
+                let mut sidebar = Sidebar::new(runtime, window, cx);
+                sidebar.selection = Some(Selection::Session(id));
+                sidebar.initial_selection_pending = false;
+                sidebar
+            });
+            cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(sidebar.read_with(cx, |sidebar, cx| sidebar.checkout_targets(cx).is_empty()));
+            assert!(cx.debug_bounds("checkout-agents").is_none());
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar
+                .checkout_panel
+                .agent_observer
+                .is_some()));
+            let mut next = grove_core::codex::Snapshot::new(saved);
+            next.status = grove_core::codex::Status::Working;
+            next.saved.work_periods = vec![grove_core::codex::WorkPeriod {
+                start_item: 0,
+                end_item: None,
+                duration_ms: None,
+                subagents: vec![grove_core::codex::Subagent {
+                    id: "first-child".into(),
+                    name: "Explorer".into(),
+                    task: Some("Inspect source".into()),
+                    role: None,
+                    activity: "Reading files".into(),
+                    status: grove_core::codex::SubagentStatus::Working,
+                }],
+            }];
+            // Only the provider update channel changes; do not notify Sidebar.
+            updates.send(next).unwrap();
+            cx.executor().advance_clock(Duration::from_millis(41));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                cx.debug_bounds("checkout-agents").is_some(),
+                "first child makes independent right panel visible for {}",
+                provider.label()
+            );
+            assert!(cx.debug_bounds("checkout-finder").is_none());
+        }
+    }
+
     #[gpui::test]
     fn codex_and_claude_checkout_agents_follow_session_updates_and_disclosures(
         cx: &mut gpui::TestAppContext,
@@ -2576,6 +2902,96 @@ mod tests {
                 window.set_rem_size(gpui::px(crate::zoom::REM_BASE));
                 let _ = window.draw(cx);
             });
+            let row = cx.debug_bounds("checkout-agent-old-running").unwrap();
+            // Pointer intent does not open immediately or steal composer focus.
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    gpui::Focusable::focus_handle(sidebar.codex_views[&id].read(cx), cx)
+                        .focus(window, cx);
+                });
+            });
+            let outside = gpui::point(gpui::px(1.), gpui::px(1.));
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_none()));
+            cx.executor().advance_clock(Duration::from_millis(221));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar
+                .checkout_panel
+                .peek
+                .as_ref()
+                .is_some_and(|peek| !peek.explicit)));
+            assert!(
+                cx.update(|window, cx| sidebar.read(cx).codex_views[&id]
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)),
+                "hover keeps composer focus"
+            );
+            let hover_preview = cx.debug_bounds("agent-peek").unwrap();
+            // A short crossing outside both surfaces must not dismiss the preview.
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_some()));
+            cx.simulate_mouse_move(hover_preview.center(), None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(300));
+            cx.run_until_parked();
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_some()),
+                "entering preview cancels transit dismissal"
+            );
+            // Root Escape must work while hover has left focus in the composer.
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_none()));
+            cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(221));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(261));
+            cx.run_until_parked();
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_none()),
+                "hover dismissal runs after transit grace"
+            );
+            cx.simulate_click(row.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar
+                .checkout_panel
+                .peek
+                .as_ref()
+                .is_some_and(|peek| peek.explicit)));
+            let preview = cx.debug_bounds("agent-peek").unwrap();
+            let composer = cx.debug_bounds("codex-composer").unwrap();
+            assert!(preview.bottom() <= composer.top());
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_none()));
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.checkout_panel.agent_focus["old-running"].focus(window, cx);
+                });
+            });
+            cx.simulate_keystrokes("space");
+            cx.run_until_parked();
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_some()));
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
             let card = cx.debug_bounds("checkout-card").unwrap();
             let divider = cx.debug_bounds("checkout-agents-divider").unwrap();
             assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
@@ -2665,6 +3081,26 @@ mod tests {
             assert!(sidebar.read_with(cx, |sidebar, cx| sidebar.codex_views[&id]
                 .read(cx)
                 .agents_in_checkout));
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| sidebar.toggle_zen(window, cx));
+                let _ = window.draw(cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                cx.debug_bounds("checkout-summary").is_some(),
+                "Agents remains reachable in Zen"
+            );
+            assert!(
+                cx.debug_bounds("checkout-finder").is_none(),
+                "Zen contains session agents only"
+            );
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| sidebar.toggle_zen(window, cx));
+            });
+            cx.run_until_parked();
         }
     }
 

@@ -404,7 +404,7 @@ impl WorkspaceManager {
                 )
                 .when(enabled, |el| el.tab_index(0))
                 .focus_visible(|s| s.bg(c::BG_HOVER()))
-                .when(!enabled, |el| el.opacity(OPACITY_DISABLED))
+                .when(!enabled, |el| el.cursor_default().opacity(OPACITY_DISABLED))
                 .when(enabled, |el| {
                     el.on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
                 })
