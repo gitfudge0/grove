@@ -1238,7 +1238,11 @@ impl Actor {
         if self.state.saved.pending_edit.is_some()
             && !matches!(
                 action,
-                Action::Reconnect | Action::Stop { .. } | Action::Draft(_) | Action::DraftImages(_)
+                Action::Reconnect
+                    | Action::Stop { .. }
+                    | Action::Draft(_)
+                    | Action::DraftImages(_)
+                    | Action::DraftReference(_)
             )
         {
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
@@ -1391,6 +1395,15 @@ impl Actor {
                     return Err("Reconnect before resuming queued inputs".into());
                 }
                 self.queue_ready = true;
+            }
+            Action::DraftReference(reference) => {
+                if let Some(reference) = &reference {
+                    codex::validate_prompt(
+                        &reference.serialize(&self.state.saved.draft),
+                        &self.state.saved.draft_images,
+                    )?;
+                }
+                self.state.saved.draft_reference = reference;
             }
             Action::Draft(text) => {
                 if text.len() > 512 * 1024 {
@@ -2452,6 +2465,7 @@ impl Actor {
                             .any(|queued| queued.id == prompt.id)
                             && self.state.saved.draft.is_empty()
                             && self.state.saved.draft_images.is_empty()
+                            && self.state.saved.draft_reference.is_none()
                         {
                             self.state.saved.draft = prompt.text;
                             self.state.saved.draft_images = prompt.images;
@@ -3156,6 +3170,88 @@ mod tests {
         actor.message(json!({"type":"system","subtype":"task_notification","task_id":"sdk-task","status":"completed"})).unwrap();
         assert_eq!(actor.state.approvals.len(), 0);
         assert_eq!(actor.state.status, Status::Idle);
+    }
+    #[test]
+    fn reference_quote_only_interrupt_before_echo_retains_raw_draft_for_retry() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        let reference = codex::ReferenceDraft {
+            id: "quote-only".into(),
+            thread_id: None,
+            sources: vec![codex::ReferenceSource {
+                message_id: "source".into(),
+                role: "assistant".into(),
+            }],
+            text: "literal quote".into(),
+        };
+        actor.state.saved.draft_reference = Some(reference.clone());
+        let canonical = reference.serialize("");
+        actor.submit(91, canonical.clone(), vec![]).unwrap();
+        let sent = read(&mut reader);
+        assert_eq!(sent["message"]["content"][0]["text"], canonical);
+        actor.interrupting = true;
+        actor
+            .message(json!({"type":"result","is_error":false}))
+            .unwrap();
+        assert_eq!(actor.state.rejected_submission, Some(91));
+        assert!(actor.state.saved.draft.is_empty());
+        assert_eq!(actor.state.saved.draft_reference, Some(reference.clone()));
+        actor
+            .submit(92, reference.serialize(&actor.state.saved.draft), vec![])
+            .unwrap();
+        let retry = read(&mut reader);
+        assert_eq!(retry["message"]["content"][0]["text"], canonical);
+    }
+    #[test]
+    fn reference_claude_dispatch_literal_once_and_acknowledgement_owns_identity() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        let reference = codex::ReferenceDraft {
+            id: "old".into(),
+            thread_id: None,
+            sources: vec![codex::ReferenceSource {
+                message_id: "source".into(),
+                role: "assistant".into(),
+            }],
+            text: "/compact $skill\n<User reply:>\n```rust\n```".into(),
+        };
+        actor.state.saved.draft_reference = Some(reference.clone());
+        let canonical = reference.serialize("");
+        actor
+            .action(Action::Submit {
+                id: 91,
+                text: canonical.clone(),
+                images: vec![],
+            })
+            .unwrap();
+        let sent = read(&mut reader);
+        assert_eq!(sent["message"]["content"][0]["text"], canonical);
+        let mut replacement = reference.clone();
+        replacement.id = "new".into();
+        actor
+            .action(Action::DraftReference(Some(replacement.clone())))
+            .unwrap();
+        actor.acknowledge_input(&sent["uuid"]);
+        assert_eq!(actor.state.saved.draft_reference, Some(replacement.clone()));
+        assert_eq!(
+            actor.state.saved.items.last().unwrap()["content"][0]["text"],
+            canonical
+        );
+        actor.state.status = Status::Idle;
+        actor
+            .action(Action::Submit {
+                id: 92,
+                text: replacement.serialize(""),
+                images: vec![],
+            })
+            .unwrap();
+        let sent = read(&mut reader);
+        actor.acknowledge_input(&sent["uuid"]);
+        assert!(actor.state.saved.draft_reference.is_none());
     }
     #[test]
     fn deferred_inline_preserves_identical_composer_after_configuration() {

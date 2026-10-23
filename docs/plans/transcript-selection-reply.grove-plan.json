@@ -1,0 +1,331 @@
+{
+  "schema_version": 1,
+  "plan_id": "transcript-selection-reply",
+  "revision_id": "r1-2026-10-22",
+  "title": "Reply to selected transcript text",
+  "sources": [
+    {
+      "attribution": "User request",
+      "text": "Let's add a feature where highlighting text in the transcript shows me a reply icon at the edge of the selection which allows users to reference the selection in the next input. Plan this"
+    },
+    {
+      "attribution": "Native UI contract",
+      "text": "DESIGN.md; .agents/skills/grove-ui/SKILL.md. Reuse native control recipes, semantic theme and rem geometry; preserve composer drafts and session identity."
+    },
+    {
+      "attribution": "Selection implementation inspected",
+      "text": "vendor/gpui-component/ui/src/text/window_selection.rs:112–151 and vendor/gpui-component/ui/src/window_ext.rs:68,198 expose anchored internal endpoints and a public selected-text string; a scoped geometry/ownership snapshot is needed."
+    },
+    {
+      "attribution": "Shared conversation implementation inspected",
+      "text": "src/views/codex_view.rs:1270 (queue draft preservation), :2555 (submit_mode), :2734 (accepted submission clearing), :15428+ (selection tests); crates/grove-core/src/codex.rs:179 (SavedSession). Code and line anchors are investigation starting points, not guaranteed final edit locations."
+    }
+  ],
+  "changes": {
+    "files": 7,
+    "changed": 7,
+    "new": 0,
+    "deleted": 0
+  },
+  "claims": [
+    {
+      "id": "selection-action",
+      "text": "A released text selection offers Reply beside its active endpoint without moving the transcript.",
+      "exhibit": {
+        "kind": "state_machine",
+        "initial": "idle",
+        "states": [
+          {
+            "id": "idle",
+            "label": "No action",
+            "screen": {
+              "kind": "schema",
+              "text": "No eligible selection or selection is offscreen."
+            }
+          },
+          {
+            "id": "drag",
+            "label": "Selecting",
+            "screen": {
+              "kind": "schema",
+              "text": "Native highlight follows pointer; Reply stays hidden while dragging."
+            }
+          },
+          {
+            "id": "ready",
+            "label": "Reply available",
+            "screen": {
+              "kind": "schema",
+              "text": "Compact catalog icon beside selection endpoint; flip and clamp inside transcript pane. Tooltip and accessible name: Reply to selection."
+            }
+          },
+          {
+            "id": "attached",
+            "label": "Quote attached",
+            "screen": {
+              "kind": "schema",
+              "text": "Click snapshots literal text, then focuses composer without submitting."
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "from": "idle",
+            "to": "drag",
+            "label": "Begin selecting native transcript text"
+          },
+          {
+            "from": "drag",
+            "to": "ready",
+            "label": "Release with nonempty eligible selection"
+          },
+          {
+            "from": "ready",
+            "to": "attached",
+            "label": "Activate Reply by pointer or keyboard"
+          },
+          {
+            "from": "ready",
+            "to": "idle",
+            "label": "Escape, clear selection, session switch, or endpoint leaves viewport"
+          },
+          {
+            "from": "ready",
+            "to": "drag",
+            "label": "Reselect"
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "selection-ownership",
+          "text": "Only native user/assistant Markdown and code selections in the active transcript qualify.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Require all selected text owners to map to eligible message spans in the current thread. Support selections spanning multiple eligible messages in transcript order. Exclude composer, inline editor, terminal, tool controls, embedded HTML/webviews, and selections crossing excluded content. Never use unscoped window.selected_text alone."
+          }
+        },
+        {
+          "id": "selection-api",
+          "text": "Extend the selection owner with a narrow read-only snapshot, then anchor the overlay in the shared conversation view.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "api",
+                "title": "Selection owner",
+                "detail": "Expose literal text, endpoint geometry, selected owner identities, drag state and revision. Preserve content-anchored native selection and existing Copy behavior.",
+                "source": "vendor/gpui-component/ui/src/text/window_selection.rs:112"
+              },
+              {
+                "id": "extension",
+                "title": "Window extension",
+                "detail": "Expose snapshot access without exposing mutable selection internals.",
+                "source": "vendor/gpui-component/ui/src/window_ext.rs:68"
+              },
+              {
+                "id": "consumer",
+                "title": "Shared transcript view",
+                "detail": "Resolve owners to thread/message identities and pane coordinates; preserve highlight on action pointerdown, validate revision and identities on activation, dismiss stale overlay. Use existing control/theme/token recipes.",
+                "source": "src/views/codex_view.rs"
+              }
+            ]
+          }
+        },
+        {
+          "id": "selection-stability",
+          "text": "Streaming and scrolling must not retarget the selected passage.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Re-resolve anchored endpoints after layout/stream updates; hide when geometry is unavailable or offscreen. Invalidate deleted/replaced owners and changed thread identity. Clicking the action captures the currently validated literal selection; later streaming cannot modify the captured quote. No hard-coded screen coordinates or transcript layout shift."
+          }
+        }
+      ]
+    },
+    {
+      "id": "composer-preview",
+      "text": "Reply attaches a removable quote above the next input and preserves the current draft.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "composer",
+            "kind": "column",
+            "text": "",
+            "children": [
+              {
+                "id": "quote",
+                "kind": "surface",
+                "text": "Referenced selection · Assistant",
+                "children": [
+                  {
+                    "id": "literal",
+                    "kind": "text",
+                    "text": "“The selected passage appears here…”"
+                  },
+                  {
+                    "id": "remove",
+                    "kind": "control",
+                    "text": "Remove reference"
+                  }
+                ]
+              },
+              {
+                "id": "input",
+                "kind": "surface",
+                "text": "Existing draft and caret position remain intact"
+              },
+              {
+                "id": "send",
+                "kind": "control",
+                "text": "Send"
+              }
+            ]
+          }
+        ]
+      },
+      "decisions": [
+        {
+          "id": "quote-presentation",
+          "prompt": "How should the referenced selection appear while composing?",
+          "options": [
+            {
+              "id": "preview",
+              "label": "Removable quote preview (Recommended)",
+              "description": "Keep reference separate from the editable draft; show source and literal text with a compact multiline preview and full-text disclosure."
+            },
+            {
+              "id": "blockquote",
+              "label": "Editable blockquote in input",
+              "description": "Insert quoted text at the caret; users can edit it, but draft provenance and removal become less distinct."
+            }
+          ],
+          "default": "preview"
+        },
+        {
+          "id": "quote-count",
+          "prompt": "What happens when Reply is used again before sending?",
+          "options": [
+            {
+              "id": "single",
+              "label": "Replace the current reference (Recommended)",
+              "description": "One quote per next input; replacing affects only the quote and preserves typed text and images."
+            },
+            {
+              "id": "multiple",
+              "label": "Collect references",
+              "description": "Append multiple removable quotes; requires ordering, independent removal and a larger preview area."
+            }
+          ],
+          "default": "single"
+        }
+      ],
+      "children": [
+        {
+          "id": "draft-ownership",
+          "text": "Quote state belongs to the originating session draft, independent of native selection state.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Proposed draft record: reference_id; thread_id; ordered source spans {stable_message_id, role}; literal selected_text. Store actual roles and available identities without invented attribution. Persist with SavedSession using backward-compatible defaults; restore quote with draft after reopening. Session switching restores each session’s own reference. Removing or replacing a quote preserves text, caret and images."
+          }
+        },
+        {
+          "id": "draft-isolation",
+          "text": "Queued-message editing and sent-message inline editing preserve the unrelated main composer reference.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Attach an immutable quote snapshot to the submitted draft/queue record. Queue editor operates on that record, not current main draft. Inline sent-message edit retains unrelated composer text/images/reference. Follow existing recovery confirmation and message identity rules. Source: src/views/codex_view.rs:1270 and submit/accepted lifecycle."
+          }
+        }
+      ]
+    },
+    {
+      "id": "submit-contract",
+      "text": "Send includes the exact referenced passage as ordinary prompt text for Codex and Claude.",
+      "exhibit": {
+        "kind": "calls",
+        "entries": [
+          {
+            "id": "capture",
+            "title": "Capture submission snapshot",
+            "detail": "Capture quote ID, literal quote, ordinary user text and images together; quoted-only send is allowed like image-only send. Validate complete serialized prompt against existing limits; report an inline error instead of silently truncating."
+          },
+          {
+            "id": "serialize",
+            "title": "Serialize once",
+            "detail": "Canonical literal quote envelope carries truthful source/role attribution and user text. Escape envelope boundaries so arbitrary selected code/markup cannot corrupt the structure. Treat quote content as data, never as a Grove slash command or mention token."
+          },
+          {
+            "id": "provider",
+            "title": "Use normal provider dispatch",
+            "detail": "Codex and Claude receive ordinary prompt text through their existing idle, steering and queue paths. No provider-specific reply API is assumed."
+          },
+          {
+            "id": "render",
+            "title": "Render the same submitted reference",
+            "detail": "Use the same immutable quote snapshot/envelope in optimistic transcript, queued preview, sent history and restored session. Preserve literal text on Copy."
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "submit-lifecycle",
+          "text": "Submission acceptance clears only the reference captured by that submission.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Extend existing submission identity ownership. Pending/rejected/failed sends retain reference and text for retry; queued acceptance transfers its snapshot into that queue entry. If a newer reference was attached while a send was pending, acceptance of the older send cannot clear it. Prevent repeated Send from duplicating a pending reference. Preserve existing busy/queue/steering semantics. Source: src/views/codex_view.rs:2555 and :2734."
+          }
+        },
+        {
+          "id": "data-shape",
+          "text": "Use a dedicated quote model rather than overloading ComposerToken decoration.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "SavedSession draft -> optional ReferenceDraft\nSubmission/queue entry -> captured immutable ReferenceDraft + submission identity\nReferenceDraft -> reference_id, thread_id, source_spans[], literal_text\nComposerToken remains slash/mention decoration. Update legacy deserialization and roundtrip coverage. Decide exact owning model/module while tracing the shared actor path."
+          }
+        }
+      ]
+    },
+    {
+      "id": "verification",
+      "text": "Acceptance requires native interaction evidence and actual outgoing prompts from both providers.",
+      "exhibit": {
+        "kind": "schema",
+        "text": "Selection: forward/reverse, multiline, code, cross-message, exclusions, Copy, drag-release/pointerdown, Escape, keyboard activation, accessibility names.\nStability: streaming, pane scroll, offscreen endpoints, resize/rem zoom, session switch, source mutation.\nComposer: existing text/caret/images, replace/remove, saved drafts, quote-only, pending/rejected send, queue edits, inline edits, steering, accepted-ID race.\nVisual: light/dark, normal/narrow pane, long quote, shared glyph/control geometry and no layout shift."
+      },
+      "children": [
+        {
+          "id": "provider-evidence",
+          "text": "Codex and Claude are both currently untested for this proposed feature; fixtures alone will not establish live behavior.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "During implementation, verify Codex actual outgoing prompt plus idle and busy queue/steering behavior; separately verify Claude actual outgoing prompt plus its supported busy behavior. Include selected slash-command/code text and multiline literal content. Record each provider as verified, unsupported, or untested with exact method/reason; distinguish native fixture coverage from live provider-boundary evidence."
+          }
+        },
+        {
+          "id": "platform-evidence",
+          "text": "Native selection geometry and keyboard routing need explicit platform coverage.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "macOS is the primary available runtime, currently untested for this feature. Check native pointer/keyboard selection and focus restoration. Linux and Windows are currently untested: exercise coordinate conversion, Ctrl-based Copy/selection and action routing in available runtimes or disclose untested paths; do not infer parity from macOS."
+          }
+        },
+        {
+          "id": "delivery",
+          "text": "Implement only after a separate authorization, then update the contract and verify before installation.",
+          "exhibit": {
+            "kind": "schema",
+            "text": "Implementation sequence: scoped selection snapshot/API and regression coverage; transcript overlay; persisted quote draft and submission lifecycle; native visual/interaction QA; live Codex and Claude checks; DESIGN.md invariant update. Run relevant Rust/vendor/conformance checks and inspect raw output. Record observed build and evidence. Run ./install.sh once after final approved code changes at the selected delivery endpoint; no build or installation for this plan-only work."
+          }
+        }
+      ]
+    }
+  ],
+  "scope": [
+    "Planning only. Native Review response and Send response collect feedback; they do not authorize implementation.",
+    "Initial scope is the shared native Codex/Claude transcript and next-input composer. Exclude embedded HTML selection, terminal selection, tool chrome, selected images, and provider-specific reply/thread APIs.",
+    "Recommended defaults are a separate removable preview and one reference replacing the previous reference; review choices remain the user’s.",
+    "Change counts are an initial seven-file estimate, not a verified final diff. Anticipated owners: vendored selection state/window extension; shared transcript/composer view; persisted session/submission model; provider dispatch integration as needed; focused tests; DESIGN.md. Refine the file count after implementation tracing.",
+    "No code changes, builds, tests, installation or release are authorized by this plan request."
+  ]
+}

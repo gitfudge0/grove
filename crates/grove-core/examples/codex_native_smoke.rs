@@ -67,6 +67,7 @@ fn main() -> Result<(), String> {
         work_periods: Vec::new(),
         draft: String::new(),
         draft_images: Vec::new(),
+        draft_reference: None,
         native_config_version: 1,
         config_args: if extra_root.is_some() {
             vec!["-c".into(), "sandbox_mode=\"workspace-write\"".into()]

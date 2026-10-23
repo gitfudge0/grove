@@ -1,3 +1,4 @@
+use crate::text::TextSelectionSnapshot;
 use crate::{
     Placement, Root,
     dialog::{AlertDialog, Dialog},
@@ -5,7 +6,7 @@ use crate::{
     notification::Notification,
     sheet::Sheet,
 };
-use gpui::{App, ElementId, Entity, Window};
+use gpui::{App, Bounds, ElementId, Entity, EntityId, Pixels, Window};
 use std::rc::Rc;
 
 pub trait WindowExt: Sized {
@@ -66,6 +67,22 @@ pub trait WindowExt: Sized {
 
     /// Merges all selectable TextViews' selections, top to bottom, joined with `\n`; empty if the window root isn't a [`Root`].
     fn selected_text(&mut self, cx: &mut App) -> String;
+
+    /// Literal text, contributing native owners and content-anchored window geometry.
+    /// Reflects the last painted frame; compare snapshots again when activating an action.
+    fn text_selection_snapshot(&mut self, cx: &mut App) -> Option<TextSelectionSnapshot>;
+
+    /// Protect a selection action's hit rectangle from the ordinary press-to-clear behavior.
+    /// The owner MUST reset this to None whenever its action is hidden, and update it
+    /// during prepaint when geometry changes. A reset only clears that owner's action,
+    /// so rendering another pane cannot remove an active pane's protection.
+    /// Other presses clear it automatically.
+    fn set_text_selection_action_bounds(
+        &mut self,
+        owner: EntityId,
+        bounds: Option<Bounds<Pixels>>,
+        cx: &mut App,
+    );
 
     /// True for either a window-level drag selection or a view-local one (select-all, double-click word).
     fn has_text_selection(&mut self, cx: &mut App) -> bool;
@@ -200,6 +217,32 @@ impl WindowExt for Window {
             return String::new();
         };
         root.read(cx).window_selected_text(cx)
+    }
+
+    fn text_selection_snapshot(&mut self, cx: &mut App) -> Option<TextSelectionSnapshot> {
+        let root = self.root::<Root>().flatten()?;
+        root.read(cx).window_text_selection_snapshot(cx)
+    }
+
+    fn set_text_selection_action_bounds(
+        &mut self,
+        owner: EntityId,
+        bounds: Option<Bounds<Pixels>>,
+        cx: &mut App,
+    ) {
+        if let Some(root) = self.root::<Root>().flatten() {
+            root.update(cx, |root, _| {
+                if let Some(bounds) = bounds {
+                    root.text_selection.action_bounds = Some((owner, bounds));
+                } else if root
+                    .text_selection
+                    .action_bounds
+                    .is_some_and(|(registered, _)| registered == owner)
+                {
+                    root.text_selection.action_bounds = None;
+                }
+            });
+        }
     }
 
     #[inline]

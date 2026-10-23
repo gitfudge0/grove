@@ -175,6 +175,44 @@ fn record_subagent(
         agent.status = status;
     }
 }
+/// Immutable selection captured from eligible transcript messages.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferenceSource {
+    pub message_id: String,
+    pub role: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferenceDraft {
+    pub id: String,
+    pub thread_id: Option<String>,
+    pub sources: Vec<ReferenceSource>,
+    pub text: String,
+}
+impl ReferenceDraft {
+    fn is_canonical_prompt(text: &str) -> bool {
+        let Some((encoded, reply)) = text
+            .strip_prefix("Referenced transcript selection (quoted data):\n")
+            .and_then(|body| body.split_once("\n\nUser reply:\n"))
+        else {
+            return false;
+        };
+        serde_json::from_str::<Self>(encoded).is_ok_and(|reference| {
+            !reference.id.is_empty()
+                && !reference.sources.is_empty()
+                && reference.serialize(reply) == text
+        })
+    }
+    /// JSON encodes the literal quote and metadata so quoted delimiters, slash
+    /// commands and markup remain ordinary prompt data.
+    pub fn serialize(&self, text: &str) -> String {
+        format!(
+            "Referenced transcript selection (quoted data):\n{}\n\nUser reply:\n{}",
+            serde_json::json!(self),
+            text
+        )
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
     #[serde(default)]
@@ -204,6 +242,8 @@ pub struct SavedSession {
     pub draft: String,
     #[serde(default)]
     pub draft_images: Vec<String>,
+    #[serde(default)]
+    pub draft_reference: Option<ReferenceDraft>,
     #[serde(default)]
     pub config_args: Vec<String>,
     /// Version 1 marks startup options supplied specifically for a native session.
@@ -303,14 +343,20 @@ impl SavedSession {
         saved.work_periods.clear();
         saved.draft.clear();
         saved.draft_images.clear();
+        saved.draft_reference = None;
         saved.context = None;
         saved
     }
     /// Consume the accepted composer copy, preserving any newer text/attachment pair.
     pub(crate) fn clear_submitted_draft(&mut self, text: &str, images: &[String]) {
-        if self.draft == text && self.draft_images == images {
+        let canonical = self
+            .draft_reference
+            .as_ref()
+            .map(|reference| reference.serialize(&self.draft));
+        if canonical.as_deref().unwrap_or(&self.draft) == text && self.draft_images == images {
             self.draft.clear();
             self.draft_images.clear();
+            self.draft_reference = None;
         }
     }
 }
@@ -2089,6 +2135,7 @@ pub enum Action {
         images: Vec<String>,
     },
     DraftImages(Vec<String>),
+    DraftReference(Option<ReferenceDraft>),
     /// Compact the conversation context (`/compact`); rejected while a turn is active.
     Compact,
     Interrupt,
@@ -2453,6 +2500,8 @@ enum Pending {
     Thread,
     Turn {
         submission: Option<u64>,
+        text: String,
+        images: Vec<String>,
     },
     InlineTurn,
     Steer {
@@ -2655,7 +2704,11 @@ impl Actor {
             if skill["enabled"] == false {
                 continue;
             }
-            if text
+            let command_text = text
+                .strip_prefix("Referenced transcript selection (quoted data):\n")
+                .and_then(|body| body.split_once("\n\nUser reply:\n").map(|(_, reply)| reply))
+                .unwrap_or(text);
+            if command_text
                 .split_whitespace()
                 .any(|word| word.trim_end_matches([',', '.', ';', ')']) == format!("${name}"))
             {
@@ -2900,14 +2953,27 @@ impl Actor {
         if self.process.is_none() {
             return Err("Reconnect before sending a prompt".into());
         }
-        self.state.saved.draft.clone_from(&text);
-        self.state.saved.draft_images.clone_from(&images);
+        let reference = self
+            .state
+            .saved
+            .draft_reference
+            .as_ref()
+            .is_some_and(|reference| reference.serialize(&self.state.saved.draft) == text);
+        if !reference {
+            self.state.saved.draft.clone_from(&text);
+            self.state.saved.draft_images.clone_from(&images);
+        }
+        let pending = Pending::Turn {
+            submission,
+            text: text.clone(),
+            images: images.clone(),
+        };
         let _ = thread;
         self.capture_edit_checkpoint();
         self.request(
             "turn/start",
             self.turn_params(self.input(&text, images)),
-            Pending::Turn { submission },
+            pending,
         )?;
         self.state.status = Status::Working;
         self.state.clear_error();
@@ -3128,7 +3194,11 @@ impl Actor {
         if self.state.saved.pending_edit.is_some()
             && !matches!(
                 action,
-                Action::Reconnect | Action::Stop { .. } | Action::Draft(_) | Action::DraftImages(_)
+                Action::Reconnect
+                    | Action::Stop { .. }
+                    | Action::Draft(_)
+                    | Action::DraftImages(_)
+                    | Action::DraftReference(_)
             )
         {
             if let Action::Submit { id, .. } | Action::SubmitWithMode { id, .. } = &action {
@@ -3399,34 +3469,31 @@ impl Actor {
                     return Err(error);
                 }
             }
+            Action::DraftReference(reference) => {
+                if let Some(reference) = &reference {
+                    validate_prompt(
+                        &reference.serialize(&self.state.saved.draft),
+                        &self.state.saved.draft_images,
+                    )?;
+                }
+                self.state.saved.draft_reference = reference;
+            }
             Action::DraftImages(images) => {
                 validate_images(&images)?;
-                if !self
-                    .pending
-                    .values()
-                    .any(|r| matches!(r.kind, Pending::Turn { .. } | Pending::QueuedTurn { .. }))
-                {
-                    if let Some(edit) = &mut self.state.saved.pending_edit {
-                        if let Some((_, draft_images)) = &mut edit.composer_draft {
-                            draft_images.clone_from(&images);
-                        }
+                if let Some(edit) = &mut self.state.saved.pending_edit {
+                    if let Some((_, draft_images)) = &mut edit.composer_draft {
+                        draft_images.clone_from(&images);
                     }
-                    self.state.saved.draft_images = images;
                 }
+                self.state.saved.draft_images = images;
             }
             Action::Draft(text) => {
-                if !self
-                    .pending
-                    .values()
-                    .any(|request| matches!(request.kind, Pending::Turn { .. }))
-                {
-                    if let Some(edit) = &mut self.state.saved.pending_edit {
-                        if let Some((draft, _)) = &mut edit.composer_draft {
-                            draft.clone_from(&text);
-                        }
+                if let Some(edit) = &mut self.state.saved.pending_edit {
+                    if let Some((draft, _)) = &mut edit.composer_draft {
+                        draft.clone_from(&text);
                     }
-                    self.state.saved.draft = text;
                 }
+                self.state.saved.draft = text;
             }
             Action::Metadata { project, roots } => {
                 self.state.saved.project = project;
@@ -3837,8 +3904,22 @@ impl Actor {
                 );
                 return Ok(());
             }
+            if let Pending::Turn { text, images, .. } = &request.kind {
+                // A queued UI clear may arrive before the provider rejects the
+                // start. Recover the submitted draft, preserving newer edits
+                // and independently owned quote state.
+                if self.state.saved.draft.is_empty()
+                    && self.state.saved.draft_images.is_empty()
+                    && self.state.saved.draft_reference.is_none()
+                    && !ReferenceDraft::is_canonical_prompt(text)
+                {
+                    self.state.saved.draft.clone_from(text);
+                    self.state.saved.draft_images.clone_from(images);
+                }
+            }
             if let Pending::Turn {
                 submission: Some(id),
+                ..
             } = &request.kind
             {
                 self.state.rejected_submission = Some(*id);
@@ -4255,17 +4336,20 @@ impl Actor {
                     self.state.turn_id = result["turn"]["id"].as_str().map(str::to_owned);
                 }
             }
-            Pending::Turn { submission } => {
+            Pending::Turn {
+                submission,
+                text,
+                images,
+            } => {
                 self.bind_edit_checkpoint(result);
                 if let Some(submission) = submission {
                     self.state.accepted_submission = Some(submission);
                 }
                 self.state.accepted_prompts = self.state.accepted_prompts.saturating_add(1);
                 if self.state.saved.title.is_none() {
-                    self.state.saved.title = prompt_title(&self.state.saved.draft);
+                    self.state.saved.title = prompt_title(&text);
                 }
-                self.state.saved.draft.clear();
-                self.state.saved.draft_images.clear();
+                self.state.saved.clear_submitted_draft(&text, &images);
                 if self.state.status == Status::Working {
                     self.state.turn_id = result["turn"]["id"].as_str().map(str::to_owned);
                 }
@@ -4418,6 +4502,7 @@ impl Actor {
             .find_map(|request| match request.kind {
                 Pending::Turn {
                     submission: Some(id),
+                    ..
                 }
                 | Pending::Steer { submission: id, .. } => Some(id),
                 _ => None,
@@ -4570,11 +4655,227 @@ mod tests {
             work_periods: Vec::new(),
             draft: String::new(),
             draft_images: Vec::new(),
+            draft_reference: None,
             config_args: Vec::new(),
             native_config_version: 1,
             composer: ComposerSettings::default(),
             context: None,
         }
+    }
+    fn reference(id: &str) -> ReferenceDraft {
+        ReferenceDraft {
+            id: id.into(),
+            thread_id: Some("thread-1".into()),
+            sources: vec![ReferenceSource {
+                message_id: "message-1".into(),
+                role: "assistant".into(),
+            }],
+            text: "/compact $skill literal\n```rust\n<User reply:>\n```".into(),
+        }
+    }
+    #[test]
+    fn reference_draft_roundtrip_legacy_and_acceptance_identity() {
+        let mut saved = saved();
+        let mut legacy = serde_json::to_value(&saved).unwrap();
+        legacy.as_object_mut().unwrap().remove("draft_reference");
+        assert!(serde_json::from_value::<SavedSession>(legacy)
+            .unwrap()
+            .draft_reference
+            .is_none());
+        saved.draft = "explain".into();
+        saved.draft_reference = Some(reference("old"));
+        let canonical = saved
+            .draft_reference
+            .as_ref()
+            .unwrap()
+            .serialize(&saved.draft);
+        let encoded = canonical.lines().nth(1).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ReferenceDraft>(encoded).unwrap(),
+            reference("old")
+        );
+        let restored: SavedSession =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!(restored.draft_reference, saved.draft_reference);
+        saved.draft_reference = Some(reference("new"));
+        saved.clear_submitted_draft(&canonical, &[]);
+        assert_eq!(saved.draft, "explain");
+        assert_eq!(saved.draft_reference, Some(reference("new")));
+        let canonical = saved
+            .draft_reference
+            .as_ref()
+            .unwrap()
+            .serialize(&saved.draft);
+        saved.clear_submitted_draft(&canonical, &[]);
+        assert!(saved.draft.is_empty());
+        assert!(saved.draft_reference.is_none());
+        saved.draft_reference = Some(reference("fresh"));
+        assert!(saved.fresh_conversation().draft_reference.is_none());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn reference_codex_dispatch_literal_once_and_late_acceptance_preserves_replacement() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let mut actor = actor();
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let input = child.stdin.take().unwrap();
+        let (_, lines) = mpsc::channel();
+        actor.process = Some(Process {
+            child,
+            input,
+            lines,
+        });
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        actor.state.saved.draft = "explain".into();
+        actor.state.saved.draft_reference = Some(reference("old"));
+        actor.state.skills = vec![json!({"name":"skill","path":"/tmp/skill"})];
+        let canonical = reference("old").serialize("explain");
+        actor
+            .action(Action::Submit {
+                id: 91,
+                text: canonical.clone(),
+                images: vec![],
+            })
+            .unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let sent: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(sent["params"]["input"][0]["text"], canonical);
+        assert_eq!(sent["params"]["input"].as_array().unwrap().len(), 1);
+        assert_eq!(actor.state.saved.draft, "explain");
+        actor
+            .action(Action::DraftReference(Some(reference("new"))))
+            .unwrap();
+        actor
+            .message(json!({"id":1,"result":{"turn":{"id":"turn-new"}}}))
+            .unwrap();
+        assert_eq!(actor.state.accepted_submission, Some(91));
+        assert_eq!(actor.state.saved.draft_reference, Some(reference("new")));
+        assert_eq!(actor.state.saved.draft, "explain");
+    }
+    #[test]
+    #[cfg(unix)]
+    fn reference_attached_after_plain_submit_preserves_newer_draft_on_acceptance() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        actor.state.saved.draft = "original plain message".into();
+        actor
+            .action(Action::Submit {
+                id: 91,
+                text: "original plain message".into(),
+                images: vec![],
+            })
+            .unwrap();
+        actor
+            .action(Action::Draft("new unsent text".into()))
+            .unwrap();
+        let images = vec!["data:image/png;base64,aGVsbG8=".into()];
+        actor.action(Action::DraftImages(images.clone())).unwrap();
+        actor
+            .action(Action::DraftReference(Some(reference("new"))))
+            .unwrap();
+        actor
+            .message(json!({"id":1,"result":{"turn":{"id":"accepted-turn"}}}))
+            .unwrap();
+        assert_eq!(actor.state.accepted_submission, Some(91));
+        assert_eq!(actor.state.saved.draft, "new unsent text");
+        assert_eq!(actor.state.saved.draft_images, images);
+        assert_eq!(actor.state.saved.draft_reference, Some(reference("new")));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn reference_attached_after_plain_submit_survives_rejection_without_restoring_old_text() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        actor
+            .action(Action::Submit {
+                id: 91,
+                text: "old submitted text".into(),
+                images: vec![],
+            })
+            .unwrap();
+        actor.action(Action::Draft(String::new())).unwrap();
+        actor
+            .action(Action::DraftReference(Some(reference("new"))))
+            .unwrap();
+        actor
+            .message(json!({"id":1,"error":{"message":"rejected"}}))
+            .unwrap();
+        assert_eq!(actor.state.rejected_submission, Some(91));
+        assert!(actor.state.saved.draft.is_empty());
+        assert_eq!(actor.state.saved.draft_reference, Some(reference("new")));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn reference_prefix_looking_ordinary_prompt_restores_after_rejection() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        let text = "Referenced transcript selection (quoted data):\nnot JSON\n\nUser reply:\nexplain this format";
+        actor
+            .action(Action::Submit {
+                id: 91,
+                text: text.into(),
+                images: vec![],
+            })
+            .unwrap();
+        actor.action(Action::Draft(String::new())).unwrap();
+        actor
+            .message(json!({"id":1,"error":{"message":"rejected"}}))
+            .unwrap();
+        assert_eq!(actor.state.saved.draft, text);
+        assert!(actor.state.saved.draft_reference.is_none());
+        assert!(ReferenceDraft::is_canonical_prompt(
+            &reference("valid").serialize("reply")
+        ));
+        let mut invalid = reference("");
+        assert!(!ReferenceDraft::is_canonical_prompt(
+            &invalid.serialize("reply")
+        ));
+        invalid.id = "valid".into();
+        invalid.sources.clear();
+        assert!(!ReferenceDraft::is_canonical_prompt(
+            &invalid.serialize("reply")
+        ));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn reference_queue_and_steer_snapshots_are_immutable_and_rejections_retain_draft() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.saved.draft_reference = Some(reference("old"));
+        let canonical = reference("old").serialize("");
+        actor
+            .submit_mode(91, canonical.clone(), vec![], SubmissionMode::Steer)
+            .unwrap();
+        actor
+            .message(json!({"id":1,"error":{"message":"rejected"}}))
+            .unwrap();
+        assert_eq!(actor.state.saved.draft_reference, Some(reference("old")));
+        actor
+            .submit_mode(92, canonical.clone(), vec![], SubmissionMode::Queue)
+            .unwrap();
+        assert!(actor.state.saved.draft_reference.is_none());
+        assert_eq!(actor.state.queued_prompts.last().unwrap().text, canonical);
+        actor
+            .action(Action::DraftReference(Some(reference("new"))))
+            .unwrap();
+        assert_eq!(
+            actor.state.queued_prompts.last().unwrap().text,
+            reference("old").serialize("")
+        );
     }
     #[test]
     fn legacy_native_bypass_migration_preserves_explicit_access_and_custom_options() {
@@ -5673,6 +5974,8 @@ mod tests {
             Request {
                 kind: Pending::Turn {
                     submission: Some(42),
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
                 },
                 deadline: Instant::now(),
             },
@@ -5691,6 +5994,8 @@ mod tests {
             Request {
                 kind: Pending::Turn {
                     submission: Some(43),
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
                 },
                 deadline: Instant::now(),
             },
@@ -5712,7 +6017,11 @@ mod tests {
         actor.pending.insert(
             1,
             Request {
-                kind: Pending::Turn { submission: None },
+                kind: Pending::Turn {
+                    submission: None,
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
+                },
                 deadline: Instant::now(),
             },
         );
@@ -5725,6 +6034,8 @@ mod tests {
             Request {
                 kind: Pending::Turn {
                     submission: Some(41),
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
                 },
                 deadline: Instant::now(),
             },
@@ -5742,6 +6053,8 @@ mod tests {
             Request {
                 kind: Pending::Turn {
                     submission: Some(42),
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
                 },
                 deadline: Instant::now(),
             },
@@ -5756,7 +6069,11 @@ mod tests {
         actor.pending.insert(
             4,
             Request {
-                kind: Pending::Turn { submission: None },
+                kind: Pending::Turn {
+                    submission: None,
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
+                },
                 deadline: Instant::now(),
             },
         );
@@ -5773,7 +6090,11 @@ mod tests {
         actor.pending.insert(
             8,
             Request {
-                kind: Pending::Turn { submission: None },
+                kind: Pending::Turn {
+                    submission: None,
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
+                },
                 deadline: Instant::now(),
             },
         );
@@ -5788,7 +6109,11 @@ mod tests {
         actor.pending.insert(
             9,
             Request {
-                kind: Pending::Turn { submission: None },
+                kind: Pending::Turn {
+                    submission: None,
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
+                },
                 deadline: Instant::now(),
             },
         );
@@ -5820,7 +6145,11 @@ mod tests {
         actor.pending.insert(
             9,
             Request {
-                kind: Pending::Turn { submission: None },
+                kind: Pending::Turn {
+                    submission: None,
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
+                },
                 deadline: Instant::now(),
             },
         );
@@ -5832,7 +6161,11 @@ mod tests {
         actor.pending.insert(
             10,
             Request {
-                kind: Pending::Turn { submission: None },
+                kind: Pending::Turn {
+                    submission: None,
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
+                },
                 deadline: Instant::now(),
             },
         );
@@ -5962,7 +6295,11 @@ mod tests {
         actor.pending.insert(
             1,
             Request {
-                kind: Pending::Turn { submission: None },
+                kind: Pending::Turn {
+                    submission: None,
+                    text: actor.state.saved.draft.clone(),
+                    images: actor.state.saved.draft_images.clone(),
+                },
                 deadline: Instant::now(),
             },
         );

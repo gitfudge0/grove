@@ -114,6 +114,25 @@ pub struct WindowTextSelection {
     pub(crate) cursor: Option<SelectionEndpoint>,
     pub(crate) is_selecting: bool,
     pub(crate) did_hit_text: bool,
+    pub(crate) action_bounds: Option<(EntityId, Bounds<Pixels>)>,
+}
+
+/// An immutable selection from the last painted native text frame. Geometry is in
+/// window coordinates and follows the selected content when it moves.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextSelectionSnapshot {
+    pub text: String,
+    /// Every contributing text owner, in the same order as `text`.
+    pub spans: Vec<TextSelectionSpan>,
+    pub anchor: Point<Pixels>,
+    pub endpoint: Point<Pixels>,
+    pub is_selecting: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextSelectionSpan {
+    pub owner: EntityId,
+    pub text: String,
 }
 
 /// A selection endpoint, content-anchored to a TextView so it follows scrolling; a blank-space press proxy-anchors to the nearest view instead (`inside` false).
@@ -230,21 +249,27 @@ impl Root {
         })
     }
 
-    /// Uses `&self` so it's safe to call while the Root entity is leased. Reflects the last painted frame, not any pending repaint.
+    /// Uses `&self` so callers can inspect it while Root is leased.
     pub(crate) fn window_selected_text(&self, cx: &App) -> String {
+        self.window_text_selection_snapshot(cx)
+            .map_or_else(String::new, |s| s.text)
+    }
+
+    pub(crate) fn window_text_selection_snapshot(&self, cx: &App) -> Option<TextSelectionSnapshot> {
         let resolved = self.text_selection.resolved_points(cx);
         let single_view = self.text_selection.single_view();
-        // Only views in the active scope contribute, so copying never mixes text across modal layers.
-        let anchor_scope = self.active_selection_scope();
-
-        let mut items: Vec<(Point<Pixels>, String)> = Vec::new();
-        for (id, (view, _, scope)) in self.selectable_text_views.iter() {
+        let active_scope = self.active_selection_scope();
+        let mut items = Vec::new();
+        for (id, (view, _, scope)) in &self.selectable_text_views {
+            if *scope != active_scope {
+                continue;
+            }
             let Some(view) = view.upgrade() else { continue };
             let state = view.read(cx);
-            let in_window_selection = resolved.is_some()
-                && state.is_selectable()
-                && *scope == anchor_scope
-                && single_view.map_or(true, |v| v == *id);
+            if !state.is_selectable() {
+                continue;
+            }
+            let in_window_selection = resolved.is_some() && single_view.map_or(true, |v| v == *id);
             if !state.has_view_selection() && !in_window_selection {
                 continue;
             }
@@ -252,9 +277,17 @@ impl Root {
             if text.trim().is_empty() {
                 continue;
             }
-            items.push((state.bounds().origin, text));
+            let local_endpoint = state
+                .multi_click_selection()
+                .map(|s| s.pos)
+                .unwrap_or_else(|| state.bounds().bottom_right());
+            items.push((
+                state.bounds().origin,
+                TextSelectionSpan { owner: *id, text },
+                local_endpoint,
+                state.is_selecting,
+            ));
         }
-
         items.sort_by(|a, b| {
             a.0.y
                 .partial_cmp(&b.0.y)
@@ -265,16 +298,28 @@ impl Root {
                         .unwrap_or(std::cmp::Ordering::Equal),
                 )
         });
-
-        items
-            .into_iter()
-            .map(|(_, text)| text)
+        let first = items.first()?;
+        let (anchor, endpoint) = resolved.unwrap_or((first.2, items.last()?.2));
+        let is_selecting = self.text_selection.is_selecting || items.iter().any(|item| item.3);
+        let spans: Vec<_> = items.into_iter().map(|item| item.1).collect();
+        let text = spans
+            .iter()
+            .map(|span| span.text.as_str())
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        Some(TextSelectionSnapshot {
+            text,
+            spans,
+            anchor,
+            endpoint,
+            is_selecting,
+        })
     }
 
     /// Clear the window selection and all view-local selections.
     pub fn clear_text_selection(&mut self, cx: &mut Context<Self>) {
+        self.text_selection.action_bounds = None;
+        cx.notify();
         let had_window_selection = self.text_selection.anchor.is_some();
         self.text_selection.anchor = None;
         self.text_selection.cursor = None;
@@ -335,6 +380,7 @@ impl Root {
             .as_ref()
             .is_some_and(|endpoint| endpoint.inside_text);
         self.text_selection.is_selecting = true;
+        cx.notify();
     }
 
     pub(crate) fn update_text_selection(
@@ -375,6 +421,7 @@ impl Root {
         }
 
         self.notify_selection_band(old_points, new_points, cx);
+        cx.notify();
     }
 
     pub(crate) fn end_text_selection(&mut self, cx: &mut Context<Self>) {
@@ -382,6 +429,7 @@ impl Root {
             return;
         }
         self.text_selection.is_selecting = false;
+        cx.notify();
         if !self.text_selection.did_hit_text {
             self.text_selection.anchor = None;
             self.text_selection.cursor = None;
@@ -628,7 +676,18 @@ impl Element for TextSelectionController {
             if phase.capture() {
                 // Reset the flag and clear the previous selection on every press (browser behavior).
                 GlobalState::global_mut(cx).suppress_text_selection = false;
-                Root::update(window, cx, |root, _, cx| root.clear_text_selection(cx));
+                Root::update(window, cx, |root, _, cx| {
+                    if root
+                        .text_selection
+                        .action_bounds
+                        .is_some_and(|(_, bounds)| bounds.contains(&event.position))
+                        && root.window_text_selection_snapshot(cx).is_some()
+                    {
+                        GlobalState::global_mut(cx).suppress_text_selection = true;
+                    } else {
+                        root.clear_text_selection(cx);
+                    }
+                });
             } else if event.click_count == 1 {
                 // A component that owns its own press sets this in its bubble handler; the press is theirs.
                 if GlobalState::global(cx).suppress_text_selection {
@@ -795,6 +854,64 @@ mod tests {
     fn window_selected_text(cx: &mut VisualTestContext) -> String {
         use crate::WindowExt as _;
         cx.update(|window, cx| window.selected_text(cx))
+    }
+
+    fn snapshot(cx: &mut VisualTestContext) -> super::TextSelectionSnapshot {
+        use crate::WindowExt as _;
+        cx.update(|window, cx| {
+            window
+                .text_selection_snapshot(cx)
+                .expect("selection snapshot")
+        })
+    }
+
+    #[gpui::test]
+    fn snapshot_tracks_all_owners_and_reverse_endpoint(cx: &mut TestAppContext) {
+        let (chat, cx) = setup(true, cx);
+        let owners = chat.read_with(cx, |chat, _| {
+            [chat.first.entity_id(), chat.second.entity_id()]
+        });
+        let top = point(px(0.), px(15.));
+        let bottom = point(px(300.), px(70.));
+        drag(cx, top, bottom);
+        let forward = snapshot(cx);
+        assert_eq!(
+            forward
+                .spans
+                .iter()
+                .map(|span| span.owner)
+                .collect::<Vec<_>>(),
+            owners
+        );
+        assert_eq!(forward.text, window_selected_text(cx));
+        assert_eq!(forward.anchor, top);
+        assert_eq!(forward.endpoint, bottom);
+        assert!(!forward.is_selecting);
+        drag(cx, bottom, top);
+        let reverse = snapshot(cx);
+        assert_eq!(reverse.spans, forward.spans);
+        assert_eq!(reverse.anchor, bottom);
+        assert_eq!(reverse.endpoint, top);
+    }
+
+    #[gpui::test]
+    fn selection_action_preserves_snapshot_until_activation(cx: &mut TestAppContext) {
+        use crate::WindowExt as _;
+        let (chat, cx) = setup(true, cx);
+        let owner = chat.entity_id();
+        let other_owner = chat.read_with(cx, |chat, _| chat.first.entity_id());
+        drag(cx, point(px(0.), px(15.)), point(px(300.), px(70.)));
+        let before = snapshot(cx);
+        let action = gpui::Bounds::new(point(px(10.), px(100.)), gpui::size(px(25.), px(25.)));
+        cx.update(|window, cx| window.set_text_selection_action_bounds(owner, Some(action), cx));
+        // An unrelated pane's render must not revoke the active action.
+        cx.update(|window, cx| window.set_text_selection_action_bounds(other_owner, None, cx));
+        cx.simulate_click(action.center(), Modifiers::default());
+        assert_eq!(snapshot(cx), before);
+        // Its own pane hiding the action must revoke protection immediately.
+        cx.update(|window, cx| window.set_text_selection_action_bounds(owner, None, cx));
+        cx.simulate_click(action.center(), Modifiers::default());
+        cx.update(|window, cx| assert!(window.text_selection_snapshot(cx).is_none()));
     }
 
     #[gpui::test]
@@ -980,6 +1097,11 @@ mod tests {
 
         let text = window_selected_text(cx);
         assert_eq!(text.trim(), "Hello", "expected word selection: {text:?}");
+        let selection = snapshot(cx);
+        assert_eq!(selection.text.trim(), "Hello");
+        assert_eq!(selection.spans.len(), 1);
+        assert_eq!(selection.endpoint, position);
+        assert!(!selection.is_selecting);
         assert!(!text.contains("Second message"), "got: {text:?}");
     }
 
@@ -1311,6 +1433,9 @@ mod tests {
             point(b.origin.x + b.size.width + px(80.), b.center().y),
         );
 
+        let selected = snapshot(cx);
+        let front_id = view.read_with(cx, |v, _| v.front.entity_id());
+        assert!(selected.spans.iter().all(|span| span.owner == front_id));
         let front = view.read_with(cx, |v, cx| v.front.read(cx).selected_text());
         assert!(
             front.contains("Front"),

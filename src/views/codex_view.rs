@@ -21,8 +21,8 @@ use gpui_component::{
         TextDecorationCollection,
     },
     menu::{PopupMenu, PopupMenuItem},
-    text::{TextView, TextViewStyle},
-    Disableable,
+    text::{TextSelectionSnapshot, TextView, TextViewState, TextViewStyle},
+    Disableable, WindowExt as _,
 };
 use grove_core::codex::{self, Action, SubmissionMode};
 use grove_core::elicitation::{ElicitationKind, ElicitationMode, ElicitationRequest};
@@ -162,6 +162,10 @@ const QUEUED_PROMPTS_MAX_H: f32 = 144.0;
 const QUESTION_PANEL_MAX_H: f32 = 360.0;
 /// Leave room for the transcript and composer even when permission forms are long.
 const APPROVAL_TRAY_VIEWPORT_SHARE: f32 = 0.45;
+const INLINE_REFERENCE_MAX_H: f32 = 80.0;
+const REFERENCE_PREVIEW_H: f32 = 60.0;
+const REFERENCE_EXPANDED_H: f32 = 200.0;
+const REFERENCE_PREVIEW_CHARS: usize = 240;
 const TOOL_DETAIL_MAX_H: f32 = 280.0;
 /// Context share, in whole percent, at which the meter switches to the warning colour.
 const CONTEXT_WARN_PERCENT: u32 = 80;
@@ -682,6 +686,7 @@ struct QueueEditor {
     draft: String,
     images: Vec<String>,
     tokens: Vec<ComposerToken>,
+    reference: Option<codex::ReferenceDraft>,
     loaded: bool,
     saving: bool,
 }
@@ -695,6 +700,7 @@ struct MessageEditor {
     _subscription: Subscription,
     index: usize,
     message_id: String,
+    reference: Option<codex::ReferenceDraft>,
     input: Entity<InputState>,
     images: Vec<String>,
     restored: bool,
@@ -709,6 +715,17 @@ pub struct CodexView {
     pub(super) html: Entity<super::inline_html::HtmlSession>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     input: Entity<InputState>,
+    reference: Option<codex::ReferenceDraft>,
+    submitted_reference: Option<String>,
+    reference_expanded: bool,
+    reference_disclosure_focus: FocusHandle,
+    reference_remove_focus: FocusHandle,
+    selection_views: HashMap<String, Entity<TextViewState>>,
+    selection_dismissed: Option<TextSelectionSnapshot>,
+    selection_root_observed: bool,
+    selection_reply_focus: FocusHandle,
+    submitted_images: Vec<String>,
+    transcript_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
     checkout_context: Option<(String, String)>,
     expanded: HashSet<String>,
     pub(super) agents_in_checkout: bool,
@@ -793,6 +810,7 @@ impl CodexView {
         let stream_thread = session.read(cx).state.saved.thread_id.clone();
         let draft = session.read(cx).state.saved.draft.clone();
         let images = session.read(cx).state.saved.draft_images.clone();
+        let reference = session.read(cx).state.saved.draft_reference.clone();
         let previews = images
             .iter()
             .filter_map(|url| image_from_url(url).map(|image| (url.clone(), image)))
@@ -871,6 +889,17 @@ impl CodexView {
             html,
             native_plans: HashMap::new(),
             input,
+            reference,
+            submitted_reference: None,
+            reference_expanded: false,
+            reference_disclosure_focus: cx.focus_handle(),
+            reference_remove_focus: cx.focus_handle(),
+            selection_views: HashMap::new(),
+            selection_dismissed: None,
+            selection_root_observed: false,
+            selection_reply_focus: cx.focus_handle(),
+            submitted_images: Vec::new(),
+            transcript_bounds: Rc::default(),
             expanded: HashSet::new(),
             agents_in_checkout: false,
             work_tick_pending: Rc::new(Cell::new(false)),
@@ -1316,6 +1345,7 @@ impl CodexView {
             draft: self.input.read(cx).value().to_string(),
             images: self.images.clone(),
             tokens: self.picked_tokens.clone(),
+            reference: None,
             loaded: false,
             saving: false,
         };
@@ -1334,7 +1364,11 @@ impl CodexView {
         else {
             return;
         };
-        let text = self.input.read(cx).value().to_string();
+        let draft = self.input.read(cx).value().to_string();
+        let text = editor
+            .reference
+            .as_ref()
+            .map_or_else(|| draft.clone(), |reference| reference.serialize(&draft));
         if let Err(error) = codex::validate_prompt(&text, &self.images) {
             self.session.update(cx, |session, cx| {
                 session.state.error = Some(error);
@@ -1408,8 +1442,8 @@ impl CodexView {
                     // Capture the current unrelated draft at the moment the hold is granted.
                     // Pending input/attachment changes must survive the editor handoff.
                     editor.draft = self.input.read(cx).value().to_string();
-                    editor.images = self.images.clone();
-                    editor.tokens = self.picked_tokens.clone();
+                    editor.images.clone_from(&self.images);
+                    editor.tokens.clone_from(&self.picked_tokens);
                     editor.loaded = true;
                     self.images = prompt.images.clone();
                     for url in &self.images {
@@ -1420,8 +1454,14 @@ impl CodexView {
                         }
                     }
                     self.picked_tokens.clear();
+                    let text = if let Some((reference, reply)) = reference_prompt(&prompt.text) {
+                        editor.reference = Some(reference);
+                        reply.to_owned()
+                    } else {
+                        prompt.text.clone()
+                    };
                     self.input.update(cx, |input, cx| {
-                        input.set_value(prompt.text.clone(), window, cx);
+                        input.set_value(text, window, cx);
                     });
                     self.input.focus_handle(cx).focus(window, cx);
                 }
@@ -1659,11 +1699,11 @@ impl CodexView {
                 let steer = !locked && active_turn_redirect_available(state);
                 let selected = self.queue_selected == Some(id);
                 let label = if prompt.images.is_empty() {
-                    collapsed_draft_preview(&prompt.text)
+                    collapsed_draft_preview(&reference_prompt_copy(&prompt.text))
                 } else {
                     format!(
                         "{} · {} images",
-                        collapsed_draft_preview(&prompt.text),
+                        collapsed_draft_preview(&reference_prompt_copy(&prompt.text)),
                         prompt.images.len()
                     )
                 };
@@ -2619,11 +2659,25 @@ impl CodexView {
         {
             return;
         }
-        let text = self.input.read(cx).value().to_string();
+        let draft = self.input.read(cx).value().to_string();
+        let text = self
+            .reference
+            .as_ref()
+            .map_or_else(|| draft.clone(), |quote| quote.serialize(&draft));
         if text.trim().is_empty() && self.images.is_empty() {
             return;
         }
         let result = self.session.update(cx, |session, cx| {
+            codex::validate_prompt(&text, &self.images)?;
+            session
+                .handle
+                .send(Action::DraftReference(self.reference.clone()))?;
+            session.state.saved.draft.clone_from(&draft);
+            session
+                .state
+                .saved
+                .draft_reference
+                .clone_from(&self.reference);
             session.submit_with_mode(text.clone(), self.images.clone(), mode, cx)
         });
         if let Ok(submission) = result {
@@ -2651,7 +2705,9 @@ impl CodexView {
                     optimistic: None,
                 });
             }
-            self.submitted = Some(text);
+            self.submitted_reference = self.reference.as_ref().map(|quote| quote.id.clone());
+            self.submitted_images = self.images.clone();
+            self.submitted = Some(draft);
             self.submitted_ack = Some(submission);
             self.follow_after_submit = true;
         } else if let Err(error) = result {
@@ -2669,6 +2725,13 @@ impl Focusable for CodexView {
 }
 impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.selection_root_observed {
+            if let Some(root) = window.root::<gpui_component::Root>().flatten() {
+                self.subscriptions
+                    .push(cx.observe(&root, |_, _, cx| cx.notify()));
+                self.selection_root_observed = true;
+            }
+        }
         self.restore_image_tokens(window, cx);
         let state = self.session.read(cx).state.shared();
         // Source geometry belongs to one editor in one conversation, never to a
@@ -2791,6 +2854,10 @@ impl Render for CodexView {
                     self.images.clear();
                 }
             }
+            self.reference = None;
+            self.submitted_reference = None;
+            self.selection_views.clear();
+            self.selection_dismissed = None;
             self.submitted = None;
             self.submitted_ack = None;
             self.expanded.clear();
@@ -2838,11 +2905,24 @@ impl Render for CodexView {
             .submitted_ack
             .is_some_and(|target| state.accepted_submission == Some(target))
         {
-            self.submitted = None;
+            let reference_matches =
+                self.reference.as_ref().map(|quote| &quote.id) == self.submitted_reference.as_ref();
+            if reference_matches {
+                self.reference = None;
+                self.reference_expanded = false;
+            }
+            self.submitted_reference = None;
+            let submitted = self.submitted.take();
             self.submitted_ack = None;
-            self.input
-                .update(cx, |input, cx| input.set_value("", window, cx));
-            self.images.clear();
+            if reference_matches
+                && submitted.as_deref() == Some(self.input.read(cx).value().as_ref())
+            {
+                self.input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+            }
+            if reference_matches && self.images == self.submitted_images {
+                self.images.clear();
+            }
         }
         if self
             .submitted_ack
@@ -2913,6 +2993,16 @@ impl Render for CodexView {
         }
         let changed_thread = self.stream_thread != state.saved.thread_id;
         if changed_thread {
+            self.selection_views.clear();
+            self.selection_dismissed = None;
+            if self
+                .reference
+                .as_ref()
+                .is_some_and(|quote| quote.thread_id != state.saved.thread_id)
+            {
+                self.reference.clone_from(&state.saved.draft_reference);
+                self.reference_expanded = false;
+            }
             self.stream_text.clear();
             self.stream_thread.clone_from(&state.saved.thread_id);
         }
@@ -3029,6 +3119,7 @@ impl Render for CodexView {
         // The first rendered child at or after each item, for jump-to-start.
         let mut item_children = Vec::with_capacity(state.saved.items.len());
         let mut message_child = 0;
+        let mut rendered_selection_keys = HashSet::new();
         let mut messages = div()
             .id("codex-messages")
             .debug_selector(|| "codex-messages".into())
@@ -3576,7 +3667,16 @@ impl Render for CodexView {
                         .bg(c::BG_RAIL())
                 });
             let text = if tool { tool_detail(item) } else { text };
-            let copy = text.clone();
+            let copy = if kind == "userMessage" {
+                reference_prompt_copy(&text)
+            } else {
+                text.clone()
+            };
+            let text = if kind == "userMessage" {
+                reference_prompt_markdown(&text)
+            } else {
+                text
+            };
             let text = if kind == "agentMessage" && !cx.reduce_motion() {
                 let key = item["id"]
                     .as_str()
@@ -3721,7 +3821,26 @@ impl Render for CodexView {
                             .id(format!("codex-message-body-{index}"))
                             .debug_selector(move || format!("codex-message-body-{index}"))
                             .child({
-                                let view = TextView::markdown(("codex-text", index), text)
+                                let owner_key = format!(
+                                    "{}:{}",
+                                    state.saved.thread_id.as_deref().unwrap_or(""),
+                                    html_message
+                                );
+                                rendered_selection_keys.insert(owner_key.clone());
+                                let owner = if let Some(owner) =
+                                    self.selection_views.get(&owner_key).filter(|owner| {
+                                        text.starts_with(owner.read(cx).source().as_ref())
+                                    }) {
+                                    owner.clone()
+                                } else {
+                                    let owner = cx.new(|cx| TextViewState::markdown(&text, cx));
+                                    self.subscriptions
+                                        .push(cx.observe(&owner, |_, _, cx| cx.notify()));
+                                    self.selection_views.insert(owner_key, owner.clone());
+                                    owner
+                                };
+                                owner.update(cx, |owner, cx| owner.set_text_incremental(&text, cx));
+                                let view = TextView::new(&owner)
                                     .markdown_extensions(html_extensions)
                                     .style(markdown_style(window))
                                     .selectable(true);
@@ -4115,9 +4234,40 @@ impl Render for CodexView {
         }
         messages =
             messages.children(self.question_blocks_at(state.saved.items.len(), &state, window, cx));
+        // Hidden, replaced and removed message owners must be dropped so the
+        // native selection controller cannot copy their last painted text.
+        self.selection_views
+            .retain(|key, _| rendered_selection_keys.contains(key));
         let minimap = self.render_message_minimap(minimap_entries, &minimap_anchors, window, cx);
+        let selection_overlay = self.render_selection_reply(&state, window, cx);
+        let transcript_bounds = self.transcript_bounds.clone();
+        let bounds_owner = cx.entity().downgrade();
         let transcript = div()
             .id("codex-transcript")
+            .relative()
+            .child(
+                gpui::canvas(
+                    move |bounds, _, cx| {
+                        if transcript_bounds.replace(bounds) != bounds {
+                            let _ = bounds_owner.update(cx, |_, cx| cx.notify());
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|_, _, _, cx| cx.notify()),
+            )
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.selection_dismissed = window.text_selection_snapshot(cx);
+                    cx.notify();
+                }
+            }))
+            .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
             .flex_1()
             .min_h_0()
             .min_w_0()
@@ -4125,7 +4275,8 @@ impl Render for CodexView {
             .when(!minimap_entries.is_empty(), |transcript| {
                 transcript.pl(rpx(CHROME_CONTROL_H))
             })
-            .child(messages);
+            .child(messages)
+            .children(selection_overlay);
         let mut surface = div()
             .id("codex-conversation")
             .relative()
@@ -4405,7 +4556,9 @@ impl Render for CodexView {
             || self.submitted.is_some()
             || self.pending_image_pastes > 0
             || stopping
-            || (self.input.read(cx).value().trim().is_empty() && self.images.is_empty());
+            || (self.input.read(cx).value().trim().is_empty()
+                && self.images.is_empty()
+                && self.reference.is_none());
         let steer_available = active_turn_redirect_available(&state);
         let editing = self
             .queue_editor
@@ -4415,7 +4568,12 @@ impl Render for CodexView {
             self.queue_editor
                 .as_ref()
                 .is_some_and(|editor| editor.saving)
-                || (self.input.read(cx).value().trim().is_empty() && self.images.is_empty())
+                || (self.input.read(cx).value().trim().is_empty()
+                    && self.images.is_empty()
+                    && self
+                        .queue_editor
+                        .as_ref()
+                        .is_none_or(|editor| editor.reference.is_none()))
         } else {
             draft_disabled
         };
@@ -4613,6 +4771,8 @@ impl Render for CodexView {
                             .when_some(task_strip, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
+                            .child(div().w_full().flex().flex_col().flex_shrink_0()
+                            .children(self.render_reference_preview(window, cx))
                             .child(
                         div()
                             .id("codex-composer")
@@ -4627,6 +4787,7 @@ impl Render for CodexView {
                             .pt(rpx(SPACE_3XL))
                             .pb(rpx(SPACE_2XL))
                             .rounded(rpx(RADIUS_PANEL))
+                            .when(self.queue_editor.as_ref().map_or_else(|| self.reference.is_some(), |editor| editor.reference.is_some()), |composer| composer.rounded_none().rounded_b(rpx(RADIUS_PANEL)))
                             .border_1()
                             .border_color(c::BORDER_SOFT())
                             .bg(c::BG_RAIL())
@@ -4673,7 +4834,7 @@ impl Render for CodexView {
                                             ))
                                     ),
                             )
-                            )
+                            ))
                             .child(
                                 div()
                                     .id("codex-composer-hints")
@@ -4912,7 +5073,9 @@ impl CodexView {
         };
         if self.edit_request_pending
             || editor.accepted_prompts.is_some()
-            || (editor.input.read(cx).value().trim().is_empty() && editor.images.is_empty())
+            || (editor.input.read(cx).value().trim().is_empty()
+                && editor.images.is_empty()
+                && editor.reference.is_none())
         {
             return;
         }
@@ -4936,7 +5099,11 @@ impl CodexView {
         let Some(editor) = &mut self.message_editor else {
             return;
         };
-        let text = editor.input.read(cx).value().to_string();
+        let draft = editor.input.read(cx).value().to_string();
+        let text = editor
+            .reference
+            .as_ref()
+            .map_or_else(|| draft.clone(), |reference| reference.serialize(&draft));
         let images = editor.images.clone();
         editor.accepted_prompts = Some(self.session.read(cx).state.accepted_prompts);
         self.session.update(cx, |session, cx| {
@@ -4955,7 +5122,9 @@ impl CodexView {
             || self.edit_confirmation.is_some();
         let send_bounds = editor.send_bounds.clone();
         let send_disabled = disabled
-            || (editor.input.read(cx).value().trim().is_empty() && editor.images.is_empty());
+            || (editor.input.read(cx).value().trim().is_empty()
+                && editor.images.is_empty()
+                && editor.reference.is_none());
         div()
             .id("codex-inline-editor")
             .debug_selector(|| "codex-inline-editor".into())
@@ -4993,6 +5162,24 @@ impl CodexView {
                     cx.notify();
                 }
             }))
+            .when_some(editor.reference.as_ref(), |column, reference| {
+                column.child(
+                    div()
+                        .id("codex-inline-reference")
+                        .max_h(rpx(INLINE_REFERENCE_MAX_H))
+                        .overflow_y_scroll()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .children(
+                            std::iter::once(div().child("Referenced selection")).chain(
+                                reference
+                                    .text
+                                    .lines()
+                                    .map(|line| div().child(line.to_owned())),
+                            ),
+                        ),
+                )
+            })
             .child(
                 Input::new(&editor.input)
                     .disabled(disabled)
@@ -5290,7 +5477,13 @@ impl CodexView {
                 }
                 let item = &state.saved.items[index];
                 let id = item["id"].as_str().unwrap_or("").to_owned();
-                let text = codex::item_text(item);
+                let canonical = codex::item_text(item);
+                let (reference, text) =
+                    if let Some((reference, reply)) = reference_prompt(&canonical) {
+                        (Some(reference), reply.to_owned())
+                    } else {
+                        (None, canonical)
+                    };
                 let images = item["content"]
                     .as_array()
                     .into_iter()
@@ -5320,6 +5513,7 @@ impl CodexView {
                     _subscription: subscription,
                     index,
                     message_id: id,
+                    reference,
                     input,
                     images,
                     restored: false,
@@ -6550,7 +6744,353 @@ impl CodexView {
         }
         cx.notify();
     }
+    fn remove_reference(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.queue_editor.as_mut() {
+            editor.reference = None;
+        } else {
+            self.set_reference(None, cx);
+        }
+        self.reference_expanded = false;
+        self.input.focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn set_reference(&mut self, reference: Option<codex::ReferenceDraft>, cx: &mut Context<Self>) {
+        self.reference.clone_from(&reference);
+        self.reference_expanded = false;
+        self.session.update(cx, |session, cx| {
+            session.state.saved.draft_reference.clone_from(&reference);
+            session.send(Action::DraftReference(reference), cx);
+        });
+        cx.notify();
+    }
+
+    fn selection_reference(
+        &self,
+        snapshot: &TextSelectionSnapshot,
+        state: &codex::Snapshot,
+    ) -> Option<codex::ReferenceDraft> {
+        if snapshot.is_selecting
+            || snapshot.text.trim().is_empty()
+            || snapshot.spans.is_empty()
+            || self.message_editor.is_some()
+            || self.queue_editor.is_some()
+            || self.edit_confirmation.is_some()
+            || self.menu.is_some()
+            || self.popup.is_some()
+        {
+            return None;
+        }
+        let mut sources = Vec::new();
+        for span in &snapshot.spans {
+            let source = state.saved.items.iter().find_map(|item| {
+                let id = item["id"].as_str()?;
+                let role = match item["type"].as_str()? {
+                    "userMessage" => "User",
+                    "agentMessage" => "Assistant",
+                    _ => return None,
+                };
+                let key = format!("{}:{}", state.saved.thread_id.as_deref().unwrap_or(""), id);
+                let owner = self.selection_views.get(&key)?;
+                (owner.entity_id() == span.owner).then(|| codex::ReferenceSource {
+                    message_id: id.to_owned(),
+                    role: role.to_owned(),
+                })
+            })?;
+            if sources.last() != Some(&source) {
+                sources.push(source);
+            }
+        }
+        Some(codex::ReferenceDraft {
+            id: String::new(),
+            thread_id: state.saved.thread_id.clone(),
+            sources,
+            text: snapshot.text.clone(),
+        })
+    }
+
+    fn attach_selection(
+        &mut self,
+        expected: &TextSelectionSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        static NEXT_REFERENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let Some(current) = window.text_selection_snapshot(cx) else {
+            return;
+        };
+        if &current != expected {
+            return;
+        }
+        let state = self.session.read(cx).state.shared();
+        let Some(mut reference) = self.selection_reference(&current, &state) else {
+            return;
+        };
+        reference.id = format!(
+            "{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            NEXT_REFERENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.set_reference(Some(reference), cx);
+        window.clear_text_selection(cx);
+        self.selection_dismissed = None;
+        self.set_composer_collapsed(false, cx);
+        self.input.focus_handle(cx).focus(window, cx);
+    }
+
+    fn render_selection_reply(
+        &mut self,
+        state: &codex::Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        window.set_text_selection_action_bounds(cx.entity_id(), None, cx);
+        let Some(snapshot) = window.text_selection_snapshot(cx) else {
+            self.selection_dismissed = None;
+            return None;
+        };
+        if snapshot.is_selecting {
+            self.selection_dismissed = None;
+            return None;
+        }
+        if self.selection_dismissed.as_ref() == Some(&snapshot) {
+            return None;
+        }
+        self.selection_reference(&snapshot, state)?;
+        let pane = self.transcript_bounds.get();
+        if !pane.contains(&snapshot.endpoint) {
+            return None;
+        }
+        let control = rpx(CHROME_CONTROL_H).to_pixels(window.rem_size());
+        let gap = rpx(SPACE_SM).to_pixels(window.rem_size());
+        let mut left = snapshot.endpoint.x + gap;
+        if left + control > pane.right() {
+            left = snapshot.endpoint.x - gap - control;
+        }
+        left = left
+            .max(pane.left())
+            .min((pane.right() - control).max(pane.left()));
+        let top = snapshot
+            .endpoint
+            .y
+            .min(pane.bottom() - control)
+            .max(pane.top());
+        let keyboard = snapshot.clone();
+        let action_owner = cx.entity_id();
+        Some(
+            header_control("codex-selection-reply", "Reply to selection")
+                .debug_selector(|| "codex-selection-reply".into())
+                .absolute()
+                .left(left - pane.left())
+                .top(top - pane.top())
+                .bg(c::SURFACE_RAISED())
+                .border_1()
+                .border_color(c::BORDER_SOFT())
+                .track_focus(
+                    &self
+                        .selection_reply_focus
+                        .clone()
+                        .tab_index(0)
+                        .tab_stop(true),
+                )
+                .tab_index(0)
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .child(
+                    gpui::canvas(
+                        move |bounds, window, cx| {
+                            window.set_text_selection_action_bounds(action_owner, Some(bounds), cx);
+                        },
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+                .child(crate::icons::icon("reply", ICON_MD, c::FG()))
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if action_key(event) {
+                            this.attach_selection(&keyboard, window, cx);
+                            cx.stop_propagation();
+                        }
+                    }),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.attach_selection(&snapshot, window, cx);
+                    cx.stop_propagation();
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn render_reference_preview(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let quote = if let Some(editor) = self.queue_editor.as_ref() {
+            editor.reference.as_ref()?
+        } else {
+            self.reference.as_ref()?
+        };
+        let full = quote.text.clone();
+        let needs_disclosure =
+            full.lines().count() > 3 || full.chars().count() > REFERENCE_PREVIEW_CHARS;
+        let preview = if self.reference_expanded {
+            full.clone()
+        } else {
+            let lines: Vec<_> = full.lines().take(3).collect();
+            let mut preview: String = lines
+                .join("\n")
+                .chars()
+                .take(REFERENCE_PREVIEW_CHARS)
+                .collect();
+            if needs_disclosure {
+                preview.push('…');
+            }
+            preview
+        };
+        let provider = self.session.read(cx).state.saved.provider;
+        let mut roles = Vec::new();
+        for source in &quote.sources {
+            let role = if source.role == "Assistant" {
+                provider.label()
+            } else {
+                "You"
+            };
+            if !roles.contains(&role) {
+                roles.push(role);
+            }
+        }
+        let sources = roles.join(" · ");
+        Some(
+            div()
+                .id("codex-reference-preview")
+                .debug_selector(|| "codex-reference-preview".into())
+                .w_full()
+                .min_w_0()
+                .flex_shrink_0()
+                .px(rpx(SPACE_2XL))
+                .pt(rpx(SPACE_LG))
+                .pb(rpx(SPACE_LG))
+                .rounded_t(rpx(RADIUS_PANEL))
+                .border_1()
+                .border_b_0()
+                .border_color(c::BORDER_SOFT())
+                .bg(c::BG_RAIL())
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .child(crate::icons::icon("reply", ICON_MD, c::FG_DIM()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(rpx(TEXT_MICRO))
+                                .text_color(c::FG_DIM())
+                                .child(format!("Replying to {sources}")),
+                        )
+                        .child(
+                            header_control("codex-remove-reference", "Remove reference")
+                                .debug_selector(|| "codex-remove-reference".into())
+                                .track_focus(
+                                    &self
+                                        .reference_remove_focus
+                                        .clone()
+                                        .tab_index(0)
+                                        .tab_stop(true),
+                                )
+                                .tab_index(0)
+                                .focus_visible(|style| style.bg(c::SURFACE_RAISED()))
+                                .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
+                                .on_key_down(cx.listener(
+                                    |this, event: &gpui::KeyDownEvent, window, cx| {
+                                        if action_key(event) {
+                                            this.remove_reference(window, cx);
+                                            cx.stop_propagation();
+                                        }
+                                    },
+                                ))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.remove_reference(window, cx);
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("codex-reference-text")
+                        .debug_selector(|| "codex-reference-text".into())
+                        .min_w_0()
+                        .max_h(rpx(if self.reference_expanded {
+                            REFERENCE_EXPANDED_H
+                        } else {
+                            REFERENCE_PREVIEW_H
+                        }))
+                        .overflow_y_scroll()
+                        .border_l_2()
+                        .border_color(c::BORDER())
+                        .pl(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_BODY))
+                        .text_color(c::FG())
+                        .children(
+                            preview
+                                .lines()
+                                .map(|line| div().child(line.to_owned()))
+                                .collect::<Vec<_>>(),
+                        ),
+                )
+                .when(needs_disclosure, |preview| {
+                    preview.child(
+                        transcript_action(
+                            "codex-reference-disclosure",
+                            if self.reference_expanded {
+                                "Show less"
+                            } else {
+                                "Show full quote"
+                            },
+                            false,
+                            window,
+                            cx,
+                        )
+                        .debug_selector(|| "codex-reference-disclosure".into())
+                        .with_focus_handle(self.reference_disclosure_focus.clone())
+                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                            if action_key(event) {
+                                this.reference_expanded = !this.reference_expanded;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }))
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path(if self.reference_expanded {
+                                    "icons/arrow-up.svg"
+                                } else {
+                                    "icons/chev-down.svg"
+                                })
+                                .size(rpx(ICON_SM)),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.reference_expanded = !this.reference_expanded;
+                            cx.notify();
+                        })),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     fn run_command(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.reference.is_some() {
+            return false;
+        }
         let text = self.input.read(cx).value().to_string();
         let mut parts = text.split_whitespace();
         let Some(command) = parts.next() else {
@@ -7932,6 +8472,59 @@ fn composer_placeholder(provider: codex::Provider) -> &'static str {
     } else {
         "Ask anything, @tag files/folders, $use skills, or / for commands"
     }
+}
+
+/// Decode only complete canonical reference prompts. All other user text stays literal.
+fn reference_prompt(text: &str) -> Option<(codex::ReferenceDraft, &str)> {
+    let body = text.strip_prefix("Referenced transcript selection (quoted data):\n")?;
+    let (json, reply) = body.split_once("\n\nUser reply:\n")?;
+    let reference: codex::ReferenceDraft = serde_json::from_str(json).ok()?;
+    if reference.id.is_empty() || reference.sources.is_empty() || reference.serialize(reply) != text
+    {
+        return None;
+    }
+    Some((reference, reply))
+}
+
+fn reference_prompt_copy(text: &str) -> String {
+    let Some((reference, reply)) = reference_prompt(text) else {
+        return text.to_owned();
+    };
+    let roles = reference
+        .sources
+        .iter()
+        .map(|source| source.role.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    format!(
+        "Referenced selection · {roles}\n{}\n\n{}",
+        reference.text, reply
+    )
+}
+
+fn reference_prompt_markdown(text: &str) -> String {
+    let Some((reference, reply)) = reference_prompt(text) else {
+        return text.to_owned();
+    };
+    // A fence longer than any run in the literal passage prevents selected
+    // Markdown/code from becoming authored transcript chrome.
+    let longest = reference
+        .text
+        .split(|ch| ch != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    let roles = reference
+        .sources
+        .iter()
+        .map(|source| source.role.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    format!(
+        "Referenced selection · {roles}\n\n{fence}text\n{}\n{fence}\n\n{}",
+        reference.text, reply
+    )
 }
 
 /// Retain the first line while explicitly indicating omitted draft lines.
@@ -10193,14 +10786,37 @@ mod tests {
             items: Vec::new(),
             draft: String::new(),
             draft_images: Vec::new(),
+            draft_reference: None,
             config_args: Vec::new(),
             native_config_version: 1,
         });
         state.status = Status::Idle;
         state
     }
+    /// Use Grove's real unconsumed Tab handler, rather than installing a
+    /// component keybinding that the production shell intentionally omits.
+    struct ConversationNavigationFixture(Entity<CodexView>);
+    impl Render for ConversationNavigationFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .on_key_down(super::super::shell::traverse_unhandled_tab)
+                .child(self.0.clone())
+        }
+    }
     fn fixture(
         cx: &mut gpui::TestAppContext,
+    ) -> (
+        Entity<CodexView>,
+        &mut gpui::VisualTestContext,
+        mpsc::Receiver<Action>,
+        mpsc::Sender<Snapshot>,
+    ) {
+        fixture_with_navigation(cx, false)
+    }
+    fn fixture_with_navigation(
+        cx: &mut gpui::TestAppContext,
+        shell_navigation: bool,
     ) -> (
         Entity<CodexView>,
         &mut gpui::VisualTestContext,
@@ -10219,7 +10835,12 @@ mod tests {
             let session = cx.new(|cx| CodexSession::from_connection(snapshot(), connection, cx));
             let chat = cx.new(|cx| CodexView::new(session, window, cx));
             view = Some(chat.clone());
-            gpui_component::Root::new(chat, window, cx).bordered(false)
+            if shell_navigation {
+                let shell = cx.new(|_| ConversationNavigationFixture(chat));
+                gpui_component::Root::new(shell, window, cx).bordered(false)
+            } else {
+                gpui_component::Root::new(chat, window, cx).bordered(false)
+            }
         });
         (view.unwrap(), cx, actions, updates)
     }
@@ -10313,6 +10934,115 @@ mod tests {
                     .unwrap();
             }
         }
+    }
+
+    /// Opt-in native Metal rendering without modifying the installed app.
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn selection_reference_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        let previous_theme = grove_core::theme::current().name.clone();
+        for appearance in ["dark", "light"] {
+            cx.update(|cx| {
+                assert!(grove_core::theme::set_by_name(&format!(
+                    "grove-{appearance}"
+                )));
+                c::sync_component_theme(cx);
+            });
+            for width in [1024.0, 400.0] {
+                let quote = codex::ReferenceDraft {
+                    id: "native-reference".into(),
+                    thread_id: Some("thread-ui".into()),
+                    sources: vec![codex::ReferenceSource {
+                        message_id: "answer".into(),
+                        role: "Assistant".into(),
+                    }],
+                    text: "Drafts survive reconnection.".into(),
+                };
+                let mut state = snapshot();
+                state.saved.draft = "Can you explain how this works?".into();
+                state.saved.draft_reference = Some(quote.clone());
+                state.saved.items = vec![
+                    json!({"id":"question", "type":"userMessage", "content":[{"type":"text", "text":"What happens if the agent disconnects while I’m writing?"}]}),
+                    json!({"id":"answer", "type":"agentMessage", "text":"Your conversation stays open while Grove reconnects to the agent.\n\nYour message and attached images stay in the composer. Drafts survive reconnection.\n\nYou can continue editing your message while you wait."}),
+                ];
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let connection = Connection {
+                    handle,
+                    updates: receive.into(),
+                };
+                let retained = Rc::new(std::cell::RefCell::new(None));
+                let captured = retained.clone();
+                let window = cx
+                    .open_window(
+                        gpui::size(gpui::px(width), gpui::px(800.0)),
+                        move |window, cx| {
+                            let session =
+                                cx.new(|cx| CodexSession::from_connection(state, connection, cx));
+                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                            *captured.borrow_mut() = Some(chat.clone());
+                            cx.new(|cx| gpui_component::Root::new(chat, window, cx).bordered(false))
+                        },
+                    )
+                    .unwrap();
+                // Native text shaping and Input auto-grow publish layout after
+                // the initial frame. Drive those actual frames before capture.
+                for _ in 0..12 {
+                    cx.advance_clock(std::time::Duration::from_millis(16));
+                    cx.run_until_parked();
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.simulate_next_frame(cx);
+                        let _ = window.draw(cx);
+                    })
+                    .unwrap();
+                }
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                    let chat = retained.borrow();
+                    let view = chat.as_ref().unwrap().read(cx);
+                    assert_eq!(
+                        view.input.read(cx).value().as_ref(),
+                        "Can you explain how this works?"
+                    );
+                    assert_eq!(view.reference.as_ref().unwrap().text, quote.text);
+                    let input = view.input.read(cx).range_to_bounds(&(0..1)).expect("native input text shaped");
+                    let pane = view.transcript_bounds.get();
+                    let viewport = window.viewport_size();
+                    eprintln!("Native quote layout {width}/{appearance}: transcript={pane:?}, input={input:?}, viewport={viewport:?}");
+                    assert!(input.top() >= gpui::px(0.) && input.bottom() <= viewport.height, "composer input outside screenshot viewport");
+                    assert!(pane.bottom() < input.top() && pane.bottom() < viewport.height - gpui::px(100.), "quote/composer must reserve visible space below transcript");
+                    assert!(view
+                        .selection_views
+                        .values()
+                        .all(|owner| !owner.read(cx).source().contains("\"message_id\":")));
+                })
+                .unwrap();
+                let path = format!("/tmp/grove-selection-reply-{width:.0}-{appearance}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Native selection reference fixture: {path}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+        cx.update(|cx| {
+            assert!(grove_core::theme::set_by_name(&previous_theme));
+            c::sync_component_theme(cx);
+        });
     }
 
     fn draw(cx: &mut gpui::VisualTestContext) {
@@ -16058,6 +16788,422 @@ mod tests {
             .update(gpui_component::WindowExt::selected_text)
             .is_empty());
     }
+    #[gpui::test]
+    fn codex_selection_reply_pointer_capture_preserves_draft_and_sends_canonical_quote(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        selection_reply_pointer_fixture(cx, codex::Provider::Codex);
+    }
+    #[gpui::test]
+    fn claude_selection_reply_pointer_capture_preserves_draft_and_sends_canonical_quote(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        selection_reply_pointer_fixture(cx, codex::Provider::Claude);
+    }
+    fn selection_reply_pointer_fixture(cx: &mut gpui::TestAppContext, provider: codex::Provider) {
+        let (view, cx, actions, updates) = fixture_with_navigation(cx, true);
+        let mut response = snapshot();
+        response.saved.provider = provider;
+        response.saved.items.push(serde_json::json!({
+            "type":"agentMessage", "id":"selection-source", "text":"literal selected passage for reply"
+        }));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input.update(cx, |input, cx| {
+                    input.set_value("my existing draft", window, cx);
+                });
+            });
+        });
+        draw(cx);
+        let body = cx.debug_bounds("codex-message-body-0").unwrap();
+        let start = body.origin + gpui::point(gpui::px(1.), gpui::px(8.));
+        let end = body.origin + gpui::point(gpui::px(110.), gpui::px(8.));
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            end,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert!(
+            cx.debug_bounds("codex-selection-reply").is_none(),
+            "hidden during drag"
+        );
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        let selected = cx.update(gpui_component::WindowExt::selected_text);
+        assert!(!selected.is_empty());
+        let reply = cx
+            .debug_bounds("codex-selection-reply")
+            .expect("release reveals action");
+        if provider == codex::Provider::Claude {
+            let mut focused = false;
+            for _ in 0..20 {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                focused =
+                    cx.update(|window, cx| view.read(cx).selection_reply_focus.is_focused(window));
+                if focused {
+                    break;
+                }
+            }
+            assert!(focused, "Reply action must be reachable by Tab");
+            cx.simulate_keystrokes("enter");
+        } else {
+            cx.simulate_click(reply.center(), gpui::Modifiers::default());
+        }
+        draw(cx);
+        assert!(cx.debug_bounds("codex-reference-preview").is_some());
+        let reference = view.read_with(cx, |view, cx| {
+            assert_eq!(view.input.read(cx).value().as_ref(), "my existing draft");
+            let quote = view.reference.as_ref().unwrap();
+            assert_eq!(quote.text, selected);
+            assert_eq!(quote.sources[0].message_id, "selection-source");
+            quote.clone()
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.submit_mode(SubmissionMode::Send, window, cx);
+            });
+        });
+        let dispatched: Vec<_> = actions.try_iter().collect();
+        let submitted_at = dispatched
+            .iter()
+            .position(|action| matches!(action, Action::Submit { .. }))
+            .unwrap();
+        assert!(
+            submitted_at > 0
+                && matches!(&dispatched[submitted_at - 1], Action::DraftReference(Some(current)) if current == &reference),
+            "current reference must be synchronized immediately before dispatch"
+        );
+        let outgoing = dispatched.into_iter().find_map(|action| match action {
+            Action::Submit { text, .. } => Some(text),
+            _ => None,
+        });
+        assert_eq!(
+            outgoing,
+            Some(reference.serialize("my existing draft")),
+            "{provider:?}"
+        );
+    }
+
+    #[test]
+    fn selection_reference_projection_preserves_literal_quote_and_rejects_partial_envelopes() {
+        let quote = codex::ReferenceDraft {
+            id: "reference".into(),
+            thread_id: Some("thread".into()),
+            sources: vec![codex::ReferenceSource {
+                message_id: "source".into(),
+                role: "Assistant".into(),
+            }],
+            text: "  /clear\n```rust\n<literal>\n\nUser reply:\n```".into(),
+        };
+        let canonical = quote.serialize("my reply");
+        let (restored, reply) = reference_prompt(&canonical).unwrap();
+        assert_eq!(restored, quote);
+        assert_eq!(reply, "my reply");
+        assert!(reference_prompt_copy(&canonical).contains(&quote.text));
+        assert!(reference_prompt_markdown(&canonical).contains(&quote.text));
+        assert!(!reference_prompt_copy(&canonical).contains("message_id"));
+        let partial = "Referenced transcript selection (quoted data):\n{}\n\nUser reply:\nreply";
+        assert_eq!(reference_prompt_copy(partial), partial);
+    }
+
+    #[gpui::test]
+    fn selection_reference_preview_is_bounded_at_narrow_width_and_zoom(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, updates) = fixture_with_navigation(cx, true);
+        let mut response = snapshot();
+        response.saved.items.push(json!({"id":"source", "type":"agentMessage", "text":"long literal selection ".repeat(200)}));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_reference(
+                    Some(codex::ReferenceDraft {
+                        id: "long".into(),
+                        thread_id: Some("thread-ui".into()),
+                        sources: vec![codex::ReferenceSource {
+                            message_id: "source".into(),
+                            role: "Assistant".into(),
+                        }],
+                        text: "long literal selection ".repeat(200),
+                    }),
+                    cx,
+                );
+                view.input.focus_handle(cx).focus(window, cx);
+            });
+        });
+        for (width, rem) in [(1000., 16.), (400., 16.), (400., 20.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+            cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
+            for _ in 0..4 {
+                cx.update(gpui::Window::simulate_next_frame);
+                draw(cx);
+            }
+            let text = cx.debug_bounds("codex-reference-text").unwrap();
+            let preview = cx.debug_bounds("codex-reference-preview").unwrap();
+            let composer = cx.debug_bounds("codex-composer").unwrap();
+            assert!(
+                composer.bottom() <= gpui::px(900.),
+                "composer must fit within the pane: {composer:?}"
+            );
+            assert!(text.size.height <= gpui::px(60. * rem / 16. + 1.));
+            assert!(preview.left() >= gpui::px(0.) && preview.right() <= gpui::px(width));
+            assert!((preview.left() - composer.left()).abs() < gpui::px(1.));
+            assert!(
+                preview.bottom() >= composer.top(),
+                "preview attaches to composer"
+            );
+            let disclosure = cx.debug_bounds("codex-reference-disclosure").unwrap();
+            cx.simulate_click(disclosure.center(), gpui::Modifiers::default());
+            draw(cx);
+            view.read_with(cx, |view, _| assert!(view.reference_expanded));
+            let text = cx.debug_bounds("codex-reference-text").unwrap();
+            assert!(text.size.height <= gpui::px(200. * rem / 16. + 1.));
+            let mut focused = false;
+            for _ in 0..20 {
+                cx.simulate_keystrokes("tab");
+                draw(cx);
+                focused = cx.update(|window, cx| {
+                    view.read(cx).reference_disclosure_focus.is_focused(window)
+                });
+                if focused {
+                    break;
+                }
+            }
+            assert!(focused, "Quote disclosure must be reachable by Tab");
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            view.read_with(cx, |view, _| assert!(!view.reference_expanded));
+        }
+    }
+
+    #[gpui::test]
+    fn selection_reply_source_disappearance_clears_native_selected_text(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_, cx, _, updates) = fixture(cx);
+        let mut response = snapshot();
+        response.saved.items.push(serde_json::json!({"type":"agentMessage", "id":"removed-source", "text":"selected text disappears"}));
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        let body = cx.debug_bounds("codex-message-body-0").unwrap();
+        let start = body.origin + gpui::point(gpui::px(1.), gpui::px(8.));
+        let end = body.origin + gpui::point(gpui::px(110.), gpui::px(8.));
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+        cx.simulate_mouse_move(
+            end,
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+        draw(cx);
+        assert!(!cx
+            .update(gpui_component::WindowExt::selected_text)
+            .is_empty());
+        updates.send(snapshot()).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        assert!(cx.debug_bounds("codex-selection-reply").is_none());
+        assert!(cx
+            .update(gpui_component::WindowExt::selected_text)
+            .is_empty());
+    }
+
+    #[gpui::test]
+    fn selection_reference_queue_editor_saves_its_quote_and_restores_main_reference(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let quote = |id: &str| codex::ReferenceDraft {
+            id: id.into(),
+            thread_id: Some("thread-ui".into()),
+            sources: vec![codex::ReferenceSource {
+                message_id: "source".into(),
+                role: "Assistant".into(),
+            }],
+            text: format!("literal {id} quote"),
+        };
+        let main = quote("main");
+        let queued = quote("queued");
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input
+                    .update(cx, |input, cx| input.set_value("main draft", window, cx));
+                view.set_reference(Some(main.clone()), cx);
+                view.session.update(cx, |session, _| {
+                    session.state.queued_prompts.push(codex::QueuedPrompt {
+                        id: 81,
+                        text: queued.serialize("queued reply"),
+                        images: Vec::new(),
+                    });
+                });
+                view.begin_queue_edit(81, cx);
+                view.session
+                    .update(cx, |session, _| session.state.queue_edit = Some(81));
+            });
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.input.read(cx).value().as_ref(), "queued reply");
+            assert_eq!(
+                view.queue_editor.as_ref().unwrap().reference.as_ref(),
+                Some(&queued)
+            );
+            assert_eq!(view.reference.as_ref(), Some(&main));
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input
+                    .update(cx, |input, cx| input.set_value("edited reply", window, cx));
+                view.save_queue_edit(cx);
+            });
+        });
+        assert!(actions.try_iter().any(|action| matches!(action, Action::SaveQueuedEdit { id:81, text, .. } if text == queued.serialize("edited reply"))));
+        cx.update(|window, cx| view.update(cx, |view, cx| view.restore_queue_draft(window, cx)));
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.input.read(cx).value().as_ref(), "main draft");
+            assert_eq!(view.reference.as_ref(), Some(&main));
+        });
+    }
+
+    #[gpui::test]
+    fn selection_reference_requires_current_native_message_owners_and_preserves_order(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, updates) = fixture(cx);
+        let mut response = snapshot();
+        response.saved.items = vec![
+            serde_json::json!({"type":"userMessage", "id":"user-source", "content":[{"type":"text","text":"user passage"}]}),
+            serde_json::json!({"type":"agentMessage", "id":"assistant-source", "text":"assistant passage"}),
+        ];
+        updates.send(response).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let state = view.session.read(cx).state.shared();
+                let owner = |id: &str| view.selection_views[&format!("thread-ui:{id}")].entity_id();
+                let mut selection = TextSelectionSnapshot {
+                    text: "user passage\nassistant passage".into(),
+                    spans: vec![
+                        gpui_component::text::TextSelectionSpan {
+                            owner: owner("user-source"),
+                            text: "user passage".into(),
+                        },
+                        gpui_component::text::TextSelectionSpan {
+                            owner: owner("assistant-source"),
+                            text: "assistant passage".into(),
+                        },
+                    ],
+                    anchor: gpui::point(gpui::px(0.), gpui::px(0.)),
+                    endpoint: gpui::point(gpui::px(1.), gpui::px(1.)),
+                    is_selecting: false,
+                };
+                let quote = view.selection_reference(&selection, &state).unwrap();
+                assert_eq!(
+                    quote
+                        .sources
+                        .iter()
+                        .map(|s| s.message_id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["user-source", "assistant-source"]
+                );
+                selection.spans[1].owner = view.input.entity_id();
+                assert!(
+                    view.selection_reference(&selection, &state).is_none(),
+                    "composer/tool/HTML owners cannot qualify"
+                );
+                selection.spans.pop();
+                let mut switched = (*state).clone();
+                switched.saved.thread_id = Some("another-thread".into());
+                assert!(
+                    view.selection_reference(&selection, &switched).is_none(),
+                    "old thread owners cannot qualify"
+                );
+                let mut removed = (*state).clone();
+                removed.saved.items.clear();
+                assert!(
+                    view.selection_reference(&selection, &removed).is_none(),
+                    "removed sources cannot qualify"
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn selection_reference_replacement_remove_and_late_accept_preserve_newer_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, updates) = fixture_with_navigation(cx, true);
+        let quote = |id: &str| codex::ReferenceDraft {
+            id: id.into(),
+            thread_id: Some("thread-ui".into()),
+            sources: vec![codex::ReferenceSource {
+                message_id: "source".into(),
+                role: "Assistant".into(),
+            }],
+            text: "/clear\ncode <literal>".into(),
+        };
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input
+                    .update(cx, |input, cx| input.set_value("preserved", window, cx));
+                view.set_reference(Some(quote("old")), cx);
+                view.submitted_reference = Some("old".into());
+                view.submitted_ack = Some(7);
+                view.submitted = Some("preserved".into());
+                view.images = vec!["same-image".into()];
+                view.submitted_images.clone_from(&view.images);
+                view.set_reference(Some(quote("new")), cx);
+                view.input.focus_handle(cx).focus(window, cx);
+            });
+        });
+        let mut accepted = snapshot();
+        accepted.accepted_submission = Some(7);
+        updates.send(accepted).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.reference.as_ref().unwrap().id, "new");
+            assert_eq!(view.input.read(cx).value().as_ref(), "preserved");
+            assert_eq!(view.images, vec!["same-image"]);
+        });
+        assert!(cx.debug_bounds("codex-remove-reference").is_some());
+        let mut focused = false;
+        for _ in 0..20 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            focused =
+                cx.update(|window, cx| view.read(cx).reference_remove_focus.is_focused(window));
+            if focused {
+                break;
+            }
+        }
+        assert!(focused, "Remove reference must be reachable by Tab");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(view.reference.is_none());
+            assert_eq!(view.input.read(cx).value().as_ref(), "preserved");
+            assert_eq!(view.images, vec!["same-image"]);
+        });
+        assert!(cx.update(|window, cx| view.read(cx).input.focus_handle(cx).is_focused(window)));
+    }
+
     #[gpui::test]
     fn repeated_message_copy_extends_feedback_and_resets_after_delay(
         cx: &mut gpui::TestAppContext,

@@ -190,7 +190,17 @@ impl CodexSession {
                 self.state.saved.provider.label()
             ));
         }
-        self.state.saved.draft.clone_from(&text);
+        // Reference sends use a serialized prompt while the saved composer
+        // keeps its editable raw text and separate quote for retry/reconnect.
+        if self
+            .state
+            .saved
+            .draft_reference
+            .as_ref()
+            .is_none_or(|reference| reference.serialize(&self.state.saved.draft) != text)
+        {
+            self.state.saved.draft.clone_from(&text);
+        }
         self.state.saved.draft_images.clone_from(&images);
         let submission = if tracked {
             self.handle.submit(text, images)?

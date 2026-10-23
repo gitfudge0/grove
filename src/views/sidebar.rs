@@ -8924,6 +8924,7 @@ for line in sys.stdin:
                     work_periods: Vec::new(),
                     draft: String::new(),
                     draft_images: Vec::new(),
+                    draft_reference: None,
                     config_args: Vec::new(),
                     native_config_version: 1,
                 };
@@ -9100,6 +9101,7 @@ for line in sys.stdin:
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
+                draft_reference: None,
                 config_args: Vec::new(),
             native_config_version: 1,
             };

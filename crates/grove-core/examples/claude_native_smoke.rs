@@ -70,6 +70,7 @@ fn main() -> Result<(), String> {
         work_periods: Vec::new(),
         draft: String::new(),
         draft_images: Vec::new(),
+        draft_reference: None,
         config_args: Vec::new(),
         native_config_version: 1,
     };
