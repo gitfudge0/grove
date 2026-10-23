@@ -6,7 +6,7 @@
 //! compact headers read the cached [`TaskGlance`]; an open disclosure reads
 //! the current full checklist.
 
-use super::{Sidebar, HIERARCHY_META_TEXT, SESSION_META_LINE_H, SESSION_SPINNER_PERIOD};
+use super::{Sidebar, HIERARCHY_META_TEXT, SESSION_META_LINE_H};
 use crate::{
     entities::session_registry::SessionId,
     theme as c,
@@ -16,7 +16,7 @@ use crate::{
         tokens::*,
     },
 };
-use gpui::{div, prelude::*, AnimationExt as _, AnyElement, App, Context, FocusHandle, Window};
+use gpui::{div, prelude::*, AnyElement, App, Context, FocusHandle, Window};
 use gpui_component::ElementExt as _;
 use grove_core::{
     codex::Status,
@@ -158,7 +158,7 @@ impl Sidebar {
     }
 }
 
-/// The sidebar row's "3/7 ▬" cell: before the Git counts in list rows, trailing in tree rows.
+/// The sidebar row's "3/7 ▬" cell: beside project identity in list cards, trailing in tree rows.
 pub(super) fn row_progress(id: SessionId, glance: &TaskGlance) -> AnyElement {
     div()
         .id(("session-tasks", id.raw()))
@@ -205,49 +205,16 @@ fn lifecycle_label(status: Status) -> &'static str {
 }
 
 fn lifecycle_color(status: Status) -> gpui::Hsla {
-    match status {
-        Status::Starting | Status::Working => c::BLUE(),
-        Status::Waiting => c::AMBER(),
-        Status::Failed | Status::Disconnected => c::RED(),
-        _ => c::FG_DIM(),
-    }
+    super::super::status::codex_kind(status).color()
 }
 
 fn lifecycle_mark(status: Status, cx: &App) -> AnyElement {
-    let mark = div()
-        .size(rpx(ICON_SM))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center();
-    match status {
-        Status::Starting | Status::Working if !cx.reduce_motion() => mark
-            .with_animation(
-                "header-task-spinner",
-                gpui::Animation::new(SESSION_SPINNER_PERIOD).repeat(),
-                move |element, progress| {
-                    let frame =
-                        (progress * crate::entities::animation_clock::SPINNER_FRAMES as f32) as u64;
-                    element.child(task_mark(TaskStatus::InProgress, TaskPhase::Running, frame))
-                },
-            )
-            .into_any_element(),
-        Status::Starting | Status::Working => mark
-            .child(task_mark(TaskStatus::InProgress, TaskPhase::Running, 0))
-            .into_any_element(),
-        Status::Waiting => mark
-            .child(crate::icons::icon("task-waiting", ICON_SM, c::AMBER()))
-            .into_any_element(),
-        Status::Failed | Status::Disconnected => mark
-            .child(crate::icons::icon("close", ICON_SM, c::RED()))
-            .into_any_element(),
-        Status::Done => mark
-            .child(crate::icons::icon("check", ICON_SM, c::GREEN()))
-            .into_any_element(),
-        _ => mark
-            .child(task_mark(TaskStatus::Pending, TaskPhase::Stale, 0))
-            .into_any_element(),
-    }
+    super::super::status::mark(
+        "header-task-spinner",
+        super::super::status::codex_kind(status),
+        ICON_SM,
+        cx,
+    )
 }
 
 impl Sidebar {
@@ -617,8 +584,8 @@ mod tests {
         assert_eq!(header_label(Status::Waiting, &glance), "Needs you · 2/2");
         assert_eq!(header_label(Status::Failed, &glance), "Failed · 2/2");
         assert_eq!(header_label(Status::Disconnected, &glance), "Failed · 2/2");
-        assert_eq!(lifecycle_color(Status::Waiting), c::AMBER());
-        assert_eq!(lifecycle_color(Status::Failed), c::RED());
+        assert_eq!(lifecycle_color(Status::Waiting), c::STATUS_WARNING());
+        assert_eq!(lifecycle_color(Status::Failed), c::STATUS_ERROR());
     }
 
     #[test]

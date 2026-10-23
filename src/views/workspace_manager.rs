@@ -1,4 +1,5 @@
 //! Persistent workspace selection and management.
+use super::status::{self, StatusKind};
 use super::{components::header_control, motion, rpx, tokens::*};
 use crate::{icons::icon, theme as c};
 use gpui::{
@@ -750,8 +751,14 @@ impl WorkspaceManager {
                         .id("workspace-validation-error")
                         .role(gpui::Role::Alert)
                         .text_size(rpx(TEXT_BODY))
-                        .text_color(c::FORM_ERROR())
-                        .child(error.clone()),
+                        .text_color(StatusKind::Failed.color())
+                        .child(status::label(
+                            "workspace-error-status",
+                            StatusKind::Failed,
+                            error.clone(),
+                            ICON_SM,
+                            cx,
+                        )),
                 );
             }
             panel = panel.child(body).child(

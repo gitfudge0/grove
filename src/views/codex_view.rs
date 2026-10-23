@@ -1,10 +1,11 @@
 //! Native conversation surface for a structured Codex session.
+use super::status::{self, StatusKind};
 use super::{
     components::{
         attached_validation, form_action, header_control, header_control_frame,
         header_control_with_hover, header_control_with_tooltip, project_field_well,
-        question_choice, question_disclosure, shimmer_label, task_mark, task_meter, tooltip,
-        tooltip_content, transcript_action, truncation_safe_label_width, TaskPhase,
+        question_choice, question_disclosure, task_mark, task_meter, tooltip, tooltip_content,
+        transcript_action, truncation_safe_label_width, TaskPhase,
     },
     rpx,
     tokens::*,
@@ -634,10 +635,15 @@ fn permission_heading(title: String, source: String) -> gpui::Div {
         .flex_wrap()
         .items_center()
         .gap(rpx(SPACE_SM))
-        .child(crate::icons::icon("message-warning", ICON_MD, c::AMBER()))
+        .child(crate::icons::icon(
+            StatusKind::NeedsInput.icon_name(),
+            ICON_MD,
+            StatusKind::NeedsInput.color(),
+        ))
         .child(
             div()
                 .min_w_0()
+                .text_color(StatusKind::NeedsInput.color())
                 .text_size(rpx(TEXT_TITLE))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .child(title),
@@ -2116,6 +2122,12 @@ impl CodexView {
         } else {
             "Request stopped"
         };
+        let notice_kind = if notice.is_some_and(|n| n.kind == codex::SessionNoticeKind::UsageLimit)
+        {
+            StatusKind::Warning
+        } else {
+            StatusKind::Failed
+        };
         let expanded = self.expanded.contains("session-notice-details");
         let (summary, details) =
             if notice.is_some_and(|n| n.kind == codex::SessionNoticeKind::UsageLimit) {
@@ -2140,6 +2152,7 @@ impl CodexView {
                     div()
                         .text_size(rpx(TEXT_SMALL))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(notice_kind.color())
                         .child(title),
                 )
             })
@@ -2262,10 +2275,11 @@ impl CodexView {
                 .bg(c::BG_RAIL())
                 .flex()
                 .gap(rpx(SPACE_LG))
-                .child(crate::icons::icon(
-                    "message-error",
+                .child(status::mark(
+                    "session-notice-mark",
+                    notice_kind,
                     ICON_MD,
-                    c::FORM_ERROR(),
+                    cx,
                 ))
                 .child(content)
                 .into_any_element(),
@@ -2294,7 +2308,7 @@ impl CodexView {
             (TaskSummary::Waiting(_), true) => Some(
                 div()
                     .flex_shrink_0()
-                    .text_color(c::FG())
+                    .text_color(StatusKind::NeedsInput.color())
                     .child("Waiting for you")
                     .into_any_element(),
             ),
@@ -2320,7 +2334,7 @@ impl CodexView {
                     .child(
                         div()
                             .flex_shrink_0()
-                            .text_color(c::FG())
+                            .text_color(StatusKind::NeedsInput.color())
                             .child("Waiting for you"),
                     )
                     .child(separator())
@@ -3197,14 +3211,19 @@ impl Render for CodexView {
                 .text_color(c::FG_DIM())
                 .child(
                     div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .child(status::mark(
+                            "provider-connection-status",
+                            StatusKind::Working,
+                            ICON_SM,
+                            cx,
+                        ))
+                        .text_color(StatusKind::Working.color())
                         .id("codex-provider-connection")
                         .debug_selector(|| "codex-provider-connection".into())
-                        .child(shimmer_label(
-                            "codex-provider-connection-shimmer".into(),
-                            format!("Connecting to {provider}…"),
-                            true,
-                            cx,
-                        )),
+                        .child(format!("Connecting to {provider}…")),
                 )
                 .into_any_element();
         }
@@ -3295,12 +3314,22 @@ impl Render for CodexView {
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
                                 .aria_label(label.clone())
-                                .child(shimmer_label(
-                                    ("codex-work-shimmer", index).into(),
-                                    label,
-                                    false,
+                                .text_color(if active {
+                                    StatusKind::Working.color()
+                                } else {
+                                    StatusKind::Idle.color()
+                                })
+                                .child(status::mark(
+                                    format!("work-header-status-{index}"),
+                                    if active {
+                                        StatusKind::Working
+                                    } else {
+                                        StatusKind::Idle
+                                    },
+                                    ICON_SM,
                                     cx,
                                 ))
+                                .child(label)
                                 .child(crate::icons::icon(
                                     if expanded { "chev-down" } else { "chev-right" },
                                     ICON_SM,
@@ -3371,13 +3400,18 @@ impl Render for CodexView {
                                 .flex()
                                 .items_center()
                                 .gap(rpx(SPACE_LG))
-                                .child(crate::icons::icon("message-warning", ICON_MD, c::AMBER()))
+                                .child(crate::icons::icon(
+                                    StatusKind::Warning.icon_name(),
+                                    ICON_MD,
+                                    StatusKind::Warning.color(),
+                                ))
                                 .child(
                                     div()
                                         .flex_1()
                                         .min_w_0()
                                         .text_size(rpx(TEXT_SMALL))
                                         .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(StatusKind::Warning.color())
                                         .child(
                                             item["title"]
                                                 .as_str()
@@ -3458,21 +3492,39 @@ impl Render for CodexView {
                     "Activity"
                 }
                 .to_owned();
+                let group_status = if tools.iter().any(|(_, item)| tool_failed(item)) {
+                    StatusKind::Failed
+                } else if running {
+                    StatusKind::Working
+                } else if tools
+                    .iter()
+                    .all(|(_, item)| tool_status_kind(item, false) == StatusKind::Success)
+                {
+                    StatusKind::Success
+                } else {
+                    StatusKind::Unknown
+                };
                 let summary = div()
+                    .text_color(group_status.color())
                     .id(("codex-tool-summary", index))
                     .debug_selector(move || format!("codex-tool-summary-{index}"))
                     .relative()
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_SM))
-                    .child(crate::icons::icon("terminal", ICON_SM, c::FG_DIM()))
+                    .child(status::mark(
+                        format!("tool-group-status-{index}"),
+                        group_status,
+                        ICON_SM,
+                        cx,
+                    ))
                     .child(
                         div()
                             .id(("codex-tool-label", index))
                             .debug_selector(move || format!("codex-tool-label-{index}"))
                             .min_w_0()
                             .truncate()
-                            .child(tool_activity_label(label.clone(), index, false, cx)),
+                            .child(label.clone()),
                     )
                     .child(
                         div()
@@ -3551,7 +3603,8 @@ impl Render for CodexView {
                         let tool_key = tool_expansion_key(tool, detail_index);
                         let tool_expanded = self.expanded.contains(&tool_key);
                         let keyboard_key = tool_key.clone();
-                        let failed = tool_failed(tool);
+                        let tool_status =
+                            tool_status_kind(tool, tool_is_running(&state, detail_index));
                         let activity =
                             tool_activity_summary(tool, tool_is_running(&state, detail_index));
                         let mut label_run = window.text_style().to_run(activity.len());
@@ -3595,16 +3648,11 @@ impl Render for CodexView {
                                         })
                                         .size(rpx(ICON_SM))
                                         .flex_shrink_0()
-                                        .child(crate::icons::icon(
-                                            if failed {
-                                                "message-error"
-                                            } else if tool["type"] == "reasoning" {
-                                                "brain"
-                                            } else {
-                                                "terminal"
-                                            },
+                                        .child(status::mark(
+                                            format!("tool-status-{detail_index}"),
+                                            tool_status,
                                             ICON_SM,
-                                            if failed { c::FORM_ERROR() } else { c::FG_DIM() },
+                                            cx,
                                         )),
                                 )
                                 .child(
@@ -3617,14 +3665,8 @@ impl Render for CodexView {
                                         .min_w_0()
                                         .truncate()
                                         .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM())
-                                        .child(shimmer_label(
-                                            ("codex-tool-detail-shimmer", detail_index).into(),
-                                            activity,
-                                            work_is_active_at(&state, detail_index)
-                                                && tool_visible(&state, detail_index),
-                                            cx,
-                                        )),
+                                        .text_color(tool_status.color())
+                                        .child(activity),
                                 )
                                 .aria_expanded(tool_expanded)
                                 .child(
@@ -3948,46 +3990,48 @@ impl Render for CodexView {
                     {
                         let message_id = error.message_id.clone();
                         let source = error.source.clone();
-                        row =
-                            row.child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(rpx(SPACE_LG))
-                                    .p(rpx(SPACE_2XL))
-                                    .child(div().text_color(c::FORM_ERROR()).child(format!(
-                                        "Couldn’t open native plan: {}",
-                                        error.error
-                                    )))
-                                    .child(div().text_color(c::FG_DIM()).child(error.source))
-                                    .child(
-                                        transcript_action(
-                                            format!("retry-native-plan-{message_id}"),
-                                            "Retry plan import",
-                                            false,
-                                            window,
-                                            cx,
-                                        )
-                                        .icon(
-                                            gpui_component::Icon::default()
-                                                .path("icons/restart.svg")
-                                                .size(rpx(ICON_SM)),
-                                        )
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.session.update(cx, |session, cx| {
-                                                    session.send(
-                                                        Action::RetryPlanImport {
-                                                            message_id: message_id.clone(),
-                                                            source: source.clone(),
-                                                        },
-                                                        cx,
-                                                    );
-                                                });
-                                            }),
-                                        ),
-                                    ),
-                            );
+                        row = row.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(rpx(SPACE_LG))
+                                .p(rpx(SPACE_2XL))
+                                .child(status::label(
+                                    format!("native-plan-open-error-{message_id}"),
+                                    StatusKind::Failed,
+                                    format!("Couldn’t open native plan: {}", error.error),
+                                    ICON_SM,
+                                    cx,
+                                ))
+                                .child(div().text_color(c::FG_DIM()).child(error.source))
+                                .child(
+                                    transcript_action(
+                                        format!("retry-native-plan-{message_id}"),
+                                        "Retry plan import",
+                                        false,
+                                        window,
+                                        cx,
+                                    )
+                                    .icon(
+                                        gpui_component::Icon::default()
+                                            .path("icons/restart.svg")
+                                            .size(rpx(ICON_SM)),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.session.update(cx, |session, cx| {
+                                                session.send(
+                                                    Action::RetryPlanImport {
+                                                        message_id: message_id.clone(),
+                                                        source: source.clone(),
+                                                    },
+                                                    cx,
+                                                );
+                                            });
+                                        },
+                                    )),
+                                ),
+                        );
                     }
                 }
 
@@ -4192,8 +4236,19 @@ impl Render for CodexView {
                 }
                 let keyboard_key = key.clone();
                 let keyboard_text = copy.clone();
-                let icon =
-                    crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM());
+                let icon = crate::icons::icon(
+                    if copied {
+                        StatusKind::Success.icon_name()
+                    } else {
+                        "copy"
+                    },
+                    ICON_MD,
+                    if copied {
+                        StatusKind::Success.color()
+                    } else {
+                        c::FG_DIM()
+                    },
+                );
                 let mut copy_button = if copied {
                     header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
                 } else {
@@ -4470,11 +4525,6 @@ impl Render for CodexView {
         if let Some(activity) = live_activity(&state)
             .filter(|_| state.approvals.is_empty() && state.elicitations.is_empty())
         {
-            let running = compacting(&state)
-                || (state.status.busy()
-                    && state.questions.is_empty()
-                    && state.elicitations.is_empty()
-                    && state.approvals.is_empty());
             surface = surface.child(
                 div()
                     .id("codex-live-activity")
@@ -4503,12 +4553,17 @@ impl Render for CodexView {
                                     .truncate()
                                     .id("codex-live-activity-text")
                                     .debug_selector(|| "codex-live-activity-text".into())
-                                    .child(shimmer_label(
-                                        "codex-activity-shimmer".into(),
-                                        activity,
-                                        running,
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_SM))
+                                    .text_color(status::codex_kind(state.status).color())
+                                    .child(status::mark(
+                                        "live-activity-status",
+                                        status::codex_kind(state.status),
+                                        ICON_SM,
                                         cx,
-                                    )),
+                                    ))
+                                    .child(activity),
                             ),
                     ),
             );
@@ -5479,9 +5534,17 @@ impl CodexView {
         .tab_index(0)
         .focus_visible(|style| style.bg(c::BG_HOVER()))
         .child(crate::icons::icon(
-            if copied { "check" } else { "copy" },
+            if copied {
+                StatusKind::Success.icon_name()
+            } else {
+                "copy"
+            },
             ICON_MD,
-            c::FG_DIM(),
+            if copied {
+                StatusKind::Success.color()
+            } else {
+                c::FG_DIM()
+            },
         ))
         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
             if action_key(event) {
@@ -7833,10 +7896,6 @@ fn tool_expansion_key(item: &serde_json::Value, index: usize) -> String {
     )
 }
 
-fn tool_activity_label(label: String, index: usize, running: bool, cx: &App) -> gpui::AnyElement {
-    shimmer_label(("codex-tool-shimmer", index).into(), label, running, cx)
-}
-
 fn tool_is_running(state: &codex::Snapshot, index: usize) -> bool {
     if !matches!(
         state.status,
@@ -8201,6 +8260,22 @@ fn tool_failed(item: &serde_json::Value) -> bool {
         || item["is_error"] == true
         || item["exitCode"].as_i64().is_some_and(|code| code != 0)
         || item.get("error").is_some_and(|error| !error.is_null())
+}
+
+fn tool_status_kind(item: &serde_json::Value, running: bool) -> StatusKind {
+    if tool_failed(item) {
+        return StatusKind::Failed;
+    }
+    if running {
+        return StatusKind::Working;
+    }
+    match item["status"].as_str().unwrap_or_default() {
+        "completed" | "success" | "succeeded" if item["type"] != "reasoning" => StatusKind::Success,
+        "cancelled" | "canceled" => StatusKind::Canceled,
+        "interrupted" | "stopped" => StatusKind::Stopped,
+        "pending" | "queued" | "inProgress" => StatusKind::Pending,
+        _ => StatusKind::Unknown,
+    }
 }
 
 /// Quiet activity rows describe the invocation; output stays behind disclosure.
@@ -9108,8 +9183,13 @@ impl CodexView {
                                 )))
                                 .role(gpui::Role::Alert)
                                 .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FORM_ERROR())
-                                .child(error.clone()),
+                                .child(status::label(
+                                    format!("elicitation-error-status-{request_index}"),
+                                    StatusKind::Failed,
+                                    error.clone(),
+                                    ICON_SM,
+                                    cx,
+                                )),
                         );
                     }
                 }
@@ -9532,8 +9612,13 @@ impl CodexView {
                                     "approval-validation-{index}"
                                 )))
                                 .role(gpui::Role::Alert)
-                                .text_color(c::FORM_ERROR())
-                                .child("Enter a valid JSON object before approving."),
+                                .child(status::label(
+                                    format!("approval-error-status-{index}"),
+                                    StatusKind::Failed,
+                                    "Enter a valid JSON object before approving.",
+                                    ICON_SM,
+                                    cx,
+                                )),
                         );
                     }
                 }
@@ -10379,8 +10464,13 @@ impl CodexView {
                     .px(rpx(SPACE_3XL))
                     .pt(rpx(SPACE_2XL))
                     .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FORM_ERROR())
-                    .child(error),
+                    .child(status::label(
+                        format!("question-error-status-{request_index}"),
+                        StatusKind::Failed,
+                        error,
+                        ICON_SM,
+                        cx,
+                    )),
             );
         }
         let cancel_key = key.clone();
@@ -10710,7 +10800,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_shimmer_tracks_active_calls_and_claude_thinking() {
+    fn tool_activity_tracks_active_calls_and_claude_thinking() {
         let mut state = snapshot();
         state.status = Status::Working;
         state.saved.provider = codex::Provider::Claude;
@@ -14116,6 +14206,51 @@ mod tests {
     }
 
     #[test]
+    fn tool_status_requires_explicit_completion_and_retains_interruption() {
+        use serde_json::json;
+        assert_eq!(
+            tool_status_kind(&json!({"type":"commandExecution"}), false),
+            StatusKind::Unknown
+        );
+        assert_eq!(
+            tool_status_kind(
+                &json!({"type":"commandExecution", "status":"inProgress"}),
+                false
+            ),
+            StatusKind::Pending
+        );
+        assert_eq!(
+            tool_status_kind(
+                &json!({"type":"commandExecution", "status":"completed"}),
+                false
+            ),
+            StatusKind::Success
+        );
+        assert_eq!(
+            tool_status_kind(&json!({"type":"reasoning", "status":"completed"}), false),
+            StatusKind::Unknown
+        );
+        assert_eq!(
+            tool_status_kind(
+                &json!({"type":"commandExecution", "status":"cancelled"}),
+                false
+            ),
+            StatusKind::Canceled
+        );
+        assert_eq!(
+            tool_status_kind(
+                &json!({"type":"commandExecution", "status":"interrupted"}),
+                false
+            ),
+            StatusKind::Stopped
+        );
+        assert_eq!(
+            tool_status_kind(&json!({"type":"commandExecution", "exitCode":1}), true),
+            StatusKind::Failed
+        );
+    }
+
+    #[test]
     fn tool_failure_summary_is_local_and_explicit() {
         let command = json!({"type":"commandExecution","command":"npm test","exitCode":1,"status":"completed"});
         assert!(tool_activity_summary(&command, false).starts_with("Command failed"));
@@ -14566,41 +14701,6 @@ mod tests {
         });
         draw(cx);
         assert!(view.read_with(cx, |view, _| view.interrupt_requested_for_turn.is_none()));
-    }
-
-    #[gpui::test]
-    fn shimmer_moves_bright_glyph_band_and_keeps_unicode_boundaries(cx: &mut gpui::TestAppContext) {
-        let (_, cx, _, _) = fixture(cx);
-        cx.update(|_, _| {
-            let label = "5 tool calls · Running…";
-            let early = super::super::components::shimmer_highlights(label, 0.25);
-            let later = super::super::components::shimmer_highlights(label, 0.75);
-            assert_eq!(early.len(), label.chars().count());
-            assert!(early
-                .iter()
-                .all(|(range, _)| label.is_char_boundary(range.start)
-                    && label.is_char_boundary(range.end)));
-            let brightest = |runs: &[(std::ops::Range<usize>, gpui::HighlightStyle)]| {
-                runs.iter()
-                    .enumerate()
-                    .max_by(|(_, first), (_, second)| {
-                        first
-                            .1
-                            .color
-                            .unwrap()
-                            .l
-                            .total_cmp(&second.1.color.unwrap().l)
-                    })
-                    .unwrap()
-                    .0
-            };
-            assert!(brightest(&early) < brightest(&later));
-            assert_ne!(
-                early[0].1.color,
-                early[early.len() / 2].1.color,
-                "shimmer varies glyph colors rather than pulsing the whole line"
-            );
-        });
     }
 
     #[test]

@@ -527,7 +527,12 @@ impl Render for ProjectSetup {
                             .flex()
                             .items_center()
                             .gap(rpx(SPACE_2XL))
-                            .child(icon("git-branch", ICON_SM, c::FG_DIM()))
+                            .child(crate::views::status::mark(
+                                "setup-git-detected",
+                                crate::views::status::StatusKind::Success,
+                                ICON_SM,
+                                cx,
+                            ))
                             .child(
                                 div()
                                     .flex_1()
@@ -538,6 +543,9 @@ impl Render for ProjectSetup {
                                     .child(
                                         div()
                                             .font_weight(FontWeight::MEDIUM)
+                                            .text_color(
+                                                crate::views::status::StatusKind::Success.color(),
+                                            )
                                             .child("Git repository detected"),
                                     )
                                     .child(
@@ -548,8 +556,7 @@ impl Render for ProjectSetup {
                                                 "{branch} · working tree at the selected folder"
                                             )),
                                     ),
-                            )
-                            .child(icon("check", ICON_SM, c::GREEN())),
+                            ),
                     );
                 }
                 GitProbe::NotRepo => {
@@ -578,7 +585,13 @@ impl Render for ProjectSetup {
                         .role(gpui::Role::Status)
                         .aria_label("Adding project")
                         .text_color(c::FG_DIM())
-                        .child("Checking the folder and saving to Grove…"),
+                        .child(crate::views::status::label(
+                            "setup-saving",
+                            crate::views::status::StatusKind::Working,
+                            "Checking the folder and saving to Grove…",
+                            ICON_SM,
+                            cx,
+                        )),
                     "project-setup-pending",
                     cx,
                 ));

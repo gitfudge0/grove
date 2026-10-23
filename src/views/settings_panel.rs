@@ -1,4 +1,5 @@
 //! App-wide settings and shortcut reference, mounted in the main canvas.
+use super::status::{self, StatusKind};
 use super::{motion, rpx, tokens::*};
 use crate::{
     entities::{
@@ -1032,6 +1033,13 @@ impl SettingsPanel {
             UpgradeState::Updated => ("Update installed".to_string(), false),
             UpgradeState::UpdateFailed(error) => (format!("Update failed: {error}"), false),
         };
+        let status_kind = match upgrade.state() {
+            UpgradeState::Idle => StatusKind::Unknown,
+            UpgradeState::Checking | UpgradeState::Updating(_) => StatusKind::Working,
+            UpgradeState::UpToDate | UpgradeState::Updated => StatusKind::Success,
+            UpgradeState::Available(_) => StatusKind::Warning,
+            UpgradeState::Error(_) | UpgradeState::UpdateFailed(_) => StatusKind::Failed,
+        };
         let can_update = upgrade.can_update();
         let has_update = upgrade.available().is_some();
         let can_restart = restart_available(upgrade.state());
@@ -1112,13 +1120,27 @@ impl SettingsPanel {
                     })),
             );
         body = body.when(self.category == Category::About, |body| {
-            body.child(div().flex().flex_col().child(Self::section("Grove")).child(
-                Self::setting_row(
-                    "Grove version",
-                    format!("v{} · {status}", env!("CARGO_PKG_VERSION")),
-                    actions,
-                ),
-            ))
+            body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(Self::section("Grove"))
+                    .child(
+                        status::label(
+                            "settings-upgrade-status",
+                            status_kind,
+                            status.clone(),
+                            ICON_SM,
+                            cx,
+                        )
+                        .text_size(rpx(TEXT_SMALL)),
+                    )
+                    .child(Self::setting_row(
+                        "Grove version",
+                        format!("v{}", env!("CARGO_PKG_VERSION")),
+                        actions,
+                    )),
+            )
         });
         body.when(self.category == Category::General, |body| {
             body.child(
@@ -1246,10 +1268,22 @@ impl SettingsPanel {
         }
         match upgrade.changelog() {
             ChangelogState::Idle | ChangelogState::Loading => {
-                body = body.child("Loading changelog…");
+                body = body.child(status::label(
+                    "changelog-loading",
+                    StatusKind::Working,
+                    "Loading changelog…",
+                    ICON_SM,
+                    cx,
+                ));
             }
             ChangelogState::Error(error) => {
-                body = body.child(format!("Could not load changelog: {error}"));
+                body = body.child(status::label(
+                    "changelog-error",
+                    StatusKind::Failed,
+                    format!("Could not load changelog: {error}"),
+                    ICON_SM,
+                    cx,
+                ));
             }
             ChangelogState::Loaded(notes) if notes.is_empty() => {
                 body = body.child("No release notes available.");
@@ -1435,8 +1469,14 @@ impl Render for SettingsPanel {
                                 .w_full()
                                 .py(rpx(SPACE_LG))
                                 .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FORM_ERROR())
-                                .child(error.clone()),
+                                .text_color(StatusKind::Failed.color())
+                                .child(status::label(
+                                    "settings-error-status",
+                                    StatusKind::Failed,
+                                    error.clone(),
+                                    ICON_SM,
+                                    cx,
+                                )),
                             format!("settings-error-{error}"),
                             cx,
                         ))

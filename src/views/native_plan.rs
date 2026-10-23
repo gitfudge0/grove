@@ -1,4 +1,5 @@
 //! Native review of validated, immutable session plan snapshots.
+use super::status::{self, StatusKind};
 use super::{
     components::{header_control_frame, project_field_well, question_choice, transcript_action},
     rpx,
@@ -958,10 +959,21 @@ impl NativePlan {
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_SM))
-                    .text_color(c::FG_DIM())
-                    .when(unanswered > 0, |s| {
-                        s.child(crate::icons::icon("question", ICON_SM, c::AMBER()))
+                    .text_color(if unanswered > 0 {
+                        StatusKind::NeedsInput.color()
+                    } else {
+                        StatusKind::Success.color()
                     })
+                    .child(status::mark(
+                        format!("claim-decision-status-{claim_key}"),
+                        if unanswered > 0 {
+                            StatusKind::NeedsInput
+                        } else {
+                            StatusKind::Success
+                        },
+                        ICON_SM,
+                        cx,
+                    ))
                     .child(decision_status(total, unanswered)),
             );
         }
@@ -1030,8 +1042,21 @@ impl NativePlan {
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_SM))
-                        .text_color(c::FG_DIM())
-                        .child(crate::icons::icon("question", ICON_SM, c::AMBER()))
+                        .text_color(if answer.is_some() || own_active {
+                            StatusKind::Success.color()
+                        } else {
+                            StatusKind::NeedsInput.color()
+                        })
+                        .child(status::mark(
+                            format!("decision-answer-status-{decision_id}"),
+                            if answer.is_some() || own_active {
+                                StatusKind::Success
+                            } else {
+                                StatusKind::NeedsInput
+                            },
+                            ICON_SM,
+                            cx,
+                        ))
                         .child(if answer.is_some() || own_active {
                             "Decision · answer recorded"
                         } else {
@@ -1280,10 +1305,10 @@ impl Render for NativePlan {
             body = body.child(self.text("plan-summary".into(), summary.into(), window));
         }
         body = body.child(
-            div()
-                .text_size(rpx(TEXT_SMALL))
-                .text_color(c::FG_DIM())
-                .child(format!(
+            status::label(
+                "plan-proposal-status",
+                StatusKind::Pending,
+                format!(
                     "Proposed · Revision {}{}",
                     self.revision_id,
                     if doc["changes"]["files"].as_u64().unwrap_or_default() > 0 {
@@ -1294,7 +1319,11 @@ impl Render for NativePlan {
                     } else {
                         String::new()
                     }
-                )),
+                ),
+                ICON_SM,
+                cx,
+            )
+            .text_size(rpx(TEXT_SMALL)),
         );
         body = body.child(
             div()
@@ -1303,10 +1332,25 @@ impl Render for NativePlan {
                 .flex()
                 .items_center()
                 .gap(rpx(SPACE_SM))
-                .text_color(c::FG_DIM())
-                .when(unanswered > 0, |s| {
-                    s.child(crate::icons::icon("question", ICON_SM, c::AMBER()))
+                .text_color(if decision_total == 0 {
+                    StatusKind::Idle.color()
+                } else if unanswered > 0 {
+                    StatusKind::NeedsInput.color()
+                } else {
+                    StatusKind::Success.color()
                 })
+                .child(status::mark(
+                    "plan-decisions-status",
+                    if decision_total == 0 {
+                        StatusKind::Idle
+                    } else if unanswered > 0 {
+                        StatusKind::NeedsInput
+                    } else {
+                        StatusKind::Success
+                    },
+                    ICON_SM,
+                    cx,
+                ))
                 .child(decision_status.clone()),
         );
         if !expanded {
@@ -1357,7 +1401,13 @@ impl Render for NativePlan {
         }
         if !self.review_open {
             if let Some(error) = &self.error {
-                body = body.child(div().text_color(c::FORM_ERROR()).child(error.clone()));
+                body = body.child(status::label(
+                    "plan-error-status",
+                    StatusKind::Failed,
+                    error.clone(),
+                    ICON_SM,
+                    cx,
+                ));
             }
         }
         body = body.child(
@@ -1428,28 +1478,51 @@ impl Render for NativePlan {
             let status = delivery
                 .as_str()
                 .unwrap_or_else(|| delivery["status"].as_str().unwrap_or("draft"));
+            let delivery_kind = match status {
+                "draft" | "queued" => StatusKind::Pending,
+                "sending" => StatusKind::Working,
+                "sent" => StatusKind::Success,
+                "uncertain" => StatusKind::Warning,
+                "failed" => StatusKind::Failed,
+                _ => StatusKind::Unknown,
+            };
             let locked =
                 self.send_pending || matches!(status, "queued" | "sending" | "sent" | "uncertain");
             body = body
                 .child(div().text_size(rpx(TEXT_TITLE)).child("Review response"))
-                .child(div().text_color(c::FG_DIM()).child(format!(
-                    "{} · Revision {} · {}",
-                    self.plan_id, self.revision_id, status
-                )))
+                .child(
+                    div()
+                        .text_color(c::FG_DIM())
+                        .child(format!("{} · Revision {}", self.plan_id, self.revision_id)),
+                )
+                .child(status::label(
+                    "plan-delivery-status",
+                    delivery_kind,
+                    status.to_owned(),
+                    ICON_SM,
+                    cx,
+                ))
                 .when_some(self.error.clone(), |body, error| {
                     body.child(
                         div()
                             .debug_selector(|| "native-plan-send-error".into())
-                            .text_color(c::FORM_ERROR())
-                            .child(error),
+                            .child(status::label(
+                                "plan-send-error-status",
+                                StatusKind::Failed,
+                                error,
+                                ICON_SM,
+                                cx,
+                            )),
                     )
                 })
                 .when(status == "failed", |body| {
-                    body.child(
-                        div()
-                            .text_color(c::FORM_ERROR())
-                            .child(string(delivery, "error")),
-                    )
+                    body.child(div().child(status::label(
+                        "plan-delivery-error-status",
+                        StatusKind::Failed,
+                        string(delivery, "error"),
+                        ICON_SM,
+                        cx,
+                    )))
                 })
                 .child(self.text(
                     "plan-response-text".into(),

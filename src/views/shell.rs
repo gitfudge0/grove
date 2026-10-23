@@ -1098,12 +1098,21 @@ impl Shell {
                         .child("Current"),
                 )
             })
-            .when_some(status, |item, (label, color)| {
+            .when_some(status, |item, (label, _color)| {
                 item.child(
                     div()
                         .flex_shrink_0()
                         .text_size(rpx(TEXT_SMALL))
-                        .text_color(color)
+                        .text_color(super::status::session_kind(label).color())
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .child(super::status::mark(
+                            format!("switcher-status-{target:?}"),
+                            super::status::session_kind(label),
+                            ICON_SM,
+                            cx,
+                        ))
                         .child(label),
                 )
             });

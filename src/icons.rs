@@ -58,7 +58,7 @@ pub fn svg_for_path(path: &str) -> Option<String> {
         // visible (`src/gui/icons.rs:125-129`).
         let deg = frame * (360 / SPINNER_FRAMES);
         return Some(wrap_svg(&format!(
-            r#"<path d="M8 1.5a6.5 6.5 0 1 1-4.6 1.9" transform="rotate({deg} 8 8)"/>"#
+            r#"<path d="M8 2a6 6 0 1 1-4.24 1.76" transform="rotate({deg} 8 8)"/>"#
         )));
     }
     if let Some(glyph) = name.strip_prefix("compact-status-") {
@@ -90,6 +90,22 @@ fn svg_for(name: &str) -> String {
         "copy" => r#"<rect x="5" y="5" width="8" height="8" rx="1"/><path d="M10 5V3H3v7h2"/>"#,
         "minus" => r#"<path d="M3 8h10"/>"#,
         "close" => r#"<path d="M4 4l8 8M12 4l-8 8"/>"#,
+        "status-info" => r#"<circle cx="8" cy="8" r="6"/><path d="M8 7v4M8 4.5h.01"/>"#,
+        "status-idle" => {
+            r#"<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"/>"#
+        }
+        "status-success" => r#"<circle cx="8" cy="8" r="6"/><path d="m5 8 2 2 4-4"/>"#,
+        "status-working" => r#"<path d="M8 2a6 6 0 1 1-4.24 1.76"/>"#,
+        "status-attention" => {
+            r#"<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/>"#
+        }
+        "status-warning" => r#"<circle cx="8" cy="8" r="6"/><path d="M8 4.5v4M8 11h.01"/>"#,
+        "status-failed" => r#"<circle cx="8" cy="8" r="6"/><path d="m5.5 5.5 5 5m0-5-5 5"/>"#,
+        "status-canceled" => r#"<circle cx="8" cy="8" r="6"/><path d="m4 12 8-8"/>"#,
+        "status-stopped" => r#"<circle cx="8" cy="8" r="6"/><path d="M5.5 8h5"/>"#,
+        "status-unknown" => {
+            r#"<circle cx="8" cy="8" r="6"/><path d="M6 6a2 2 0 1 1 3 1.73C8 8.3 8 8.5 8 9M8 11h.01"/>"#
+        }
         "check" => r#"<path d="M3 8l4 4 6-7"/>"#,
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z" fill="currentColor" stroke="none"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
@@ -308,6 +324,16 @@ mod tests {
             "check",
             "dot",
             "status-dot",
+            "status-info",
+            "status-idle",
+            "status-success",
+            "status-working",
+            "status-attention",
+            "status-warning",
+            "status-failed",
+            "status-canceled",
+            "status-stopped",
+            "status-unknown",
             "hexagon",
             "ring",
             "task-pending",

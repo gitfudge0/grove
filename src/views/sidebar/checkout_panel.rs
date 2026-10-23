@@ -1,6 +1,6 @@
 //! Checkout actions live beside the selected canvas, outside its scroll region.
 use super::*;
-use crate::views::components::{form_action, project_field_well, shimmer_label, transcript_action};
+use crate::views::components::{form_action, project_field_well, transcript_action};
 use gpui_component::{
     menu::{PopupMenu, PopupMenuItem},
     Disableable,
@@ -449,6 +449,12 @@ impl Sidebar {
                             window,
                             cx,
                         )
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path(format!("icons/{}.svg", pr_status_kind(&pr).icon_name()))
+                                .size(rpx(ICON_SM)),
+                        )
+                        .text_color(pr_status_kind(&pr).color())
                         .debug_selector(|| "checkout-pr-details".into())
                         .flex_1()
                         .min_w_0()
@@ -536,9 +542,21 @@ impl Sidebar {
                                 div()
                                     .id("checkout-pr-checks")
                                     .debug_selector(|| "checkout-pr-checks".into())
-                                    .child(pr.checks()),
+                                    .child(super::super::status::label(
+                                        "checkout-pr-check-status",
+                                        pr_checks_kind(&pr),
+                                        pr.checks(),
+                                        ICON_SM,
+                                        cx,
+                                    )),
                             )
-                            .child(pr.review_progress()),
+                            .child(super::super::status::label(
+                                "checkout-pr-review-status",
+                                pr_review_kind(&pr),
+                                pr.review_progress(),
+                                ICON_SM,
+                                cx,
+                            )),
                     );
                 }
             }
@@ -572,7 +590,13 @@ impl Sidebar {
                         .pb(rpx(SPACE_SM))
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_DIM())
-                        .child(error),
+                        .child(super::super::status::label(
+                            "checkout-pr-error",
+                            super::super::status::StatusKind::Warning,
+                            error,
+                            ICON_SM,
+                            cx,
+                        )),
                 );
             }
             None => {
@@ -913,13 +937,14 @@ impl Sidebar {
                     .when(busy, |button| {
                         button
                             .icon_only()
-                            .child(icon("git-publish", ICON_SM, c::FG_DIM()))
-                            .child(shimmer_label(
-                                "checkout-publish-shimmer".into(),
-                                "Publishing…".into(),
-                                true,
+                            .child(super::super::status::mark(
+                                "checkout-publish-working",
+                                super::super::status::StatusKind::Working,
+                                ICON_SM,
                                 cx,
                             ))
+                            .text_color(super::super::status::StatusKind::Working.color())
+                            .child("Publishing…")
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.checkout_run(
@@ -1324,7 +1349,7 @@ impl Sidebar {
                         }
                         CommitUi::Canceling if same_job => ("Canceling…", "stop", false, true),
                         CommitUi::Committing if same_job => ("Committing…", "git", false, true),
-                        CommitUi::Succeeded => ("Committed", "check", false, false),
+                        CommitUi::Succeeded => ("Committed", "status-success", false, false),
                         CommitUi::Failed => ("Retry commit", "git", !busy, false),
                         _ => (base_label, base_glyph, base_enabled && !busy, false),
                     }
@@ -2026,7 +2051,25 @@ fn checkout_loading_row(
                         .debug_selector(move || format!("{id}-icon"))
                         .w(rpx(ICON_LG))
                         .flex_shrink_0()
-                        .child(icon(glyph, ICON_MD, c::FG_DIM())),
+                        .child(if loading {
+                            super::super::status::mark(
+                                id,
+                                super::super::status::StatusKind::Working,
+                                ICON_MD,
+                                cx,
+                            )
+                        } else {
+                            icon(
+                                glyph,
+                                ICON_MD,
+                                if glyph == "status-success" {
+                                    c::STATUS_SUCCESS()
+                                } else {
+                                    c::FG_DIM()
+                                },
+                            )
+                            .into_any_element()
+                        }),
                 )
                 .child(
                     div()
@@ -2035,12 +2078,14 @@ fn checkout_loading_row(
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .child(shimmer_label(
-                            SharedString::from(format!("{id}-shimmer")).into(),
-                            label.to_string(),
-                            loading,
-                            cx,
-                        )),
+                        .text_color(if loading {
+                            c::STATUS_INFO()
+                        } else if glyph == "status-success" {
+                            c::STATUS_SUCCESS()
+                        } else {
+                            c::FG()
+                        })
+                        .child(label),
                 ),
         )
 }
@@ -2118,6 +2163,49 @@ fn change_stat_counts(added: u32, removed: u32, widths: [gpui::Pixels; 2]) -> im
                     .child(text)
             }),
         )
+}
+
+fn pr_checks_kind(pr: &grove_core::checkout_pr::PullRequest) -> super::super::status::StatusKind {
+    use super::super::status::StatusKind;
+    match pr.checks() {
+        "Checks passing" => StatusKind::Success,
+        "Checks failed" => StatusKind::Failed,
+        "Checks running" => StatusKind::Working,
+        _ => StatusKind::Unknown,
+    }
+}
+fn pr_review_kind(pr: &grove_core::checkout_pr::PullRequest) -> super::super::status::StatusKind {
+    use super::super::status::StatusKind;
+    match pr.review_decision.as_str() {
+        "APPROVED" if pr.review_requests.as_ref().is_none_or(Vec::is_empty) => StatusKind::Success,
+        "CHANGES_REQUESTED" => StatusKind::NeedsInput,
+        _ if pr.review_requests.as_ref().is_some_and(|r| !r.is_empty()) => StatusKind::Pending,
+        _ => StatusKind::Unknown,
+    }
+}
+fn pr_status_kind(pr: &grove_core::checkout_pr::PullRequest) -> super::super::status::StatusKind {
+    use super::super::status::StatusKind;
+    match pr.state.as_str() {
+        "MERGED" => StatusKind::Success,
+        "CLOSED" => StatusKind::Stopped,
+        _ if pr.is_draft => StatusKind::Pending,
+        _ if pr.mergeable == "CONFLICTING" => StatusKind::Warning,
+        _ if pr.blocker().is_some() => {
+            if pr.checks() == "Checks failed" {
+                StatusKind::Failed
+            } else {
+                StatusKind::NeedsInput
+            }
+        }
+        _ if pr
+            .status_check_rollup
+            .as_ref()
+            .is_some_and(|r| !r.is_empty()) =>
+        {
+            pr_checks_kind(pr)
+        }
+        _ => pr_review_kind(pr),
+    }
 }
 
 fn commit_row_state(state: Option<&CheckoutGitState>) -> (&'static str, &'static str, bool) {

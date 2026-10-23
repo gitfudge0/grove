@@ -26,9 +26,8 @@ use crate::{
     theme as c,
 };
 use gpui::{
-    div, prelude::*, AnimationExt as _, AnyElement, App, Context, CursorStyle, Div, Entity,
-    EventEmitter, FocusHandle, Focusable, MouseButton, MouseMoveEvent, ScrollHandle, SharedString,
-    Stateful, Window,
+    div, prelude::*, AnyElement, App, Context, CursorStyle, Div, Entity, EventEmitter, FocusHandle,
+    Focusable, MouseButton, MouseMoveEvent, ScrollHandle, SharedString, Stateful, Window,
 };
 use gpui_component::input::InputState;
 use grove_core::{agent::Agent, storage::SidebarAppearance};
@@ -79,7 +78,12 @@ const SESSION_LAUNCHER_SIZE: f32 = ICON_SM;
 const SESSION_TITLE_LINE_H: f32 = 17.0;
 const SESSION_META_LINE_H: f32 = 14.0;
 const SESSION_ROW_RADIUS: f32 = 7.0;
+const SESSION_LIST_CARD_H: f32 = 78.0;
+const SESSION_LIST_HEADER_H: f32 = 20.0;
+const SESSION_LIST_TITLE_H: f32 = 20.0;
+const SESSION_LIST_FOOTER_H: f32 = 16.0;
 const SESSION_FIRST_GAP: f32 = 3.0;
+#[cfg(test)]
 const SESSION_SPINNER_PERIOD: Duration = Duration::from_millis(1200);
 const SESSION_AGE_REFRESH: Duration = Duration::from_secs(1);
 const WORKTREE_READINESS_REFRESH: Duration = Duration::from_secs(5);
@@ -95,40 +99,7 @@ fn session_status_icon_sized(id: SessionId, status: &str, size: f32, cx: &App) -
 
 /// Shared status marks keep session and child-agent semantics and motion identical.
 fn status_icon_sized(id: SharedString, status: &str, size: f32, cx: &App) -> AnyElement {
-    let working_color = c::BLUE();
-    match status {
-        "Working" | "Starting" if !cx.reduce_motion() => div()
-            .id(SharedString::from(format!("session-spinner-icon-{id}")))
-            .size(rpx(size))
-            .with_animation(
-                SharedString::from(format!("session-spinner-{id}")),
-                gpui::Animation::new(SESSION_SPINNER_PERIOD).repeat(),
-                move |element, progress| {
-                    let frame =
-                        (progress * crate::entities::animation_clock::SPINNER_FRAMES as f32) as u64;
-                    let id = id.clone();
-                    element
-                        .debug_selector(move || format!("session-spinner-phase-{id}-{frame}"))
-                        .child(
-                            crate::icons::spinner(size, working_color, 0).with_transformation(
-                                gpui::Transformation::rotate(gpui::percentage(progress)),
-                            ),
-                        )
-                },
-            )
-            .into_any_element(),
-        "Working" | "Starting" => div()
-            .id(SharedString::from(format!("session-spinner-icon-{id}")))
-            .debug_selector(move || format!("session-spinner-phase-{id}-0"))
-            .size(rpx(size))
-            .child(crate::icons::spinner(size, working_color, 0))
-            .into_any_element(),
-        "Running" => icon("status-dot", size, c::GREEN()).into_any_element(),
-        "Needs you" => icon("status-dot", size, c::AMBER()).into_any_element(),
-        "Done" => icon("check", size, c::GREEN()).into_any_element(),
-        "Failed" => icon("close", size, c::RED()).into_any_element(),
-        _ => icon("hexagon", size, c::FG_DIM()).into_any_element(),
-    }
+    super::status::mark(id, super::status::session_kind(status), size, cx)
 }
 
 fn sidebar_worktree_name(name: &str, is_main: bool) -> &str {
@@ -3414,7 +3385,7 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (status, color) = self.status(meta, cx);
+        let (status, _) = self.status(meta, cx);
         let id = meta.id;
         let tasks = self.task_glance(id).cloned();
         let tasks_suffix = tasks.as_ref().map_or_else(String::new, |tasks| {
@@ -3441,7 +3412,6 @@ impl Sidebar {
         };
         let row = if list {
             let selected = self.selection == Some(Selection::Session(id));
-            let attention = matches!(status, "Needs you" | "Failed");
             let worktree = self
                 .snapshot
                 .projects
@@ -3505,41 +3475,16 @@ impl Sidebar {
             .relative()
             .group("session-row")
             .h_auto()
-            .min_h(rpx(ROW_H))
-            .px(rpx(SPACE_LG))
-            .py(rpx(SPACE_MD))
+            .min_h(rpx(SESSION_LIST_CARD_H))
+            .px(rpx(SPACE_XL))
+            .py(rpx(SPACE_LG))
             .rounded(rpx(RADIUS_GROUP))
-            .border_1()
-            .border_color(if attention {
-                c::AMBER()
-            } else {
-                c::alpha(c::BORDER(), 0.0)
-            })
             .bg(if selected {
                 c::alpha(c::FG(), 0.14)
-            } else if attention {
-                c::AMBER_ROW_TINT()
             } else {
                 c::alpha(c::BG(), 0.0)
             })
             .items_start()
-            .gap(rpx(SPACE_MD))
-            .child(
-                div()
-                    .id(("session-number", id.raw()))
-                    .debug_selector(move || format!("session-number-{}", id.raw()))
-                    .w(rpx(ICON_XS))
-                    .flex_shrink_0()
-                    .text_size(rpx(TEXT_MICRO))
-                    .line_height(rpx(SESSION_TITLE_LINE_H))
-                    .text_color(c::FG_MUTE())
-                    .font_family(crate::fonts::UI_FAMILY)
-                    .child(
-                        number
-                            .filter(|number| *number <= 9)
-                            .map_or_else(String::new, |number| number.to_string()),
-                    ),
-            )
             .child(
                 div()
                     .flex_1()
@@ -3547,37 +3492,55 @@ impl Sidebar {
                     .flex()
                     .flex_col()
                     .relative()
-                    .gap(rpx(SPACE_XS))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .min_w_0()
-                            .gap(rpx(SPACE_SM))
+                            .h(rpx(SESSION_LIST_HEADER_H))
+                            .gap(rpx(SPACE_MD))
                             .child(
                                 div()
-                                    .flex_1()
+                                    .flex_shrink_0()
+                                    .size(rpx(ICON_LG))
+                                    .id(("session-list-agent", id.raw()))
+                                    .debug_selector(move || {
+                                        format!("session-list-agent-{}", id.raw())
+                                    })
+                                    .child(icon(meta.agent.icon_name(), ICON_LG, c::FG_DIM())),
+                            )
+                            .child(
+                                div()
                                     .min_w_0()
                                     .truncate()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .line_height(rpx(SESSION_LIST_FOOTER_H))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_size(rpx(TEXT_BODY))
-                                    .line_height(rpx(SESSION_TITLE_LINE_H))
-                                    .id(("session-list-title", id.raw()))
+                                    .text_color(c::FG_DIM())
+                                    .id(("session-list-context", id.raw()))
                                     .debug_selector(move || {
-                                        format!("session-list-title-{}", id.raw())
+                                        format!("session-list-context-{}", id.raw())
                                     })
-                                    .child(single_line_session_title(&title)),
+                                    .child(meta.project.clone()),
                             )
+                            .when_some(tasks.as_ref(), |line, tasks| {
+                                line.child(task_glance::row_progress(id, tasks))
+                            })
+                            .child(div().flex_1().min_w_0())
                             .child(motion::fast(
                                 div()
                                     .flex_shrink_0()
-                                    .text_size(rpx(TEXT_MICRO))
-                                    .line_height(rpx(SESSION_TITLE_LINE_H))
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_SM))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .line_height(rpx(SESSION_LIST_FOOTER_H))
                                     .id(("session-list-status", id.raw()))
                                     .debug_selector(move || {
                                         format!("session-list-status-{}", id.raw())
                                     })
-                                    .text_color(color)
+                                    .text_color(super::status::session_kind(status).color())
+                                    .child(session_status_icon_sized(id, status, ICON_LG, cx))
                                     .child(status),
                                 format!("session-status-list-{}-{status}", id.raw()),
                                 cx,
@@ -3585,13 +3548,29 @@ impl Sidebar {
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .w_full()
+                            .truncate()
+                            .mt(rpx(SPACE_SM))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_size(rpx(TEXT_TITLE))
+                            .line_height(rpx(SESSION_LIST_TITLE_H))
+                            .id(("session-list-title", id.raw()))
+                            .debug_selector(move || format!("session-list-title-{}", id.raw()))
+                            .child(single_line_session_title(&title)),
+                    )
+                    .child(
+                        div()
                             .flex()
                             .items_center()
                             .min_w_0()
-                            .gap(rpx(SPACE_XS))
+                            .mt(rpx(SPACE_XS))
+                            .h(rpx(SESSION_LIST_FOOTER_H))
+                            .gap(rpx(SPACE_MD))
                             .pr(rpx(CONTROL_H + SPACE_XS))
-                            .text_size(rpx(TEXT_MICRO))
-                            .line_height(rpx(SESSION_META_LINE_H))
+                            .text_size(rpx(TEXT_SMALL))
+                            .line_height(rpx(SESSION_LIST_FOOTER_H))
+                            .font_weight(gpui::FontWeight::NORMAL)
                             .text_color(c::FG_DIM())
                             .id(("session-list-context-line", id.raw()))
                             .tooltip({
@@ -3601,48 +3580,24 @@ impl Sidebar {
                                         .build(window, cx)
                                 }
                             })
+                            .child(div().flex_shrink_0().child(icon(
+                                "git-branch",
+                                ICON_SM,
+                                c::FG_DIM(),
+                            )))
                             .child(
                                 div()
+                                    .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .font_family(crate::fonts::UI_FAMILY)
-                                    .font_weight(gpui::FontWeight::NORMAL)
-                                    .id(("session-list-context", id.raw()))
+                                    .id(("session-list-branch", id.raw()))
                                     .debug_selector(move || {
-                                        format!("session-list-context-{}", id.raw())
+                                        format!("session-list-branch-{}", id.raw())
                                     })
-                                    .child(context),
+                                    .child(branch.unwrap_or(&name).to_string()),
                             )
-                            .when_some(branch, |line, branch| {
-                                line.child(div().flex_shrink_0().child("·")).child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .font_family(crate::fonts::UI_FAMILY)
-                                        .id(("session-list-branch", id.raw()))
-                                        .debug_selector(move || {
-                                            format!("session-list-branch-{}", id.raw())
-                                        })
-                                        .child(branch.to_string()),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .min_w_0()
-                            .gap(rpx(SPACE_SM))
-                            .pr(rpx(CONTROL_H + SPACE_XS))
-                            .text_size(rpx(TEXT_MICRO))
-                            .line_height(rpx(SESSION_META_LINE_H))
-                            .font_weight(gpui::FontWeight::NORMAL)
-                            .text_color(c::FG_DIM())
-                            .when_some(tasks.as_ref(), |line, tasks| {
-                                line.child(task_glance::row_progress(id, tasks))
-                            })
-                            .when_some(Some(diff), |line, (label, actionable)| {
-                                line.child(div().flex_1().min_w_0().child(if actionable {
+                            .when(diff.1, |line| {
+                                line.child(
                                     self.control(
                                         ("diff-chip-open", id.raw()),
                                         format!("Open changes in {}", meta.wt_path),
@@ -3654,37 +3609,25 @@ impl Sidebar {
                                         self.session_diff_focus.get(&id),
                                         gpui::InteractiveElement::track_focus,
                                     )
-                                    .w_full()
-                                    .min_w_0()
+                                    .flex_shrink_0()
                                     .h_auto()
                                     .px_0()
-                                    .justify_start()
                                     .text_color(c::GREEN())
                                     .child(
                                         div()
-                                            .min_w_0()
-                                            .truncate()
                                             .id(("session-list-diff-label", id.raw()))
                                             .debug_selector(move || {
                                                 format!("session-list-diff-label-{}", id.raw())
                                             })
-                                            .child(label),
-                                    )
-                                    .into_any_element()
-                                } else {
-                                    div().truncate().child(label).into_any_element()
-                                }))
+                                            .child(diff.0.clone()),
+                                    ),
+                                )
                             })
-                            .child(div().flex_shrink_0().child(age))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(SPACE_XS))
-                                    .child(icon(meta.agent.icon_name(), ICON_XS, c::FG_DIM()))
-                                    .child(meta.agent.label()),
-                            ),
+                            .child(div().flex_shrink_0().child(icon(
+                                meta.agent.icon_name(),
+                                ICON_MD,
+                                c::FG_MUTE(),
+                            ))),
                     )
                     .child(
                         self.control(
@@ -3696,11 +3639,11 @@ impl Sidebar {
                         .debug_selector(move || format!("close-session-{}", id.raw()))
                         .absolute()
                         .right_0()
-                        .top(rpx(SESSION_TITLE_LINE_H
+                        .top(rpx(SESSION_LIST_HEADER_H
+                            + SPACE_SM
+                            + SESSION_LIST_TITLE_H
                             + SPACE_XS
-                            + SESSION_META_LINE_H
-                            + SPACE_XS
-                            + SESSION_META_LINE_H
+                            + SESSION_LIST_FOOTER_H
                             - CONTROL_H))
                         .opacity(0.0)
                         .group_hover("session-row", |button| button.opacity(1.0))
@@ -4279,7 +4222,13 @@ impl Sidebar {
                         .pl(rpx(HIERARCHY_LABEL_INSET))
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_DIM())
-                        .child("Loading worktrees…"),
+                        .child(super::status::label(
+                            format!("worktrees-loading-{idx}"),
+                            super::status::StatusKind::Working,
+                            "Loading worktrees…",
+                            ICON_SM,
+                            cx,
+                        )),
                 );
             }
             for (worktree_position, worktree) in project.worktrees.iter().enumerate() {
@@ -7942,6 +7891,139 @@ mod tests {
         assert_eq!(rows[1].status, "Starting");
     }
 
+    /// Native renderer fixtures exercise Codex and Claude card identities without live providers.
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn session_list_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        for light in [false, true] {
+            for rem in [16.0, 20.0] {
+                for width in [220.0, 260.0, 340.0] {
+                    cx.update(|cx| {
+                        cx.set_global(SettingsState::new(grove_core::storage::Store {
+                            sidebar_width: Some(width),
+                            projects: ["grove", "a-very-long-project-name"]
+                                .into_iter()
+                                .map(|name| grove_core::storage::Project {
+                                    name: name.into(),
+                                    path: format!("/tmp/{name}"),
+                                    scripts: grove_core::storage::ProjectScripts::default(),
+                                    archived: false,
+                                    worktree_dir: None,
+                                })
+                                .collect(),
+                            ..Default::default()
+                        }));
+                        grove_core::theme::set(
+                            grove_core::theme::by_name(if light {
+                                "grove-light"
+                            } else {
+                                "grove-dark"
+                            })
+                            .unwrap(),
+                        );
+                        c::sync_component_theme(cx);
+                        gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                    });
+                    let mut fixture_sidebar = None;
+                    let window = cx.open_window(gpui::size(gpui::px(1000.0), gpui::px(620.0)), |window, cx| {
+                        let runtime = cx.new(Runtime::new);
+                        let registry = runtime.read(cx).registry.clone();
+                        runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                            for (idx, name) in ["grove", "a-very-long-project-name"].into_iter().enumerate() {
+                                tree.set_active_worktrees(idx, vec![grove_core::git::Worktree {
+                                    path: format!("/tmp/{name}"), branch: "main".into(), mtime: None, is_main: true,
+                                }]);
+                            }
+                        });
+                        let mut ids = Vec::new();
+                        for (agent, project, title, state) in [
+                            (Agent::Codex, "grove", "T3 Code Features to Add", ActivityState::Done),
+                            (Agent::Claude, "grove", "Fix sidebar resize", ActivityState::Working),
+                            (Agent::Codex, "a-very-long-project-name", "Repair very long session navigation titles without hiding meaningful actions", ActivityState::WaitingForInput),
+                        ] {
+                            let id = registry.update(cx, |registry, _| {
+                                let id = registry.insert_meta(project.into(), format!("/tmp/{project}"), agent);
+                                registry.set_restored_title(id, Some(title.into()));
+                                id
+                            });
+                            runtime.read(cx).activity.clone().update(cx, |activity, _| activity.set_state_for_test(id, state));
+                            ids.push(id);
+                        }
+                        let saved: grove_core::codex::SavedSession = serde_json::from_value(serde_json::json!({
+                            "key":"session-card-fixture", "project":"grove", "cwd":"/tmp/grove", "label":"codex 1",
+                            "title":"T3 Code Features to Add", "roots":[], "thread_id":null,
+                            "items":[{"type":"plan", "plan":[{"step":"Done", "status":"completed"},{"step":"Done too", "status":"completed"}]}]
+                        })).unwrap();
+                        let (handle, _actions) = grove_core::codex::Handle::channel();
+                        let (_updates, receive) = std::sync::mpsc::channel();
+                        let session = cx.new(|cx| {
+                            let mut state = grove_core::codex::Snapshot::new(saved);
+                            state.status = grove_core::codex::Status::Done;
+                            crate::entities::codex_session::CodexSession::from_connection(state,
+                                grove_core::codex::Connection { handle: handle.clone(), updates: receive.into() }, cx)
+                        });
+                        registry.update(cx, |registry, _| registry.attach_codex(ids[0], session, handle));
+                        let sidebar = cx.new(|cx| {
+                            let mut sidebar = Sidebar::new(runtime, window, cx);
+                            sidebar.mode = ViewMode::List;
+                            sidebar.selection = Some(Selection::Session(ids[0]));
+                            sidebar.snapshot = TreeSnapshot { projects: vec![crate::entities::workspace_state::SnapshotProject {
+                                idx: 0, name: "grove".into(), sessions: ids.clone(),
+                                worktrees: vec![crate::entities::workspace_state::SnapshotWorktree {
+                                    path: "/tmp/grove".into(), name: "grove".into(), branch: "main".into(), sessions: ids.clone(), ..Default::default()
+                                }], ..Default::default()
+                            }], total_projects: 1 };
+                            sidebar
+                        });
+                        fixture_sidebar = Some(sidebar.clone());
+                        cx.new(|cx| gpui_component::Root::new(sidebar, window, cx).bordered(false).bg(c::BG()))
+                    }).unwrap();
+                    cx.run_until_parked();
+                    cx.update_window(window.into(), |_, window, cx| {
+                        let _ = window.draw(cx);
+                    })
+                    .unwrap();
+                    cx.update(|cx| {
+                        let sidebar = fixture_sidebar.as_ref().unwrap().read(cx);
+                        for id in [1, 2, 3] {
+                            let bounds =
+                                sidebar.session_close_bounds[&SessionId::from_raw(id)].get();
+                            assert!(
+                                bounds.size.width > gpui::px(0.0)
+                                    && bounds.size.height > gpui::px(0.0),
+                                "session {id} must actually render before capture"
+                            );
+                        }
+                    });
+                    let path = format!(
+                        "/tmp/grove-session-list-{}-{width:.0}-rem{rem:.0}.png",
+                        if light { "light" } else { "dark" }
+                    );
+                    cx.capture_screenshot(window.into())
+                        .unwrap()
+                        .save(&path)
+                        .unwrap();
+                    eprintln!("Native session-list fixture: {path}");
+                    cx.update_window(window.into(), |_, window, _| window.remove_window())
+                        .unwrap();
+                }
+            }
+        }
+    }
+
     #[gpui::test]
     fn sessions_list_cards_keep_inset_and_controls_inside_narrow_rail(
         cx: &mut gpui::TestAppContext,
@@ -8031,7 +8113,7 @@ mod tests {
                 let close = cx.debug_bounds(close_id).unwrap();
                 assert!(card.left() >= rail.left() + gpui::px(SPACE_LG - 1.0));
                 assert!(card.right() <= rail.right() - gpui::px(SPACE_LG - 1.0));
-                assert!(card.size.height >= gpui::px(ROW_H));
+                assert!(card.size.height >= gpui::px(SESSION_LIST_CARD_H));
                 assert!(close.left() >= card.left() && close.right() <= card.right());
                 assert!(close.top() >= card.top() && close.bottom() <= card.bottom());
                 assert!(cx.debug_bounds("diff-chip-open-1").is_some());
@@ -8055,17 +8137,30 @@ mod tests {
                 let title = cx.debug_bounds(title).unwrap();
                 let context_bounds = cx.debug_bounds(context).unwrap();
                 let branch_bounds = cx.debug_bounds(branch).unwrap();
-                assert_eq!(context_bounds.top(), branch_bounds.top());
-                assert!(branch_bounds.left() >= context_bounds.right());
+                assert!(context_bounds.bottom() <= title.top());
+                assert!(branch_bounds.top() >= title.bottom());
+                assert!(branch_bounds.left() >= title.left());
                 assert!(branch_bounds.right() <= rail.right());
-                for selector in [context, diff] {
-                    let bounds = cx.debug_bounds(selector).unwrap();
-                    assert!((bounds.left() - title.left()).abs() <= gpui::px(1.0));
-                    assert!(bounds.right() <= rail.right());
-                }
                 let status = cx.debug_bounds(status).unwrap();
-                assert!(status.left() >= title.right());
-                assert!(status.right() <= rail.right());
+                assert!(status.left() >= context_bounds.right());
+                assert!(status.bottom() <= title.top());
+                assert!(status.right() <= title.right());
+                let changes = cx.debug_bounds(diff).unwrap();
+                assert!(changes.left() >= branch_bounds.right());
+                assert!(changes.right() <= rail.right());
+                assert!(cx.debug_bounds("session-number-1").is_none());
+                let original = title;
+                cx.simulate_mouse_move(original.center(), None, gpui::Modifiers::default());
+                draw(cx);
+                assert_eq!(
+                    cx.debug_bounds(if context.ends_with('1') {
+                        "session-list-title-1"
+                    } else {
+                        "session-list-title-2"
+                    })
+                    .unwrap(),
+                    original
+                );
             }
             assert_eq!(
                 sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
@@ -8115,6 +8210,30 @@ mod tests {
         cx.update(|window, cx| diff_focus.focus(window, cx));
         draw(cx);
         cx.update(|window, _| assert!(diff_focus.is_focused(window)));
+        let title_before_focus = cx.debug_bounds("session-list-title-1").unwrap();
+        // Shell translates an unconsumed Tab into this traversal primitive;
+        // this isolated Sidebar fixture does not mount Shell's key handler.
+        let diff_handle = cx.update(|window, cx| window.focused(cx));
+        cx.update(Window::focus_next);
+        draw(cx);
+        assert_eq!(
+            cx.debug_bounds("session-list-title-1").unwrap(),
+            title_before_focus
+        );
+        let close_handle = cx.update(|window, cx| window.focused(cx));
+        assert_ne!(
+            close_handle, diff_handle,
+            "traversal must leave the Git changes control"
+        );
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.pending_close),
+            Some(SessionId::from_raw(1))
+        );
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| diff_focus.focus(window, cx));
         cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.diff_viewer.is_some()));

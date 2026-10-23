@@ -1,7 +1,7 @@
 //! Shared header control geometry and accessible naming.
 use super::{motion, rpx, tokens::*};
 use crate::theme as c;
-use gpui::{div, prelude::*, AnimationExt as _, App, Div, MouseButton, Stateful};
+use gpui::{div, prelude::*, Div, MouseButton, Stateful};
 
 const FORM_FIELD_H: f32 = FIELD_H;
 pub(super) const FORM_FIELD_INSET: f32 = FIELD_INSET_X;
@@ -503,16 +503,22 @@ pub fn task_mark(
     use grove_core::tasks::TaskStatus;
     let icon = crate::icons::icon;
     match (status, phase) {
-        (TaskStatus::Completed, TaskPhase::Stale) => icon("check", ICON_SM, c::FG_MUTE()),
-        (TaskStatus::Completed, _) => icon("check", ICON_SM, c::GREEN()),
-        (TaskStatus::Pending, _) => icon("task-pending", ICON_SM, c::FG_MUTE()),
-        (TaskStatus::InProgress, TaskPhase::Running) => {
-            crate::icons::spinner(ICON_SM, c::BLUE(), tick)
+        (TaskStatus::Completed, TaskPhase::Stale) => {
+            icon("status-success", ICON_SM, c::STATUS_SUCCESS())
         }
-        (TaskStatus::InProgress, TaskPhase::Waiting) => icon("task-waiting", ICON_SM, c::AMBER()),
-        (TaskStatus::InProgress, TaskPhase::Halted) => icon("stop", ICON_SM, c::FG_DIM()),
+        (TaskStatus::Completed, _) => icon("status-success", ICON_SM, c::STATUS_SUCCESS()),
+        (TaskStatus::Pending, _) => icon("task-pending", ICON_SM, c::STATUS_NEUTRAL()),
+        (TaskStatus::InProgress, TaskPhase::Running) => {
+            crate::icons::spinner(ICON_SM, c::STATUS_INFO(), tick)
+        }
+        (TaskStatus::InProgress, TaskPhase::Waiting) => {
+            icon("status-attention", ICON_SM, c::STATUS_WARNING())
+        }
+        (TaskStatus::InProgress, TaskPhase::Halted) => {
+            icon("status-stopped", ICON_SM, c::STATUS_NEUTRAL())
+        }
         (TaskStatus::InProgress, TaskPhase::Stale) => {
-            crate::icons::spinner(ICON_SM, c::FG_MUTE(), 0)
+            crate::icons::spinner(ICON_SM, c::STATUS_NEUTRAL(), 0)
         }
     }
 }
@@ -604,63 +610,6 @@ mod tests {
             "the original content-sized Waiting… label must reproduce premature truncation"
         );
     }
-}
-
-const TOOL_SHIMMER_PERIOD: std::time::Duration = std::time::Duration::from_millis(1600);
-const TOOL_SHIMMER_WIDTH: f32 = 0.2;
-
-/// A label whose glyphs carry a moving highlight while `running`; static with reduced motion.
-pub fn shimmer_label(
-    id: gpui::ElementId,
-    label: String,
-    running: bool,
-    cx: &App,
-) -> gpui::AnyElement {
-    if !running || cx.reduce_motion() {
-        return div().child(label).into_any_element();
-    }
-    div()
-        .with_animation(
-            id,
-            gpui::Animation::new(TOOL_SHIMMER_PERIOD).repeat(),
-            move |element, progress| {
-                element.child(
-                    gpui::StyledText::new(label.clone())
-                        .with_highlights(shimmer_highlights(&label, progress)),
-                )
-            },
-        )
-        .into_any_element()
-}
-
-pub(super) fn shimmer_highlights(
-    text: &str,
-    progress: f32,
-) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
-    let count = text.chars().count().max(1) as f32;
-    let center = progress * (1.0 + TOOL_SHIMMER_WIDTH * 2.0) - TOOL_SHIMMER_WIDTH;
-    let dim = c::FG_DIM();
-    let bright = c::FG();
-    text.char_indices()
-        .enumerate()
-        .map(|(index, (start, character))| {
-            let strength =
-                (1.0 - ((index as f32 / count - center).abs() / TOOL_SHIMMER_WIDTH)).max(0.0);
-            let color = gpui::Hsla {
-                h: dim.h + (bright.h - dim.h) * strength,
-                s: dim.s + (bright.s - dim.s) * strength,
-                l: dim.l + (bright.l - dim.l) * strength,
-                a: dim.a + (bright.a - dim.a) * strength,
-            };
-            (
-                start..start + character.len_utf8(),
-                gpui::HighlightStyle {
-                    color: Some(color),
-                    ..Default::default()
-                },
-            )
-        })
-        .collect()
 }
 
 /// Shared grouped preference choices, matching Settings' existing choice recipe.
@@ -776,8 +725,16 @@ pub fn attached_validation(
                     .py(rpx(SPACE_LG))
                     .bg(c::ERROR_WASH())
                     .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FORM_ERROR())
-                    .child(message.to_owned()),
+                    .text_color(c::STATUS_ERROR())
+                    .flex()
+                    .items_start()
+                    .gap(rpx(SPACE_SM))
+                    .child(div().flex_shrink_0().child(crate::icons::icon(
+                        "status-failed",
+                        ICON_SM,
+                        c::STATUS_ERROR(),
+                    )))
+                    .child(div().min_w_0().child(message.to_owned())),
             )
         })
 }

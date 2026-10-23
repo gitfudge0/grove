@@ -314,10 +314,16 @@ impl Sidebar {
                     div()
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::AMBER())
-                        .child(format!(
-                            "{needs_you} session{} need{} you",
-                            if needs_you == 1 { "" } else { "s" },
-                            if needs_you == 1 { "s" } else { "" }
+                        .child(super::super::status::label(
+                            "flyout-attention",
+                            super::super::status::StatusKind::NeedsInput,
+                            format!(
+                                "{needs_you} session{} need{} you",
+                                if needs_you == 1 { "" } else { "s" },
+                                if needs_you == 1 { "s" } else { "" }
+                            ),
+                            ICON_SM,
+                            cx,
                         )),
                 )
             });
@@ -494,7 +500,13 @@ impl Sidebar {
                             .line_height(rpx(SESSION_META_LINE_H))
                             .text_color(c::RED())
                             .whitespace_normal()
-                            .child(error.clone()),
+                            .child(super::super::status::label(
+                                format!("flyout-launch-status-{}", worktree.path),
+                                super::super::status::StatusKind::Failed,
+                                error.clone(),
+                                ICON_SM,
+                                cx,
+                            )),
                     );
                     child_index += 1;
                 }
@@ -634,7 +646,19 @@ impl Sidebar {
                                         .text_color(color)
                                         .font_weight(gpui::FontWeight::NORMAL)
                                         .line_height(rpx(SESSION_META_LINE_H))
-                                        .child(format!("{} · {status}", meta.agent.label())),
+                                        .flex()
+                                        .items_center()
+                                        .gap(rpx(SPACE_SM))
+                                        .child(
+                                            div().text_color(c::FG_DIM()).child(meta.agent.label()),
+                                        )
+                                        .child(super::super::status::label(
+                                            format!("flyout-status-{}", id.raw()),
+                                            super::super::status::session_kind(status),
+                                            status,
+                                            ICON_SM,
+                                            cx,
+                                        )),
                                 ),
                         ),
                     );

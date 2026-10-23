@@ -1,4 +1,5 @@
 //! Workspace-scoped command palette. The fuzzy matcher and row identities live in `launcher`.
+use super::status::{self, StatusKind};
 use super::{motion, rpx, tokens::*};
 use crate::{
     entities::session_registry::SessionId,
@@ -931,7 +932,9 @@ impl Render for WorktreeLauncher {
                             .when(!compact, |list| list.pb(rpx(SPACE_LG)))
                             .when(rows.is_empty(), |list| list.child(
                                 div().p(rpx(SPACE_3XL)).text_color(c::FG_DIM()).text_size(rpx(TEXT_BODY)).child(
-                                    if self.mode == PaletteMode::Root { "No matching commands" } else if self.loading_worktrees { "Loading worktrees…" } else { "No matching worktrees" }
+                                    if self.mode != PaletteMode::Root && self.loading_worktrees {
+                                        status::label("launcher-loading-status", StatusKind::Working, "Loading worktrees…", ICON_SM, cx).into_any_element()
+                                    } else { div().child(if self.mode == PaletteMode::Root { "No matching commands" } else { "No matching worktrees" }).into_any_element() }
                                 )
                             ))
                             .children(rows.into_iter().enumerate().map(|(index, row)| {
@@ -1035,7 +1038,7 @@ impl Render for WorktreeLauncher {
                     )
                     .when_some(self.error.clone().filter(|_| !compact), |panel, error| panel.child(
                         motion::fast(
-                            div().px(rpx(SPACE_3XL)).pb(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::RED()).child(error.clone()),
+                            div().px(rpx(SPACE_3XL)).pb(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).child(status::label("launcher-error-status", StatusKind::Failed, error.clone(), ICON_SM, cx)),
                             format!("worktree-launcher-error-{error}"),
                             cx,
                         )
@@ -1110,8 +1113,7 @@ impl Render for WorktreeLauncher {
                             .when_some(self.error.clone().filter(|_| compact), |footer, error| footer.child(
                                 motion::fast(div()
                                     .debug_selector(|| "worktree-launcher-compact-error".into())
-                                    .text_color(c::RED())
-                                    .child(error.clone()),
+                                    .child(status::label("launcher-compact-error-status", StatusKind::Failed, error.clone(), ICON_SM, cx)),
                                     format!("worktree-launcher-compact-error-{error}"),
                                     cx,
                                 )

@@ -24,6 +24,7 @@ pub mod components;
 mod inline_html;
 mod mermaid;
 mod native_plan;
+pub mod status;
 
 mod workspace_manager;
 

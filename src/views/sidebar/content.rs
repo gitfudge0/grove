@@ -249,7 +249,7 @@ impl Sidebar {
                                         .flex_col()
                                         .gap(rpx(SPACE_LG))
                                         .child(motion::fast(
-                                            div().child(label),
+                                            super::super::status::label("worktree-removal-stage", if !finished { super::super::status::StatusKind::Working } else if success { super::super::status::StatusKind::Success } else { super::super::status::StatusKind::Failed }, label, ICON_SM, cx),
                                             format!("worktree-removal-stage-{label}"),
                                             cx,
                                         ))
@@ -289,7 +289,7 @@ impl Sidebar {
                                         .bg(c::ERROR_WASH())
                                         .text_color(c::FORM_ERROR())
                                         .child(motion::fast(
-                                            div().child(error.clone()),
+                                            super::super::status::label("worktree-removal-failure", super::super::status::StatusKind::Failed, error.clone(), ICON_SM, cx),
                                             format!("worktree-removal-error-{error}"),
                                             cx,
                                         )),
@@ -808,9 +808,18 @@ impl Sidebar {
             .role(gpui::Role::Status)
             .aria_label(state.label())
             .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_SM))
             .text_size(rpx(TEXT_MICRO))
             .text_color(state.color())
             .whitespace_nowrap()
+            .child(super::super::status::mark(
+                format!("canvas-status-{}", id.raw()),
+                super::super::status::session_kind(state.label()),
+                ICON_SM,
+                cx,
+            ))
             .child(state.label());
         let status = motion::fast(
             status,
@@ -1484,7 +1493,13 @@ impl Sidebar {
                     .id("git-init-status")
                     .role(gpui::Role::Status)
                     .text_color(c::FG_DIM())
-                    .child("Initializing Git…"),
+                    .child(super::super::status::label(
+                        "git-initializing",
+                        super::super::status::StatusKind::Working,
+                        "Initializing Git…",
+                        ICON_SM,
+                        cx,
+                    )),
             );
         }
         card.into_any_element()
@@ -1899,8 +1914,14 @@ impl Sidebar {
                     div()
                         .flex_shrink_0()
                         .p(rpx(SPACE_LG))
-                        .text_color(c::FORM_ERROR())
-                        .child(error),
+                        .text_color(c::RED())
+                        .child(super::super::status::label(
+                            "content-error",
+                            super::super::status::StatusKind::Failed,
+                            error,
+                            ICON_SM,
+                            cx,
+                        )),
                 )
             })
             .into_any_element()
@@ -1950,12 +1971,7 @@ impl CanvasState {
         }
     }
     fn color(self) -> gpui::Hsla {
-        match self {
-            Self::Running | Self::Working => c::GREEN(),
-            Self::NeedsYou => c::YELLOW(),
-            Self::Failed => c::FORM_ERROR(),
-            _ => c::FG_DIM(),
-        }
+        super::super::status::session_kind(self.label()).color()
     }
     fn message(self, error: Option<&str>) -> Option<String> {
         match self {

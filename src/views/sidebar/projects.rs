@@ -916,7 +916,21 @@ impl Render for ProjectPanel {
                                         div()
                                             .text_size(rpx(TEXT_SMALL))
                                             .text_color(c::FG_DIM())
-                                            .child(count),
+                                            .child(if self.worktree_count.is_some() {
+                                                div().child(count)
+                                            } else {
+                                                crate::views::status::label(
+                                                    "project-worktree-discovery",
+                                                    if self.discovery_done {
+                                                        crate::views::status::StatusKind::Unknown
+                                                    } else {
+                                                        crate::views::status::StatusKind::Working
+                                                    },
+                                                    count,
+                                                    ICON_SM,
+                                                    cx,
+                                                )
+                                            }),
                                     ),
                             )
                             .child(crate::views::components::boolean_choices(
@@ -976,9 +990,23 @@ impl Render for ProjectPanel {
                                 div()
                                     .id("project-removal-status")
                                     .role(gpui::Role::Status)
-                                    .child(format!(
-                                        "{} of {} worktrees processed",
-                                        status.completed, status.total
+                                    .child(crate::views::status::label(
+                                        "project-removal-progress",
+                                        if status.finished {
+                                            if status.errors.is_empty() {
+                                                crate::views::status::StatusKind::Success
+                                            } else {
+                                                crate::views::status::StatusKind::Warning
+                                            }
+                                        } else {
+                                            crate::views::status::StatusKind::Working
+                                        },
+                                        format!(
+                                            "{} of {} worktrees processed",
+                                            status.completed, status.total
+                                        ),
+                                        ICON_SM,
+                                        cx,
                                     )),
                             )
                             .child(
@@ -1014,13 +1042,19 @@ impl Render for ProjectPanel {
                                     .rounded(rpx(RADIUS_CONTROL))
                                     .bg(c::RED_WASH())
                                     .text_color(c::RED())
-                                    .child(error.clone()),
+                                    .child(crate::views::status::label(
+                                        "project-operation-error",
+                                        crate::views::status::StatusKind::Failed,
+                                        error.clone(),
+                                        ICON_SM,
+                                        cx,
+                                    )),
                             );
                         }
                         if status.finished {
                             content = content.child(div().text_color(if status.errors.is_empty() { c::FG_DIM() } else { c::RED() })
-                                .child(if status.unregistered { "Project registration removed. The main project folder remains on disk." }
-                                    else { "Project could not be unregistered. Review the errors above." }));
+                                .child(crate::views::status::label("project-removal-result", if status.unregistered { crate::views::status::StatusKind::Success } else { crate::views::status::StatusKind::Failed }, if status.unregistered { "Project registration removed. The main project folder remains on disk." }
+                                    else { "Project could not be unregistered. Review the errors above." }, ICON_SM, cx)));
                             footer = footer.child(div()).child(
                                 project_action(
                                     "project-panel-cancel".into(),
@@ -1210,7 +1244,13 @@ impl Render for ProjectPanel {
                         .rounded(rpx(RADIUS_CONTROL))
                         .bg(c::RED_WASH())
                         .text_color(c::FORM_ERROR())
-                        .child(error.clone()),
+                        .child(crate::views::status::label(
+                            "project-operation-error",
+                            crate::views::status::StatusKind::Failed,
+                            error.clone(),
+                            ICON_SM,
+                            cx,
+                        )),
                 );
             }
         }

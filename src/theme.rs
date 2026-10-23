@@ -33,6 +33,11 @@ enum ChromeRole {
     Error,
     Switch,
     Scrim,
+    StatusInfo,
+    StatusSuccess,
+    StatusWarning,
+    StatusError,
+    StatusNeutral,
 }
 
 struct ResolvedChrome {
@@ -40,7 +45,7 @@ struct ResolvedChrome {
     grove: bool,
     background: Rgba,
     foreground: Rgba,
-    colors: Option<[Hsla; 17]>,
+    colors: Option<[Hsla; 22]>,
 }
 
 impl ResolvedChrome {
@@ -79,6 +84,11 @@ impl ResolvedChrome {
                 Error,
                 Switch,
                 Scrim,
+                ChromeRole::StatusInfo,
+                ChromeRole::StatusSuccess,
+                ChromeRole::StatusWarning,
+                ChromeRole::StatusError,
+                ChromeRole::StatusNeutral,
             ]
             .map(|role| self.color(role)),
         );
@@ -92,6 +102,19 @@ impl ResolvedChrome {
         };
         if let Some(colors) = &self.colors {
             return colors[role as usize];
+        }
+        let status_base = match role {
+            ChromeRole::StatusInfo => Some(Info),
+            ChromeRole::StatusSuccess => Some(Success),
+            ChromeRole::StatusWarning => Some(Warning),
+            ChromeRole::StatusError => Some(Error),
+            ChromeRole::StatusNeutral => Some(Supporting),
+            _ => None,
+        };
+        if let Some(base) = status_base {
+            return self
+                .readable_on(self.color(base).into(), &self.status_surfaces())
+                .into();
         }
         let rgb = |dark, light| gpui::rgb(if self.light { light } else { dark });
         if self.grove {
@@ -113,6 +136,13 @@ impl ResolvedChrome {
                 Error => rgb(0xef7d8e, 0xb6384c),
                 Switch => rgb(0x39b76c, 0x39b76c),
                 Scrim => rgb(0x0d0d0f, 0x141416),
+                ChromeRole::StatusInfo
+                | ChromeRole::StatusSuccess
+                | ChromeRole::StatusWarning
+                | ChromeRole::StatusError
+                | ChromeRole::StatusNeutral => {
+                    unreachable!("status roles resolve before base roles")
+                }
             }
             .into();
         }
@@ -134,6 +164,11 @@ impl ResolvedChrome {
             Warning => rgb(0xe0ad63, 0x896009),
             Error => rgb(0xef7d8e, 0xb6384c),
             Scrim => rgb(0x0d0d0f, 0x141416),
+            ChromeRole::StatusInfo
+            | ChromeRole::StatusSuccess
+            | ChromeRole::StatusWarning
+            | ChromeRole::StatusError
+            | ChromeRole::StatusNeutral => unreachable!("status roles resolve before base roles"),
         };
         match role {
             Foreground | Supporting | Quiet | Info | Agent | Success | Warning | Error => {
@@ -149,6 +184,32 @@ impl ResolvedChrome {
             mix(self.background, self.foreground, 0.055),
             mix(self.background, self.foreground, 0.10),
         ];
+        self.readable_on(candidate, &surfaces)
+    }
+
+    // Status labels appear on base surfaces as well as neutral selected rows.
+    fn status_surfaces(&self) -> [Rgba; 8] {
+        let surfaces = [
+            ChromeRole::Background,
+            ChromeRole::Rail,
+            ChromeRole::Field,
+            ChromeRole::Hover,
+        ]
+        .map(|role| self.color(role).into());
+        let foreground = self.color(ChromeRole::Foreground).into();
+        [
+            surfaces[0],
+            surfaces[1],
+            surfaces[2],
+            surfaces[3],
+            mix(surfaces[0], foreground, 0.14),
+            mix(surfaces[1], foreground, 0.14),
+            mix(surfaces[2], foreground, 0.14),
+            mix(surfaces[3], foreground, 0.14),
+        ]
+    }
+
+    fn readable_on(&self, candidate: Rgba, surfaces: &[Rgba]) -> Rgba {
         let endpoint = gpui::rgb(if self.light { 0x000000 } else { 0xffffff });
         for step in 0..=100 {
             let color = mix(candidate, endpoint, step as f32 / 100.0);
@@ -392,6 +453,25 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     theme.tokens = theme.colors.into();
     theme.font_family = crate::fonts::UI_FAMILY.into();
     theme.mono_font_family = crate::fonts::MONO_FAMILY.into();
+}
+
+/// Legible semantic status foregrounds, including neutral selected surfaces.
+/// Base accent roles remain available for meters, fills and decorative glyphs.
+pub fn STATUS_INFO() -> Hsla {
+    chrome(ChromeRole::StatusInfo)
+}
+pub fn STATUS_SUCCESS() -> Hsla {
+    chrome(ChromeRole::StatusSuccess)
+}
+pub fn STATUS_WARNING() -> Hsla {
+    chrome(ChromeRole::StatusWarning)
+}
+pub fn STATUS_ERROR() -> Hsla {
+    chrome(ChromeRole::StatusError)
+}
+
+pub fn STATUS_NEUTRAL() -> Hsla {
+    chrome(ChromeRole::StatusNeutral)
 }
 
 pub fn GREEN() -> Hsla {
@@ -1053,6 +1133,37 @@ mod tests {
                 assert_eq!(highlight.style.editor_background, Some(BG()));
                 assert_eq!(highlight.style.editor_foreground, Some(FG()));
             }
+        }
+    }
+
+    #[test]
+    fn status_foregrounds_are_readable_on_neutral_and_selected_surfaces() {
+        for item in grove_core::app_theme::CATALOG {
+            let palette = item.terminal();
+            let chrome = ResolvedChrome::from_theme(&palette).resolved();
+            for role in [
+                ChromeRole::StatusInfo,
+                ChromeRole::StatusSuccess,
+                ChromeRole::StatusWarning,
+                ChromeRole::StatusError,
+                ChromeRole::StatusNeutral,
+            ] {
+                let foreground: Rgba = chrome.color(role).into();
+                for background in chrome.status_surfaces() {
+                    assert!(
+                        contrast(foreground, background) >= 4.49,
+                        "{} status foreground contrast {}",
+                        item.label,
+                        contrast(foreground, background)
+                    );
+                }
+            }
+            // The foreground resolver must not alter existing accent swatches.
+            let uncached = ResolvedChrome::from_theme(&palette);
+            assert_eq!(
+                chrome.color(ChromeRole::Success),
+                uncached.color(ChromeRole::Success)
+            );
         }
     }
 

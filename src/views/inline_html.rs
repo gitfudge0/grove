@@ -1,5 +1,6 @@
 //! Self-contained transcript documents. A surface lease follows GPUI element
 //! lifetime; the retained document follows session lifetime, never streaming text.
+use super::status::{self, StatusKind};
 use super::{components::transcript_action, rpx, tokens::*};
 use crate::{
     platform::inline_html::{LoadStatus, NativeDocument},
@@ -831,8 +832,13 @@ impl HtmlSession {
             cards.push(
                 div()
                     .p(rpx(SPACE_LG))
-                    .text_color(c::RED())
-                    .child(error.clone())
+                    .child(status::label(
+                        "html-browser-error-status",
+                        StatusKind::Failed,
+                        error.clone(),
+                        ICON_SM,
+                        cx,
+                    ))
                     .into_any_element(),
             );
         }
@@ -1297,17 +1303,27 @@ impl Render for HtmlArtifact {
             .w_full()
             .overflow_hidden();
         if self.loading_file {
-            body = body.child(div().p(rpx(SPACE_2XL)).child("Reading HTML document…"));
+            body = body.child(
+                status::label(
+                    "html-reading-status",
+                    StatusKind::Working,
+                    "Reading HTML document…",
+                    ICON_SM,
+                    cx,
+                )
+                .p(rpx(SPACE_2XL)),
+            );
         } else if self.source || self.error.is_some() {
             body = body.overflow_y_scroll();
             if let Some(error) = &self.error {
                 body = body
-                    .child(
-                        div()
-                            .p(rpx(SPACE_LG))
-                            .text_color(c::FG_DIM())
-                            .child(error.clone()),
-                    )
+                    .child(div().p(rpx(SPACE_LG)).child(status::label(
+                        "html-preview-error-status",
+                        StatusKind::Failed,
+                        error.clone(),
+                        ICON_SM,
+                        cx,
+                    )))
                     .child(
                         transcript_action("html-retry", "Retry preview", false, window, cx)
                             .icon(
@@ -1328,7 +1344,16 @@ impl Render for HtmlArtifact {
             body = body.child(source_view(&self.version.markdown, 0, window));
         } else if let Some(surface) = &self.surface {
             if surface.native.status() == LoadStatus::Loading {
-                body = body.child(div().p(rpx(SPACE_2XL)).child("Loading preview…"));
+                body = body.child(
+                    status::label(
+                        "html-loading-status",
+                        StatusKind::Working,
+                        "Loading preview…",
+                        ICON_SM,
+                        cx,
+                    )
+                    .p(rpx(SPACE_2XL)),
+                );
             }
             body = body.child(NativeElement {
                 artifact: cx.entity_id(),

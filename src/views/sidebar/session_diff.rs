@@ -55,9 +55,21 @@ impl Sidebar {
             .h_full()
             .overflow_y_scroll();
         if loading && changed_files.is_empty() {
-            files = files.child(div().p(rpx(SPACE_2XL)).child("Loading changes…"));
+            files = files.child(div().p(rpx(SPACE_2XL)).child(crate::views::status::label(
+                "diff-loading-changes",
+                crate::views::status::StatusKind::Working,
+                "Loading changes…",
+                ICON_SM,
+                cx,
+            )));
         } else if changed_files.is_empty() {
-            files = files.child(div().p(rpx(SPACE_2XL)).child("No changed files"));
+            files = files.child(div().p(rpx(SPACE_2XL)).child(crate::views::status::label(
+                "diff-no-changes",
+                crate::views::status::StatusKind::Idle,
+                "No changed files",
+                ICON_SM,
+                cx,
+            )));
         }
         for file in &changed_files {
             let path = file.path.clone();
@@ -92,7 +104,13 @@ impl Sidebar {
             .text_size(rpx(TEXT_CODE_SMALL));
         if let Some(path) = &selected_path {
             if !changed_files.iter().any(|file| &file.path == path) {
-                body = body.child(div().p(rpx(SPACE_2XL)).child("No longer changed"));
+                body = body.child(div().p(rpx(SPACE_2XL)).child(crate::views::status::label(
+                    "diff-no-longer-changed",
+                    crate::views::status::StatusKind::Info,
+                    "No longer changed",
+                    ICON_SM,
+                    cx,
+                )));
             } else if let Some(patch) = &patch {
                 match patch {
                     Patch::Binary => {
@@ -145,7 +163,13 @@ impl Sidebar {
                     }
                 }
             } else {
-                body = body.child(div().p(rpx(SPACE_2XL)).child("Loading patch…"));
+                body = body.child(div().p(rpx(SPACE_2XL)).child(crate::views::status::label(
+                    "diff-loading-patch",
+                    crate::views::status::StatusKind::Working,
+                    "Loading patch…",
+                    ICON_SM,
+                    cx,
+                )));
             }
         } else if !loading && !changed_files.is_empty() {
             body = body.child(div().p(rpx(SPACE_2XL)).child("Select a changed file"));

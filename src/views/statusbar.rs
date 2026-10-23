@@ -1,4 +1,5 @@
 //! Passive, workspace-scoped status strip. Repaints follow existing entities.
+use super::status::{self, StatusKind};
 use std::collections::{HashMap, HashSet};
 
 use gpui::{div, prelude::*, Context, Entity, Render, Subscription, Window};
@@ -226,10 +227,27 @@ impl Render for Statusbar {
                 .truncate()
                 .when(toast.is_none() && compact, gpui::Styled::flex_1)
                 .text_color(if summary.waiting > 0 {
-                    c::AMBER()
+                    StatusKind::NeedsInput.color()
+                } else if summary.working > 0 {
+                    StatusKind::Working.color()
                 } else {
-                    c::FG_DIM()
+                    StatusKind::Idle.color()
                 })
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .child(status::mark(
+                    "status-summary-mark",
+                    if summary.waiting > 0 {
+                        StatusKind::NeedsInput
+                    } else if summary.working > 0 {
+                        StatusKind::Working
+                    } else {
+                        StatusKind::Idle
+                    },
+                    ICON_SM,
+                    cx,
+                ))
                 .child(label.clone()),
             format!("status-session-summary-{label}"),
             cx,
@@ -252,11 +270,24 @@ impl Render for Statusbar {
                     .min_w_0()
                     .truncate()
                     .text_color(if toast.kind == ToastKind::Error {
-                        c::FORM_ERROR()
+                        StatusKind::Failed.color()
                     } else {
-                        c::FG()
+                        StatusKind::Info.color()
                     })
-                    .child(toast.message),
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_SM))
+                    .child(status::mark(
+                        "status-toast-mark",
+                        if toast.kind == ToastKind::Error {
+                            StatusKind::Failed
+                        } else {
+                            StatusKind::Info
+                        },
+                        ICON_SM,
+                        cx,
+                    ))
+                    .child(div().min_w_0().truncate().child(toast.message)),
             );
         } else {
             bar = bar.child(div().flex_1().min_w_0());

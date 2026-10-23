@@ -335,13 +335,22 @@ impl Sidebar {
                     .min_w_0()
                     .truncate()
                     .text_color(c::FG_DIM())
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_SM))
                     .child(format!(
-                        "{provider} · {}{}",
-                        presentation.status,
+                        "{provider}{}",
                         agent
                             .role
                             .as_ref()
                             .map_or(String::new(), |role| format!(" · {role}"))
+                    ))
+                    .child(super::super::status::label(
+                        format!("agent-preview-status-{}", agent.id),
+                        super::super::status::session_kind(presentation.status),
+                        presentation.status,
+                        ICON_SM,
+                        cx,
                     )),
             );
         let freshness = activity
@@ -358,17 +367,25 @@ impl Sidebar {
             .unwrap_or_else(|| "Observation time unavailable".into());
         if let Some(activity) = &activity {
             if activity.refresh_error {
-                content = content.child(
-                    div()
-                        .text_color(c::FG_DIM())
-                        .child("Child activity could not be refreshed"),
-                );
+                content = content.child(div().text_color(c::FG_DIM()).child(
+                    super::super::status::label(
+                        "child-refresh-error",
+                        super::super::status::StatusKind::Warning,
+                        "Child activity could not be refreshed",
+                        ICON_SM,
+                        cx,
+                    ),
+                ));
             } else if activity.refreshing {
-                content = content.child(
-                    div()
-                        .text_color(c::FG_DIM())
-                        .child("Refreshing child activity…"),
-                );
+                content = content.child(div().text_color(c::FG_DIM()).child(
+                    super::super::status::label(
+                        "child-refreshing",
+                        super::super::status::StatusKind::Working,
+                        "Refreshing child activity…",
+                        ICON_SM,
+                        cx,
+                    ),
+                ));
             }
         }
         if let Some(task) = &agent.task {

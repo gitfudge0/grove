@@ -1,4 +1,5 @@
 //! Release-authored, opt-in highlights. Replays never alter first-run bookkeeping.
+use super::status::{self, StatusKind};
 use super::{rpx, tokens::*};
 use crate::{assets::Assets, theme as c};
 use gpui::{
@@ -440,7 +441,13 @@ impl Render for ReleaseCarousel {
                                     .child(slide.description.clone()),
                             )
                             .when_some(self.media_error.clone(), |element, error| {
-                                element.child(div().text_color(c::FORM_ERROR()).child(error))
+                                element.child(status::label(
+                                    "release-media-error",
+                                    StatusKind::Failed,
+                                    error,
+                                    ICON_SM,
+                                    cx,
+                                ))
                             }),
                     )
                     .child(
