@@ -264,7 +264,7 @@ fn rasterize(source: &str, options: RenderOptions) -> Option<(Arc<Image>, f32, f
         font_family: crate::fonts::UI_FAMILY.to_owned(),
         ..usvg::Options::default()
     };
-    if let Some(font) = crate::assets::Assets::get("fonts/Geist-Regular.ttf") {
+    if let Some(font) = crate::assets::Assets::get("fonts/DMSans-Regular.ttf") {
         svg_options
             .fontdb_mut()
             .load_font_data(font.data.into_owned());

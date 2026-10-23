@@ -8715,7 +8715,7 @@ for line in sys.stdin:
         use gpui::AssetSource as _;
         let platform = gpui_platform::current_platform(true);
         let text_system = std::sync::Arc::new(gpui::TextSystem::new(platform.text_system()));
-        let fonts = ["fonts/Geist-Regular.ttf", "fonts/Geist-Medium.ttf"]
+        let fonts = ["fonts/DMSans-Regular.ttf", "fonts/DMSans-Medium.ttf"]
             .map(|path| crate::assets::Assets.load(path).unwrap().unwrap());
         text_system.add_fonts(fonts.into()).unwrap();
         let window_text_system = gpui::WindowTextSystem::new(text_system.clone());
@@ -10709,7 +10709,7 @@ for line in sys.stdin:
         let destination = cx.debug_bounds("project-move-destination-2").unwrap();
         cx.simulate_click(destination.center(), gpui::Modifiers::default());
         draw(cx);
-        cx.simulate_keystrokes("tab tab tab enter");
+        cx.simulate_keystrokes("tab tab tab tab enter");
         draw(cx);
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
@@ -10763,7 +10763,7 @@ for line in sys.stdin:
         let destination = cx.debug_bounds("project-move-destination-1").unwrap();
         cx.simulate_click(destination.center(), gpui::Modifiers::default());
         draw(cx);
-        cx.simulate_keystrokes("tab space tab tab enter");
+        cx.simulate_keystrokes("tab tab space tab tab enter");
         draw(cx);
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {

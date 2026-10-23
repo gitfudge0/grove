@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn asset_paths_resolve_only_under_the_icons_prefix() {
         assert!(svg_for_path("icons/plus.svg").is_some());
-        assert!(svg_for_path("fonts/BlexMono.ttf").is_none());
+        assert!(svg_for_path("fonts/JetBrainsMono-Regular.ttf").is_none());
         assert!(svg_for_path("icons/plus").is_none());
         assert!(svg_for_path("plus.svg").is_none());
     }

@@ -792,23 +792,11 @@ impl Render for ProjectPanel {
                     }
                     content = content.child(
                         div()
-                            .id("project-move-open-destination")
-                            .cursor_pointer()
-                            .debug_selector(|| "project-move-open-destination".into())
-                            .role(gpui::Role::Switch)
-                            .aria_label("Open destination workspace after moving")
-                            .aria_toggled(if self.open_destination {
-                                gpui::Toggled::True
-                            } else {
-                                gpui::Toggled::False
-                            })
-                            .tab_index(0)
                             .w_full()
                             .min_h(rpx(PREFERENCE_ROW_MIN_H))
                             .py(rpx(SPACE_2XL))
                             .border_t_1()
                             .border_color(c::BORDER_SOFT())
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .flex()
                             .items_center()
                             .gap(rpx(SPACE_2XL))
@@ -818,20 +806,17 @@ impl Render for ProjectPanel {
                                     .min_w_0()
                                     .child("Open destination workspace after moving"),
                             )
-                            .child(crate::views::components::switch_track(
+                            .child(crate::views::components::boolean_choices(
+                                "project-move-open-destination",
+                                "Open destination workspace after moving",
                                 self.open_destination,
-                            ))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_destination = !this.open_destination;
-                                cx.notify();
-                            }))
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.open_destination = !this.open_destination;
-                                    cx.stop_propagation();
+                                true,
+                                cx,
+                                |this, enabled, _, cx| {
+                                    this.open_destination = enabled;
                                     cx.notify();
-                                }
-                            })),
+                                },
+                            )),
                     );
                     footer = footer
                         .child(
@@ -907,18 +892,6 @@ impl Render for ProjectPanel {
                             |n| format!("{n} additional worktree folders"),
                         );
                         let switch = div()
-                            .id("remove-worktrees")
-                            .when(self.worktree_count.is_some(), gpui::Styled::cursor_pointer)
-                            .when(self.worktree_count.is_none(), gpui::Styled::cursor_default)
-                            .role(gpui::Role::Switch)
-                            .aria_label("Delete non-main worktrees from disk")
-                            .aria_toggled(if self.delete_worktrees {
-                                gpui::Toggled::True
-                            } else {
-                                gpui::Toggled::False
-                            })
-                            .tab_index(if self.worktree_count.is_some() { 0 } else { -1 })
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
                             .w_full()
                             .min_h(rpx(PREFERENCE_ROW_MIN_H))
                             .py(rpx(SPACE_2XL))
@@ -946,24 +919,19 @@ impl Render for ProjectPanel {
                                             .child(count),
                                     ),
                             )
-                            .child(crate::views::components::switch_track(
+                            .child(crate::views::components::boolean_choices(
+                                "remove-worktrees",
+                                "Delete non-main worktrees from disk",
                                 self.delete_worktrees,
-                            ))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.worktree_count.is_some() {
-                                    this.delete_worktrees = !this.delete_worktrees;
-                                    cx.notify();
-                                }
-                            }))
-                            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                                if this.worktree_count.is_some()
-                                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                {
-                                    this.delete_worktrees = !this.delete_worktrees;
-                                    cx.notify();
-                                    cx.stop_propagation();
-                                }
-                            }));
+                                self.worktree_count.is_some(),
+                                cx,
+                                |this, enabled, _, cx| {
+                                    if this.worktree_count.is_some() {
+                                        this.delete_worktrees = enabled;
+                                        cx.notify();
+                                    }
+                                },
+                            ));
                         content = content.child(switch)
                             .child(readonly_path("Main project folder · protected", path.clone()))
                             .child(div().p(rpx(SPACE_2XL)).rounded(rpx(RADIUS_CONTROL))
@@ -1513,11 +1481,10 @@ mod tests {
         draw(cx);
         assert_eq!(panel.read_with(cx, |panel, _| panel.destination), Some(2));
         assert!(!panel.read_with(cx, |panel, _| panel.open_destination));
-        cx.simulate_keystrokes("tab space");
+        cx.simulate_keystrokes("tab tab space");
         draw(cx);
         assert!(panel.read_with(cx, |panel, _| panel.open_destination));
-        let toggle = cx.debug_bounds("project-move-open-destination").unwrap();
-        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        cx.simulate_keystrokes("shift-tab space");
         draw(cx);
         assert!(!panel.read_with(cx, |panel, _| panel.open_destination));
         cx.simulate_keystrokes("escape");
@@ -1542,7 +1509,7 @@ mod tests {
         cx.simulate_keystrokes("tab space");
         draw(cx);
         assert_eq!(panel.read_with(cx, |panel, _| panel.destination), Some(2));
-        cx.simulate_keystrokes("tab tab tab enter");
+        cx.simulate_keystrokes("tab tab tab tab enter");
         draw(cx);
         assert!(panel.read_with(cx, |panel, _| panel.error.is_none()));
         cx.read(|cx| {

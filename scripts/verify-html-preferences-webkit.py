@@ -22,13 +22,16 @@ script = re.search(r'fn preference_script\(.*?r"(.*?)"\s*\)', rust, re.S)[1]
 script = script.replace('{{', '{').replace('}}', '}')
 on = script.replace('{reduced}', 'true')
 off = script.replace('{reduced}', 'false')
-css = ''.join("@font-face{font-family:'Geist';font-style:normal;font-weight:" + str(weight) + ";font-display:swap;src:url(data:font/ttf;base64," + base64.b64encode((repo / ('assets/fonts/Geist-' + name + '.ttf')).read_bytes()).decode() + ") format('truetype')}" for name, weight in [('Regular',400), ('Medium',500), ('SemiBold',600), ('Bold',700)])
+css = ''.join("@font-face{font-family:'DM Sans';font-style:normal;font-weight:" + str(weight) + ";font-display:swap;src:url(data:font/ttf;base64," + base64.b64encode((repo / ('assets/fonts/DMSans-' + name + '.ttf')).read_bytes()).decode() + ") format('truetype')}" for name, weight in [('Regular',400), ('Medium',500), ('SemiBold',600), ('Bold',700)])
+font_script = re.search(r'''fn document_font_script\(\).*?r#"(.*?)"#''', rust, re.S)[1]
+css += ''.join("@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:" + str(weight) + ";src:url(data:font/ttf;base64," + base64.b64encode((repo / ('assets/fonts/JetBrainsMono-' + name + '.ttf')).read_bytes()).decode() + ") format('truetype')}" for name, weight in [('Regular',400), ('Bold',700)])
 csp = re.search(r'const CSP: &str = "([^"]*)"', rust)[1]
-source = '<!doctype html><meta http-equiv="Content-Security-Policy" content="' + csp + '"><style>' + css + '</style><script>' + on + '''</script><html><head><style>@keyframes spin{to{transform:rotate(1turn)}}#animated{animation:spin 1s infinite}</style></head><body><input id="retained" value="keep me"><div id="animated">Animation</div><script>
+source = '<!doctype html><meta http-equiv="Content-Security-Policy" content="' + csp + '"><style>' + css + '</style><script>' + on + '</script><script>' + font_script + '''</script><html><head><style>@keyframes spin{to{transform:rotate(1turn)}}#animated{animation:spin 1s infinite}</style></head><body><input id="retained" value="keep me"><div id="animated" style="font-family:serif!important">Animation</div><pre id="mono">Code <span id="mono-child" style="font-family:serif">child</span></pre><span id="sans" style="font-family:Arial">Sans</span><script>
 window.initialMotion=matchMedia('(PREFERS-REDUCED-MOTION: REDUCE)').matches;
 window.query=matchMedia('screen and (min-width: 1px) and (prefers-reduced-motion: reduce)');
 window.events=[];query.addEventListener('change',e=>events.push(e.matches));
-window.loadedFonts=false;document.fonts.load('13px Geist').then(faces=>loadedFonts=faces.length>0);
+window.loadedFonts=false;Promise.all([document.fonts.load('13px \"DM Sans\"'),document.fonts.load('13px \"JetBrains Mono\"')]).then(faces=>loadedFonts=faces.every(group=>group.length>0));
+document.addEventListener('DOMContentLoaded',()=>{const dynamic=document.createElement('div');dynamic.id='dynamic';dynamic.style.fontFamily='serif';dynamic.textContent='Added text';document.body.append(dynamic)});
 </script></body></html>'''
 (out / 'fixture.html').write_text(source)
 (out / 'motion-on.js').write_text(on)

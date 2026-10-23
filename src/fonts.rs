@@ -4,22 +4,26 @@ use gpui::{px, AssetSource as _, SharedString, TextRun};
 
 use crate::assets::Assets;
 
-/// Must stay aligned with the bundled BlexMono font at 12.5pt or the cursor drifts across long rows (`src/gui/metrics.rs:24-32`).
+/// Must stay aligned with the bundled JetBrains Mono font at 12.5pt or the cursor drifts across long rows (`src/gui/metrics.rs:24-32`).
 pub const CELL_W: f32 = 7.5; // measured advance at FONT_SIZE; == FONT_SIZE * 0.6
 /// A GROVE constant, NOT a font metric — never use `window.line_height()` or `window.rem_size()` for the grid.
 pub const CELL_H: f32 = 17.0;
 pub const FONT_SIZE: f32 = 12.5;
 /// `fc-scan` and gpui's `all_font_names()` agree on this spelling.
-pub const MONO_FAMILY: &str = "BlexMono Nerd Font Mono";
-pub const UI_FAMILY: &str = "Geist";
+pub const MONO_FAMILY: &str = "JetBrains Mono";
+pub const UI_FAMILY: &str = "DM Sans";
 
-const FONT_FILES: [&str; 6] = [
-    "fonts/BlexMonoNerdFontMono-Regular.ttf",
-    "fonts/BlexMonoNerdFontMono-Bold.ttf",
-    "fonts/Geist-Regular.ttf",
-    "fonts/Geist-Medium.ttf",
-    "fonts/Geist-SemiBold.ttf",
-    "fonts/Geist-Bold.ttf",
+const FONT_FILES: [&str; 10] = [
+    "fonts/JetBrainsMono-Regular.ttf",
+    "fonts/JetBrainsMono-Bold.ttf",
+    "fonts/JetBrainsMono-Medium.ttf",
+    "fonts/JetBrainsMono-SemiBold.ttf",
+    "fonts/JetBrainsMono-Italic.ttf",
+    "fonts/JetBrainsMono-BoldItalic.ttf",
+    "fonts/DMSans-Regular.ttf",
+    "fonts/DMSans-Medium.ttf",
+    "fonts/DMSans-SemiBold.ttf",
+    "fonts/DMSans-Bold.ttf",
 ];
 
 /// A genuinely wrong font/size is off by >= 0.3px per cell; float noise from shaping is ~5e-7.

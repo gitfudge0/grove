@@ -553,13 +553,7 @@ impl Render for ProjectSetup {
                     );
                 }
                 GitProbe::NotRepo => {
-                    fields = fields.child(div().id("initialize-project-git")
-                        .when(!self.busy, gpui::Styled::cursor_pointer)
-                        .when(self.busy, gpui::Styled::cursor_default)
-                        .role(gpui::Role::Switch).aria_label("Initialize Git repository")
-                        .aria_toggled(if self.state.init_git { gpui::Toggled::True } else { gpui::Toggled::False })
-                        .tab_index(if self.busy { -1 } else { 0 })
-                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                    fields = fields.child(div()
                         .w_full().min_h(rpx(FIELD_H)).py(rpx(SPACE_2XL))
                         .border_b_1().border_color(c::BORDER_SOFT())
                         .flex().items_center().gap(rpx(SPACE_2XL))
@@ -567,17 +561,12 @@ impl Render for ProjectSetup {
                             .child(div().font_weight(FontWeight::MEDIUM).child("Initialize Git repository"))
                             .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
                                 .child("Start sessions in the main checkout now. Make the first commit before adding another worktree.")))
-                        .child(crate::views::components::switch_track(self.state.init_git))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if !this.busy { this.state.init_git = !this.state.init_git; cx.notify(); }
-                        }))
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                            if !this.busy && matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
-                                this.state.init_git = !this.state.init_git;
-                                cx.notify();
-                                cx.stop_propagation();
-                            }
-                        })))
+                        .child(crate::views::components::boolean_choices(
+                            "initialize-project-git", "Initialize Git repository", self.state.init_git, !self.busy, cx,
+                            |this, enabled, _, cx| {
+                                if !this.busy { this.state.init_git = enabled; cx.notify(); }
+                            },
+                        )))
                     .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE())
                         .child("Leave this off to start sessions in the folder without Git. Worktrees need Git."));
                 }

@@ -667,7 +667,7 @@ fn r20_views_do_not_construct_palette_colors() {
 }
 #[test]
 fn every_allow_list_entry_carries_a_justification() {
-    // No exceptions: current architecture permits inherited Geist, named module
+    // No exceptions: current architecture permits inherited DM Sans, named module
     // geometry and shared focus rings directly, without per-file exclusions.
     let source = source("src/views/conformance.rs");
     for line in source

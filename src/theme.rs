@@ -390,6 +390,7 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     // tokens (Root background, Markdown code blocks, menus and selections).
     // Publish one palette to both representations after applying our overrides.
     theme.tokens = theme.colors.into();
+    theme.font_family = crate::fonts::UI_FAMILY.into();
     theme.mono_font_family = crate::fonts::MONO_FAMILY.into();
 }
 

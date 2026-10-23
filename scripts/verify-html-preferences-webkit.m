@@ -22,7 +22,7 @@ int main(int argc, const char **argv) {
         grove_html_show(handle, (__bridge void *)window.contentView, 0,0,800,600,0,0,800,600);
         for (int i=0;i<500 && grove_html_status(handle)==0;i++) pump(0.01);
         for (int i=0;i<500 && ![evaluate(doc,@"window.loadedFonts===true") boolValue];i++) pump(0.01);
-        id initial = evaluate(doc,@"({initial_motion:initialMotion,combined_query:query.matches,no_preference:!matchMedia('(PREFERS-REDUCED-MOTION: NO-PREFERENCE)').matches,animation_stopped:getComputedStyle(document.getElementById('animated')).animationName==='none',font_loaded:loadedFonts})");
+        id initial = evaluate(doc,@"({initial_motion:initialMotion,combined_query:query.matches,no_preference:!matchMedia('(PREFERS-REDUCED-MOTION: NO-PREFERENCE)').matches,animation_stopped:getComputedStyle(document.getElementById('animated')).animationName==='none',font_loaded:loadedFonts,ui_font:getComputedStyle(document.getElementById('animated')).fontFamily==='\"DM Sans\"',mono_font:['mono','mono-child'].every(id=>getComputedStyle(document.getElementById(id)).fontFamily==='\"JetBrains Mono\"'),other_fonts:['sans','dynamic'].every(id=>getComputedStyle(document.getElementById(id)).fontFamily==='\"DM Sans\"')})");
         NSData *off = [NSData dataWithContentsOfFile:@(argv[2])];
         grove_html_report_theme(handle, off.bytes, off.length, false);pump(0.1);
         id disabled = evaluate(doc,@"document.documentElement.dataset.groveReduceMotion==='false' && document.getElementById('grove-motion').textContent==='' && document.getElementById('retained').value==='keep me'");
@@ -30,7 +30,7 @@ int main(int argc, const char **argv) {
         grove_html_report_theme(handle, on.bytes, on.length, false);pump(0.1);
         id enabled = evaluate(doc,@"query.matches && document.documentElement.dataset.groveReduceMotion==='true' && getComputedStyle(document.getElementById('animated')).animationName==='none' && document.getElementById('retained').value==='keep me'");
         BOOL pass = [initial isKindOfClass:[NSDictionary class]] && [disabled boolValue] && [enabled boolValue];
-        for (NSString *key in @[@"initial_motion",@"combined_query",@"no_preference",@"animation_stopped",@"font_loaded"]) pass = pass && [initial[key] boolValue];
+        for (NSString *key in @[@"initial_motion",@"combined_query",@"no_preference",@"animation_stopped",@"font_loaded",@"ui_font",@"mono_font",@"other_fonts"]) pass = pass && [initial[key] boolValue];
         NSDictionary *result = @{ @"initial": initial?:[NSNull null], @"disabled_without_reload": disabled?:[NSNull null], @"reenabled_without_reload": enabled?:[NSNull null], @"media_change_events": evaluate(doc,@"events")?:[NSNull null], @"pass":@(pass)};
         NSData *json = [NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil];
         puts([[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding].UTF8String);

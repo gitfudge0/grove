@@ -22,7 +22,7 @@ current zoom.
 | `--grove-info`, `--grove-success`, `--grove-warning` | `BLUE`, `GREEN`, `AMBER` |
 | `--grove-body`, `--grove-title`, `--grove-display` | `TEXT_BODY`, `TEXT_DISPLAY`, `TEXT_DISPLAY_LG` |
 | `--grove-gap`, `--grove-section`, `--grove-radius` | `SPACE_LG`, `SPACE_20`, `RADIUS_GROUP` |
-| `--grove-font` | Bundled UI family, falling back to `system-ui` |
+| `--grove-font` | Bundled DM Sans UI family |
 
 The injected rules also set the root background, colour, font and size, zero the
 body margin, and hide root overflow while the report is inline.
@@ -60,8 +60,7 @@ requests, no host objects, no workers, no popups.
 ## Authoring limits
 
 Avoid viewport-height layouts, inner scroll areas, fixed or sticky positioning,
-body margins, and `!important` overrides of the injected rules. Geist may fall
-back to the system font where the web view cannot load it.
+body margins, and `!important` overrides of the injected rules. Embedded DOM text uses bundled DM Sans, with JetBrains Mono for semantic or authored monospace text. Font choices are normalized, including dynamically inserted text. Platform glyph fallback remains available for unsupported characters. Text drawn inside authored canvas/bitmap assets is intrinsic content.
 
 ## Verification
 

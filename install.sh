@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — build & install Grove as a native desktop app.
+# install.sh — install a checkout build or a published Grove desktop app.
 #
 #   macOS: produces Grove.app (via cargo-bundle) and copies it to /Applications.
 #   Linux: produces a .deb (via cargo-bundle) and installs it, or falls back to
@@ -9,33 +9,77 @@ set -euo pipefail
 REPO_URL="${GROVE_REPO_URL:-https://github.com/gitfudge0/grove.git}"
 REPO_REF="${GROVE_REPO_REF:-main}"
 
-# Detect whether we're running from a local checkout or being piped (curl | bash).
-# When piped, BASH_SOURCE is unset/empty or points at a non-file, and there's no
-# Cargo.toml next to the script.
+# A checkout builds locally; curl installs published binaries unless --source is set.
+SOURCE=0
+PROFILE=local
+for arg in "$@"; do
+  case "$arg" in
+    --source) SOURCE=1 ;;
+    --release) PROFILE=release ;;
+    --help|-h)
+      echo "Usage: install.sh [--source] [--release]"
+      echo "Checkout: fast local build; curl: latest prebuilt release."
+      echo "--source builds a remote checkout; --release optimizes source builds."
+      exit 0 ;;
+    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+  esac
+done
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+if [ "$OS" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+  ARCH=arm64
+fi
+TMP_DIR=""
+MOUNT_DIR=""
+cleanup() {
+  [ -z "$MOUNT_DIR" ] || hdiutil detach "$MOUNT_DIR" >/dev/null 2>&1 || true
+  [ -z "$TMP_DIR" ] || rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
 script_src="${BASH_SOURCE[0]:-}"
+PREBUILT=0
 if [ -n "$script_src" ] && [ -f "$(dirname "$script_src")/Cargo.toml" ]; then
   cd "$(dirname "$script_src")"
 else
-  if ! command -v git >/dev/null 2>&1; then
-    echo "Error: git is required to install grove from a remote URL." >&2
-    exit 1
-  fi
   TMP_DIR="$(mktemp -d -t grove-install.XXXXXX)"
-  trap 'rm -rf "$TMP_DIR"' EXIT
-  echo "Cloning $REPO_URL ($REPO_REF)..."
-  git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$TMP_DIR/grove"
-  cd "$TMP_DIR/grove"
-fi
-
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "Error: cargo is required. Install Rust from https://rustup.rs" >&2
-  exit 1
-fi
-
-BUNDLE_VERSION="0.12.0"
-if [ "$(cargo bundle --version 2>/dev/null || true)" != "cargo-bundle v$BUNDLE_VERSION" ]; then
-  echo "Installing cargo-bundle $BUNDLE_VERSION..."
-  cargo install cargo-bundle --version "$BUNDLE_VERSION" --locked
+  if [ "$SOURCE" = 1 ]; then
+    command -v git >/dev/null 2>&1 || { echo "Error: git is required for --source." >&2; exit 1; }
+    echo "Cloning $REPO_URL ($REPO_REF)..."
+    git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$TMP_DIR/grove"
+    cd "$TMP_DIR/grove"
+  else
+    PREBUILT=1
+    command -v curl >/dev/null 2>&1 || { echo "Error: curl is required." >&2; exit 1; }
+    RELEASE_URL="${REPO_URL%.git}/releases"
+    LATEST="$(curl -fsSL --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' "$RELEASE_URL/latest")"
+    TAG="${LATEST##*/}"
+    VERSION="${TAG#v}"
+    case "$VERSION" in
+      ''|*[!0-9.]*) echo "Error: cannot resolve latest release. Use --source to build instead." >&2; exit 1 ;;
+    esac
+    case "$OS:$ARCH" in
+      Darwin:arm64|Darwin:aarch64) ASSET="Grove-$VERSION-macos-arm64.dmg" ;;
+      Darwin:x86_64) ASSET="Grove-$VERSION-macos-x86_64.dmg" ;;
+      Linux:x86_64) ASSET="Grove-$VERSION-linux-amd64.deb" ;;
+      *) echo "Error: no prebuilt release for $OS/$ARCH. Use --source." >&2; exit 1 ;;
+    esac
+    echo "Downloading $ASSET..."
+    curl -fSL --proto '=https' --proto-redir '=https' "$RELEASE_URL/download/$TAG/$ASSET" -o "$TMP_DIR/$ASSET"
+    if [ "$OS" = Darwin ]; then
+      MOUNT_DIR="$TMP_DIR/mount"
+      mkdir -p "$MOUNT_DIR"
+      hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_DIR" "$TMP_DIR/$ASSET" >/dev/null
+      BUNDLE_DIR="$TMP_DIR"
+      # The common installation path expects bundle/osx-style app discovery.
+      mkdir -p "$TMP_DIR/osx"
+      cp -R "$MOUNT_DIR/Grove.app" "$TMP_DIR/osx/"
+      hdiutil detach "$MOUNT_DIR" >/dev/null
+      MOUNT_DIR=""
+    else
+      command -v dpkg >/dev/null 2>&1 || { echo "Error: dpkg is required for the prebuilt package. Use --source." >&2; exit 1; }
+      DEB="$TMP_DIR/$ASSET"
+    fi
+  fi
 fi
 
 # Remove only the obsolete command link created by older Grove installers.
@@ -48,46 +92,55 @@ remove_cli_link() {
   fi
 }
 
-OS="$(uname -s)"
-
-# Pin the bundle format per-OS. Left unset, `cargo bundle` on macOS also builds
-# a .dmg, whose hdiutil unmount step intermittently fails with "Resource busy"
-# (Spotlight/fseventsd grab the freshly-mounted staging volume). We only ever
-# install the .app below, so build just that and skip the flaky DMG path.
-case "$OS" in
-  Darwin) BUNDLE_FORMAT=osx ;;
-  Linux)  BUNDLE_FORMAT=deb ;;
-  *)      BUNDLE_FORMAT="" ;;
-esac
-
-TARGET=""
-BUILD_DIR="${CARGO_TARGET_DIR:-target}"
-BUNDLE_DIR="$BUILD_DIR/release/bundle"
-if [ "$OS" = "Darwin" ]; then
-  # `uname -m` reflects Rosetta when the shell itself runs translated, so it
-  # can report x86_64 on Apple Silicon hardware. Ask sysctl for the real CPU
-  # to pick the native target and avoid an accidental Rosetta-emulated build.
-  if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
-    ARCH=arm64
-  else
-    ARCH="$(uname -m)"
+if [ "$PREBUILT" = 0 ]; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "Error: cargo is required. Install Rust from https://rustup.rs" >&2
+    exit 1
   fi
-  case "$ARCH" in
-    arm64|aarch64) TARGET=aarch64-apple-darwin ;;
-    x86_64)        TARGET=x86_64-apple-darwin ;;
-    *) echo "Warning: unrecognized macOS arch '$ARCH', letting cargo pick the default target." >&2 ;;
+
+  BUNDLE_VERSION="0.12.0"
+  if [ "$(cargo bundle --version 2>/dev/null || true)" != "cargo-bundle v$BUNDLE_VERSION" ]; then
+    echo "Installing cargo-bundle $BUNDLE_VERSION..."
+    cargo install cargo-bundle --version "$BUNDLE_VERSION" --locked
+  fi
+
+  # Pin the bundle format per-OS. Left unset, `cargo bundle` on macOS also builds
+  # a .dmg, whose hdiutil unmount step intermittently fails with "Resource busy"
+  # (Spotlight/fseventsd grab the freshly-mounted staging volume). We only ever
+  # install the .app below, so build just that and skip the flaky DMG path.
+  case "$OS" in
+    Darwin) BUNDLE_FORMAT=osx ;;
+    Linux)  BUNDLE_FORMAT=deb ;;
+    *)      BUNDLE_FORMAT="" ;;
   esac
-  if [ -n "$TARGET" ]; then
-    rustup target add "$TARGET" >/dev/null 2>&1 || true
-    BUNDLE_DIR="$BUILD_DIR/$TARGET/release/bundle"
-  fi
-fi
 
-echo "Building release bundle..."
-CARGO_BUNDLE_ARGS=(-p grove --release)
-[ -n "$BUNDLE_FORMAT" ] && CARGO_BUNDLE_ARGS+=(--format "$BUNDLE_FORMAT")
-[ -n "$TARGET" ] && CARGO_BUNDLE_ARGS+=(--target "$TARGET")
-cargo bundle "${CARGO_BUNDLE_ARGS[@]}"
+  TARGET="${CARGO_BUILD_TARGET:-}"
+  BUILD_DIR="${CARGO_TARGET_DIR:-target}"
+  if [ "$OS" = Darwin ]; then
+    case "$ARCH" in
+      arm64|aarch64) NATIVE_TARGET=aarch64-apple-darwin ;;
+      x86_64) NATIVE_TARGET=x86_64-apple-darwin ;;
+      *) echo "Error: unsupported macOS architecture: $ARCH" >&2; exit 1 ;;
+    esac
+    HOST="$(rustc -vV | sed -n 's/^host: //p')"
+    # Native builds share ordinary cargo artifacts. Explicit targeting remains
+    # necessary when the toolchain is running under Rosetta.
+    if [ "$HOST" != "$NATIVE_TARGET" ] || [ -n "$TARGET" ]; then
+      TARGET="$NATIVE_TARGET"
+      rustup target add "$TARGET"
+    fi
+  fi
+  PROFILE_DIR="$BUILD_DIR"
+  [ -z "$TARGET" ] || PROFILE_DIR="$PROFILE_DIR/$TARGET"
+  PROFILE_DIR="$PROFILE_DIR/$PROFILE"
+  BUNDLE_DIR="$PROFILE_DIR/bundle"
+
+  echo "Building $PROFILE bundle..."
+  CARGO_BUNDLE_ARGS=(-p grove --profile "$PROFILE")
+  [ -n "$BUNDLE_FORMAT" ] && CARGO_BUNDLE_ARGS+=(--format "$BUNDLE_FORMAT")
+  [ -n "$TARGET" ] && CARGO_BUNDLE_ARGS+=(--target "$TARGET")
+  cargo bundle "${CARGO_BUNDLE_ARGS[@]}"
+fi
 
 case "$OS" in
   Darwin)
@@ -118,7 +171,9 @@ case "$OS" in
     ;;
 
   Linux)
-    DEB="$(find "$BUILD_DIR/release/bundle/deb" -maxdepth 1 -name '*.deb' 2>/dev/null | head -n1 || true)"
+    if [ "$PREBUILT" = 0 ]; then
+      DEB="$(find "$BUNDLE_DIR/deb" -maxdepth 1 -name '*.deb' 2>/dev/null | head -n1 || true)"
+    fi
     if [ -n "$DEB" ] && command -v dpkg >/dev/null 2>&1; then
       echo "Installing $DEB (sudo)..."
       sudo dpkg -i "$DEB" || sudo apt-get -f install -y
@@ -127,7 +182,7 @@ case "$OS" in
     else
       # Fallback: binary + .desktop + icon under ~/.local (no root needed).
       echo "dpkg/.deb unavailable — installing under ~/.local ..."
-      install -Dm755 "$BUILD_DIR/release/grove" "$HOME/.local/bin/grove"
+      install -Dm755 "$PROFILE_DIR/grove" "$HOME/.local/bin/grove"
       install -Dm644 assets/icon/512x512.png \
         "$HOME/.local/share/icons/hicolor/512x512/apps/grove.png"
       DESKTOP="$HOME/.local/share/applications/grove.desktop"

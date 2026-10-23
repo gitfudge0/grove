@@ -55,7 +55,7 @@ fn report_script(window: &Window, expanded: bool) -> String {
         ":root{{--grove-bg:{};--grove-fg:{};--grove-muted:{};--grove-surface:{};\
          --grove-border:{};--grove-info:{};--grove-success:{};--grove-warning:{};\
          --grove-body:{}px;--grove-title:{}px;--grove-display:{}px;--grove-gap:{}px;\
-         --grove-section:{}px;--grove-radius:{}px;--grove-font:'{}',system-ui,sans-serif}}\
+         --grove-section:{}px;--grove-radius:{}px;--grove-font:'{}'}}\
          html{{background:var(--grove-bg);color:var(--grove-fg);font-family:var(--grove-font);\
          font-size:var(--grove-body);overflow:{}}}body{{margin:0;display:flow-root}}",
         color(c::BG()),
@@ -156,12 +156,68 @@ fn document_font_css() -> &'static str {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     static CSS: OnceLock<String> = OnceLock::new();
     CSS.get_or_init(|| {
-        [("Regular", 400), ("Medium", 500), ("SemiBold", 600), ("Bold", 700)]
-            .into_iter().filter_map(|(name, weight)| {
-                let font = crate::assets::Assets::get(&format!("fonts/Geist-{name}.ttf"))?;
-                Some(format!("@font-face{{font-family:'{}';font-style:normal;font-weight:{weight};font-display:swap;src:url(data:font/ttf;base64,{}) format('truetype')}}", crate::fonts::UI_FAMILY, STANDARD.encode(font.data)))
-            }).collect()
+        let faces = [
+            ("DMSans", crate::fonts::UI_FAMILY, "Regular", 400, "normal"),
+            ("DMSans", crate::fonts::UI_FAMILY, "Medium", 500, "normal"),
+            ("DMSans", crate::fonts::UI_FAMILY, "SemiBold", 600, "normal"),
+            ("DMSans", crate::fonts::UI_FAMILY, "Bold", 700, "normal"),
+            ("JetBrainsMono", crate::fonts::MONO_FAMILY, "Regular", 400, "normal"),
+            ("JetBrainsMono", crate::fonts::MONO_FAMILY, "Medium", 500, "normal"),
+            ("JetBrainsMono", crate::fonts::MONO_FAMILY, "SemiBold", 600, "normal"),
+            ("JetBrainsMono", crate::fonts::MONO_FAMILY, "Bold", 700, "normal"),
+            ("JetBrainsMono", crate::fonts::MONO_FAMILY, "Italic", 400, "italic"),
+            ("JetBrainsMono", crate::fonts::MONO_FAMILY, "BoldItalic", 700, "italic"),
+        ];
+        let mut css: String = faces.into_iter().filter_map(|(file, family, name, weight, style)| {
+            let path = format!("fonts/{file}-{name}.ttf");
+            let font = crate::assets::Assets::get(&path)?;
+            Some(format!("@font-face{{font-family:'{family}';font-style:{style};font-weight:{weight};font-display:swap;src:url(data:font/ttf;base64,{}) format('truetype')}}", STANDARD.encode(font.data)))
+        }).collect();
+        css.push_str("*::before,*::after{font-family:inherit!important}");
+        css
     })
+}
+
+/// Normalize authored font choices while retaining semantic and explicitly authored
+/// monospace text. Observe streaming/script changes without replacing the document.
+fn document_font_script() -> &'static str {
+    r#"(()=>{
+const familyFor=value=>/monospace|JetBrains Mono|Courier|Consolas|Menlo|Monaco|BlexMono/i.test(value)?'JetBrains Mono':'DM Sans';
+const originals=new WeakMap();
+const normalize=root=>{
+ const nodes=root.nodeType===1?[root,...root.querySelectorAll('*')]:[...root.querySelectorAll('*')];
+ for(const el of nodes){
+  const current=el.style.getPropertyValue('font-family');
+  if(!originals.has(el)||(current!=='"DM Sans"'&&current!=='"JetBrains Mono"'))originals.set(el,[current,el.style.getPropertyPriority('font-family')]);
+  const [value,priority]=originals.get(el);
+  if(value)el.style.setProperty('font-family',value,priority);else el.style.removeProperty('font-family');
+ }
+ // Read before writing: children must retain their authored inherited monospace role.
+ const choices=nodes.map(el=>{
+  const family=getComputedStyle(el).fontFamily;
+  const mono=el.closest('pre,code,kbd,samp,tt')!==null||familyFor(family)==='JetBrains Mono';
+  return [el,mono?'JetBrains Mono':'DM Sans'];
+ });
+ for(const [el,family] of choices)if(el.style.getPropertyValue('font-family')!==`"${family}"`||el.style.getPropertyPriority('font-family')!=='important')el.style.setProperty('font-family',`"${family}"`,'important');
+};
+const start=()=>{
+ normalize(document);
+ const observer=new MutationObserver(records=>{
+  observer.disconnect();
+  for(const record of records){
+   if(record.type==='childList'){
+    if(record.target.nodeType===1&&record.target.matches('style'))normalize(document);
+    else for(const node of record.addedNodes)if(node.nodeType===1)normalize(node);
+   }
+   if(record.type==='attributes')normalize(record.target);
+  }
+  observe();
+ });
+ const observe=()=>observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['style','class']});
+ observe();
+};
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start,{once:true});else start();
+})()"#
 }
 
 /// App preference reaches ordinary HTML as well as integrated reports. CSS
@@ -202,8 +258,8 @@ fn sandboxed(source: &str, reduced: bool) -> String {
     // The first policy is parsed before ANY author bytes, including malformed
     // heads, base tags and author policies. Subsequent CSP policies only tighten it.
     format!(
-        "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\"><style>{}</style><script>{}</script>{source}",
-        document_font_css(), preference_script(reduced)
+        "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\"><style>{}</style><script>{}</script><script>{}</script>{source}",
+        document_font_css(), preference_script(reduced), document_font_script()
     )
 }
 

@@ -555,7 +555,7 @@ mod tests {
         let platform = gpui_platform::current_platform(true);
         let text_system = std::sync::Arc::new(gpui::TextSystem::new(platform.text_system()));
         let font = crate::assets::Assets
-            .load("fonts/Geist-Regular.ttf")
+            .load("fonts/DMSans-Regular.ttf")
             .unwrap()
             .unwrap();
         text_system.add_fonts(vec![font]).unwrap();
@@ -663,28 +663,66 @@ pub(super) fn shimmer_highlights(
         .collect()
 }
 
-/// Shared visual switch track; the owning control supplies its accessible role and input.
-pub fn switch_track(enabled: bool) -> Div {
+/// Shared grouped preference choices, matching Settings' existing choice recipe.
+pub fn preference_choices() -> Div {
     div()
-        .w(rpx(SWITCH_W))
-        .h(rpx(SWITCH_H))
-        .flex_shrink_0()
-        .p(rpx(SWITCH_INSET))
-        .rounded_full()
         .flex()
-        .items_center()
-        .bg(if enabled {
-            c::SWITCH_ON()
-        } else {
-            c::BORDER_STRONG()
-        })
-        .when(enabled, gpui::Styled::justify_end)
-        .child(
-            div()
-                .size(rpx(SWITCH_THUMB))
-                .rounded_full()
-                .bg(c::SWITCH_THUMB()),
-        )
+        .flex_wrap()
+        .flex_shrink_0()
+        .gap(rpx(SPACE_XS))
+        .p(rpx(SPACE_XS))
+        .border_1()
+        .border_color(c::BORDER_SOFT())
+        .rounded(rpx(RADIUS_CONTROL))
+}
+
+/// Explicit Off/On actions. Re-selecting a choice sets that value again rather than toggling.
+pub fn boolean_choices<T: 'static>(
+    id: &'static str,
+    label: &'static str,
+    value: bool,
+    enabled: bool,
+    cx: &gpui::Context<T>,
+    on_change: impl Fn(&mut T, bool, &mut gpui::Window, &mut gpui::Context<T>) + Clone + 'static,
+) -> Div {
+    let mut group = preference_choices();
+    for (selected_value, text) in [(false, "Off"), (true, "On")] {
+        let click = on_change.clone();
+        let key = on_change.clone();
+        group = group.child(
+            settings_control(
+                format!("{id}-{selected_value}"),
+                format!("{label} {text}"),
+                value == selected_value,
+                enabled,
+            )
+            .border_0()
+            .bg(if value == selected_value {
+                c::BG_HOVER()
+            } else {
+                c::BG()
+            })
+            .child(text)
+            .when(enabled, |control| {
+                control
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        click(this, selected_value, window, cx);
+                    }))
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.is_held
+                            {
+                                key(this, selected_value, window, cx);
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        },
+                    ))
+            }),
+        );
+    }
+    group
 }
 
 /// Literal selectable readonly text; HTML escaping prevents paths becoming markup.

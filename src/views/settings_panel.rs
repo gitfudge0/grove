@@ -519,19 +519,13 @@ impl SettingsPanel {
         self.save(cx, |store| store.native_agents_enabled = !enabled);
     }
 
-    fn toggle_telemetry(&mut self, cx: &mut Context<Self>) {
-        let enabled = !SettingsState::telemetry_enabled(&cx.global::<SettingsState>().store);
+    fn set_telemetry(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.save(cx, |store| store.telemetry_enabled = Some(enabled)) {
             crate::telemetry::set_enabled(enabled);
         }
     }
 
-    fn toggle_reduce_motion(&mut self, cx: &mut Context<Self>) {
-        let enabled = !cx
-            .global::<SettingsState>()
-            .store
-            .reduce_motion
-            .unwrap_or(false);
+    fn set_reduce_motion(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.save(cx, |store| store.reduce_motion = Some(enabled)) {
             cx.set_reduce_motion(enabled);
         }
@@ -678,14 +672,7 @@ impl SettingsPanel {
     }
 
     fn choices() -> gpui::Div {
-        div()
-            .flex()
-            .flex_wrap()
-            .gap(rpx(SPACE_XS))
-            .p(rpx(SPACE_XS))
-            .border_1()
-            .border_color(c::BORDER_SOFT())
-            .rounded(rpx(RADIUS_CONTROL))
+        super::components::preference_choices()
     }
 
     fn section(label: &'static str) -> gpui::Div {
@@ -826,25 +813,14 @@ impl SettingsPanel {
                         el.on_click(cx.listener(|this, _, _, cx| this.set_zoom(ZOOM_STEP, cx)))
                     }),
             );
-        let reduce_motion_control = self
-            .button(
-                "settings-reduce-motion",
-                "Toggle reduced motion",
-                reduce_motion,
-                true,
-            )
-            .role(gpui::Role::Switch)
-            .aria_toggled(if reduce_motion {
-                gpui::Toggled::True
-            } else {
-                gpui::Toggled::False
-            })
-            .h(rpx(SWITCH_H))
-            .border_0()
-            .px_0()
-            .bg(c::BG())
-            .child(super::components::switch_track(reduce_motion))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_reduce_motion(cx)));
+        let reduce_motion_control = super::components::boolean_choices(
+            "settings-reduce-motion",
+            "Reduce motion",
+            reduce_motion,
+            true,
+            cx,
+            |this, enabled, _, cx| this.set_reduce_motion(enabled, cx),
+        );
         body = body.when(self.category == Category::General, |body| {
             body.child(
                 div()
@@ -897,20 +873,14 @@ impl SettingsPanel {
                     el.on_click(cx.listener(|this, _, _, cx| this.set_backend(true, cx)))
                 }),
             );
-        let permissions = self
-            .button("settings-yolo", "Yolo mode", skip, true)
-            .role(gpui::Role::Switch)
-            .aria_toggled(if skip {
-                gpui::Toggled::True
-            } else {
-                gpui::Toggled::False
-            })
-            .h(rpx(SWITCH_H))
-            .border_0()
-            .px_0()
-            .bg(c::BG())
-            .child(super::components::switch_track(skip))
-            .on_click(cx.listener(move |this, _, _, cx| this.set_yolo(!skip, cx)));
+        let permissions = super::components::boolean_choices(
+            "settings-yolo",
+            "Yolo mode",
+            skip,
+            true,
+            cx,
+            |this, enabled, _, cx| this.set_yolo(enabled, cx),
+        );
         let mut browser = Self::choices();
         let mut terminal_agents_control = Self::choices();
         for (enabled, label) in [(false, "Off"), (true, "On")] {
@@ -1033,25 +1003,14 @@ impl SettingsPanel {
             body.child(terminal_body)
         });
 
-        let telemetry_button = self
-            .button(
-                "settings-telemetry",
-                "Toggle anonymous usage data",
-                telemetry,
-                true,
-            )
-            .role(gpui::Role::Switch)
-            .aria_toggled(if telemetry {
-                gpui::Toggled::True
-            } else {
-                gpui::Toggled::False
-            })
-            .h(rpx(SWITCH_H))
-            .border_0()
-            .px_0()
-            .bg(c::BG())
-            .child(super::components::switch_track(telemetry))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_telemetry(cx)));
+        let telemetry_button = super::components::boolean_choices(
+            "settings-telemetry",
+            "Share anonymous usage data",
+            telemetry,
+            true,
+            cx,
+            |this, enabled, _, cx| this.set_telemetry(enabled, cx),
+        );
         body = body.when(self.category == Category::Privacy, |body| body.child(
             div().flex().flex_col()
                 .child(Self::section("Usage & diagnostics"))

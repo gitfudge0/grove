@@ -22,11 +22,19 @@ Download your installer from the [latest release](https://github.com/gitfudge0/g
 - **Linux:** install the `.deb` for `amd64` with `sudo apt install ./Grove-*.deb`. Requires a graphical X11 or XWayland session.
 - **Windows (alpha):** run the `.msi`. Expect rough edges.
 
-If an installer is unavailable, build from source on macOS or Linux (requires Rust, Git, and the [development prerequisites](#develop)):
+Or install the latest prebuilt release from the command line on macOS or amd64 Linux (no Rust toolchain required):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gitfudge0/grove/main/install.sh | bash
 ```
+
+To build from a remote source checkout instead (requires Rust, Git, and the [development prerequisites](#develop)):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gitfudge0/grove/main/install.sh | bash -s -- --source
+```
+
+Download failures stop the installer; it never silently compiles from source. Remote installs use the repository's latest published release, while `GROVE_REPO_REF` selects the branch or tag for `--source`.
 
 Install [Git](https://git-scm.com/) and your preferred agent CLI separately, and sign in through that CLI. Grove uses the tools already on your machine. `tmux` is optional on macOS and Linux for persistent terminal sessions.
 
@@ -52,12 +60,14 @@ cd grove
 cargo run
 ```
 
-To build and install a release app locally on macOS or Linux:
+To build and install an app locally on macOS or Linux:
 
 ```sh
 ./install.sh
 ```
 
-The script installs `cargo-bundle` if needed, builds Grove, and installs the native app. On Windows, use `cargo run` for development.
+The script installs `cargo-bundle` if needed and uses the `local` profile, which skips release LTO and allows parallel code generation. Use `./install.sh --release` for the optimized shipping profile. Native macOS builds share Cargo's normal target directory; a translated toolchain explicitly targets native hardware to avoid a Rosetta app. `CARGO_TARGET_DIR` is respected. On Windows, use `cargo run` for development.
+
+Build artifacts remain cached to speed up subsequent builds. To reclaim space explicitly, run `cargo clean --profile local` or `cargo clean --release`; `cargo clean` removes all artifacts for this checkout and makes the next build slower. Older installers may have left `target/aarch64-apple-darwin` or `target/x86_64-apple-darwin` artifacts; `cargo clean --target <triple> --release` removes that target's old release artifacts. The installer never clears caches automatically.
 
 To disable anonymous usage telemetry, turn off **Share anonymous usage data** in Settings or set `GROVE_TELEMETRY=off`.
