@@ -22,9 +22,9 @@ The importer snapshots the document and assets; changing or deleting source file
 does not change an imported review. Invalid imports show an error and explicit
 Retry while preserving earlier revisions.
 
-The schema has `schema_version: 1`, `plan_id`, `revision_id`, `title`, `sources`
+The schema has `schema_version: 1`, `plan_id`, `revision_id`, `title`, optional `summary` (the intended outcome), `sources`
 (`attribution`, `text`), `changes` (`files`, `new`, `changed`, `deleted`), `claims` and `scope`.
-Each claim has `id`, `text`, optional `exhibit`, `html_links`, `decisions` and
+Each claim has `id`, `text` (a concise heading), optional `detail` (the explanation), optional `exhibit`, `html_links`, `decisions` and
 `children`. Keep claims at most three levels deep and five children per parent.
 Each decision has `id`, `prompt`, `options` (`id`, `label`, `description`) and an
 optional `default` containing an option ID. Recommendations are not accepted
@@ -51,7 +51,13 @@ Keep documents below 1 MiB, individual text fields below 64 KiB and total decode
 raster assets below 20 MiB. Unsupported versions, unsafe paths, invalid IDs,
 missing assets and conflicting revisions fail validation.
 
-Readers expand claims, choose answers, write comments and inspect **Review
+The transcript shows a compact entry with an Open plan action and unanswered
+decision count. The expanded editorial document uses a numbered claim spine;
+evidence and decisions start visible, and claim disclosure preferences persist.
+Existing version 1 documents without summary/detail remain valid and display
+only their authored content. Recommendations never count as answers.
+
+Readers inspect claims, choose answers, write comments and inspect **Review
 response** before **Send response**. Feedback is bound to this plan revision and
 session, persists across restart, and uses the normal provider queue while busy.
 Sending feedback does not authorize implementation or change permission mode.

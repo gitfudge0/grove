@@ -96,6 +96,10 @@ pub(super) struct NativePlan {
     error: Option<String>,
 }
 
+// Editorial document dimensions are local to this view, not application chrome.
+const PLAN_TITLE_SIZE: f32 = 26.0;
+const PLAN_READING_WIDTH: f32 = 840.0;
+
 fn string(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_owned()
 }
@@ -106,6 +110,63 @@ fn entries(value: &Value) -> Vec<Value> {
 fn target_key(kind: &str, id: &str) -> String {
     json!([kind, id]).to_string()
 }
+fn decision_counts(claims: &Value, review: &Value) -> (usize, usize) {
+    let mut total = 0;
+    let mut unanswered = 0;
+    for claim in entries(claims) {
+        for decision in entries(&claim["decisions"]) {
+            total += 1;
+            let id = string(&decision, "id");
+            let selected = review["answers"][&id].as_str().is_some_and(|answer| {
+                entries(&decision["options"])
+                    .iter()
+                    .any(|option| option["id"] == answer)
+            });
+            let own = review["own_answers"][&id]
+                .as_str()
+                .is_some_and(|s| !s.trim().is_empty());
+            unanswered += usize::from(!selected && !own);
+        }
+        let (nested, pending) = decision_counts(&claim["children"], review);
+        total += nested;
+        unanswered += pending;
+    }
+    (total, unanswered)
+}
+
+fn decision_status(total: usize, unanswered: usize) -> String {
+    if total == 0 {
+        "No decisions requested".into()
+    } else {
+        format!(
+            "{unanswered} unanswered · {total} {}",
+            if total == 1 { "decision" } else { "decisions" }
+        )
+    }
+}
+
+fn initial_claims(claims: &Value, open: &mut HashSet<String>) {
+    for claim in entries(claims) {
+        open.insert(target_key("claim", &string(&claim, "id")));
+        initial_claims(&claim["children"], open);
+    }
+}
+
+fn visible_decisions(claims: &Value, open: &HashSet<String>, viewed: &mut Vec<Value>) {
+    for claim in entries(claims) {
+        if !open.contains(&target_key("claim", &string(&claim, "id"))) {
+            continue;
+        }
+        for decision in entries(&claim["decisions"]) {
+            let id = json!(string(&decision, "id"));
+            if !viewed.contains(&id) {
+                viewed.push(id);
+            }
+        }
+        visible_decisions(&claim["children"], open, viewed);
+    }
+}
+
 fn code_markdown(text: &str, language: &str) -> String {
     let mut longest = 0;
     let mut run = 0;
@@ -315,6 +376,16 @@ impl NativePlan {
 
     fn toggle_expansion(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let expanded = self.expanded(cx);
+        if !expanded && !self.send_pending && !review_locked(&self.snapshot(cx)) {
+            let snapshot = self.snapshot(cx);
+            let mut review = snapshot["review"].clone();
+            let mut viewed = entries(&review["viewed_decisions"]);
+            visible_decisions(&snapshot["document"]["claims"], &self.open, &mut viewed);
+            if viewed != entries(&review["viewed_decisions"]) {
+                review["viewed_decisions"] = json!(viewed);
+                self.save_review(review, cx);
+            }
+        }
         if !cx.has_global::<PlanUi>() {
             cx.set_global(PlanUi::default());
         }
@@ -841,7 +912,7 @@ impl NativePlan {
             .min_w_0()
             .border_b_1()
             .border_color(c::BORDER_SOFT())
-            .py(rpx(SPACE_2XL))
+            .py(rpx(SPACE_20))
             .gap(rpx(SPACE_2XL));
         body = body.child(
             div()
@@ -849,46 +920,17 @@ impl NativePlan {
                 .items_start()
                 .gap(rpx(SPACE_LG))
                 .child(
-                    header_control_frame(
-                        format!("claim-{id}"),
-                        format!(
-                            "{} {}",
-                            if open { "Collapse" } else { "Expand" },
-                            string(claim, "text")
-                        ),
-                        c::BG_HOVER(),
-                    )
-                    .aria_expanded(open)
-                    .tab_index(0)
-                    .focus_visible(|s| s.bg(c::BG_HOVER()))
-                    .child(crate::icons::icon(
-                        if open { "chev-down" } else { "chev-right" },
-                        ICON_MD,
-                        c::FG_DIM(),
-                    ))
-                    .on_key_down(cx.listener({
-                        let key = claim_key.clone();
-                        move |this, event: &gpui::KeyDownEvent, _, cx| {
-                            let selected = match event.keystroke.key.as_str() {
-                                "right" => !this.open.contains(&key),
-                                "left" => this.open.contains(&key),
-                                "space" | "enter" => true,
-                                _ => false,
-                            };
-                            if selected {
-                                this.toggle(&key, cx);
-                                cx.stop_propagation();
-                            }
-                        }
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle, cx))),
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(rpx(TEXT_TITLE))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(self.text(
+                            format!("claim-text-{id}"),
+                            string(claim, "text"),
+                            window,
+                        )),
                 )
-                .child(div().text_color(c::FG_DIM()).child(number.clone()))
-                .child(div().flex_1().min_w_0().child(self.text(
-                    format!("claim-text-{id}"),
-                    string(claim, "text"),
-                    window,
-                )))
                 .child(
                     transcript_action(
                         format!("comment-{id}"),
@@ -908,34 +950,60 @@ impl NativePlan {
                     })),
                 ),
         );
+        let (total, unanswered) = decision_counts(&json!([claim]), &snapshot["review"]);
+        if total > 0 {
+            body = body.child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_SM))
+                    .text_color(c::FG_DIM())
+                    .when(unanswered > 0, |s| {
+                        s.child(crate::icons::icon("question", ICON_SM, c::AMBER()))
+                    })
+                    .child(decision_status(total, unanswered)),
+            );
+        }
         if self.comments_open.contains(&claim_key) {
             body = body.child(self.comment(&claim_key, snapshot, window, cx));
         }
         if open {
+            if let Some(detail) = claim["detail"].as_str().filter(|s| !s.is_empty()) {
+                body = body.child(self.text(format!("claim-detail-{id}"), detail.into(), window));
+            }
             if !claim["exhibit"].is_null() {
+                body = body.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("Evidence"),
+                );
                 body =
                     body.child(self.exhibit(&claim["exhibit"], &claim_key, snapshot, window, cx));
                 let target = target_key("exhibit", &claim_key);
                 let toggle = target.clone();
                 body = body.child(
-                    transcript_action(
-                        format!("comment-{target}"),
-                        "Comment on exhibit",
-                        false,
-                        window,
-                        cx,
-                    )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/plus.svg")
-                            .size(rpx(ICON_SM)),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.comments_open.remove(&toggle) {
-                            this.comments_open.insert(toggle.clone());
-                        }
-                        cx.notify();
-                    })),
+                    div().flex().child(
+                        transcript_action(
+                            format!("comment-{target}"),
+                            "Comment on exhibit",
+                            false,
+                            window,
+                            cx,
+                        )
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/plus.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.comments_open.remove(&toggle) {
+                                this.comments_open.insert(toggle.clone());
+                            }
+                            cx.notify();
+                        })),
+                    ),
                 );
                 if self.comments_open.contains(&target) {
                     body = body.child(self.comment(&target, snapshot, window, cx));
@@ -953,6 +1021,23 @@ impl NativePlan {
                     .as_str()
                     .filter(|_| !own_active)
                     .map(str::to_owned);
+                body = body.child(
+                    div()
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .pt(rpx(SPACE_3XL))
+                        .text_size(rpx(TEXT_SMALL))
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .text_color(c::FG_DIM())
+                        .child(crate::icons::icon("question", ICON_SM, c::AMBER()))
+                        .child(if answer.is_some() || own_active {
+                            "Decision · answer recorded"
+                        } else {
+                            "Decision · needs your judgment"
+                        }),
+                );
                 body = body.child(self.text(
                     format!("decision-{decision_id}"),
                     string(&decision, "prompt"),
@@ -997,7 +1082,7 @@ impl NativePlan {
                         if answer.is_some()
                             || snapshot["review"]["own_answers"][&decision_id]
                                 .as_str()
-                                .is_some_and(|s| !s.is_empty())
+                                .is_some_and(|s| !s.trim().is_empty())
                         {
                             "Answer recorded"
                         } else {
@@ -1029,7 +1114,64 @@ impl NativePlan {
                 )));
             }
         }
-        body.into_any_element()
+        div()
+            .flex()
+            .items_start()
+            .gap(rpx(SPACE_LG))
+            .min_w_0()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .flex_shrink_0()
+                    .w(rpx(ICON_BTN_W))
+                    .py(rpx(SPACE_20))
+                    .gap(rpx(SPACE_SM))
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_TITLE))
+                            .text_color(c::FG_DIM())
+                            .child(number),
+                    )
+                    .child(
+                        header_control_frame(
+                            format!("claim-{id}"),
+                            format!(
+                                "{} {}",
+                                if open { "Collapse" } else { "Expand" },
+                                string(claim, "text")
+                            ),
+                            c::BG_HOVER(),
+                        )
+                        .aria_expanded(open)
+                        .tab_index(0)
+                        .focus_visible(|s| s.bg(c::BG_HOVER()))
+                        .child(crate::icons::icon(
+                            if open { "chev-down" } else { "chev-right" },
+                            ICON_MD,
+                            c::FG_DIM(),
+                        ))
+                        .on_key_down(cx.listener({
+                            let key = claim_key.clone();
+                            move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                let selected = match event.keystroke.key.as_str() {
+                                    "right" => !this.open.contains(&key),
+                                    "left" => this.open.contains(&key),
+                                    "space" | "enter" => true,
+                                    _ => false,
+                                };
+                                if selected {
+                                    this.toggle(&key, cx);
+                                    cx.stop_propagation();
+                                }
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle, cx))),
+                    ),
+            )
+            .child(body.flex_1().min_w_0())
+            .into_any_element()
     }
 }
 
@@ -1059,6 +1201,26 @@ impl Render for NativePlan {
                     .filter_map(|v| v.as_str().map(str::to_owned)),
             );
         }
+        let marker = target_key("presentation", "editorial");
+        if !self.open.contains(&marker) {
+            // A nonempty legacy disclosure set records an intentional choice.
+            if self.open.is_empty() {
+                initial_claims(&doc["claims"], &mut self.open);
+            }
+            self.open.insert(marker);
+        }
+        if expanded && !self.send_pending && !review_locked(&snapshot) {
+            let mut review = snapshot["review"].clone();
+            let mut viewed = entries(&review["viewed_decisions"]);
+            visible_decisions(&doc["claims"], &self.open, &mut viewed);
+            if viewed != entries(&review["viewed_decisions"]) {
+                review["viewed_decisions"] = json!(viewed);
+                self.save_review(review, cx);
+                cx.notify();
+            }
+        }
+        let (decision_total, unanswered) = decision_counts(&doc["claims"], &snapshot["review"]);
+        let decision_status = decision_status(decision_total, unanswered);
         let mut body = div()
             .flex()
             .flex_col()
@@ -1067,70 +1229,104 @@ impl Render for NativePlan {
             .text_size(rpx(TEXT_BODY))
             .text_color(c::FG())
             .bg(c::BG())
+            .w_full()
+            .when(expanded, |s| s.max_w(rpx(PLAN_READING_WIDTH)).mx_auto())
             .p(rpx(SPACE_3XL));
-        body = body.child(
-            div()
-                .flex()
-                .items_start()
-                .gap(rpx(SPACE_LG))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(rpx(TEXT_DISPLAY))
-                        .child(string(doc, "title")),
-                )
-                .child(
-                    transcript_action(
-                        "plan-expand",
-                        if expanded {
-                            "Return to conversation"
-                        } else {
-                            "Expand"
-                        },
-                        false,
-                        window,
-                        cx,
-                    )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path(gpui::SharedString::from(format!(
-                                "icons/{}.svg",
-                                if expanded { "unified" } else { "zen" }
-                            )))
-                            .size(rpx(ICON_SM)),
-                    )
-                    .debug_selector(|| "native-plan-expand".into())
-                    .with_focus_handle(if expanded {
-                        self.return_focus.clone()
-                    } else {
-                        self.expand_focus.clone()
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_expansion(window, cx))),
-                ),
-        );
+        let title = div()
+            .when(!expanded, gpui::Styled::flex_1)
+            .when(expanded, gpui::Styled::w_full)
+            .min_w_0()
+            .text_size(rpx(if expanded {
+                PLAN_TITLE_SIZE
+            } else {
+                TEXT_TITLE
+            }))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .child(string(doc, "title"));
+        let navigation = transcript_action(
+            "plan-expand",
+            if expanded {
+                "Return to conversation"
+            } else {
+                "Open plan"
+            },
+            false,
+            window,
+            cx,
+        )
+        .icon(
+            gpui_component::Icon::default()
+                .path(gpui::SharedString::from(format!(
+                    "icons/{}.svg",
+                    if expanded { "unified" } else { "zen" }
+                )))
+                .size(rpx(ICON_SM)),
+        )
+        .debug_selector(|| "native-plan-expand".into())
+        .with_focus_handle(if expanded {
+            self.return_focus.clone()
+        } else {
+            self.expand_focus.clone()
+        })
+        .on_click(cx.listener(|this, _, window, cx| this.toggle_expansion(window, cx)));
+        let mut header = div().flex().items_start().gap(rpx(SPACE_LG)).min_w_0();
+        if expanded {
+            header = header.flex_col().child(navigation).child(title);
+        } else {
+            header = header.child(title).child(navigation);
+        }
+        body = body.child(header);
+        if let Some(summary) = doc["summary"].as_str().filter(|s| !s.is_empty()) {
+            body = body.child(self.text("plan-summary".into(), summary.into(), window));
+        }
         body = body.child(
             div()
                 .text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG_DIM())
                 .child(format!(
-                    "Proposed · Revision {} · {} files · {} changed{}",
+                    "Proposed · Revision {}{}",
                     self.revision_id,
-                    doc["changes"]["files"].as_u64().unwrap_or_default(),
-                    doc["changes"]["changed"].as_u64().unwrap_or_default(),
-                    extra_counts
+                    if doc["changes"]["files"].as_u64().unwrap_or_default() > 0 {
+                        format!(
+                            " · {} files · {} changed{}",
+                            doc["changes"]["files"], doc["changes"]["changed"], extra_counts
+                        )
+                    } else {
+                        String::new()
+                    }
                 )),
         );
+        body = body.child(
+            div()
+                .debug_selector(|| "native-plan-decisions".into())
+                .text_size(rpx(TEXT_SMALL))
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .text_color(c::FG_DIM())
+                .when(unanswered > 0, |s| {
+                    s.child(crate::icons::icon("question", ICON_SM, c::AMBER()))
+                })
+                .child(decision_status.clone()),
+        );
+        if !expanded {
+            return div()
+                .id("native-plan-card")
+                .debug_selector(|| "native-plan-card".into())
+                .child(body);
+        }
         let why = target_key("why", "");
         let toggle_why = why.clone();
         body = body.child(
-            transcript_action(why.clone(), "Why · original requests", false, window, cx)
-                .icon(
-                    gpui_component::Icon::default()
-                        .path("icons/question.svg")
-                        .size(rpx(ICON_SM)),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle_why, cx))),
+            div().flex().child(
+                transcript_action(why.clone(), "Why · original requests", false, window, cx)
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/question.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle_why, cx))),
+            ),
         );
         if self.open.contains(&why) {
             for (index, source) in entries(&doc["sources"]).iter().enumerate() {
@@ -1146,7 +1342,8 @@ impl Render for NativePlan {
             }
         }
         for (index, claim) in entries(&doc["claims"]).iter().enumerate() {
-            body = body.child(self.claim(claim, (index + 1).to_string(), &snapshot, window, cx));
+            body =
+                body.child(self.claim(claim, format!("{:02}", index + 1), &snapshot, window, cx));
         }
         for scope in entries(&doc["scope"]) {
             body = body.child(
@@ -1167,8 +1364,20 @@ impl Render for NativePlan {
             div()
                 .flex()
                 .flex_wrap()
-                .justify_end()
+                .border_t_1()
+                .border_color(c::BORDER_SOFT())
+                .pt(rpx(SPACE_3XL))
                 .gap(rpx(SPACE_LG))
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(format!(
+                            "{decision_status} · feedback requires Send response"
+                        )),
+                )
                 .child(
                     transcript_action("plan-comment", "Comment", false, window, cx)
                         .icon(
@@ -1351,6 +1560,182 @@ mod tests {
     use std::sync::mpsc;
 
     #[test]
+    fn unanswered_counts_ignore_recommendations_and_include_nested_decisions() {
+        let claims = json!([{"decisions":[{"id":"audience","default":"all","options":[{"id":"all"}]}],
+            "children":[{"decisions":[{"id":"activation","options":[{"id":"user"}]}]}]}]);
+        assert_eq!(decision_counts(&claims, &json!({})), (2, 2));
+        assert_eq!(
+            decision_counts(
+                &claims,
+                &json!({"answers":{"audience":"all", "activation":"invalid"}})
+            ),
+            (2, 1)
+        );
+        assert_eq!(
+            decision_counts(
+                &claims,
+                &json!({"answers":{"audience":"all"},"own_answers":{"activation":"  "}})
+            ),
+            (2, 1)
+        );
+        assert_eq!(
+            decision_counts(
+                &claims,
+                &json!({"answers":{"audience":"all"},"own_answers":{"activation":"Only administrators"}})
+            ),
+            (2, 0)
+        );
+    }
+
+    #[test]
+    fn only_visible_claim_decisions_become_viewed_without_accepting_defaults() {
+        let claims = json!([{"id":"one","decisions":[{"id":"visible","default":"yes"}],"children":[{"id":"nested","decisions":[{"id":"hidden-child"}]}]}, {"id":"two","decisions":[{"id":"hidden-sibling"}]}]);
+        let open = HashSet::from([target_key("claim", "one")]);
+        let mut viewed = vec![];
+        visible_decisions(&claims, &open, &mut viewed);
+        assert_eq!(viewed, vec![json!("visible")]);
+        visible_decisions(&claims, &open, &mut viewed);
+        assert_eq!(viewed, vec![json!("visible")]);
+    }
+
+    /// Actual Metal/text shaping without touching the installed application.
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn native_plan_brief_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+        });
+        let previous_theme = grove_core::theme::current().name.clone();
+        let previous_font_size = cx.update(|cx| gpui_component::Theme::global_mut(cx).font_size);
+        for appearance in ["dark", "light"] {
+            cx.update(|cx| {
+                assert!(grove_core::theme::set_by_name(&format!(
+                    "grove-{appearance}"
+                )));
+                c::sync_component_theme(cx);
+            });
+            for (width, zoom) in [(1024.0, 1.0), (400.0, 1.0), (400.0, 1.25)] {
+                cx.update(|cx| {
+                    gpui_component::Theme::global_mut(cx).font_size =
+                        gpui::px(crate::zoom::REM_BASE * zoom);
+                });
+                for mode in ["entry", "plan", "response"] {
+                    let saved: SavedSession = serde_json::from_value(json!({
+                        "key":"plan-brief-qa","provider":"codex","project":"QA","cwd":"/tmp",
+                        "label":"QA","roots":[],"thread_id":"qa-thread","items":[],
+                        "rich_plans":{"revisions":[{"message_id":"answer","source":"plan.grove-plan.json","assets":[],
+                            "document":{"schema_version":1,"plan_id":"plan","revision_id":"r1",
+                                "title":"Invite customers to try Insights",
+                                "summary":"Give existing customers a useful first look, then let eligible users opt in with a clear, recoverable activation flow.",
+                                "claims":[{"id":"audience","text":"Make audience and activation an explicit choice",
+                                    "detail":"These choices change permissions, page copy and the enrollment contract. Resolve them before building the invitation page and server APIs.",
+                                    "exhibit":{"kind":"schema","text":"Authenticated session → eligibility → invitation → enrollment"},
+                                    "decisions":[{"id":"targeting","prompt":"Who sees the invitation?", "default":"eligible",
+                                        "options":[{"id":"eligible","label":"Eligible signed-in users","description":"Show the invitation to people whose workspace qualifies."},
+                                            {"id":"admins","label":"Workspace administrators only","description":"Let administrators introduce early access to the workspace."}]}]}],
+                                "scope":["No email delivery or billing changes."]}}]}
+                    })).unwrap();
+                    let state = Snapshot::new(saved);
+                    let (handle, _actions) = Handle::channel();
+                    let (_updates, receive) = mpsc::channel();
+                    let mut captured = None;
+                    let window = cx
+                        .open_window(
+                            gpui::size(gpui::px(width), gpui::px(1200.0)),
+                            |window, cx| {
+                                let session = cx.new(|cx| {
+                                    CodexSession::from_connection(
+                                        state,
+                                        Connection {
+                                            handle,
+                                            updates: receive.into(),
+                                        },
+                                        cx,
+                                    )
+                                });
+                                let html = cx.new(|_| {
+                                    super::super::inline_html::HtmlSession::new(
+                                        "/tmp".into(),
+                                        gpui::ScrollHandle::new(),
+                                    )
+                                });
+                                let view = cx.new(|cx| {
+                                    NativePlan::new(session, html, "plan".into(), "r1".into(), cx)
+                                });
+                                captured = Some(view.clone());
+                                cx.new(|cx| {
+                                    gpui_component::Root::new(view, window, cx)
+                                        .bordered(false)
+                                        .bg(c::BG())
+                                })
+                            },
+                        )
+                        .unwrap();
+                    cx.update_window(window.into(), |_, window, cx| {
+                        captured.as_ref().unwrap().update(cx, |view, cx| {
+                            if mode != "entry" { view.reveal(window, cx); }
+                            if mode == "response" {
+                                view.choose("targeting", "eligible", cx);
+                                view.set_feedback("comments", &target_key("claim", "audience"), "Keep tenant context server-derived.\nVerify repeat enrollment.".into(), cx);
+                                view.review_open = true;
+                                // Capture the review footer without duplicating the long document.
+                                view.open.insert(target_key("presentation", "editorial"));
+                                view.open.remove(&target_key("claim", "audience"));
+                            }
+                            cx.notify();
+                        });
+                    }).unwrap();
+                    cx.run_until_parked();
+                    cx.update_window(window.into(), |_, window, cx| {
+                        let _ = window.draw(cx);
+                        assert_eq!(
+                            window.rem_size(),
+                            gpui::px(crate::zoom::REM_BASE * zoom),
+                            "Root must use the requested QA zoom"
+                        );
+                    })
+                    .unwrap();
+                    let suffix = if zoom > 1.0 { "-zoom125" } else { "" };
+                    let path = format!(
+                        "/tmp/grove-native-plan-{appearance}-{mode}-{width:.0}{suffix}.png"
+                    );
+                    cx.capture_screenshot(window.into())
+                        .unwrap()
+                        .save(&path)
+                        .unwrap();
+                    if zoom > 1.0 {
+                        let baseline =
+                            format!("/tmp/grove-native-plan-{appearance}-{mode}-{width:.0}.png");
+                        assert_ne!(
+                            std::fs::read(&path).unwrap(),
+                            std::fs::read(&baseline).unwrap(),
+                            "zoom capture must visibly differ from its baseline"
+                        );
+                    }
+                    eprintln!("Native plan fixture: {path}");
+                    cx.update_window(window.into(), |_, window, _| window.remove_window())
+                        .unwrap();
+                }
+            }
+        }
+        cx.update(|cx| {
+            assert!(grove_core::theme::set_by_name(&previous_theme));
+            c::sync_component_theme(cx);
+            gpui_component::Theme::global_mut(cx).font_size = previous_font_size;
+        });
+    }
+
+    #[test]
     fn repository_authoring_example_matches_the_native_contract() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut store = grove_core::rich_plan::PlanStore::default();
@@ -1444,6 +1829,16 @@ mod tests {
         });
         cx.update(|window, cx| {
             plan.update(cx, |view, cx| {
+                assert!(
+                    entries(&view.snapshot(cx)["review"]["viewed_decisions"]).is_empty(),
+                    "compact entry has not shown decisions"
+                );
+                view.reveal(window, cx);
+                assert_eq!(
+                    entries(&view.snapshot(cx)["review"]["viewed_decisions"]),
+                    vec![json!("decision")]
+                );
+                assert!(view.snapshot(cx)["review"]["answers"]["decision"].is_null());
                 view.toggle(&target_key("claim", "claim"), cx);
                 view.set_feedback("comments", "claim", "First comment".into(), cx);
                 view.set_feedback("own_answers", "decision", "Keep it native".into(), cx);

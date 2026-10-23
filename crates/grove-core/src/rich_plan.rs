@@ -8,7 +8,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub const GUIDANCE: &str = "Grove supports native rich plans (schema_version 1). When authoring an interactive plan or decision review, atomically write a local .grove-plan.json file and include a Markdown link to its absolute path in a completed assistant message. A bare path or a path in backticks will not import the plan. Use plan_id, immutable revision_id, title, sources, changes, claims and scope. Claims have stable id, text, optional typed exhibit, html_links, decisions and children. Decisions have id,prompt,options (id,label,description),default. Supported exhibits: code(language,text), schema(text), calls(entries:id,title,detail), state_machine(states:id,label,screen; initial; transitions:from,to,label), image(path,alt), layout(nodes:id,kind,text,children), html_link(path,label). Layout kinds: row,column,text,surface,control. Assets must be local raster images or HTML under registered checkout roots; paths resolve relative to the document. HTML opens separately in a sandbox. Never embed HTML/scripts in native layouts. Keep document below 1 MiB, 200 claims, three claim levels and at most five children each. Native review feedback requires explicit Send response and never authorizes implementation. Legacy packed HTML remains supported for explicit user requests or content the native format cannot represent.";
+pub const GUIDANCE: &str = "Grove supports native rich plans (schema_version 1). When authoring an interactive plan or decision review, atomically write a local .grove-plan.json file and include a Markdown link to its absolute path in a completed assistant message. A bare path or a path in backticks will not import the plan. Use plan_id, immutable revision_id, title, optional summary describing the outcome, sources, changes, claims and scope. Claims have stable id, text (the heading), optional detail (the explanation), optional typed exhibit, html_links, decisions and children. Decisions have id,prompt,options (id,label,description),default. Supported exhibits: code(language,text), schema(text), calls(entries:id,title,detail), state_machine(states:id,label,screen; initial; transitions:from,to,label), image(path,alt), layout(nodes:id,kind,text,children), html_link(path,label). Layout kinds: row,column,text,surface,control. Assets must be local raster images or HTML under registered checkout roots; paths resolve relative to the document. HTML opens separately in a sandbox. Never embed HTML/scripts in native layouts. Keep document below 1 MiB, 200 claims, three claim levels and at most five children each. Native review feedback requires explicit Send response and never authorizes implementation. Legacy packed HTML remains supported for explicit user requests or content the native format cannot represent.";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlanStore {
     #[serde(default)]
@@ -40,6 +40,8 @@ pub struct PlanDocument {
     pub plan_id: String,
     pub revision_id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     #[serde(default)]
     pub sources: Vec<Quote>,
     #[serde(default)]
@@ -67,6 +69,8 @@ pub struct FileCounts {
 pub struct Claim {
     pub id: String,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     #[serde(default)]
     pub exhibit: Option<Exhibit>,
     #[serde(default)]
@@ -913,6 +917,27 @@ pub fn retry_import(saved: &mut SavedSession, message: &str, source: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editorial_fields_are_optional_and_round_trip_without_changing_feedback() {
+        let old = document();
+        assert!(old.summary.is_none());
+        assert!(old.claims[0].detail.is_none());
+        let original = PlanRevision {
+            message_id: "m".into(),
+            source: "plan.grove-plan.json".into(),
+            document: old.clone(),
+            assets: vec![],
+            review: ReviewState::default(),
+        };
+        let mut updated = original.clone();
+        updated.document.summary = Some("A readable outcome".into());
+        updated.document.claims[0].detail = Some("An explanation of this claim".into());
+        let restored: PlanDocument =
+            serde_json::from_value(serde_json::to_value(&updated.document).unwrap()).unwrap();
+        assert_eq!(restored, updated.document);
+        assert_eq!(original.response_text(), updated.response_text());
+    }
+
     fn document() -> PlanDocument {
         serde_json::from_value(serde_json::json!({"schema_version":1,"plan_id":"plan","revision_id":"r1","title":"Review me","claims":[{"id":"claim","text":"A claim","decisions":[{"id":"choice","prompt":"Where?","options":[{"id":"inline","label":"Inline card"}],"default":"inline"}]}]})).unwrap()
     }

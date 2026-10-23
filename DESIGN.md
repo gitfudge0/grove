@@ -161,6 +161,8 @@ An edited-message send that restores workspace state uses a pane-local confirmat
 
 All inline HTML previews omit a toolbar. Expanded documents retain their controls and return navigation. Integrated reports additionally render as a canvas without an enclosing card/border, with content-measured height subject to the shared cap. The exact `<!-- grove:integrated-report -->` marker enables Grove theme/font/zoom integration. Explicit Open in browser links open externally without inline expansion. Preference updates, including Reduce motion on ordinary HTML and reports, preserve the live document and input state. Check macOS, Linux, and Windows paths when platform behavior changes; one platform’s rendering does not establish parity elsewhere.
 
+Native plans use a compact transcript entry with an explicit Open plan action and unanswered decision count. Expanded plans present an editorial document: authored outcome summary when supplied, numbered claim headings and explanations, visible evidence and decisions, and a review footer. The document title may use its local document-title type role; this exception does not apply to chrome. Claim disclosure preferences persist. Recommendations remain unanswered until chosen, and older documents display only their authored content.
+
 Native plan response text preserves authored line breaks using separate literal line/paragraph blocks with readable spacing at narrow and wide widths. Authored feedback markup stays inert. Preview-only removal of presentation markers must not alter the canonical content delivered by Copy or Send. Review responses preserve anchors, and sending requires the explicit Send response action. Review feedback does not authorize implementation.
 
 ## Settings and diff headers

@@ -91,7 +91,8 @@
           ],
           "default": "inline"
         }
-      ]
+      ],
+      "detail": "Open a readable document from the compact transcript entry. Review evidence and make choices in context, then return to the conversation."
     },
     {
       "id": "feedback",
@@ -181,5 +182,6 @@
   "scope": [
     "Legacy HTML reports remain supported.",
     "Review feedback does not authorize implementation."
-  ]
+  ],
+  "summary": "Keep the argument, evidence and unresolved choices together, then send revision-specific feedback without losing the conversation."
 }
