@@ -36,8 +36,32 @@ use std::{
     sync::Arc,
 };
 
-/// Describe the session's actual bypass policy, not a preference for future sessions.
+/// Yolo belongs to the saved native launch recipe, never to a later access choice.
+fn session_launched_with_yolo(state: &codex::Snapshot) -> bool {
+    if state.saved.native_config_version == 0 {
+        // Legacy CLI-only bypass preferences are removed by reconnect migration.
+        return false;
+    }
+    let args = &state.saved.config_args;
+    match state.saved.provider {
+        codex::Provider::Claude => args
+            .iter()
+            .any(|arg| arg == "--dangerously-skip-permissions"),
+        codex::Provider::Codex => {
+            let configured = |value: &str| {
+                args.windows(2)
+                    .any(|pair| matches!(pair[0].as_str(), "-c" | "--config") && pair[1] == value)
+            };
+            configured("approval_policy=\"never\"")
+                && configured("sandbox_mode=\"danger-full-access\"")
+        }
+    }
+}
+
 fn session_has_yolo_access(state: &codex::Snapshot) -> bool {
+    if !session_launched_with_yolo(state) {
+        return false;
+    }
     let access = state.access.as_deref().or(state.resolved_access.as_deref());
     match state.saved.provider {
         codex::Provider::Claude => access == Some("bypassPermissions"),
@@ -10850,27 +10874,72 @@ mod tests {
             .any(|(value, label)| value == "workspace-write" || label.contains("sandbox")));
     }
     #[test]
-    fn yolo_access_requires_actual_provider_bypass_policy() {
-        let mut state = snapshot();
-        state.resolved_access = Some("full-access".into());
-        state.sandbox = Some(json!({"type":"dangerFullAccess"}));
-        state.approval_policy = Some(json!("on-request"));
-        assert!(!session_has_yolo_access(&state));
-        state.approval_policy = Some(json!("never"));
-        assert!(session_has_yolo_access(&state));
-        state.access = Some("read-only".into());
-        assert!(!session_has_yolo_access(&state));
-        state.access = Some("full-access".into());
-        assert!(session_has_yolo_access(&state));
-        state.saved.provider = codex::Provider::Claude;
-        assert!(!session_has_yolo_access(&state));
-        state.access = Some("bypassPermissions".into());
-        assert!(session_has_yolo_access(&state));
-        state.access = None;
-        state.resolved_access = Some("default".into());
-        assert!(!session_has_yolo_access(&state));
-        state.resolved_access = Some("bypassPermissions".into());
-        assert!(session_has_yolo_access(&state));
+    fn yolo_identity_comes_from_saved_native_launch_options() {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.access = Some(
+                if provider == codex::Provider::Codex {
+                    "full-access"
+                } else {
+                    "bypassPermissions"
+                }
+                .into(),
+            );
+            state.resolved_access = state.access.clone();
+            state.sandbox = Some(json!({"type":"dangerFullAccess"}));
+            state.approval_policy = Some(json!("never"));
+            assert!(!session_launched_with_yolo(&state));
+            state.saved.config_args = provider
+                .launch_options(&provider.agent().launch_args_for_backend(true, true, false))
+                .unwrap()
+                .0;
+            let saved =
+                serde_json::from_value(serde_json::to_value(&state.saved).unwrap()).unwrap();
+            state = Snapshot::new(saved);
+            assert!(session_launched_with_yolo(&state));
+            state.access = Some("plan".into());
+            state.resolved_access = Some("plan".into());
+            assert!(
+                session_launched_with_yolo(&state),
+                "effective provider fallback does not rewrite launch identity"
+            );
+            assert!(!session_has_yolo_access(&state));
+            state.saved.native_config_version = 0;
+            assert!(
+                !session_launched_with_yolo(&state),
+                "legacy CLI bypass is not a native Yolo launch"
+            );
+        }
+    }
+
+    #[test]
+    fn yolo_readonly_requires_launch_provenance_and_effective_bypass() {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.saved.config_args = provider
+                .launch_options(&provider.agent().launch_args_for_backend(true, true, false))
+                .unwrap()
+                .0;
+            if provider == codex::Provider::Codex {
+                state.resolved_access = Some("full-access".into());
+                state.sandbox = Some(json!({"type":"dangerFullAccess"}));
+                state.approval_policy = Some(json!("on-request"));
+                assert!(!session_has_yolo_access(&state));
+                state.approval_policy = Some(json!("never"));
+                assert!(session_has_yolo_access(&state));
+                state.sandbox = Some(json!({"type":"readOnly"}));
+                assert!(!session_has_yolo_access(&state));
+            } else {
+                state.resolved_access = Some("default".into());
+                assert!(!session_has_yolo_access(&state));
+                state.resolved_access = Some("bypassPermissions".into());
+                assert!(session_has_yolo_access(&state));
+                state.access = Some("default".into());
+                assert!(!session_has_yolo_access(&state));
+            }
+        }
     }
 
     #[gpui::test]
@@ -10906,13 +10975,100 @@ mod tests {
     }
 
     #[gpui::test]
+    fn explicit_full_access_remains_reversible_for_codex_and_claude(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::settings::SettingsState::new(
+                grove_core::storage::Store::default(),
+            ));
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for restored in [false, true] {
+                let (view, cx, actions, _) = fixture(cx);
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, cx| {
+                            let access = if provider == codex::Provider::Codex {
+                                "full-access"
+                            } else {
+                                "bypassPermissions"
+                            };
+                            session.state.saved.provider = provider;
+                            session.state.saved.composer.access = Some(access.into());
+                            if restored {
+                                let saved = serde_json::from_value(
+                                    serde_json::to_value(&session.state.saved).unwrap(),
+                                )
+                                .unwrap();
+                                session.state = Snapshot::new(saved).into();
+                            }
+                            // Restored sessions publish their connected state after startup.
+                            session.state.status = Status::Idle;
+                            session.state.access = Some(access.into());
+                            session.state.resolved_access = Some(access.into());
+                            session.state.permission_modes =
+                                ["default", "acceptEdits", "bypassPermissions"]
+                                    .map(str::to_owned)
+                                    .to_vec();
+                            cx.notify();
+                        });
+                    });
+                });
+                for enabled in [false, true] {
+                    cx.update(|_, cx| {
+                        cx.global_mut::<crate::settings::SettingsState>()
+                            .store
+                            .yolo_enabled = enabled;
+                    });
+                    draw(cx);
+                    assert!(
+                        cx.debug_bounds("codex-yolo-access").is_none(),
+                        "new-session Settings preferences must not relabel an existing session"
+                    );
+                }
+                draw(cx);
+                assert!(
+                    cx.debug_bounds("codex-yolo-access").is_none(),
+                    "an explicit access choice must not turn into a Yolo launch"
+                );
+                let trigger = view.read_with(cx, |view, _| view.option_bounds[2].get());
+                cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+                draw(cx);
+                let popup = cx.debug_bounds("codex-options-popup").unwrap();
+                // Both providers have three choices plus configured defaults.
+                let first_row =
+                    gpui::point(popup.center().x, popup.top() + popup.size.height * 0.125);
+                cx.simulate_click(first_row, gpui::Modifiers::default());
+                draw(cx);
+                let expected = if provider == codex::Provider::Codex {
+                    "read-only"
+                } else {
+                    "default"
+                };
+                assert!(actions.try_iter().any(|action| matches!(action, Action::Configure { access: Some(access), .. } if access == expected)));
+                assert!(view.read_with(cx, |view, _| view.popup.is_none()));
+            }
+        }
+    }
+
+    #[gpui::test]
     fn yolo_access_is_readonly_and_cannot_open_access_menu(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(crate::settings::SettingsState::new(
+                grove_core::storage::Store::default(),
+            ));
+        });
         let (view, cx, actions, _) = fixture(cx);
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
                     view.session.update(cx, |session, cx| {
                         session.state.saved.provider = provider;
+                        session.state.saved.config_args = provider
+                            .launch_options(
+                                &provider.agent().launch_args_for_backend(true, true, false),
+                            )
+                            .unwrap()
+                            .0;
                         session.state.access = Some(
                             if provider == codex::Provider::Codex {
                                 "full-access"
@@ -10928,9 +11084,16 @@ mod tests {
                     assert!(view.menu.is_none());
                 });
             });
-            draw(cx);
-            assert!(cx.debug_bounds("codex-yolo-access").is_some());
-            assert!(cx.debug_bounds("codex-access-summary").is_none());
+            for enabled in [false, true] {
+                cx.update(|_, cx| {
+                    cx.global_mut::<crate::settings::SettingsState>()
+                        .store
+                        .yolo_enabled = enabled;
+                });
+                draw(cx);
+                assert!(cx.debug_bounds("codex-yolo-access").is_some());
+                assert!(cx.debug_bounds("codex-access-summary").is_none());
+            }
         }
         assert!(!actions
             .try_iter()
@@ -11059,6 +11222,15 @@ mod tests {
                 } else if kind == "claude-yolo" {
                     state.saved.provider = codex::Provider::Claude;
                     state.access = Some("bypassPermissions".into());
+                }
+                if kind != "configured" {
+                    let provider = state.saved.provider;
+                    state.saved.config_args = provider
+                        .launch_options(
+                            &provider.agent().launch_args_for_backend(true, true, false),
+                        )
+                        .unwrap()
+                        .0;
                 }
                 let (handle, _actions) = Handle::channel();
                 let (_updates, receive) = mpsc::channel();
@@ -15131,6 +15303,59 @@ mod tests {
             assert!(!actions
                 .try_iter()
                 .any(|action| matches!(action, Action::Configure { .. })));
+        }
+    }
+
+    #[gpui::test]
+    fn codex_and_claude_access_popup_pointer_selection_dispatches_configuration(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, actions, _) = fixture(cx);
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.permission_modes = ["default", "acceptEdits", "plan"]
+                            .map(str::to_owned)
+                            .to_vec();
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            let trigger = view.read_with(cx, |view, _| view.option_bounds[2].get());
+            cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
+            draw(cx);
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            draw(cx);
+            cx.simulate_click(trigger.center(), gpui::Modifiers::default());
+            draw(cx);
+            let popup = cx.debug_bounds("codex-options-popup").unwrap();
+            // Both fixtures have four rows; use the rendered menu's second row.
+            let second_row = gpui::point(popup.center().x, popup.top() + popup.size.height * 0.375);
+            cx.simulate_mouse_move(second_row, None, gpui::Modifiers::default());
+            draw(cx);
+            cx.simulate_mouse_down(
+                second_row,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            cx.simulate_mouse_up(
+                second_row,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            let expected = if provider == codex::Provider::Claude {
+                "acceptEdits"
+            } else {
+                "workspace-write"
+            };
+            assert!(actions.try_iter().any(|action| matches!(action, Action::Configure { access: Some(access), model: None, effort: None } if access == expected)));
+            assert!(view.read_with(cx, |view, _| view.popup.is_none()));
         }
     }
 

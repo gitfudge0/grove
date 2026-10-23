@@ -622,6 +622,7 @@ impl Actor {
     }
     fn drain_queue(&mut self) -> bool {
         if self.initialized
+            && self.permission_changes.is_empty()
             && self.state.queue_uncertain.is_empty()
             && !self.state.status.busy()
             && (self.queue_ready || self.deferred.is_some() || self.initial.is_some())
@@ -703,6 +704,7 @@ impl Actor {
             && self.in_flight.is_none()
             && self.pending_completion.is_none()
             && !self.configuring
+            && self.permission_changes.is_empty()
             && !self.interrupting
             && !self.redirect_pending
             && self.state.saved.pending_edit.is_none();
@@ -860,6 +862,17 @@ impl Actor {
         )?;
         Ok(())
     }
+    fn configure_pending_access(&mut self) -> Result<(), String> {
+        if !self.initialized || self.reset_configuration || !self.permission_changes.is_empty() {
+            return Ok(());
+        }
+        if let Some(access) = self.pending_access.take() {
+            self.control(
+                json!({"subtype":"set_permission_mode","mode":permission_mode(&access)?}),
+            )?;
+        }
+        Ok(())
+    }
     fn capture_edit_checkpoint(&mut self) {
         let mut roots = vec![std::path::PathBuf::from(&self.state.saved.cwd)];
         roots.extend(
@@ -888,6 +901,7 @@ impl Actor {
             || self.in_flight.is_some()
             || self.pending_completion.is_some()
             || self.configuring
+            || !self.permission_changes.is_empty()
             || self.interrupting
             || self.redirect_pending
         {
@@ -1065,7 +1079,7 @@ impl Actor {
     }
     fn submit_inner(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
         codex::validate_prompt(&text, &images)?;
-        if !self.initialized || self.state.status.busy() {
+        if !self.initialized || self.state.status.busy() || self.deferred.is_some() {
             return Err(
                 "Claude Code is busy; queue this message to send it after the current turn".into(),
             );
@@ -1074,6 +1088,12 @@ impl Actor {
             && !self.state.queue_sending.contains(&id)
         {
             self.state.queue_sending.push(id);
+        }
+        if !self.permission_changes.is_empty() {
+            // Keep an explicitly submitted prompt behind the permission ACK;
+            // selecting a mode alone never starts a turn.
+            self.deferred = Some(QueuedPrompt { id, text, images });
+            return Ok(());
         }
         if self.reconfigure {
             self.deferred = Some(QueuedPrompt { id, text, images });
@@ -1438,6 +1458,7 @@ impl Actor {
                 effort,
                 access,
             } => {
+                let configure_model_effort = model.is_some() || effort.is_some();
                 if let Some(effort) = &effort {
                     if !["low", "medium", "high", "xhigh", "max"].contains(&effort.as_str()) {
                         return Err(format!("Unsupported Claude Code effort: {effort}"));
@@ -1473,7 +1494,8 @@ impl Actor {
                     self.pending_access = Some(permission_mode(&access)?.into());
                 }
                 self.state.saved.composer.reset_to_configured = false;
-                self.reconfigure = true;
+                self.reconfigure |= configure_model_effort;
+                self.configure_pending_access()?;
             }
 
             Action::ResetModelEffort => {
@@ -2071,9 +2093,6 @@ impl Actor {
                     if let Some(mode) = data["current_permission_mode"].as_str() {
                         self.effective_permission_mode(mode);
                     }
-                    if self.pending_access.is_some() {
-                        self.reconfigure = true;
-                    }
                     self.state.resolved_model = data["models"]
                         .as_array()
                         .and_then(|models| models.iter().find(|m| m["value"] == "default"))
@@ -2566,6 +2585,7 @@ impl Actor {
             _ => {}
         }
         self.state.refresh_interaction_status();
+        self.configure_pending_access()?;
         Ok(())
     }
     fn assistant_block_id(
@@ -2938,6 +2958,127 @@ mod tests {
         assert_eq!(permission_modes_from_help("--permission-mode <mode> Permission mode (choices: \"acceptEdits\", \"manual\", \"plan\")"), vec!["acceptEdits", "manual", "plan"]);
         assert!(permission_modes_from_help("unknown CLI version").is_empty());
     }
+    #[test]
+    fn permission_selection_dispatches_before_first_prompt_and_waits_for_ack() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.state.resolved_access = Some("default".into());
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("plan".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            actor.permission_changes.len(),
+            1,
+            "selection must send a permission control request without requiring a prompt"
+        );
+        let request = read(&mut reader);
+        assert_eq!(
+            request["request"],
+            json!({"subtype":"set_permission_mode","mode":"plan"})
+        );
+        assert_eq!(actor.state.status, Status::Idle);
+        assert!(actor.state.access.is_none());
+        assert!(actor.state.saved.composer.access.is_none());
+        actor
+            .submit(41, "an explicit user prompt".into(), vec![])
+            .unwrap();
+        assert!(actor.submit(42, "another prompt".into(), vec![]).is_err());
+        assert_eq!(actor.state.rejected_submission, Some(42));
+        assert_eq!(actor.deferred.as_ref().unwrap().id, 41);
+        assert!(actor.in_flight.is_none());
+        assert!(!actor.drain_queue());
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"]}})).unwrap();
+        assert_eq!(actor.state.access.as_deref(), Some("plan"));
+        assert_eq!(actor.state.saved.composer.access.as_deref(), Some("plan"));
+        assert!(actor.drain_queue());
+        assert_eq!(read(&mut reader)["type"], "user");
+    }
+
+    #[test]
+    fn permission_selection_survives_initialization_and_rejection_keeps_effective_access() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("plan".into()),
+            })
+            .unwrap();
+        assert!(actor.permission_changes.is_empty());
+        actor
+            .pending
+            .insert("initialize".into(), "initialize".into());
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":"initialize","response":{"current_permission_mode":"default"}}})).unwrap();
+        assert_eq!(actor.permission_changes.len(), 1);
+        let request = read(&mut reader);
+        assert_eq!(
+            request["request"],
+            json!({"subtype":"set_permission_mode","mode":"plan"})
+        );
+        actor.message(json!({"type":"control_response","response":{"subtype":"error","request_id":request["request_id"],"error":"mode unavailable"}})).unwrap();
+        assert_eq!(actor.state.resolved_access.as_deref(), Some("default"));
+        assert!(actor.state.saved.composer.access.is_none());
+        assert_eq!(actor.state.error.as_deref(), Some("mode unavailable"));
+        assert!(actor.deferred.is_none());
+        assert!(actor.in_flight.is_none());
+        assert_eq!(actor.state.status, Status::Idle);
+    }
+
+    #[test]
+    fn busy_permission_selection_serializes_changes_without_applying_model_or_effort() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("active".into());
+        actor
+            .action(Action::Configure {
+                model: Some("sonnet".into()),
+                effort: Some("low".into()),
+                access: Some("plan".into()),
+            })
+            .unwrap();
+        assert_eq!(actor.permission_changes.len(), 1);
+        let first = read(&mut reader);
+        assert_eq!(actor.pending.len(), 1);
+        assert!(actor
+            .redirect(42, "steer while the mode is pending".into(), vec![])
+            .is_err());
+        actor
+            .action(Action::Configure {
+                model: None,
+                effort: None,
+                access: Some("acceptEdits".into()),
+            })
+            .unwrap();
+        assert_eq!(actor.permission_changes.len(), 1);
+        assert_eq!(actor.pending_access.as_deref(), Some("acceptEdits"));
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":first["request_id"]}})).unwrap();
+        assert_eq!(actor.state.access.as_deref(), Some("plan"));
+        let second = read(&mut reader);
+        assert_eq!(
+            second["request"],
+            json!({"subtype":"set_permission_mode","mode":"acceptEdits"})
+        );
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":second["request_id"]}})).unwrap();
+        assert_eq!(actor.state.access.as_deref(), Some("acceptEdits"));
+        assert_eq!(actor.state.status, Status::Working);
+        assert_eq!(actor.state.turn_id.as_deref(), Some("active"));
+        assert!(
+            actor.reconfigure,
+            "model and effort remain pending for the next turn"
+        );
+        assert!(actor.pending.is_empty());
+        assert!(actor.in_flight.is_none());
+    }
+
     #[test]
     fn claude_permission_change_ack_is_bound_to_request_and_fallback_is_authoritative() {
         let mut actor = actor();
