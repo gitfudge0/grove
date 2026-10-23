@@ -3010,14 +3010,14 @@ impl Sidebar {
                         .agent
                         .multi_root_launch_args_for_backend(
                             crate::runtime::native_codex_enabled(store, None),
-                            store.dangerously_skip_permissions_enabled.unwrap_or(false),
+                            store.yolo_enabled,
                             store.chrome_enabled.unwrap_or(false),
                             &extra_roots,
                         )
                         .unwrap_or_else(|| {
                             meta.agent.launch_args_for_backend(
                                 crate::runtime::native_codex_enabled(store, None),
-                                store.dangerously_skip_permissions_enabled.unwrap_or(false),
+                                store.yolo_enabled,
                                 store.chrome_enabled.unwrap_or(false),
                             )
                         });

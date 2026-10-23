@@ -237,7 +237,7 @@ impl Runtime {
             let store = &cx.global::<SettingsState>().store;
             agent.launch_args_for_backend(
                 native_codex_enabled(store, None),
-                store.dangerously_skip_permissions_enabled.unwrap_or(false),
+                store.yolo_enabled,
                 store.chrome_enabled.unwrap_or(false),
             )
         };
@@ -994,7 +994,7 @@ impl Runtime {
             let store = &cx.global::<SettingsState>().store;
             agent.multi_root_launch_args_for_backend(
                 native_codex_enabled(store, None),
-                store.dangerously_skip_permissions_enabled.unwrap_or(false),
+                store.yolo_enabled,
                 store.chrome_enabled.unwrap_or(false),
                 &extra_roots,
             )

@@ -429,9 +429,12 @@ pub struct Store {
     /// Installed releases whose highlights have already been presented.
     #[serde(default)]
     pub seen_highlights_versions: Vec<String>,
-    /// None is treated as `true` (bypass enabled), preserving pre-existing upgrade behavior.
+    /// Legacy CLI-only preference, retained for compatibility; never enables Yolo.
     #[serde(default)]
     pub dangerously_skip_permissions_enabled: Option<bool>,
+    /// Launch new native and CLI agents with bypass permissions. Missing means off.
+    #[serde(default)]
+    pub yolo_enabled: bool,
     #[serde(default)]
     pub chrome_enabled: Option<bool>,
     /// None is treated as `true` (opt-out model).
@@ -794,6 +797,7 @@ pub(crate) mod tests {
             skipped_version: None,
             seen_highlights_versions: vec![],
             dangerously_skip_permissions_enabled: Some(false),
+            yolo_enabled: false,
             chrome_enabled: Some(true),
             telemetry_enabled: Some(true),
             grid_order: vec![],
@@ -878,6 +882,24 @@ pub(crate) mod tests {
         );
         assert!(store.dangerously_skip_permissions_enabled.is_none());
         assert!(store.recent_launches.is_empty());
+    }
+
+    #[test]
+    fn yolo_requires_explicit_opt_in_independent_of_legacy_cli_preference() {
+        for legacy in ["true", "false"] {
+            let json =
+                format!(r#"{{"projects":[],"dangerously_skip_permissions_enabled":{legacy}}}"#);
+            let mut store: Store = serde_json::from_str(&json).unwrap();
+            assert!(!store.yolo_enabled);
+            store.yolo_enabled = true;
+            let recovered: Store =
+                serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
+            assert!(recovered.yolo_enabled);
+            store.yolo_enabled = false;
+            let recovered: Store =
+                serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
+            assert!(!recovered.yolo_enabled);
+        }
     }
 
     #[test]

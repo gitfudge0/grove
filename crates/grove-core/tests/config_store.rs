@@ -99,6 +99,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
         last_update_check: Some(1_700_000_000),
         skipped_version: Some("v0.9.0".into()),
         dangerously_skip_permissions_enabled: Some(true),
+        yolo_enabled: true,
         chrome_enabled: Some(true),
         telemetry_enabled: Some(false),
         grid_order: vec!["myapp::/home/user/myapp".into()],
@@ -131,6 +132,7 @@ fn store_round_trips_through_write_atomic_and_manual_read() {
     assert_eq!(recovered.last_update_check, Some(1_700_000_000));
     assert_eq!(recovered.skipped_version.as_deref(), Some("v0.9.0"));
     assert_eq!(recovered.dangerously_skip_permissions_enabled, Some(true));
+    assert!(recovered.yolo_enabled);
     assert_eq!(recovered.telemetry_enabled, Some(false));
     assert_eq!(recovered.grid_order, original.grid_order);
     assert!(!recovered.theme_follow_system);

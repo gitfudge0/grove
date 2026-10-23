@@ -81,25 +81,25 @@ impl Agent {
         args
     }
 
-    /// Global permission preferences belong to CLI agents only. Explicit native
-    /// caller options are passed separately and must not use this preference.
+    /// Yolo applies to fresh CLI and native launches. Native adapters translate
+    /// these flags into provider options; saved sessions keep their own options.
     pub fn launch_args_for_backend(
         self,
-        native: bool,
+        _native: bool,
         skip_permissions: bool,
         chrome: bool,
     ) -> Vec<String> {
-        self.launch_args(!native && skip_permissions, chrome)
+        self.launch_args(skip_permissions, chrome)
     }
 
     pub fn multi_root_launch_args_for_backend(
         self,
-        native: bool,
+        _native: bool,
         skip_permissions: bool,
         chrome: bool,
         additional_roots: &[String],
     ) -> Option<Vec<String>> {
-        self.multi_root_launch_args(!native && skip_permissions, chrome, additional_roots)
+        self.multi_root_launch_args(skip_permissions, chrome, additional_roots)
     }
 
     /// Builds launch arguments for one primary root plus additional writable roots.
@@ -369,25 +369,51 @@ fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn cli_access_preference_is_absent_from_native_launches_with_roots_and_chrome() {
+    fn yolo_applies_to_cli_and_native_launches_with_roots_and_chrome() {
         let roots = vec!["/extra".to_owned()];
+        for agent in [
+            Agent::Claude,
+            Agent::Codex,
+            Agent::OpenCode,
+            Agent::Terminal,
+        ] {
+            for native in [false, true] {
+                for yolo in [false, true] {
+                    assert_eq!(
+                        agent.launch_args_for_backend(native, yolo, true),
+                        agent.launch_args(yolo, true)
+                    );
+                    assert_eq!(
+                        agent.multi_root_launch_args_for_backend(native, yolo, true, &roots),
+                        agent.multi_root_launch_args(yolo, true, &roots)
+                    );
+                }
+            }
+        }
         for agent in [Agent::Claude, Agent::Codex] {
-            assert_eq!(
-                agent.launch_args_for_backend(true, true, true),
-                agent.launch_args(false, true)
+            let off = agent.launch_args_for_backend(true, false, false);
+            assert!(!off.iter().any(|arg| arg.contains("dangerously")));
+            let off_options = if agent == Agent::Codex {
+                crate::codex::launch_options(&off).unwrap().0
+            } else {
+                crate::claude::launch_options(&off).unwrap().0
+            };
+            assert!(
+                off_options.is_empty(),
+                "off must leave provider defaults alone"
             );
-            assert_eq!(
-                agent.multi_root_launch_args_for_backend(true, true, true, &roots),
-                agent.multi_root_launch_args(false, true, &roots)
-            );
-            assert_eq!(
-                agent.launch_args_for_backend(false, true, true),
-                agent.launch_args(true, true)
-            );
-            assert_eq!(
-                agent.multi_root_launch_args_for_backend(false, true, true, &roots),
-                agent.multi_root_launch_args(true, true, &roots)
-            );
+            let on = agent.launch_args_for_backend(true, true, false);
+            let options = if agent == Agent::Codex {
+                crate::codex::launch_options(&on).unwrap().0
+            } else {
+                crate::claude::launch_options(&on).unwrap().0
+            };
+            if agent == Agent::Codex {
+                assert!(options.contains(&"approval_policy=\"never\"".into()));
+                assert!(options.contains(&"sandbox_mode=\"danger-full-access\"".into()));
+            } else {
+                assert!(options.contains(&"--dangerously-skip-permissions".into()));
+            }
         }
     }
     #[cfg(unix)]

@@ -501,9 +501,9 @@ impl SettingsPanel {
         self.save(cx, |store| store.default_agent = Some(agent));
     }
 
-    fn set_permissions(&mut self, skip: bool, cx: &mut Context<Self>) {
+    fn set_yolo(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.save(cx, |store| {
-            store.dangerously_skip_permissions_enabled = Some(skip);
+            store.yolo_enabled = enabled;
         });
     }
 
@@ -743,7 +743,7 @@ impl SettingsPanel {
         let zoom = cx.global::<ZoomState>().zoom;
         let tmux_on = store.tmux_enabled.unwrap_or(false);
         let tmux_available = grove_core::tmux::available();
-        let skip = store.dangerously_skip_permissions_enabled.unwrap_or(false);
+        let skip = store.yolo_enabled;
         let chrome = store.chrome_enabled.unwrap_or(false);
         let terminal_agents = cfg!(windows) || runs_agents_in_terminal(store);
         let telemetry = SettingsState::telemetry_enabled(store);
@@ -893,19 +893,20 @@ impl SettingsPanel {
                     el.on_click(cx.listener(|this, _, _, cx| this.set_backend(true, cx)))
                 }),
             );
-        let mut permissions = Self::choices();
-        for (enabled, label) in [(false, "Ask before running"), (true, "Skip prompts")] {
-            permissions = permissions.child(
-                self.choice(
-                    format!("settings-permissions-{enabled}"),
-                    label,
-                    skip == enabled,
-                    true,
-                )
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_permissions(enabled, cx))),
-            );
-        }
+        let permissions = self
+            .button("settings-yolo", "Yolo mode", skip, true)
+            .role(gpui::Role::Switch)
+            .aria_toggled(if skip {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
+            .h(rpx(SWITCH_H))
+            .border_0()
+            .px_0()
+            .bg(c::BG())
+            .child(super::components::switch_track(skip))
+            .on_click(cx.listener(move |this, _, _, cx| this.set_yolo(!skip, cx)));
         let mut browser = Self::choices();
         let mut terminal_agents_control = Self::choices();
         for (enabled, label) in [(false, "Off"), (true, "On")] {
@@ -1023,9 +1024,8 @@ impl SettingsPanel {
                 } else {
                     "Conversation view is experimental. OpenCode always uses a terminal. Open and saved conversations are preserved."
                 }))
-                .child(Self::section("Terminal agent access"))
-                .child(Self::setting_row("Permission prompts", "Choose how CLI agents run commands. Native conversations use their provider’s access controls.", permissions))
-                .when(skip, |body| body.child(div().id("settings-permission-warning").role(gpui::Role::Alert).text_size(rpx(TEXT_SMALL)).text_color(c::AMBER()).child("CLI agents can run commands without asking. Use only in projects you trust.")))
+                .child(Self::section("Agent access"))
+                .child(Self::setting_row("Yolo mode", "Launch new CLI and native sessions with bypass permissions. When off, agents use their defaults. OpenCode uses its own permissions.", permissions))
                 .child(Self::section("Browser access"))
                 .child(Self::setting_row("Claude in Chrome", "Let Claude read and control Chrome tabs.", browser))
         ));

@@ -4878,6 +4878,34 @@ mod tests {
         );
     }
     #[test]
+    fn fresh_yolo_options_survive_saved_session_resume_for_both_providers() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let args = provider.agent().launch_args_for_backend(true, true, false);
+            let options = if provider == Provider::Codex {
+                launch_options(&args).unwrap().0
+            } else {
+                crate::claude::launch_options(&args).unwrap().0
+            };
+            assert!(!options.is_empty());
+            let mut session = saved();
+            session.provider = provider;
+            session.native_config_version = 1;
+            session.config_args = options.clone();
+            session.composer.access = Some(
+                if provider == Provider::Codex {
+                    "full-access"
+                } else {
+                    "bypassPermissions"
+                }
+                .into(),
+            );
+            let mut recovered = recover_saved_for_test(&session);
+            recovered.migrate_native_config();
+            assert_eq!(recovered.config_args, options);
+            assert_eq!(recovered.composer.access, session.composer.access);
+        }
+    }
+    #[test]
     fn legacy_native_bypass_migration_preserves_explicit_access_and_custom_options() {
         for provider in [Provider::Codex, Provider::Claude] {
             let mut legacy = serde_json::to_value(saved()).unwrap();
