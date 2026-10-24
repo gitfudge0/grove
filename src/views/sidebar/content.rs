@@ -109,7 +109,7 @@ impl Sidebar {
                     .rounded(rpx(RADIUS_CONTROL))
                     .bg(c::RED())
                     .text_color(c::BG())
-                    .child(icon("trash", ICON_SM, c::FG_DIM()))
+                    .child(crate::icons::action_icon("trash", ICON_SM))
                     .child("Delete worktree"),
                 );
         } else if finished {

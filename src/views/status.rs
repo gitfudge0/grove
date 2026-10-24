@@ -73,8 +73,10 @@ pub fn codex_kind(status: grove_core::codex::Status) -> StatusKind {
 /// Fixed-size icon slot; reduced motion never schedules animation.
 pub fn mark(id: impl Into<SharedString>, kind: StatusKind, size: f32, cx: &App) -> AnyElement {
     let id = id.into();
+    let selector = format!("status-mark-{id}");
     let slot = div()
         .id(SharedString::from(format!("session-spinner-icon-{id}")))
+        .debug_selector(move || selector.clone())
         .size(rpx(size))
         .flex_shrink_0()
         .flex()
@@ -107,6 +109,29 @@ pub fn mark(id: impl Into<SharedString>, kind: StatusKind, size: f32, cx: &App) 
         .into_any_element()
     }
 }
+#[derive(gpui::IntoElement)]
+struct FirstLineMark {
+    mark: AnyElement,
+    size: f32,
+}
+
+impl gpui::RenderOnce for FirstLineMark {
+    fn render(self, window: &mut gpui::Window, _: &mut App) -> impl IntoElement {
+        // Resolve the inherited line height during layout, so different text roles
+        // and zoom levels center against the first line rather than the whole label.
+        div()
+            .w(rpx(self.size))
+            .h(window
+                .line_height()
+                .max(rpx(self.size).to_pixels(window.rem_size())))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(self.mark)
+    }
+}
+
 /// Plain semantic icon and matching text, with no badge background.
 pub fn label(
     id: impl Into<SharedString>,
@@ -122,13 +147,70 @@ pub fn label(
         .gap(rpx(SPACE_SM))
         .min_w_0()
         .text_color(kind.color())
-        .child(mark(id, kind, size, cx))
+        .child(FirstLineMark {
+            mark: mark(id, kind, size, cx),
+            size,
+        })
         .child(div().min_w_0().child(text))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ALIGNMENT_WIDTH: f32 = 180.;
+    const ALIGNMENT_LINE_H: f32 = 22.;
+    struct AlignmentProbe {
+        rem: f32,
+    }
+    impl gpui::Render for AlignmentProbe {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            window.set_rem_size(gpui::px(self.rem));
+            div()
+                .w(rpx(ALIGNMENT_WIDTH))
+                .text_size(rpx(super::super::tokens::TEXT_BODY))
+                .line_height(rpx(ALIGNMENT_LINE_H))
+                .child(
+                    label(
+                        "alignment-probe",
+                        StatusKind::Success,
+                        "A diagnostic that wraps onto several lines and preserves its leading mark",
+                        super::super::tokens::ICON_SM,
+                        cx,
+                    )
+                    .debug_selector(|| "alignment-label".into()),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn status_mark_centers_on_first_line_at_each_zoom(cx: &mut gpui::TestAppContext) {
+        for rem in [crate::zoom::REM_BASE, 20.] {
+            let (_, cx) = cx.add_window_view(|_, _| AlignmentProbe { rem });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let row = cx.debug_bounds("alignment-label").unwrap();
+            let mark = cx.debug_bounds("status-mark-alignment-probe").unwrap();
+            let scale = rem / crate::zoom::REM_BASE;
+            assert!(
+                f32::from(row.size.height) > ALIGNMENT_LINE_H * scale,
+                "probe must exercise multiline text"
+            );
+            let expected = (ALIGNMENT_LINE_H - super::super::tokens::ICON_SM) * scale / 2.;
+            assert!(
+                (f32::from(mark.top() - row.top()) - expected).abs() <= 0.5,
+                "mark must center on the first line within layout pixel rounding"
+            );
+            assert_eq!(f32::from(mark.size.width), 12. * scale);
+        }
+    }
+
     #[test]
     fn lifecycle_adapters_preserve_semantic_distinctions() {
         use grove_core::codex::Status;
@@ -171,7 +253,7 @@ mod native_snapshots {
     use super::*;
     use crate::views::tokens::{ICON_SM, SPACE_3XL, SPACE_LG, TEXT_SMALL};
     use gpui::{Context, Render, Window};
-    const STATUS_GALLERY_HEIGHT: f32 = 780.;
+    const STATUS_GALLERY_HEIGHT: f32 = 960.;
     struct StatusGallery;
     impl Render for StatusGallery {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -196,6 +278,27 @@ mod native_snapshots {
                 (StatusKind::Failed, "Literal provider diagnostic: the connection could not be restored. Your draft remains available.\nAdditional diagnostic details remain visible and wrap within this panel."),
             ].into_iter().enumerate() {
                 panel = panel.child(label(format!("gallery-{index}"), kind, text, ICON_SM, cx));
+            }
+            // The action glyph must inherit both inverse rest and semantic
+            // hover/focus foregrounds; actual interaction is checked in the app.
+            for (text, fill, foreground) in [
+                ("Delete worktree", c::RED(), c::BG()),
+                ("Hover foreground", c::RED_WASH(), c::RED()),
+                ("Focus foreground", c::RED_WASH(), c::RED()),
+            ] {
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .px(rpx(SPACE_LG))
+                        .h(rpx(super::super::tokens::CONTROL_H))
+                        .rounded(rpx(super::super::tokens::RADIUS_CONTROL))
+                        .bg(fill)
+                        .text_color(foreground)
+                        .child(crate::icons::action_icon("trash", ICON_SM))
+                        .child(text),
+                );
             }
             panel
         }

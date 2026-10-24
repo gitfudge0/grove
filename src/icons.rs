@@ -41,6 +41,28 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
         .text_color(color)
 }
 
+/// Action glyphs follow their button's foreground through hover and focus.
+pub fn action_icon(name: &str, size: f32) -> impl gpui::IntoElement {
+    ActionIcon {
+        name: name.to_owned().into(),
+        size,
+    }
+}
+
+#[derive(gpui::IntoElement)]
+struct ActionIcon {
+    name: SharedString,
+    size: f32,
+}
+
+impl gpui::RenderOnce for ActionIcon {
+    fn render(self, window: &mut gpui::Window, _: &mut gpui::App) -> impl gpui::IntoElement {
+        // SVG paint needs an explicit tint; resolve the owning button's current
+        // foreground here rather than choosing a second independent icon color.
+        icon(&self.name, self.size, window.text_style().color)
+    }
+}
+
 /// The rotating Working/loading arc. `tick` is the animation clock; the arc
 /// advances one of [`SPINNER_FRAMES`] fixed steps every 3 ticks — parity with
 /// `src/gui/icons.rs:136-138`.
