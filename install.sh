@@ -135,6 +135,17 @@ if [ "$PREBUILT" = 0 ]; then
   PROFILE_DIR="$PROFILE_DIR/$PROFILE"
   BUNDLE_DIR="$PROFILE_DIR/bundle"
 
+  # An interrupted link can leave a non-executable stub that cargo still treats
+  # as fresh; the bundled app then fails with "not supported on this Mac".
+  # Drop grove's artifacts so cargo relinks instead of reusing the stub.
+  if [ "$OS" = Darwin ] && [ -e "$PROFILE_DIR/grove" ] \
+    && ! file -b "$PROFILE_DIR/grove" | grep -q '^Mach-O'; then
+    echo "Discarding corrupt $PROFILE_DIR/grove; relinking..."
+    CLEAN_ARGS=(-p grove --profile "$PROFILE")
+    [ -n "$TARGET" ] && CLEAN_ARGS+=(--target "$TARGET")
+    cargo clean "${CLEAN_ARGS[@]}"
+  fi
+
   echo "Building $PROFILE bundle..."
   CARGO_BUNDLE_ARGS=(-p grove --profile "$PROFILE")
   [ -n "$BUNDLE_FORMAT" ] && CARGO_BUNDLE_ARGS+=(--format "$BUNDLE_FORMAT")
@@ -146,6 +157,8 @@ case "$OS" in
   Darwin)
     APP="$(find "$BUNDLE_DIR/osx" -maxdepth 1 -name '*.app' | head -n1)"
     [ -n "$APP" ] || { echo "Error: no .app produced." >&2; exit 1; }
+    file -b "$APP/Contents/MacOS/grove" | grep -q '^Mach-O' \
+      || { echo "Error: $APP has no valid executable; rerun install.sh." >&2; exit 1; }
     DEST="/Applications"
     [ -w "$DEST" ] || DEST="$HOME/Applications"
     mkdir -p "$DEST"
