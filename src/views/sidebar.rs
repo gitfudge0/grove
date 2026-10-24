@@ -2236,7 +2236,11 @@ impl Sidebar {
     }
 
     pub(super) fn html_overlay_open(&self) -> bool {
-        !self.navigation_available() || self.project_flyout.is_some()
+        !self.navigation_available()
+            || self.project_flyout.is_some()
+            // Native webviews sit above GPUI paint, including deferred previews.
+            // Keep them hidden through the preview's dismissal animation too.
+            || self.checkout_panel.peek.is_some()
     }
 
     pub(crate) fn highlights_blocked(&self) -> bool {

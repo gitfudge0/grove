@@ -38,6 +38,7 @@ impl Sidebar {
 
     pub(super) fn dismiss_agent_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.checkout_panel.peek_task = None;
+        self.checkout_panel.peek_hover_target = None;
         if let Some(peek) = self.checkout_panel.peek.as_mut() {
             if peek.closing {
                 return;
@@ -133,7 +134,7 @@ impl Sidebar {
         cx.notify();
     }
 
-    fn agent_peek_hover(
+    pub(super) fn agent_peek_hover(
         &mut self,
         session: SessionId,
         child: String,
@@ -141,6 +142,18 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // GPUI can deliver the next row's enter before the old row (or preview)
+        // leaves. An old source must not cancel the new source's intent timer.
+        if !hovered
+            && self
+                .checkout_panel
+                .peek_hover_target
+                .as_ref()
+                .is_some_and(|(owner, target)| *owner != session || *target != child)
+        {
+            return;
+        }
+        self.checkout_panel.peek_hover_target = hovered.then(|| (session, child.clone()));
         self.checkout_panel.peek_task = None;
         if self
             .checkout_panel
@@ -238,6 +251,7 @@ impl Sidebar {
         {
             self.checkout_panel.peek = None;
             self.checkout_panel.peek_task = None;
+            self.checkout_panel.peek_hover_target = None;
             return None;
         }
         if peek.closing && cx.reduce_motion() {
@@ -257,6 +271,7 @@ impl Sidebar {
         let Some(session) = session else {
             self.checkout_panel.peek = None;
             self.checkout_panel.peek_task = None;
+            self.checkout_panel.peek_hover_target = None;
             return None;
         };
         let state = &session.read(cx).state;
@@ -271,6 +286,7 @@ impl Sidebar {
         let Some(agent) = agent else {
             self.checkout_panel.peek = None;
             self.checkout_panel.peek_task = None;
+            self.checkout_panel.peek_hover_target = None;
             return None;
         };
         let activity = state.subagent_activity.get(&child).cloned();

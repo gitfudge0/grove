@@ -42,6 +42,7 @@ pub(super) struct CheckoutPanel {
     pub(super) agent_observer: Option<(gpui::EntityId, gpui::Subscription)>,
     pub(super) peek: Option<AgentPeek>,
     pub(super) peek_task: Option<gpui::Task<()>>,
+    pub(super) peek_hover_target: Option<(SessionId, String)>,
     pub(super) peek_close_task: Option<gpui::Task<()>>,
     pub(super) peek_presence: motion::Presence,
     pub(super) agent_focus: HashMap<String, FocusHandle>,
@@ -1172,6 +1173,7 @@ impl Sidebar {
         {
             self.checkout_panel.peek = None;
             self.checkout_panel.peek_task = None;
+            self.checkout_panel.peek_hover_target = None;
         }
         Some(section.into_any_element())
     }
@@ -1200,6 +1202,7 @@ impl Sidebar {
         if self.checkout_panel.root_owner != self.selection {
             self.checkout_panel.peek = None;
             self.checkout_panel.peek_task = None;
+            self.checkout_panel.peek_hover_target = None;
             self.checkout_panel.agent_focus.clear();
             self.checkout_panel.agent_bounds.clear();
             self.checkout_panel.root_owner = self.selection.clone();
@@ -2739,6 +2742,10 @@ mod tests {
                     status: grove_core::codex::SubagentStatus::Working,
                 }],
             }];
+            let mut second = next.saved.work_periods[0].subagents[0].clone();
+            second.id = "second-child".into();
+            second.name = "Reviewer".into();
+            next.saved.work_periods[0].subagents.push(second);
             // Only the provider update channel changes; do not notify Sidebar.
             updates.send(next).unwrap();
             cx.executor().advance_clock(Duration::from_millis(41));
@@ -2758,9 +2765,21 @@ mod tests {
                     let Some(Selection::Session(id)) = sidebar.selection else {
                         panic!("fixture session");
                     };
+                    assert!(
+                        !sidebar.html_overlay_open(),
+                        "resting transcript permits HTML"
+                    );
                     sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
+                    assert!(
+                        sidebar.html_overlay_open(),
+                        "preview must cover native HTML"
+                    );
                     sidebar.dismiss_agent_peek(window, cx);
                     assert!(sidebar.checkout_panel.peek.as_ref().unwrap().closing);
+                    assert!(
+                        sidebar.html_overlay_open(),
+                        "HTML stays hidden during dismissal"
+                    );
                     assert!(sidebar.checkout_panel.agent_focus["first-child"].is_focused(window));
                     sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
                 });
@@ -2776,6 +2795,7 @@ mod tests {
                         "old dismissal must not remove reopened {} preview",
                         provider.label()
                     );
+                    assert!(sidebar.html_overlay_open(), "reopening keeps HTML hidden");
                     sidebar.dismiss_agent_peek(window, cx);
                 });
             });
@@ -2792,15 +2812,82 @@ mod tests {
             cx.update(|window, cx| {
                 sidebar.update(cx, |sidebar, cx| {
                     assert!(sidebar.checkout_panel.peek.is_none());
+                    assert!(!sidebar.html_overlay_open(), "HTML returns after dismissal");
                     cx.set_reduce_motion(true);
                     let Some(Selection::Session(id)) = sidebar.selection else {
                         panic!("fixture session");
                     };
                     sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
+                    assert!(
+                        sidebar.html_overlay_open(),
+                        "static preview covers native HTML"
+                    );
                     sidebar.dismiss_agent_peek(window, cx);
                     assert!(sidebar.checkout_panel.peek.is_none());
+                    assert!(
+                        !sidebar.html_overlay_open(),
+                        "static dismissal restores HTML"
+                    );
+                    sidebar.agent_peek_hover(id, "first-child".into(), true, window, cx);
                 });
             });
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(220));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    let Some(Selection::Session(id)) = sidebar.selection else {
+                        panic!("fixture session");
+                    };
+                    assert_eq!(
+                        sidebar.checkout_panel.peek.as_ref().unwrap().child,
+                        "first-child"
+                    );
+                    // Enter can arrive before the old row/preview's exit.
+                    sidebar.agent_peek_hover(id, "second-child".into(), true, window, cx);
+                    sidebar.agent_peek_hover(id, "first-child".into(), false, window, cx);
+                });
+            });
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(220));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    let Some(Selection::Session(id)) = sidebar.selection else {
+                        panic!("fixture session");
+                    };
+                    assert_eq!(
+                        sidebar.checkout_panel.peek.as_ref().unwrap().child,
+                        "second-child",
+                        "quick hover handoff opens the next {} agent",
+                        provider.label()
+                    );
+                    sidebar.agent_peek_hover(id, "first-child".into(), false, window, cx);
+                });
+            });
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(260));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    let Some(Selection::Session(id)) = sidebar.selection else {
+                        panic!("fixture session");
+                    };
+                    assert_eq!(
+                        sidebar.checkout_panel.peek.as_ref().unwrap().child,
+                        "second-child",
+                        "stale exits cannot dismiss the new preview"
+                    );
+                    sidebar.agent_peek_hover(id, "second-child".into(), false, window, cx);
+                });
+            });
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(260));
+            cx.run_until_parked();
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_none()),
+                "leaving the current agent still dismisses its preview"
+            );
         }
     }
 
@@ -2822,6 +2909,8 @@ mod tests {
         let fixture_path = fixture.path().to_string_lossy().into_owned();
         cx.update(|cx| {
             gpui_component::init(cx);
+            // Immediate interaction checks; the separate lifecycle test covers exit motion.
+            cx.set_reduce_motion(true);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
                 projects: vec![grove_core::storage::Project {
                     name: "Checkout QA".into(),
