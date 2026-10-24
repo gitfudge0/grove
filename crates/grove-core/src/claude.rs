@@ -3229,7 +3229,8 @@ mod tests {
                 assert!(appended[0][1].contains("does not override explicit user preferences"));
                 assert!(appended[0][1].contains("TodoWrite or TaskCreate/TaskUpdate"));
                 assert!(appended[0][1].contains("select:TaskCreate,TaskUpdate"));
-                assert!(appended[0][1].contains("Keep task statuses current"));
+                assert!(appended[0][1].contains(crate::tasks::CLAUDE_GUIDANCE));
+                assert!(!appended[0][1].contains(crate::tasks::CODEX_GUIDANCE));
                 assert!(appended[0][1].contains("<!-- grove:integrated-report -->"));
                 assert!(appended[0][1].contains(crate::reports::REPORT_GUIDANCE));
                 assert!(appended[0][1].ends_with(crate::rich_plan::GUIDANCE));

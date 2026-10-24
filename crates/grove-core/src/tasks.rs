@@ -8,8 +8,28 @@
 //! ordinary transcript content.
 use serde_json::Value;
 
-pub(crate) const CLAUDE_GUIDANCE: &str = "Grove displays your structured task list. For multi-step work, use TodoWrite or TaskCreate/TaskUpdate to record the actionable steps before implementation. If TaskCreate/TaskUpdate are deferred, load them with ToolSearch (select:TaskCreate,TaskUpdate) before starting. Break long-running work into concrete, independently completable tasks whose titles describe the actual outcome. Split broad implementation work by meaningful deliverable, and track distinct checks, installation, and inspection separately when applicable. Refine the list as scope becomes clear so progress remains visible; avoid trivial steps or artificial checklist inflation. Keep task statuses current as work starts and finishes, including delegated work. A prose checklist alone does not update Grove's task list. Skip task tracking for simple single-step requests.";
-pub(crate) const CODEX_GUIDANCE: &str = "Grove displays your structured task list. For multi-step work, use update_plan to record the actionable steps before implementation. Break long-running work into concrete, independently completable tasks whose titles describe the actual outcome. Split broad implementation work by meaningful deliverable, and track distinct checks, installation, and inspection separately when applicable. Refine the list as scope becomes clear so progress remains visible; avoid trivial steps or artificial checklist inflation. Keep step statuses current as work starts and finishes, including delegated work. A prose checklist alone does not update Grove's task list. Skip task tracking for simple single-step requests.";
+// Keep the outcome/evidence policy identical across providers while respecting
+// their different task APIs. This is agent guidance, not inferred task state.
+macro_rules! task_guidance {
+    ($provider:literal) => {
+        concat!(
+            "Grove displays your structured task list. For substantial multi-step work, record tasks before implementation and maintain them as work proceeds. ",
+            "Create tasks around observable, independently completable outcomes; titles should describe results, for example 'Run shell snippets in the correct checkout' or 'Verify draft preservation with live Codex and Claude'. ",
+            "Split substantial shared prerequisites from the features that depend on them, and split broad feature groups into meaningful deliverables. Separate meaningful verification outcomes such as live provider checks and native UI inspection from implementation and from each other when they require different evidence. ",
+            "Refine the list as scope becomes clearer: split or add substantial work and discovered defects. Keep routine compiler fixes, repeated checks and cache cleanup in progress notes unless they become substantial blockers. Avoid tasks for every file, mechanical task inflation, and vague buckets such as 'implement everything' or 'verify integration'. Preserve small lists for genuinely small requests; skip task tracking for simple single-step requests. ",
+            "Mark an outcome completed only when the stated result has appropriate evidence; worker reports alone are not verification. Keep unverified coverage as explicitly unfinished verification work, distinguishable from completed implementation; record blockers or unavailable checks in progress notes rather than claiming they passed. ",
+            "Preserve task ownership and existing task state when revising the list. Task tracking does not override user disclosure preferences, permission boundaries or explicit instructions. A prose checklist alone does not update Grove's task list. ",
+            $provider
+        )
+    };
+}
+
+pub(crate) const CLAUDE_GUIDANCE: &str = task_guidance!(
+    "Use TodoWrite or TaskCreate/TaskUpdate. If TaskCreate/TaskUpdate are deferred, load them with ToolSearch (select:TaskCreate,TaskUpdate) before starting. Keep task statuses current as work starts and finishes, including delegated work. TaskCreate creates pending tasks; use TaskUpdate to mark each started task in_progress, including tasks being implemented by workers. TaskCreate/TaskUpdate can represent multiple active tasks; preserve owners and dependencies, and read the latest task state before updating shared tasks. TodoWrite replaces the list and its instructions limit it to one in_progress task: when using it, keep other delegated outcomes listed and disclose their active work in progress notes without claiming completion."
+);
+pub(crate) const CODEX_GUIDANCE: &str = task_guidance!(
+    "Use update_plan. Keep step statuses current as work starts and finishes, including delegated work. update_plan replaces the plan and allows at most one in_progress step: retain all unfinished outcomes, use that active step for the outcome currently being coordinated, and identify other concurrently active or delegated outcomes by title in the explanation or progress notes without collapsing their tasks into a vague bucket. Do not mark parallel work completed just to satisfy that limit, and do not treat pending as proof that no worker is active."
+);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -241,6 +261,42 @@ fn started_at(items: &[Value], index: usize, task: &Task) -> usize {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn provider_guidance_shares_outcome_and_evidence_policy() {
+        for guidance in [CODEX_GUIDANCE, CLAUDE_GUIDANCE] {
+            for clause in [
+                "observable, independently completable outcomes",
+                "Split substantial shared prerequisites",
+                "Separate meaningful verification outcomes",
+                "live provider checks and native UI inspection",
+                "split or add substantial work and discovered defects",
+                "routine compiler fixes, repeated checks and cache cleanup in progress notes",
+                "Preserve small lists for genuinely small requests",
+                "appropriate evidence; worker reports alone are not verification",
+                "Keep unverified coverage as explicitly unfinished verification work",
+                "Preserve task ownership and existing task state",
+                "user disclosure preferences, permission boundaries or explicit instructions",
+            ] {
+                assert!(guidance.contains(clause), "Missing task policy: {clause}");
+            }
+        }
+    }
+
+    #[test]
+    fn provider_guidance_respects_active_task_limits() {
+        assert!(CODEX_GUIDANCE.contains("at most one in_progress step"));
+        assert!(CODEX_GUIDANCE.contains("retain all unfinished outcomes"));
+        assert!(CODEX_GUIDANCE.contains("other concurrently active or delegated outcomes by title"));
+        assert!(CLAUDE_GUIDANCE.contains("TaskCreate creates pending tasks"));
+        assert!(
+            CLAUDE_GUIDANCE.contains("TaskCreate/TaskUpdate can represent multiple active tasks")
+        );
+        assert!(CLAUDE_GUIDANCE.contains(
+            "TodoWrite replaces the list and its instructions limit it to one in_progress task"
+        ));
+        assert!(CLAUDE_GUIDANCE.contains("read the latest task state"));
+    }
 
     fn codex(turn: &str, plan: Value) -> Value {
         json!({"id":format!("grove-plan-{turn}"),"type":"plan","text":"","plan":plan})

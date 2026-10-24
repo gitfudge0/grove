@@ -7846,8 +7846,8 @@ mod tests {
                 assert!(guidance.contains("Markdown link to the .grove-plan.json artifact"));
                 assert!(guidance.contains("Grove's Review response and Send response controls"));
                 assert!(guidance.contains("does not override explicit user preferences"));
-                assert!(guidance.contains("use update_plan"));
-                assert!(guidance.contains("Keep step statuses current"));
+                assert!(guidance.contains(crate::tasks::CODEX_GUIDANCE));
+                assert!(!guidance.contains(crate::tasks::CLAUDE_GUIDANCE));
                 assert!(guidance.contains(crate::reports::REPORT_GUIDANCE));
                 assert!(guidance.ends_with(crate::rich_plan::GUIDANCE));
                 if let Some(custom) = custom {

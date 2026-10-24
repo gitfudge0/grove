@@ -30,13 +30,30 @@ Policy choices are constructed from the original provider request inside the cor
 
 ## Structured task lists
 
-Both Codex and Claude receive guidance to break long-running work into concrete,
-independently completable tasks named for their outcomes. Broad implementation
-work is split by deliverable, with distinct checks, installation, and inspection
-tracked separately when applicable. Agents refine tasks as scope becomes clear
-and update their statuses as work progresses, including delegated work, without
-adding trivial steps or inflating the checklist. Simple single-step requests do
-not require a task list.
+Both Codex and Claude receive the same outcome and evidence policy from
+`crates/grove-core/src/tasks.rs`: substantial multi-step work gets observable,
+independently completable tasks. Substantial shared prerequisites and feature
+outcomes stay separate; meaningful verification outcomes, such as live provider
+checks and native UI inspection, are tracked separately from implementation.
+Agents refine the list as scope becomes clear and add substantial discovered
+defects. Routine compiler fixes, repeated checks and cache cleanup stay in
+progress notes unless they become substantial blockers. Small requests retain
+small lists; simple single-step requests need none.
+
+Completion requires evidence appropriate to the stated outcome. Unverified
+coverage remains explicitly unfinished verification work even when implementation
+is complete; a worker report alone is not verification. Existing ownership, task
+state, disclosure preferences and permission boundaries remain in force.
+
+Provider task semantics differ. Codex's `update_plan` replaces the list and allows
+at most one `in_progress` step. Keep every unfinished outcome listed, use the
+active step for the outcome being coordinated, and disclose concurrent delegated
+work in the explanation or progress notes. Claude's `TaskCreate` creates pending
+tasks; `TaskUpdate` can mark multiple started tasks active while preserving their
+owners and dependencies. Claude's legacy `TodoWrite` replaces the list and its
+instructions limit it to one active task, so concurrent delegated work must also
+be disclosed in progress notes. Grove projects explicit provider task updates;
+it does not infer completion or status changes from worker activity.
 
 Both agents also receive the integrated HTML report contract: when a visual
 report communicates better than prose, write a self-contained HTML document with
