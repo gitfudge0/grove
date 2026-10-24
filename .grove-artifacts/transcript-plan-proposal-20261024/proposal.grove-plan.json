@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "plan_id": "transcript-plan-reading",
+  "revision_id": "proposal-20261024-r1",
+  "title": "Keep plan reading inside the conversation",
+  "summary": "Proposed direction: show useful plan content inline, retain optional reading beside chat, and preserve the existing explicit feedback workflow. Review selects a direction; it does not authorize implementation.",
+  "sources": [
+    {
+      "attribution": "User request",
+      "text": "I'm unhappy with how plans show up in the transcript right now. It's not nice, opens as a separate window, and makes it harder to go back. Check how t3code and conductor.build do it. I want to improve our \"plan\" that shows up in transcript"
+    },
+    {
+      "attribution": "Grove source inspection",
+      "text": "native_plan.rs inline() replaces expanded content with a placeholder; render_expanded() paints an absolute inset_0 occluding shell layer. The brief returns before claim rendering. codex_view.rs retains plan entities by plan/revision within a session. shell.rs hosts expansion. This establishes a full-shell layer, not a separate native OS window."
+    },
+    {
+      "attribution": "Competitor references",
+      "text": "Reference research supplied by the coordinator: T3 ProposedPlanCard source has an inline preview with Expand plan / Collapse plan: https://github.com/pingdotgg/t3code/blob/main/apps/web/src/components/chat/ProposedPlanCard.tsx . Conductor docs describe plan approval and feedback: https://www.conductor.build/docs/concepts/agent-modes . A historical screenshot shows Reject Plan / Approve Plan above the composer: https://github.com/user-attachments/assets/2fedcbfa-dac9-4903-bd87-2766302876c6 . This is source/document and historical screenshot research, not live competitor interaction verification."
+    }
+  ],
+  "scope": [
+    "In scope: transcript brief, claim disclosure, optional in-window reading, review continuity.",
+    "Out of scope: product implementation before visual direction is resolved; provider authorization changes."
+  ],
+  "claims": [
+    {
+      "id": "reading",
+      "text": "Read useful plan content inside the transcript",
+      "detail": "Keep authored title and summary, visible behavior headings, disclosure controls, decision count and Review response action at the transcript anchor. Preferred default is inline reading. An optional side pane may offer long-form reading while the conversation remains available. Narrow layouts expand inline. Replace the current shell-level expansion, not the validated plan document model. Supporting evidence starts collapsed and comment actions remain quiet, so the plan reads as a document rather than repeated tool blocks.",
+      "exhibit": {
+        "path": "mock.html",
+        "label": "Compare proposed inline and side-pane reading",
+        "kind": "html_link"
+      },
+      "decisions": [
+        {
+          "id": "reading-default",
+          "prompt": "Where should plan reading open by default?",
+          "options": [
+            {
+              "id": "inline",
+              "label": "Inline (recommended)",
+              "description": "Open claims in the transcript; offer reading beside chat when space permits."
+            },
+            {
+              "id": "side-pane",
+              "label": "Side pane on wide layouts",
+              "description": "Keep a useful inline brief; default detailed reading to a pane beside chat. Narrow layouts still expand inline."
+            }
+          ],
+          "default": "inline"
+        }
+      ]
+    },
+    {
+      "id": "continuity",
+      "text": "Return to the same conversation position and draft",
+      "detail": "Retain source focus and transcript scroll when opening or closing the optional pane. Scope review drafts, claim disclosure and selected answers to session + plan_id + revision_id; never move drafts between sessions or revisions. Session switching closes the reading pane without dropping that revision\u2019s draft. Current native_plan.rs toggle_expansion() already tracks source focus; codex_view.rs retains plan entities by plan/revision. Extend continuity rather than replacing it.",
+      "exhibit": {
+        "states": [
+          {
+            "id": "inline",
+            "label": "Inline plan",
+            "screen": {
+              "kind": "schema",
+              "text": "Transcript anchor and draft retained"
+            }
+          },
+          {
+            "id": "pane",
+            "label": "Read beside chat",
+            "screen": {
+              "kind": "schema",
+              "text": "Wide layout only; same revision and draft"
+            }
+          },
+          {
+            "id": "review",
+            "label": "Review response",
+            "screen": {
+              "kind": "schema",
+              "text": "Canonical feedback preview in current context"
+            }
+          }
+        ],
+        "initial": "inline",
+        "transitions": [
+          {
+            "from": "inline",
+            "to": "pane",
+            "label": "Optional read beside chat on wide layouts"
+          },
+          {
+            "from": "pane",
+            "to": "inline",
+            "label": "Close / Escape; restore source focus and scroll"
+          },
+          {
+            "from": "inline",
+            "to": "review",
+            "label": "Review response"
+          },
+          {
+            "from": "review",
+            "to": "inline",
+            "label": "Back; retain draft"
+          }
+        ],
+        "kind": "state_machine"
+      }
+    },
+    {
+      "id": "delivery",
+      "text": "Keep review, copying and sending explicit",
+      "detail": "Preserve inert authored markup and validated assets. Review response previews the canonical payload; Copy response and Send response deliver identical authored line breaks and anchors. Only explicit Send response sends feedback. Selecting a recommendation remains an explicit answer, and sending review feedback never authorizes implementation. Keep send failure/uncertain/locked states and revision identity visible. Owning code: native_plan.rs review footer and SendPlanResponse dispatch; DESIGN.md Reports and native plans.",
+      "exhibit": {
+        "entries": [
+          {
+            "id": "review",
+            "title": "Review response",
+            "detail": "Open canonical response preview; preserve the draft."
+          },
+          {
+            "id": "copy",
+            "title": "Copy response",
+            "detail": "Copy the canonical preview text exactly."
+          },
+          {
+            "id": "send",
+            "title": "Send response",
+            "detail": "Explicitly deliver feedback for this session, plan and revision; no implementation authorization."
+          }
+        ],
+        "kind": "calls"
+      }
+    },
+    {
+      "id": "acceptance",
+      "text": "Verify native continuity and both provider boundaries",
+      "detail": "Before delivery, inspect actual native rendering wide and narrow, long headings, keyboard Tab/Enter/Space/Escape, source focus and scroll return, draft retention across collapse/session/revision switches, exact Copy/Send payload and inert authored markup. Codex: live provider boundary untested; exercise an actual Codex session and record delivery/retention evidence. Claude: live provider boundary untested; exercise an actual Claude session and record delivery/retention evidence, or explicitly report unsupported behavior. Mock interactions are visual evidence only. macOS/Linux/Windows behavior must be checked where platform paths change; no platform parity is established by this proposal. Update DESIGN.md with the selected invariant during implementation, then relevant checks and the authorized final install.",
+      "exhibit": {
+        "language": "text",
+        "text": "Proposal artifact only\nCodex live: untested\nClaude live: untested\nNative UI / keyboard / clipboard / delivery: untested\nNo product code, build or installation in this proposal",
+        "kind": "code"
+      }
+    }
+  ]
+}
