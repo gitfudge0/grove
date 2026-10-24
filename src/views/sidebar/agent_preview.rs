@@ -38,11 +38,28 @@ impl Sidebar {
 
     pub(super) fn dismiss_agent_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.checkout_panel.peek_task = None;
-        if let Some(peek) = self.checkout_panel.peek.take() {
+        if let Some(peek) = self.checkout_panel.peek.as_mut() {
+            if peek.closing {
+                return;
+            }
+            peek.closing = true;
             if peek.focus.contains_focused(window, cx) {
                 if let Some(source) = self.checkout_panel.agent_focus.get(&peek.child) {
                     source.focus(window, cx);
                 }
+            }
+            self.checkout_panel.peek_presence.set(false, cx);
+            if cx.reduce_motion() {
+                self.checkout_panel.peek = None;
+            } else {
+                let duration = self.checkout_panel.peek_presence.transition_duration();
+                self.checkout_panel.peek_close_task = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(duration).await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.checkout_panel.peek = None;
+                        cx.notify();
+                    });
+                }));
             }
         }
         cx.notify();
@@ -69,6 +86,11 @@ impl Sidebar {
         {
             return;
         }
+        self.checkout_panel.peek_close_task = None;
+        if self.checkout_panel.peek.is_none() {
+            self.checkout_panel.peek_presence = motion::Presence::fast();
+        }
+        self.checkout_panel.peek_presence.set(true, cx);
         let focus = cx.focus_handle();
         if explicit {
             focus.focus(window, cx);
@@ -103,6 +125,7 @@ impl Sidebar {
             session,
             child,
             explicit,
+            closing: false,
             focus,
             transcript,
             _tick: tick,
@@ -168,12 +191,9 @@ impl Sidebar {
         let key_child = agent.id.clone();
         checkout_agent_row(agent, provider, cx)
             .role(gpui::Role::Button)
-            .aria_expanded(
-                self.checkout_panel
-                    .peek
-                    .as_ref()
-                    .is_some_and(|peek| peek.session == session && peek.child == agent.id),
-            )
+            .aria_expanded(self.checkout_panel.peek.as_ref().is_some_and(|peek| {
+                !peek.closing && peek.session == session && peek.child == agent.id
+            }))
             .debug_selector({
                 let id = agent.id.clone();
                 move || format!("checkout-agent-{id}")
@@ -220,6 +240,11 @@ impl Sidebar {
             self.checkout_panel.peek_task = None;
             return None;
         }
+        if peek.closing && cx.reduce_motion() {
+            self.checkout_panel.peek = None;
+            return None;
+        }
+        let closing = peek.closing;
         let child = peek.child.clone();
         let session_id = peek.session;
         let session = self
@@ -289,9 +314,8 @@ impl Sidebar {
             .debug_selector(|| "agent-peek".into())
             .role(gpui::Role::Dialog)
             .aria_label(format!("{} activity preview", presentation.name))
-            .track_focus(&focus)
-            .tab_index(0)
-            .occlude()
+            .when(!closing, |panel| panel.track_focus(&focus).tab_index(0))
+            .when(!closing, gpui::InteractiveElement::occlude)
             .w(width)
             .h(height)
             .overflow_hidden()
@@ -306,6 +330,14 @@ impl Sidebar {
             .text_size(rpx(TEXT_SMALL))
             .text_color(c::FG())
             .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                if this
+                    .checkout_panel
+                    .peek
+                    .as_ref()
+                    .is_some_and(|peek| peek.closing)
+                {
+                    return;
+                }
                 if *hovered {
                     this.checkout_panel.peek_task = None;
                 } else if let Some(peek) = &this.checkout_panel.peek {
@@ -325,9 +357,27 @@ impl Sidebar {
                 div()
                     .flex_shrink_0()
                     .min_w_0()
-                    .truncate()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(presentation.name.clone()),
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_MD))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(presentation.name.clone()),
+                    )
+                    .child(
+                        super::super::status::label(
+                            format!("agent-preview-status-{}", agent.id),
+                            super::super::status::session_kind(presentation.status),
+                            presentation.status,
+                            ICON_SM,
+                            cx,
+                        )
+                        .items_center()
+                        .flex_shrink_0(),
+                    ),
             )
             .child(
                 div()
@@ -335,22 +385,12 @@ impl Sidebar {
                     .min_w_0()
                     .truncate()
                     .text_color(c::FG_DIM())
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_SM))
                     .child(format!(
                         "{provider}{}",
                         agent
                             .role
                             .as_ref()
                             .map_or(String::new(), |role| format!(" · {role}"))
-                    ))
-                    .child(super::super::status::label(
-                        format!("agent-preview-status-{}", agent.id),
-                        super::super::status::session_kind(presentation.status),
-                        presentation.status,
-                        ICON_SM,
-                        cx,
                     )),
             );
         let freshness = activity
@@ -434,6 +474,16 @@ impl Sidebar {
                         cx.listener(|this, _, window, cx| this.dismiss_agent_peek(window, cx)),
                     ),
             );
+        content = content.relative().when(closing, |panel| {
+            panel.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                    .capture_any_mouse_up(|_, _, cx| cx.stop_propagation()),
+            )
+        });
         Some(
             gpui::deferred(
                 gpui::anchored()
@@ -441,7 +491,11 @@ impl Sidebar {
                     .anchor(gpui::Anchor::TopRight)
                     .position(gpui::point(right, y))
                     .snap_to_window_with_margin(margin)
-                    .child(content),
+                    .child(self.checkout_panel.peek_presence.render(
+                        content,
+                        "agent-peek-presence",
+                        cx,
+                    )),
             )
             .into_any_element(),
         )

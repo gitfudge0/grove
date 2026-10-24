@@ -42,6 +42,8 @@ pub(super) struct CheckoutPanel {
     pub(super) agent_observer: Option<(gpui::EntityId, gpui::Subscription)>,
     pub(super) peek: Option<AgentPeek>,
     pub(super) peek_task: Option<gpui::Task<()>>,
+    pub(super) peek_close_task: Option<gpui::Task<()>>,
+    pub(super) peek_presence: motion::Presence,
     pub(super) agent_focus: HashMap<String, FocusHandle>,
     pub(super) agent_bounds:
         HashMap<String, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
@@ -80,6 +82,7 @@ pub(super) struct AgentPeek {
     pub(super) session: SessionId,
     pub(super) child: String,
     pub(super) explicit: bool,
+    pub(super) closing: bool,
     pub(super) focus: FocusHandle,
     pub(super) transcript: Entity<super::super::codex_view::CodexView>,
     pub(super) _tick: gpui::Task<()>,
@@ -2749,6 +2752,55 @@ mod tests {
                 provider.label()
             );
             assert!(cx.debug_bounds("checkout-finder").is_none());
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    cx.set_reduce_motion(false);
+                    let Some(Selection::Session(id)) = sidebar.selection else {
+                        panic!("fixture session");
+                    };
+                    sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
+                    sidebar.dismiss_agent_peek(window, cx);
+                    assert!(sidebar.checkout_panel.peek.as_ref().unwrap().closing);
+                    assert!(sidebar.checkout_panel.agent_focus["first-child"].is_focused(window));
+                    sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
+                });
+            });
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(Duration::from_millis(MOTION_FAST_MS) * 2);
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    assert!(
+                        !sidebar.checkout_panel.peek.as_ref().unwrap().closing,
+                        "old dismissal must not remove reopened {} preview",
+                        provider.label()
+                    );
+                    sidebar.dismiss_agent_peek(window, cx);
+                });
+            });
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(Duration::from_millis(MOTION_FAST_MS - 1));
+            cx.run_until_parked();
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_some()),
+                "exit remains painted until the fast-motion deadline"
+            );
+            cx.executor().advance_clock(Duration::from_millis(1));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    assert!(sidebar.checkout_panel.peek.is_none());
+                    cx.set_reduce_motion(true);
+                    let Some(Selection::Session(id)) = sidebar.selection else {
+                        panic!("fixture session");
+                    };
+                    sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
+                    sidebar.dismiss_agent_peek(window, cx);
+                    assert!(sidebar.checkout_panel.peek.is_none());
+                });
+            });
         }
     }
 

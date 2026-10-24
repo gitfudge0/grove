@@ -1721,7 +1721,7 @@ impl Render for Shell {
                 !self.sidebar.read(cx).is_zen() || self.settings.read(cx).is_open(),
                 |root| root.child(self.statusbar.clone()),
             )
-            .when(self.launcher.read(cx).is_open(), |root| {
+            .when(self.launcher.read(cx).is_visible(cx), |root| {
                 root.child(gpui::deferred(self.launcher.clone()))
             })
             .when(self.switcher_open, |root| {

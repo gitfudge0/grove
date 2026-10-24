@@ -8,7 +8,12 @@ use gpui::{div, img, prelude::*, AnyElement, App, Image, ImageFormat, Window};
 use gpui_component::text::{
     markdown_ast, MarkdownExtensions, MarkdownNode, MarkdownParseContext, TextView,
 };
-use mermaid_rs_renderer::{RenderOptions, Theme};
+mod pele;
+
+struct RenderOptions {
+    palette: std::collections::HashMap<String, String>,
+    now: u64,
+}
 
 use super::{rpx, tokens::*};
 use crate::theme as c;
@@ -35,11 +40,14 @@ enum Rendered {
 struct CacheEntry {
     source: String,
     theme_generation: u64,
+    clock_generation: u64,
     result: Rendered,
 }
 impl CacheEntry {
-    fn matches(&self, source: &str, theme_generation: u64) -> bool {
-        self.theme_generation == theme_generation && self.source == source
+    fn matches(&self, source: &str, theme_generation: u64, clock_generation: u64) -> bool {
+        self.theme_generation == theme_generation
+            && self.clock_generation == clock_generation
+            && self.source == source
     }
 }
 static CACHE: Mutex<VecDeque<CacheEntry>> = Mutex::new(VecDeque::new());
@@ -110,6 +118,12 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
         return div().into_any_element();
     };
     let theme_generation = grove_core::theme::generation();
+    // Gantt today markers and implicit start dates must not stay cached forever.
+    let clock_generation = if diagram.source.lines().any(|line| line.trim() == "gantt") {
+        now_millis() / 60_000
+    } else {
+        0
+    };
     let mut launch = false;
     let result = {
         let Ok(mut cache) = CACHE.lock() else {
@@ -117,7 +131,7 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
         };
         if let Some(entry) = cache
             .iter()
-            .find(|entry| entry.matches(&diagram.source, theme_generation))
+            .find(|entry| entry.matches(&diagram.source, theme_generation, clock_generation))
         {
             entry.result.clone()
         } else if cache
@@ -137,6 +151,7 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
             cache.push_back(CacheEntry {
                 source: diagram.source.clone(),
                 theme_generation,
+                clock_generation,
                 result: Rendered::Pending,
             });
             launch = true;
@@ -159,7 +174,7 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
             if let Ok(mut cache) = CACHE.lock() {
                 if let Some(entry) = cache
                     .iter_mut()
-                    .find(|entry| entry.matches(&source, theme_generation))
+                    .find(|entry| entry.matches(&source, theme_generation, clock_generation))
                 {
                     entry.result = result;
                 }
@@ -172,21 +187,25 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
         .detach();
     }
     match result {
-        Rendered::Ready(image, ratio, width) => div()
-            .id(("mermaid-diagram", diagram.offset))
-            .debug_selector(|| "transcript-mermaid-chart".to_owned())
-            .w_full()
-            .min_w_0()
-            .p(rpx(SPACE_2XL))
-            .bg(c::FIELD_FILL())
-            .rounded(rpx(RADIUS_GROUP))
-            .role(gpui::Role::Image)
-            .aria_label("Mermaid diagram")
-            .aria_description(diagram.source.clone())
-            .child(img(image).w_full().max_w(rpx(width)).aspect_ratio(ratio))
-            .into_any_element(),
+        Rendered::Ready(image, ratio, width) => ready_view(diagram, image, ratio, width),
         Rendered::Pending | Rendered::Failed => source_view(diagram, window),
     }
+}
+
+fn ready_view(diagram: &Diagram, image: Arc<Image>, ratio: f32, width: f32) -> AnyElement {
+    div()
+        .id(("mermaid-diagram", diagram.offset))
+        .debug_selector(|| "transcript-mermaid-chart".to_owned())
+        .w_full()
+        .min_w_0()
+        .p(rpx(SPACE_2XL))
+        .bg(c::FIELD_FILL())
+        .rounded(rpx(RADIUS_GROUP))
+        .role(gpui::Role::Image)
+        .aria_label("Mermaid diagram")
+        .aria_description(diagram.source.clone())
+        .child(img(image).w_full().max_w(rpx(width)).aspect_ratio(ratio))
+        .into_any_element()
 }
 
 fn source_view(diagram: &Diagram, window: &Window) -> AnyElement {
@@ -202,73 +221,58 @@ fn css(color: gpui::Hsla) -> String {
     format!("#{:06x}", u32::from(rgba) >> 8)
 }
 
-fn options() -> RenderOptions {
-    let fill = css(c::FIELD_FILL());
-    let text = css(c::FG());
-    let border = css(c::BORDER());
-    let line = css(c::FG_DIM());
-    let mut theme = Theme::modern();
-    crate::fonts::UI_FAMILY.clone_into(&mut theme.font_family);
-    theme.font_size = TEXT_BODY;
-    theme.background.clone_from(&fill);
-    theme.primary_color = css(c::BG_HOVER());
-    theme.primary_text_color.clone_from(&text);
-    theme.primary_border_color.clone_from(&border);
-    theme.line_color.clone_from(&line);
-    theme.secondary_color.clone_from(&fill);
-    theme.tertiary_color.clone_from(&fill);
-    theme.edge_label_background.clone_from(&fill);
-    theme.cluster_background.clone_from(&fill);
-    theme.cluster_border.clone_from(&border);
-    theme.sequence_actor_fill.clone_from(&fill);
-    theme.sequence_actor_border.clone_from(&border);
-    theme.sequence_actor_line = line;
-    theme.sequence_note_fill.clone_from(&fill);
-    theme.sequence_note_border.clone_from(&border);
-    theme.sequence_activation_fill = css(c::BG_HOVER());
-    theme.sequence_activation_border.clone_from(&border);
-    theme.text_color.clone_from(&text);
-    theme.git_colors = std::array::from_fn(|_| css(c::BG_HOVER()));
-    theme.git_inv_colors = std::array::from_fn(|_| text.clone());
-    theme.git_branch_label_colors = std::array::from_fn(|_| text.clone());
-    theme.git_commit_label_color.clone_from(&text);
-    theme.git_commit_label_background.clone_from(&fill);
-    theme.git_tag_label_color.clone_from(&text);
-    theme.git_tag_label_background.clone_from(&fill);
-    theme.git_tag_label_border.clone_from(&border);
-    theme.pie_colors = std::array::from_fn(|index| {
-        css(if index % 2 == 0 {
-            c::BG_HOVER()
-        } else {
-            c::BORDER()
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().try_into().unwrap_or(u64::MAX)
         })
-    });
-    theme.pie_title_text_size = TEXT_BODY;
-    theme.pie_section_text_size = TEXT_BODY;
-    theme.pie_legend_text_size = TEXT_BODY;
-    theme.pie_title_text_color.clone_from(&text);
-    theme.pie_section_text_color.clone_from(&text);
-    theme.pie_legend_text_color = text;
-    theme.pie_stroke_color.clone_from(&border);
-    theme.pie_outer_stroke_color = border;
+}
+
+fn options() -> RenderOptions {
+    let mut palette = std::collections::HashMap::from([
+        ("--pele-bg".to_owned(), css(c::FIELD_FILL())),
+        ("--pele-fg".to_owned(), css(c::FG())),
+        ("--pele-muted".to_owned(), css(c::FG_DIM())),
+        ("--pele-line".to_owned(), css(c::FG_DIM())),
+        ("--pele-surface".to_owned(), css(c::BG_HOVER())),
+        ("--pele-surface-alt".to_owned(), css(c::FIELD_FILL())),
+        ("--pele-border".to_owned(), css(c::BORDER())),
+        ("--pele-accent".to_owned(), css(c::FG_DIM())),
+        ("--pele-font".to_owned(), crate::fonts::UI_FAMILY.to_owned()),
+        (
+            "--pele-font-mono".to_owned(),
+            crate::fonts::MONO_FAMILY.to_owned(),
+        ),
+        ("--pele-bold-weight".to_owned(), "bold".to_owned()),
+    ]);
+    for index in 1..=8 {
+        palette.insert(
+            format!("--pele-series-{index}"),
+            css(if index % 2 == 0 {
+                c::BORDER()
+            } else {
+                c::BG_HOVER()
+            }),
+        );
+    }
     RenderOptions {
-        theme,
-        ..RenderOptions::default()
+        palette,
+        now: now_millis(),
     }
 }
 
 fn rasterize(source: &str, options: RenderOptions) -> Option<(Arc<Image>, f32, f32)> {
     use resvg::{tiny_skia, usvg};
-    let svg = mermaid_rs_renderer::render_strict(source, options).ok()?;
+    if !within_limits(source) {
+        return None;
+    }
+    let svg = pele::render(source, TEXT_BODY, &options.palette, options.now)?;
     let mut svg_options = usvg::Options {
         font_family: crate::fonts::UI_FAMILY.to_owned(),
         ..usvg::Options::default()
     };
-    if let Some(font) = crate::assets::Assets::get("fonts/DMSans-Regular.ttf") {
-        svg_options
-            .fontdb_mut()
-            .load_font_data(font.data.into_owned());
-    }
+    svg_options.fontdb = pele::fonts();
     // Never resolve file, network or embedded image references from transcript data.
     svg_options.image_href_resolver = usvg::ImageHrefResolver {
         resolve_data: Box::new(|_, _, _| None),
@@ -302,11 +306,12 @@ mod tests {
         let entry = CacheEntry {
             source: "flowchart LR\nA-->B".to_owned(),
             theme_generation: 7,
+            clock_generation: 0,
             result: Rendered::Pending,
         };
-        assert!(entry.matches("flowchart LR\nA-->B", 7));
-        assert!(!entry.matches("flowchart LR\nA-->B", 8));
-        assert!(!entry.matches("flowchart LR\nA-->C", 7));
+        assert!(entry.matches("flowchart LR\nA-->B", 7, 0));
+        assert!(!entry.matches("flowchart LR\nA-->B", 8, 0));
+        assert!(!entry.matches("flowchart LR\nA-->C", 7, 0));
     }
 
     #[test]
@@ -347,6 +352,9 @@ mod tests {
             "stateDiagram-v2\n[*] --> Ready\nReady --> [*]",
             "erDiagram\nCUSTOMER ||--o{ ORDER : places",
             "pie title Work\n\"Done\" : 3\n\"Pending\" : 2",
+            "gantt\n dateFormat YYYY-MM-DD\n section Build\n Task :2026-10-24, 2d",
+            "mindmap\n  root((Grove))\n    Diagrams\n    Source",
+            "flowchart LR\nsubgraph One\nsubgraph Two\nA[Hello]-->B[World]\nend\nend",
         ] {
             let (image, ratio, width) = rasterize(source, options())
                 .unwrap_or_else(|| panic!("Could not rasterize: {source}"));
@@ -358,5 +366,110 @@ mod tests {
         }
         assert!(rasterize("this is not a diagram", options()).is_none());
         assert!(rasterize("flowchart LR\nsubgraph MissingEnd\nA --> B", options()).is_none());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod native_snapshots {
+    use super::*;
+    use gpui::{Context, Render};
+    struct DiagramGallery {
+        image: Arc<Image>,
+        ratio: f32,
+        width: f32,
+        diagram: Diagram,
+    }
+    impl Render for DiagramGallery {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w_full()
+                .h_full()
+                .p(rpx(SPACE_LG))
+                .bg(c::BG())
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_LG))
+                .child(ready_view(
+                    &self.diagram,
+                    self.image.clone(),
+                    self.ratio,
+                    self.width,
+                ))
+                .child(source_view(
+                    &Diagram {
+                        source: "flowchart LR\nA-->".to_owned(),
+                        markdown: "```mermaid\nflowchart LR\nA-->".to_owned(),
+                        offset: 1,
+                    },
+                    window,
+                ))
+        }
+    }
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes native Pele fixture screenshots to /tmp"]
+    fn pele_native_snapshots() {
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        for light in [false, true] {
+            for (width, rem) in [(760., 16.), (360., 20.)] {
+                cx.update(|cx| {
+                    grove_core::theme::set(
+                        grove_core::theme::by_name(if light {
+                            "grove-light"
+                        } else {
+                            "grove-dark"
+                        })
+                        .unwrap(),
+                    );
+                    c::sync_component_theme(cx);
+                    gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                });
+                let source="flowchart LR\nA[\"<b>Grove café 東京</b>\"]-->B{Ready?}\nB-->|Yes|C[\"<code>source</code>\"]\nB-->|No|D[Copy source]";
+                let (image, ratio, natural_width) = rasterize(source, options()).unwrap();
+                let window = cx
+                    .open_window(gpui::size(gpui::px(width), gpui::px(400.)), |window, cx| {
+                        let gallery = cx.new(|_| DiagramGallery {
+                            image,
+                            ratio,
+                            width: natural_width,
+                            diagram: Diagram {
+                                source: source.to_owned(),
+                                markdown: format!("```mermaid\n{source}\n```"),
+                                offset: 0,
+                            },
+                        });
+                        cx.new(|cx| {
+                            gpui_component::Root::new(gallery, window, cx)
+                                .bordered(false)
+                                .bg(c::BG())
+                        })
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                let path = format!(
+                    "/tmp/grove-pele-{}-{width:.0}-rem{rem:.0}.png",
+                    if light { "light" } else { "dark" }
+                );
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Native Pele fixture: {path}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
     }
 }

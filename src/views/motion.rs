@@ -109,3 +109,72 @@ fn lerp_color(from: Hsla, to: Hsla, t: f32) -> Hsla {
         a: from.a + (to.a - from.a) * t,
     }
 }
+
+/// Interruptible mount/unmount fade. Owners retain exiting content until `duration`
+/// elapses, but release its input ownership immediately on dismissal.
+#[derive(Clone, Copy, Debug)]
+pub struct Presence {
+    started: std::time::Instant,
+    from: f32,
+    to: f32,
+    revision: u64,
+    transition_duration: Duration,
+}
+impl Default for Presence {
+    fn default() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            from: 0.,
+            to: 0.,
+            revision: 0,
+            transition_duration: Self::duration(),
+        }
+    }
+}
+impl Presence {
+    pub fn fast() -> Self {
+        Self {
+            transition_duration: Duration::from_millis(MOTION_FAST_MS),
+            ..Self::default()
+        }
+    }
+    pub fn transition_duration(&self) -> Duration {
+        self.transition_duration
+    }
+    pub fn set(&mut self, visible: bool, cx: &App) {
+        let from = self.opacity();
+        self.from = if cx.reduce_motion() {
+            visible as u8 as f32
+        } else {
+            from
+        };
+        self.to = visible as u8 as f32;
+        self.started = std::time::Instant::now();
+        self.revision = self.revision.wrapping_add(1);
+    }
+    fn opacity(&self) -> f32 {
+        let t =
+            (self.started.elapsed().as_secs_f32() / self.transition_duration.as_secs_f32()).min(1.);
+        self.from + (self.to - self.from) * ease_standard(t)
+    }
+    pub fn duration() -> Duration {
+        Duration::from_millis(MOTION_BASE_MS)
+    }
+    pub fn render<E>(&self, element: E, id: &str, cx: &App) -> AnyElement
+    where
+        E: IntoElement + Styled + 'static,
+    {
+        if cx.reduce_motion() {
+            return element.opacity(self.to).into_any_element();
+        }
+        let from = self.from;
+        let to = self.to;
+        element
+            .with_animation(
+                format!("{id}-{}", self.revision),
+                Animation::new(self.transition_duration).with_easing(ease_standard),
+                move |el, t| el.opacity(from + (to - from) * t),
+            )
+            .into_any_element()
+    }
+}

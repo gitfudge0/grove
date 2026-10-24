@@ -10,7 +10,8 @@
 //! shipped as a file: [`Assets::load`](crate::assets::Assets) answers
 //! `icons/<name>.svg` and `icons/spinner-<frame>.svg` straight out of this
 //! table. The color is **not** baked into the SVG text (`stroke="currentColor"`
-//! / `fill="currentColor"`), so one path serves every tint.
+//! / `fill="currentColor"`), so one path serves every tint. [`icon`] resolves
+//! Claude and Codex brand colors centrally, including compact status variants.
 //!
 //! **Verified at ZED_REV `1a246ef`:** `Svg` has no `color` method; it paints
 //! with `style.text.color` (`crates/gpui/src/elements/svg.rs:110`), so the tint
@@ -26,8 +27,14 @@ use gpui::{svg, Hsla, SharedString, Styled as _, Svg};
 
 use crate::entities::animation_clock::{spinner_frame, SPINNER_FRAMES};
 
-/// A square, tinted icon by sprite name.
+/// A square icon by sprite name. Provider marks retain their brand colors;
+/// all other glyphs use the caller’s semantic tint.
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
+    let color = match name.strip_prefix("compact-status-").unwrap_or(name) {
+        "claude" => crate::theme::CLAUDE_BRAND(),
+        "codex" => crate::theme::OPENAI_BRAND(),
+        _ => color,
+    };
     svg()
         .path(SharedString::from(format!("icons/{name}.svg")))
         .size(rpx(size))

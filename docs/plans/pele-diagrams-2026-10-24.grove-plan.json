@@ -1,0 +1,343 @@
+{
+  "schema_version": 1,
+  "plan_id": "pele-transcript-diagrams",
+  "revision_id": "r3-20261024-native-image",
+  "title": "Pele Diagrams in Grove",
+  "summary": "Native image presentation chosen: replace the renderer behind Mermaid fences after proving bounded JavaScript execution, SVG styles and font measurements. Preserve source fallback and host typography.",
+  "sources": [
+    {
+      "attribution": "User request",
+      "text": "Let's plan on moving from mermaid to https://pele.run/"
+    },
+    {
+      "attribution": "Official Pele documentation",
+      "text": "https://pele.run/ \u2014 JavaScript render/mount API, Mermaid syntax compatibility, CSS-variable theming and security documentation. Compatibility is an upstream claim, not Grove verification. Pele changes layout; arbitrary Mermaid HTML labels do not carry over."
+    },
+    {
+      "attribution": "Working-tree inspection",
+      "text": "src/views/mermaid.rs:47 extension, :58 parser, :108 render/cache, :205 theme, :260 rasterizer; src/views/inline_html.rs:539 registration. Cargo.toml:206 pins mermaid-rs-renderer. No portable embedded JS runtime is directly integrated; Cargo.lock javascriptcore-rs belongs to the WebKit stack."
+    },
+    {
+      "attribution": "Native host and design contract",
+      "text": "src/platform/inline_html.rs:90 document creation, :142 report height, :157 theme scripts; src/views/inline_html.rs:35 CSP forbids workers; :258 prepends policy. DESIGN.md:15 fonts, :17 zoom and :172 document lifecycle."
+    },
+    {
+      "attribution": "User review of r2",
+      "text": "presentation-route: native-image"
+    }
+  ],
+  "changes": {
+    "files": 6,
+    "changed": 4,
+    "new": 2,
+    "deleted": 0
+  },
+  "claims": [
+    {
+      "id": "presentation",
+      "text": "Mermaid fences display Pele diagrams after rendering succeeds.",
+      "detail": "Native image presentation is settled by the user. Keep existing GPUI scrolling, transcript placement, accessible image description and source identity. Pele geometry will differ; theme changes rerender rather than use live browser CSS.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "transcript",
+            "kind": "column",
+            "children": [
+              {
+                "id": "before",
+                "kind": "surface",
+                "text": "While streaming or rendering: selectable Mermaid code with ordinary Copy behavior"
+              },
+              {
+                "id": "after",
+                "kind": "surface",
+                "text": "After success: Pele diagram within the existing transcript image well"
+              }
+            ],
+            "text": ""
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "compatibility",
+          "text": "Existing Mermaid source remains the document format.",
+          "detail": "src/views/mermaid.rs:58\u2013107 keeps case-insensitive mermaid fences, matching closed backtick/tilde fences and resource prechecks. src/views/inline_html.rs:539 keeps the extension attached to shared Markdown. Do not require Pele-specific fences or mutate saved messages.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "parse",
+                "title": "Preserve the parser",
+                "detail": "Only closed, nonempty, bounded fences become render candidates; incomplete streaming blocks stay source."
+              },
+              {
+                "id": "supported",
+                "title": "Check real compatibility",
+                "detail": "Build representative corpus from current tests plus Mermaid 12.1 builtin families claimed by Pele; check syntax directives, labels and errors. Unsupported or rejected inputs stay source."
+              },
+              {
+                "id": "direction",
+                "title": "Preserve authored layout intent",
+                "detail": "Keep explicit LR/TB etc.; no host autoDirection override. Review Pele layout changes rather than compare exact old coordinates."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "feasibility",
+      "text": "Dependency removal waits for a working, bounded Pele adapter.",
+      "detail": "This is a migration gate, not an assertion that a JS library drops into Rust. Keep mermaid-rs-renderer until the selected route renders the corpus and meets host safety/lifecycle limits. If the gate fails, report evidence and revise the architecture with the user before removal.",
+      "exhibit": {
+        "kind": "calls",
+        "entries": [
+          {
+            "id": "bundle",
+            "title": "Pin and audit the actual JS distribution",
+            "detail": "Confirm license, bundle format, transitive dependencies and required globals; vendor a reproducible offline bundle with version/hash and provenance. Do not assume browser APIs or npm runtime availability."
+          },
+          {
+            "id": "runtime",
+            "title": "Prove the selected execution route",
+            "detail": "Native: evaluate runtime candidates on every target; prove Pele render, text measurement, bounded memory and interruptible execution without DOM/network/file globals. Browser: prove trusted offline script, resource limits, lifecycle and isolated execution."
+          },
+          {
+            "id": "svg",
+            "title": "Prove native SVG rendering if selected",
+            "detail": "Materialize Pele CSS variables/currentColor and required styles into bounded SVG using a host palette; use bundled DM Sans metrics matching rasterization. Reject unresolved style/HTML constructs. Prove real resvg output for labels, markers and diagrams."
+          },
+          {
+            "id": "stop",
+            "title": "Stop and replan on a failed gate",
+            "detail": "If JS globals, font metrics, CSS resolution, interruptibility or platform packaging fail, compare a browser-owned SVG route versus isolated helper rendering with evidence. Do not silently weaken safety or replace the dependency anyway."
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "native-host-gap",
+          "text": "Existing document hosts do not provide an SVG export pipeline.",
+          "detail": "src/platform/inline_html.rs:142 returns bounded height and :157 applies scripts, not SVG data. Existing hosts run on the UI thread. A browser-to-native SVG export path requires new bounded transport and asynchronous ownership; it is not a free reuse.",
+          "exhibit": {
+            "kind": "code",
+            "language": "rust",
+            "source": "src/platform/inline_html.rs:142",
+            "text": "pub fn report_height(&self) -> Option<f32>\npub fn report_theme(&self, script: &str, integrated: bool)\n// Existing APIs do not return generated SVG bytes."
+          }
+        },
+        {
+          "id": "browser-gate",
+          "text": "Browser presentation requires a separate isolation and lifecycle proof.",
+          "detail": "src/views/inline_html.rs:35 currently sets worker-src none; do not claim a main-thread timeout can interrupt synchronous renderer work. If choosing browser SVG, prove a narrowly scoped trusted worker/helper policy and termination, SVG delivery, text measurements and cross-platform support without weakening ordinary authored HTML policy.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "lifetime",
+                "title": "Exercise many diagram documents",
+                "detail": "Test transcript virtualization, multiple diagrams, clip/scroll, session switch, collapsed rows, window changes and teardown against NativeDocument leases."
+              },
+              {
+                "id": "resources",
+                "title": "Prove browser resource bounds",
+                "detail": "Measure view count and memory; bound active document/cache/pending work and host scalar/SVG responses. Browser responsive sizing must not oscillate report height."
+              },
+              {
+                "id": "timeout",
+                "title": "Prove actual cancellation",
+                "detail": "Terminate isolated rendering at deadline, recover capacity, and keep source visible. A 30-second load polling timeout does not prove synchronous JS interruption."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "failure",
+      "text": "Incomplete, invalid and unsafe diagrams keep copyable source.",
+      "detail": "Retain the current source-first lifecycle. Rendering completion must target the original source/theme revision, not a replacement session or newer input. Preserve the Image role and Mermaid source description in the image route.",
+      "exhibit": {
+        "kind": "state_machine",
+        "initial": "source",
+        "states": [
+          {
+            "id": "source",
+            "label": "Streaming / oversized",
+            "screen": {
+              "kind": "layout",
+              "nodes": [
+                {
+                  "id": "source-screen",
+                  "kind": "text",
+                  "text": "Selectable fenced source"
+                }
+              ]
+            }
+          },
+          {
+            "id": "pending",
+            "label": "Closed source pending",
+            "screen": {
+              "kind": "layout",
+              "nodes": [
+                {
+                  "id": "pending-screen",
+                  "kind": "text",
+                  "text": "Selectable fenced source"
+                }
+              ]
+            }
+          },
+          {
+            "id": "ready",
+            "label": "Pele success",
+            "screen": {
+              "kind": "layout",
+              "nodes": [
+                {
+                  "id": "ready-screen",
+                  "kind": "surface",
+                  "text": "Diagram"
+                }
+              ]
+            }
+          },
+          {
+            "id": "failed",
+            "label": "Error / timeout / rejected",
+            "screen": {
+              "kind": "layout",
+              "nodes": [
+                {
+                  "id": "failed-screen",
+                  "kind": "text",
+                  "text": "Selectable fenced source"
+                }
+              ]
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "from": "source",
+            "to": "pending",
+            "label": "Matching closing fence and limits pass"
+          },
+          {
+            "from": "pending",
+            "to": "ready",
+            "label": "Bounded valid result for matching revision"
+          },
+          {
+            "from": "pending",
+            "to": "failed",
+            "label": "Parse, execution, SVG, timeout or policy failure"
+          },
+          {
+            "from": "ready",
+            "to": "pending",
+            "label": "Host theme changes; rerender image route"
+          }
+        ]
+      },
+      "children": [
+        {
+          "id": "limits",
+          "text": "Rendering preserves resource limits and denies external content.",
+          "detail": "src/views/mermaid.rs:17\u201321 remains the baseline: 8 KiB source, 100 statements/structural markers, 2048 maximum raster side, 24 cache entries and two pending renders. Add explicit JS execution deadline, memory/SVG output limits and structural complexity validation; choose concrete thresholds from measured corpus before rollout.",
+          "exhibit": {
+            "kind": "calls",
+            "entries": [
+              {
+                "id": "input",
+                "title": "Treat Mermaid source strictly as data",
+                "detail": "Serialize input through the runtime API, never interpolate it into executable script/HTML. Disable Pele links, image references and unsafe source config overrides; inspect actual release options."
+              },
+              {
+                "id": "svg-policy",
+                "title": "Retain the rasterizer deny policy",
+                "detail": "src/views/mermaid.rs:275\u2013280 blocks network, file and data-image resolution. Keep both image href resolvers returning None; reject script/event/foreignObject content before browser insertion if applicable."
+              },
+              {
+                "id": "queue",
+                "title": "Contain failures and release capacity",
+                "detail": "Distinguish Pending/Ready/Failed; release slots after errors/cancellation. Enforce an interruptible deadline rather than only panic catching. Cache by source, theme and renderer/bundle options; invalidate correctly."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "theme",
+      "text": "Diagrams follow Grove fonts, palette and app zoom.",
+      "detail": "Use DESIGN.md:15\u201317, src/theme.rs and src/views/tokens.rs as authority. Maintain DM Sans with platform glyph fallback, semantic text/surface/border colors and exactly-once rem scaling. Keep the current source direction and diagram well styling.",
+      "exhibit": {
+        "kind": "calls",
+        "entries": [
+          {
+            "id": "palette",
+            "title": "Map host colors to Pele theme tokens",
+            "detail": "Native route snapshots theme values and resolves CSS before resvg; browser route updates trusted CSS in place. Do not let diagram source replace host fonts or enable external resources."
+          },
+          {
+            "id": "fonts",
+            "title": "Match measurements to actual bundled fonts",
+            "detail": "src/views/mermaid.rs:264\u2013274 already loads DM Sans into resvg. Prove equivalent JS layout metrics, multiline and Unicode fallback; mismatches block the gate."
+          },
+          {
+            "id": "zoom",
+            "title": "Check physical output at host zoom",
+            "detail": "Test default and changed rem size, narrow/wide transcript, display scale changes and palette changes within one appearance. Preserve raster cap and ensure labels do not clip or scale twice."
+          }
+        ]
+      }
+    },
+    {
+      "id": "verification",
+      "text": "Delivery requires native and provider-specific acceptance evidence.",
+      "detail": "Future implementation only: run relevant renderer/parser tests, formatting and conformance checks; inspect an isolated current native build before final installation. Run ./install.sh once after final changes at the selected delivery endpoint, unless the user overrides. No release is authorized.",
+      "exhibit": {
+        "kind": "calls",
+        "entries": [
+          {
+            "id": "checks",
+            "title": "Run focused checks and read raw output",
+            "detail": "Use repo-established cargo fmt --check, renderer/parser unit tests, clippy/conformance recipes applicable to changed files. Include actual Pele corpus, failure/timeout recovery and denied href tests, not only mocks."
+          },
+          {
+            "id": "native",
+            "title": "Inspect the real native view",
+            "detail": "Capture screenshots and interaction results for normal/narrow width, zoom, theme, Unicode, many diagrams, copy fallback, invalid/oversized input, streaming, scroll and session changes. Record exact build and platform."
+          },
+          {
+            "id": "codex",
+            "title": "Codex: untested; live verification planned",
+            "detail": "Stream a real Codex response containing Mermaid, observe open-fence source, closure, rendering, Copy and fallback. Fixtures only prove the renderer/parser boundary."
+          },
+          {
+            "id": "claude",
+            "title": "Claude: untested; live verification planned",
+            "detail": "Repeat through the live Claude response boundary; do not infer provider parity from Codex or shared fixtures."
+          },
+          {
+            "id": "platforms",
+            "title": "macOS / Linux / Windows: untested; checks planned",
+            "detail": "Verify selected runtime/bundle packaging and native font/theme/zoom behavior on all three. Browser route additionally needs actual view focus/scroll/worker lifecycle tests per backend. Mark unavailable platforms untested with reason, never verified by source inspection."
+          }
+        ]
+      }
+    }
+  ],
+  "scope": [
+    "Plan only: no production implementation, build, tests or installation performed. Native Review response / Send response records feedback and does not authorize implementation.",
+    "Estimated six-file baseline: Cargo.toml, Cargo.lock, src/views/mermaid.rs, a new isolated Pele adapter, vendored pinned JS asset and provenance. Exact files/counts follow the feasibility spike; src/views/conformance.rs changes only if affected checks require it. Browser route adds document integration and platform review.",
+    "Future implementation retains mermaid fence syntax and current source fallback. No CDN/runtime package download, external image resolution, clickable diagram actions or general HTML sandbox relaxation.",
+    "Existing parser source budgets remain unless evidence warrants a separately reviewed change. Keep source-declared direction; responsive automatic direction and new pan/zoom controls are outside this migration.",
+    "Update DESIGN.md only if the approved presentation introduces an invariant; update grove-ui skill only if its verification procedure changes.",
+    "Native images are selected. Browser SVG is only a contingency requiring replanning if the feasibility gate fails, not an active implementation option."
+  ]
+}

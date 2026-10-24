@@ -3587,7 +3587,7 @@ impl Sidebar {
                             )))
                             .child(
                                 div()
-                                    .flex_1()
+                                    .flex_shrink_1()
                                     .min_w_0()
                                     .truncate()
                                     .id(("session-list-branch", id.raw()))
@@ -3598,29 +3598,40 @@ impl Sidebar {
                             )
                             .when(diff.1, |line| {
                                 line.child(
-                                    self.control(
-                                        ("diff-chip-open", id.raw()),
-                                        format!("Open changes in {}", meta.wt_path),
-                                        Action::OpenDiff(id),
-                                        cx,
-                                    )
-                                    .debug_selector(move || format!("diff-chip-open-{}", id.raw()))
-                                    .when_some(
-                                        self.session_diff_focus.get(&id),
-                                        gpui::InteractiveElement::track_focus,
-                                    )
-                                    .flex_shrink_0()
-                                    .h_auto()
-                                    .px_0()
-                                    .text_color(c::GREEN())
-                                    .child(
-                                        div()
-                                            .id(("session-list-diff-label", id.raw()))
-                                            .debug_selector(move || {
-                                                format!("session-list-diff-label-{}", id.raw())
-                                            })
-                                            .child(diff.0.clone()),
-                                    ),
+                                    div()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap(rpx(SPACE_SM))
+                                        .id(("session-list-diff-label", id.raw()))
+                                        .debug_selector(move || {
+                                            format!("session-list-diff-label-{}", id.raw())
+                                        })
+                                        .when_some(
+                                            git.get(crate::paths::normalize_wt_path(&meta.wt_path)),
+                                            |label, state| {
+                                                if state.added > 0 || state.removed > 0 {
+                                                    label
+                                                        .child(
+                                                            div()
+                                                                .text_color(c::GREEN())
+                                                                .child(format!("+{}", state.added)),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_color(c::FG_DIM())
+                                                                .child("/"),
+                                                        )
+                                                        .child(
+                                                            div().text_color(c::RED()).child(
+                                                                format!("−{}", state.removed),
+                                                            ),
+                                                        )
+                                                } else {
+                                                    label.child(diff.0.clone())
+                                                }
+                                            },
+                                        ),
                                 )
                             }),
                     )
@@ -7988,6 +7999,63 @@ mod tests {
                     }).unwrap();
                     cx.run_until_parked();
                     cx.update_window(window.into(), |_, window, cx| {
+                        // Seed after background refresh so the captured native cards
+                        // exercise both short/long branch adjacency and semantic Git counts.
+                        fixture_sidebar.as_ref().unwrap().update(cx, |sidebar, cx| {
+                            let projects = [
+                                (
+                                    0,
+                                    "grove",
+                                    "main",
+                                    vec![SessionId::from_raw(1), SessionId::from_raw(2)],
+                                ),
+                                (
+                                    1,
+                                    "a-very-long-project-name",
+                                    "feature/session-cards-with-a-deliberately-long-branch-name",
+                                    vec![SessionId::from_raw(3)],
+                                ),
+                            ];
+                            sidebar.runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                                tree.apply_git_poll(
+                                    projects
+                                        .iter()
+                                        .map(|(_, name, _, _)| {
+                                            (
+                                                format!("/tmp/{name}"),
+                                                grove_core::git::WorktreeGitState {
+                                                    dirty: true,
+                                                    added: 23,
+                                                    removed: 3,
+                                                    ..Default::default()
+                                                },
+                                            )
+                                        })
+                                        .collect(),
+                                    &[],
+                                );
+                            });
+                            sidebar.snapshot = TreeSnapshot {
+                                projects: projects
+                                    .into_iter()
+                                    .map(|(idx, name, branch, sessions)| crate::entities::workspace_state::SnapshotProject {
+                                        idx,
+                                        name: name.into(),
+                                        sessions: sessions.clone(),
+                                        worktrees: vec![crate::entities::workspace_state::SnapshotWorktree {
+                                            path: format!("/tmp/{name}"),
+                                            name: name.into(),
+                                            branch: branch.into(),
+                                            sessions,
+                                            ..Default::default()
+                                        }],
+                                        ..Default::default()
+                                    })
+                                    .collect(),
+                                total_projects: 2,
+                            };
+                            cx.notify();
+                        });
                         let _ = window.draw(cx);
                     })
                     .unwrap();
@@ -8045,10 +8113,11 @@ mod tests {
         let (sidebar, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(Runtime::new);
             let registry = runtime.read(cx).registry.clone();
-            let ids = (0..2)
-                .map(|_| {
+            let ids = [Agent::Codex, Agent::Claude]
+                .into_iter()
+                .map(|agent| {
                     registry.update(cx, |registry, _| {
-                        registry.insert_meta("demo".into(), path.clone(), Agent::Codex)
+                        registry.insert_meta("demo".into(), path.clone(), agent)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -8111,7 +8180,7 @@ mod tests {
                 assert!(card.size.height >= gpui::px(SESSION_LIST_CARD_H));
                 assert!(close.left() >= card.left() && close.right() <= card.right());
                 assert!(close.top() >= card.top() && close.bottom() <= card.bottom());
-                assert!(cx.debug_bounds("diff-chip-open-1").is_some());
+                assert!(cx.debug_bounds("diff-chip-open-1").is_none());
             }
             for (title, context, branch, diff, status) in [
                 (
@@ -8141,7 +8210,7 @@ mod tests {
                 assert!(status.bottom() <= title.top());
                 assert!(status.right() <= title.right());
                 let changes = cx.debug_bounds(diff).unwrap();
-                assert!(changes.left() >= branch_bounds.right());
+                assert_eq!(changes.left() - branch_bounds.right(), gpui::px(SPACE_MD));
                 assert!(changes.right() <= rail.right());
                 assert!(cx.debug_bounds("session-number-1").is_none());
                 let original = title;
@@ -8199,39 +8268,27 @@ mod tests {
             sidebar.update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
         });
         draw(cx);
-        let diff_focus = sidebar.read_with(cx, |sidebar, _| {
-            sidebar.session_diff_focus[&SessionId::from_raw(1)].clone()
-        });
-        cx.update(|window, cx| diff_focus.focus(window, cx));
-        draw(cx);
-        cx.update(|window, _| assert!(diff_focus.is_focused(window)));
-        let title_before_focus = cx.debug_bounds("session-list-title-1").unwrap();
-        // Shell translates an unconsumed Tab into this traversal primitive;
-        // this isolated Sidebar fixture does not mount Shell's key handler.
-        let diff_handle = cx.update(|window, cx| window.focused(cx));
-        cx.update(Window::focus_next);
-        draw(cx);
-        assert_eq!(
-            cx.debug_bounds("session-list-title-1").unwrap(),
-            title_before_focus
-        );
-        let close_handle = cx.update(|window, cx| window.focused(cx));
-        assert_ne!(
-            close_handle, diff_handle,
-            "traversal must leave the Git changes control"
-        );
-        cx.simulate_keystrokes("enter");
-        draw(cx);
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.pending_close),
-            Some(SessionId::from_raw(1))
-        );
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        cx.update(|window, cx| diff_focus.focus(window, cx));
-        cx.simulate_keystrokes("enter");
-        draw(cx);
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.diff_viewer.is_some()));
+        // Metadata clicks bubble to the session card for both provider identities.
+        for (id, provider) in [(1, "Codex"), (2, "Claude")] {
+            let counts = cx
+                .debug_bounds(if id == 1 {
+                    "session-list-diff-label-1"
+                } else {
+                    "session-list-diff-label-2"
+                })
+                .unwrap();
+            cx.simulate_click(counts.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert_eq!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
+                Some(Selection::Session(SessionId::from_raw(id))),
+                "{provider} counts select their owning session"
+            );
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.diff_viewer.is_none()),
+                "{provider} metadata must not open a diff"
+            );
+        }
     }
 
     #[gpui::test]
@@ -8285,7 +8342,8 @@ mod tests {
                 .map(|state| (state.dirty, state.added, state.removed)),
             Some((true, 1, 0))
         );
-        assert!(cx.debug_bounds("diff-chip-open-1").is_some());
+        assert!(cx.debug_bounds("diff-chip-open-1").is_none());
+        assert!(cx.debug_bounds("session-list-diff-label-1").is_some());
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
         });

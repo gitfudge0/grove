@@ -201,9 +201,15 @@ rustc-hash = "=2.1.2"
 # normalized to provider-compatible PNG using the image version GPUI already uses.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "tiff", "bmp"] }
 gpui-component.workspace = true
-# Offline Mermaid SVG generation; rasterize using the SVG stack already used by GPUI.
+# Offline Mermaid-syntax diagrams use Pele; rasterize with GPUI's SVG stack.
 markdown = "1.0.0"
-mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
+# Offline Pele execution; QuickJS has no host IO bindings or module loader.
+rquickjs = "=0.14.0"
+# Already used by resvg; share shaping and XML/color types with its SVG stack.
+rustybuzz = "0.20.1"
+roxmltree = "0.21.1"
+xmlwriter = "0.1"
+svgtypes = "0.16"
 resvg = { version = "0.46", default-features = false, features = ["text"] }
 
 [lints]

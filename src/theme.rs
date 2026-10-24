@@ -400,6 +400,17 @@ pub fn FG_MUTE() -> Hsla {
     chrome(ChromeRole::Quiet)
 }
 
+/// Claude's authored orange, from https://claude.com/favicon.svg.
+pub fn CLAUDE_BRAND() -> Hsla {
+    gpui::rgb(0xD97757).into()
+}
+
+/// OpenAI's Blossom uses monochrome artwork, never a semantic accent.
+/// https://openai.com/brand/ — “Don't add any colors to the Blossom.”
+pub fn OPENAI_BRAND() -> Hsla {
+    gpui::rgb(if is_dark() { 0xFFFFFF } else { 0x000000 }).into()
+}
+
 pub fn BLUE() -> Hsla {
     chrome(ChromeRole::Info)
 }

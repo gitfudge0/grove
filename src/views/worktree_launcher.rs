@@ -53,6 +53,9 @@ pub struct WorktreeLauncher {
     focus: FocusHandle,
     return_focus: Option<FocusHandle>,
     open: bool,
+    closing: bool,
+    presence: motion::Presence,
+    close_task: Option<gpui::Task<()>>,
     mode: PaletteMode,
     query: String,
     selected: usize,
@@ -94,6 +97,9 @@ impl WorktreeLauncher {
             focus: cx.focus_handle(),
             return_focus: None,
             open: false,
+            closing: false,
+            presence: motion::Presence::default(),
+            close_task: None,
             mode: PaletteMode::Root,
             query: String::new(),
             selected: 0,
@@ -118,6 +124,10 @@ impl WorktreeLauncher {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub fn is_visible(&self, cx: &App) -> bool {
+        self.open || (self.closing && !cx.reduce_motion())
     }
 
     fn update_query(&mut self, query: String, cx: &mut Context<Self>) {
@@ -148,7 +158,11 @@ impl WorktreeLauncher {
         }
         self.return_focus = window.focused(cx);
         self.open = true;
+        self.closing = false;
+        self.close_task = None;
+        self.presence.set(true, cx);
         self.mode = PaletteMode::Root;
+        self.loading_worktrees = false;
         self.query.clear();
         self.selected = 0;
         self.anchor = None;
@@ -219,12 +233,24 @@ impl WorktreeLauncher {
     }
 
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
         self.open = false;
-        self.mode = PaletteMode::Root;
-        self.loading_worktrees = false;
+        self.presence.set(false, cx);
+        self.closing = !cx.reduce_motion();
+        self.close_task = self.closing.then(|| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(motion::Presence::duration())
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.closing = false;
+                    cx.notify();
+                });
+            })
+        });
         self.load_seq = self.load_seq.wrapping_add(1);
-        self.selected_worktrees.clear();
-        self.error = None;
         if let Some(focus) = self.return_focus.take() {
             focus.focus(window, cx);
         }
@@ -584,6 +610,9 @@ impl WorktreeLauncher {
     }
 
     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
         if self.mode != PaletteMode::Root && self.loading_worktrees {
             return;
         }
@@ -857,7 +886,7 @@ impl Render for WorktreeLauncher {
             .debug_selector(|| "worktree-launcher-overlay".into())
             .absolute()
             .inset_0()
-            .occlude()
+            .when(self.open, gpui::InteractiveElement::occlude)
             .bg(c::SCRIM())
             .flex()
             .items_start()
@@ -871,7 +900,7 @@ impl Render for WorktreeLauncher {
                     .debug_selector(|| "worktree-launcher-panel".into())
                     .relative()
                     .child({ let bounds = self.source_bounds.clone(); gpui::canvas(move |rect, _, _| bounds.set(Some(rect)), |_, (), _, _| {}).absolute().size_full() })
-                    .track_focus(&self.focus)
+                    .when(self.open, |panel| panel.track_focus(&self.focus))
                     .w(rpx(panel_w))
                     .max_h(rpx(panel_h))
                     .flex()
@@ -909,7 +938,7 @@ impl Render for WorktreeLauncher {
                                     .flex()
                                     .items_center()
                                     .child(
-                                        Input::new(&self.input)
+                                        Input::new(&self.input).disabled(!self.open).tab_index(if self.open { 0 } else { -1 })
                                             .aria_label("Search commands and worktrees")
                                             .appearance(false)
                                             .bordered(false)
@@ -1130,7 +1159,20 @@ impl Render for WorktreeLauncher {
                             })),
                     ),
             );
-        motion::slow(overlay, "worktree-launcher-enter", cx)
+        self.presence.render(
+            overlay.when(!self.open, |overlay| {
+                overlay.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                        .capture_any_mouse_up(|_, _, cx| cx.stop_propagation()),
+                )
+            }),
+            "worktree-launcher-presence",
+            cx,
+        )
     }
 }
 
@@ -1848,6 +1890,69 @@ mod tests {
         cx.update(|window, cx| {
             assert!(!launcher.read(cx).is_open());
             assert!(prior.is_focused(window));
+        });
+    }
+
+    #[gpui::test]
+    fn palette_exit_retains_paint_releases_focus_and_cancels_on_reopen(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (launcher, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar =
+                cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
+            WorktreeLauncher::new(runtime, sidebar, window, cx)
+        });
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            let prior = cx.focus_handle();
+            prior.focus(window, cx);
+            launcher.update(cx, |view, cx| {
+                view.open(window, cx);
+                view.close(window, cx);
+                assert!(!view.is_open());
+                assert!(
+                    view.is_visible(cx),
+                    "dismissed palette remains painted for its exit"
+                );
+                assert!(
+                    prior.is_focused(window),
+                    "dismissal immediately restores input ownership"
+                );
+                view.open(window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(motion::Presence::duration() * 2);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            launcher.update(cx, |view, cx| {
+                assert!(view.is_open());
+                assert!(
+                    view.is_visible(cx),
+                    "old dismissal cannot unmount reopened palette"
+                );
+                view.close(window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(motion::Presence::duration() * 2);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            launcher.update(cx, |view, cx| {
+                assert!(!view.is_visible(cx), "exit completion unmounts palette");
+                cx.set_reduce_motion(true);
+                view.open(window, cx);
+                view.close(window, cx);
+                assert!(!view.is_visible(cx));
+                assert!(
+                    view.close_task.is_none(),
+                    "reduced motion schedules no dismissal timer"
+                );
+            });
         });
     }
 

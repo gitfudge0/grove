@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- grove:integrated-report -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sample monthly sales</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--grove-fg); background: var(--grove-bg); font-family: var(--grove-font, system-ui, sans-serif); font-size: var(--grove-body, 14px); }
+figure { margin: 0; padding: var(--grove-section, 24px); }
+h1 { margin: 0 0 4px; font-size: var(--grove-title, 20px); font-weight: 500; }
+.subtitle { margin: 0 0 20px; color: var(--grove-muted); }
+.chart { display: grid; gap: 12px; }
+.row { display: grid; grid-template-columns: 32px minmax(0, 1fr) 42px; align-items: center; gap: 12px; }
+.track { height: 22px; border-left: 1px solid var(--grove-border); }
+.bar { height: 100%; width: var(--value); background: var(--grove-info); }
+.value { text-align: right; font-variant-numeric: tabular-nums; }
+.axis { display: grid; grid-template-columns: 32px minmax(0, 1fr) 42px; gap: 12px; margin-top: 10px; color: var(--grove-muted); }
+.ticks { display: flex; justify-content: space-between; border-top: 1px solid var(--grove-border); padding-top: 6px; font-variant-numeric: tabular-nums; }
+figcaption { color: var(--grove-muted); margin-top: 18px; }
+@media (max-width: 380px) { figure { padding: 16px; } .row, .axis { gap: 8px; } }
+</style>
+</head>
+<body>
+<figure aria-labelledby="chart-title" aria-describedby="chart-caption">
+<h1 id="chart-title">Monthly sales</h1>
+<p class="subtitle">Sample data · USD thousands</p>
+<div class="chart" role="img" aria-label="Monthly sales in thousands of US dollars: January 12, February 18, March 15, April 24, May 28, June 32. Bars begin at zero.">
+<div class="row"><span>Jan</span><div class="track"><div class="bar" style="--value:37.5%"></div></div><span class="value">$12k</span></div>
+<div class="row"><span>Feb</span><div class="track"><div class="bar" style="--value:56.25%"></div></div><span class="value">$18k</span></div>
+<div class="row"><span>Mar</span><div class="track"><div class="bar" style="--value:46.875%"></div></div><span class="value">$15k</span></div>
+<div class="row"><span>Apr</span><div class="track"><div class="bar" style="--value:75%"></div></div><span class="value">$24k</span></div>
+<div class="row"><span>May</span><div class="track"><div class="bar" style="--value:87.5%"></div></div><span class="value">$28k</span></div>
+<div class="row"><span>Jun</span><div class="track"><div class="bar" style="--value:100%"></div></div><span class="value">$32k</span></div>
+</div>
+<div class="axis" aria-hidden="true"><span></span><div class="ticks"><span>0</span><span>8</span><span>16</span><span>24</span><span>32</span></div><span></span></div>
+<figcaption id="chart-caption">Illustrative values for January–June.</figcaption>
+</figure>
+</body>
+</html>
