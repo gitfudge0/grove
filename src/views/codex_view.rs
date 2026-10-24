@@ -37,6 +37,8 @@ use std::{
     sync::Arc,
 };
 
+const CODE_COPY_FEEDBACK_MS: u64 = 1200;
+
 /// Yolo belongs to the saved native launch recipe, never to a later access choice.
 fn session_launched_with_yolo(state: &codex::Snapshot) -> bool {
     if state.saved.native_config_version == 0 {
@@ -875,6 +877,7 @@ pub struct CodexView {
     message_hover: HashSet<String>,
     message_focus: HashMap<String, FocusHandle>,
     copied_message: Option<(String, u64)>,
+    copied_code_blocks: HashMap<String, u64>,
     copy_generation: u64,
     timestamp_tick_pending: Rc<Cell<bool>>,
     stream_thread: Option<String>,
@@ -1068,6 +1071,7 @@ impl CodexView {
             message_hover: HashSet::new(),
             message_focus: HashMap::new(),
             copied_message: None,
+            copied_code_blocks: HashMap::new(),
             copy_generation: 0,
             timestamp_tick_pending: Rc::new(Cell::new(false)),
             stream_thread,
@@ -3950,7 +3954,7 @@ impl Render for CodexView {
                                     let owner = cx.new(|cx| TextViewState::markdown(&text, cx));
                                     self.subscriptions
                                         .push(cx.observe(&owner, |_, _, cx| cx.notify()));
-                                    self.selection_views.insert(owner_key, owner.clone());
+                                    self.selection_views.insert(owner_key.clone(), owner.clone());
                                     owner
                                 };
                                 owner.update(cx, |owner, cx| owner.set_text_incremental(&text, cx));
@@ -3966,7 +3970,31 @@ impl Render for CodexView {
                                     let finalized = (item["groveCompleted"] == true || item["status"] == "completed") && item["status"] != "inProgress" && self.preview_child.is_none();
                                     view.code_block_actions(move |block, window, cx| {
                                         let code = block.code().to_string();
-                                        let mut actions = div().flex().gap(rpx(SPACE_SM)).child(copy_control("codex-copy-code", "Copy code", code.clone()));
+                                        let key = format!("{owner_key}:code:{}", block.span.as_ref().map_or(0, |span| span.start));
+                                        let focus = owner.update(cx, |this, cx| this.message_focus.entry(key.clone()).or_insert_with(|| cx.focus_handle()).clone()).ok();
+                                        let copied = owner.upgrade().is_some_and(|owner| owner.read(cx).copied_code_blocks.contains_key(&key));
+                                        let label = if copied { "Copied" } else { "Copy code" };
+                                        let keyboard_owner = owner.clone();
+                                        let keyboard_key = key.clone();
+                                        let keyboard_code = code.clone();
+                                        let click_owner = owner.clone();
+                                        let click_code = code.clone();
+                                        let copy = header_control("codex-copy-code", label)
+                                            .when_some(focus, |this, focus| this.track_focus(&focus))
+                                            .debug_selector(move || if copied { "codex-code-copied".into() } else { "codex-copy-code".into() })
+                                            .tab_index(0)
+                                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                            .child(crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM()))
+                                            .on_key_down(move |event, _, cx| {
+                                                if action_key(event) {
+                                                    let _ = keyboard_owner.update(cx, |this, cx| this.copy_code_block(keyboard_key.clone(), keyboard_code.clone(), cx));
+                                                    cx.stop_propagation();
+                                                }
+                                            })
+                                            .on_click(move |_, _, cx| {
+                                                let _ = click_owner.update(cx, |this, cx| this.copy_code_block(key.clone(), click_code.clone(), cx));
+                                            });
+                                        let mut actions = div().flex().gap(rpx(SPACE_SM)).child(copy);
                                         let language = block.lang().map(|s| s.to_string()).unwrap_or_default();
                                         let closed = block.span.as_ref().and_then(|span| source.get(span.start..span.end)).is_some_and(closed_shell_fence);
                                         if finalized && closed && !code.trim().is_empty() && snippet_shell_supported(&language) {
@@ -5602,6 +5630,26 @@ impl CodexView {
             }))
             .child(actions.when(!visible && !copied, |actions| actions.opacity(0.0)))
             .into_any_element()
+    }
+
+    fn copy_code_block(&mut self, key: String, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        self.copy_generation = self.copy_generation.wrapping_add(1);
+        let generation = self.copy_generation;
+        self.copied_code_blocks.insert(key.clone(), generation);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(CODE_COPY_FEEDBACK_MS))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.copied_code_blocks.get(&key) == Some(&generation) {
+                    this.copied_code_blocks.remove(&key);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn copy_message(&mut self, key: String, text: String, cx: &mut Context<Self>) {
@@ -11400,6 +11448,89 @@ mod tests {
         });
         (view.unwrap(), cx, actions, updates)
     }
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn snippet_copy_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            c::sync_component_theme(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        for width in [1024.0, 600.0] {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let mut state = snapshot();
+                state.saved.provider = provider;
+                state.saved.items = vec![
+                    json!({"type":"agentMessage", "id":"snippet", "text":"Copy this code:\n\n```sh\n  cargo test --workspace\n```", "groveCompleted":true}),
+                ];
+                let thread = state.saved.thread_id.clone().unwrap_or_default();
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let connection = Connection {
+                    handle,
+                    updates: receive.into(),
+                };
+                let mut retained = None;
+                let window = cx
+                    .open_window(
+                        gpui::size(gpui::px(width), gpui::px(600.0)),
+                        |window, cx| {
+                            let session =
+                                cx.new(|cx| CodexSession::from_connection(state, connection, cx));
+                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                            retained = Some(chat.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(chat, window, cx)
+                                    .bordered(false)
+                                    .bg(c::BG())
+                            })
+                        },
+                    )
+                    .unwrap();
+                for copied in [false, true] {
+                    if copied {
+                        cx.update_window(window.into(), |_, _, cx| {
+                            retained.as_ref().unwrap().update(cx, |view, cx| {
+                                view.copy_code_block(
+                                    format!("{thread}:snippet:code:17"),
+                                    "  cargo test --workspace\n".into(),
+                                    cx,
+                                );
+                            });
+                        })
+                        .unwrap();
+                    }
+                    for _ in 0..4 {
+                        cx.advance_clock(std::time::Duration::from_millis(16));
+                        cx.run_until_parked();
+                        cx.update_window(window.into(), |_, window, cx| {
+                            window.simulate_next_frame(cx);
+                            let _ = window.draw(cx);
+                        })
+                        .unwrap();
+                    }
+                    let path =
+                        format!("/tmp/grove-snippet-copy-{provider:?}-{width:.0}-{copied}.png");
+                    cx.capture_screenshot(window.into())
+                        .unwrap()
+                        .save(&path)
+                        .unwrap();
+                    eprintln!("Native snippet copy fixture: {path}");
+                }
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
     #[cfg(target_os = "macos")]
@@ -18256,7 +18387,7 @@ mod tests {
 
     #[gpui::test]
     fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestAppContext) {
-        let (_view, cx, _actions, updates) = fixture(cx);
+        let (view, cx, _actions, updates) = fixture(cx);
         let text = "Run this:\n\n```sh\n  cargo test --workspace\n```";
         let mut response = snapshot();
         response
@@ -18271,8 +18402,14 @@ mod tests {
             cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
         };
         assert!(cx.debug_bounds("codex-run-code").is_some(), "Finalized shell fences retain a disabled Run control when checkout runtime is unavailable");
-        let code = cx.debug_bounds("codex-copy-code").unwrap().center();
-        cx.simulate_click(code, gpui::Modifiers::default());
+        let copy_bounds = cx.debug_bounds("codex-copy-code").unwrap();
+        cx.simulate_click(copy_bounds.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert_eq!(cx.debug_bounds("codex-code-copied"), Some(copy_bounds));
+        assert_eq!(
+            view.read_with(cx, |view, _| view.copied_code_blocks.len()),
+            1
+        );
         assert_eq!(
             clipboard(cx).as_deref().map(str::trim_end),
             Some("  cargo test --workspace")
@@ -18280,6 +18417,92 @@ mod tests {
         let response = cx.debug_bounds("codex-copy-response").unwrap().center();
         cx.simulate_click(response, gpui::Modifiers::default());
         assert_eq!(clipboard(cx).as_deref(), Some(text));
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(CODE_COPY_FEEDBACK_MS));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(cx.debug_bounds("codex-code-copied").is_none());
+        assert_eq!(cx.debug_bounds("codex-copy-code"), Some(copy_bounds));
+    }
+
+    #[gpui::test]
+    fn snippet_copy_keyboard_shows_feedback(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, updates) = fixture_with_navigation(cx, true);
+        let mut state = snapshot();
+        state.saved.items.push(json!({"type":"agentMessage", "id":"keyboard", "text":"```rust\n  let value = 1;\n```", "groveCompleted":true}));
+        updates.send(state).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        cx.update(|window, cx| {
+            let focus = view.read(cx).message_focus["thread-ui:keyboard:code:0"].clone();
+            focus.focus(window, cx);
+        });
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(
+            cx.debug_bounds("codex-code-copied").is_some(),
+            "Enter must activate focused snippet Copy"
+        );
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            Some("  let value = 1;".into())
+        );
+    }
+
+    #[gpui::test]
+    fn snippet_copy_feedback_is_local_and_repeated_click_extends_timeout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, updates) = fixture(cx);
+        let mut state = snapshot();
+        state.saved.provider = codex::Provider::Claude;
+        state.saved.items.push(json!({"type":"agentMessage", "id":"answer", "text":"```rust\nlet first = 1;\n```\n\n```rust\nlet second = 2;\n```", "groveCompleted":true}));
+        updates.send(state).unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        draw(cx);
+        let first = cx.debug_bounds("codex-copy-code").unwrap();
+        cx.simulate_click(first.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(cx.debug_bounds("codex-code-copied"), Some(first));
+        let first_payload =
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+        let other = cx.debug_bounds("codex-copy-code").unwrap();
+        assert_ne!(other, first, "other block must still offer Copy");
+        cx.simulate_click(other.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(
+            view.read_with(cx, |view, _| view.copied_code_blocks.len()),
+            2
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(CODE_COPY_FEEDBACK_MS / 2));
+        cx.simulate_click(first.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(CODE_COPY_FEEDBACK_MS / 2));
+        cx.run_until_parked();
+        draw(cx);
+        assert_eq!(cx.debug_bounds("codex-code-copied"), Some(first));
+        assert_eq!(cx.debug_bounds("codex-copy-code"), Some(other));
+        assert_eq!(
+            view.read_with(cx, |view, _| view.copied_code_blocks.len()),
+            1
+        );
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(CODE_COPY_FEEDBACK_MS / 2));
+        cx.run_until_parked();
+        draw(cx);
+        assert!(cx.debug_bounds("codex-code-copied").is_none());
+        assert!(view.read_with(cx, |view, _| view.copied_code_blocks.is_empty()));
+        assert_eq!(
+            cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+            first_payload
+        );
     }
     #[gpui::test]
     fn image_only_submission_waits_for_explicit_ack_and_retains_rejected_images(
