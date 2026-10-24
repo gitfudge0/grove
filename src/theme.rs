@@ -43,7 +43,6 @@ enum ChromeRole {
 struct ResolvedChrome {
     light: bool,
     grove: bool,
-    grove_dark: bool,
     background: Rgba,
     foreground: Rgba,
     colors: Option<[Hsla; 22]>,
@@ -55,7 +54,6 @@ impl ResolvedChrome {
             light: theme.kind == theme::ThemeKind::Light,
             grove: theme.name.starts_with("grove-")
                 || grove_core::app_theme::by_id(&theme.name).is_none(),
-            grove_dark: theme.name == DEFAULT_DARK_THEME,
             background: ic(theme.bg),
             foreground: ic(theme.fg),
             colors: None,
@@ -122,7 +120,6 @@ impl ResolvedChrome {
         if self.grove {
             return match role {
                 Background => rgb(0x111111, 0xffffff),
-                Rail if self.grove_dark => gpui::rgb(0x080808),
                 Rail => rgb(0x171716, 0xf7f7f8),
                 Strip => rgb(0x111111, 0xf7f7f8),
                 Hover => rgb(0x232327, 0xededee),
@@ -1088,7 +1085,7 @@ mod tests {
             (
                 "grove-dark",
                 [
-                    0x111111, 0x080808, 0x111111, 0x232327, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
+                    0x111111, 0x171716, 0x111111, 0x232327, 0xf7f7f8, 0xaaaab2, 0x707078, 0x34343a,
                     0x515158,
                 ],
             ),
