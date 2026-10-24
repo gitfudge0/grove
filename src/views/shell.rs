@@ -187,29 +187,6 @@ impl Shell {
                             .update(cx, |launcher, cx| launcher.open_multi_project(window, cx));
                     }
                 }
-                super::sidebar::SidebarEvent::IssueWorktreeCreated { project, path } => {
-                    // Creation can target an inactive project. Verify the concrete Git target,
-                    // register its list, then open the existing tool selector without launching.
-                    let project_path = cx
-                        .global::<crate::settings::SettingsState>()
-                        .store
-                        .projects
-                        .get(*project)
-                        .map(|p| p.path.clone());
-                    let worktrees = project_path.as_deref().and_then(|project_path| grove_core::git::list_worktrees_checked(project_path).ok());
-                    if let Some(worktrees) = worktrees.filter(|worktrees| worktrees.iter().any(|w| w.path == *path)) {
-                        let runtime = this.runtime.read(cx);
-                        let active = runtime.state.read(cx).proj_idx();
-                        let tree = runtime.tree.clone();
-                        tree.update(cx, |tree, cx| {
-                            tree.register_project_worktrees(*project, active, worktrees);
-                            cx.notify();
-                        });
-                        this.launcher.update(cx, |launcher, cx| launcher.open_for_worktree(*project, path, window, cx));
-                    } else {
-                        this.runtime.read(cx).toast.clone().update(cx, |toast,cx| toast.set_error("Worktree created, but its launch menu could not be opened. Refresh the project and try its launch menu again.",cx));
-                    }
-                }
                 super::sidebar::SidebarEvent::SettingsRequested => {
                     this.sidebar
                         .update(cx, super::sidebar::Sidebar::dismiss_project_context);

@@ -324,7 +324,7 @@ impl Sidebar {
         if self.worktree_return_focus.is_none() {
             self.worktree_return_focus = window.focused(cx);
         }
-        self.issue_flow.reset(window, cx);
+        self.worktree_branch_edited = false;
         self.pending_new_worktree = Some(idx);
         self.content_error = None;
         self.worktree_errors = [None, None, None];
@@ -336,12 +336,10 @@ impl Sidebar {
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.worktree_base
             .update(cx, |input, cx| input.set_value("HEAD", window, cx));
+        self.refresh_worktree_source(cx);
         cx.notify();
     }
     pub(super) fn submit_worktree(&mut self, cx: &mut Context<Self>) {
-        if self.issue_flow.busy {
-            return;
-        }
         let Some(idx) = self.pending_new_worktree else {
             return;
         };
@@ -376,9 +374,6 @@ impl Sidebar {
                 self.pending_new_worktree = None;
                 self.content_error = None;
                 self.select(Selection::Worktree(idx, path.clone()), cx);
-                if self.issue_flow.resolved.take().is_some() {
-                    cx.emit(super::SidebarEvent::IssueWorktreeCreated { project: idx, path });
-                }
             }
             Err(error) => {
                 let field = worktree_error_field(&error);
@@ -1566,7 +1561,7 @@ impl Sidebar {
                 self.worktree_branch.read(cx).value().as_ref(),
                 self.worktree_base.read(cx).value().as_ref(),
             );
-            let enabled = errors.iter().all(Option::is_none) && !self.issue_flow.busy;
+            let enabled = errors.iter().all(Option::is_none);
             let editor = div()
                 .id("worktree-editor-scroll")
                 .size_full()
@@ -1582,7 +1577,7 @@ impl Sidebar {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(rpx(SPACE_2XL))
+                            .gap(rpx(SPACE_LG))
                             .child(
                                 div()
                                     .text_size(rpx(TEXT_DISPLAY))
@@ -1594,7 +1589,6 @@ impl Sidebar {
                                     .text_color(c::FG_DIM())
                                     .child("Create a branch and isolated working directory."),
                             )
-                            .child(self.render_issue_worktree_fields(window, cx))
                             .child(form_field(
                                 "worktree-name-field",
                                 "Worktree name",
@@ -1613,17 +1607,18 @@ impl Sidebar {
                             ))
                             .child(form_field(
                                 "worktree-base-field",
-                                "Base branch",
+                                "Base branch or revision",
                                 &self.worktree_base,
                                 self.worktree_errors[2].as_deref(),
                                 window,
                                 cx,
                             ))
+                            .child(self.render_worktree_summary(cx))
                             .child(
                                 div()
                                     .flex()
                                     .flex_wrap()
-                                    .gap(rpx(SPACE_LG))
+                                    .gap(rpx(SPACE_SM))
                                     .child(
                                         form_action(
                                             "create-worktree",
@@ -1632,7 +1627,9 @@ impl Sidebar {
                                             window,
                                             cx,
                                         )
-                                        .flex_1()
+                                        .icon(
+                                            gpui_component::Icon::default().path("icons/plus.svg"),
+                                        )
                                         .disabled(!enabled)
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.submit_worktree(cx)),
@@ -1640,7 +1637,10 @@ impl Sidebar {
                                     )
                                     .child(
                                         form_action("cancel-worktree", "Cancel", false, window, cx)
-                                            .flex_1()
+                                            .icon(
+                                                gpui_component::Icon::default()
+                                                    .path("icons/close.svg"),
+                                            )
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.act(super::Action::Cancel, window, cx);
                                             })),

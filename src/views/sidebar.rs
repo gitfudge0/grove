@@ -6,12 +6,12 @@ mod content;
 mod grid;
 mod multi_project;
 use multi_project::SidebarContext;
-mod issue_worktree;
 mod project_flyout;
 mod project_setup;
 mod projects;
 mod session_diff;
 mod task_glance;
+mod worktree_form;
 use super::{motion, rpx, terminal_view::TerminalView, tokens::*};
 use crate::{
     activity::ActivityState,
@@ -276,7 +276,6 @@ fn terminal_directory_label(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarEvent {
-    IssueWorktreeCreated { project: usize, path: String },
     SettingsRequested,
     NewMultiProjectSessionRequested,
 }
@@ -368,7 +367,9 @@ fn effective_rail_width(preferred: f32, logical_width: f32) -> f32 {
 }
 
 pub struct Sidebar {
-    issue_flow: issue_worktree::IssueWorktreeState,
+    worktree_branch_edited: bool,
+    worktree_source_generation: u64,
+    worktree_source: String,
     checkout_panel: checkout_panel::CheckoutPanel,
     action_source_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     project_panel: Option<Entity<projects::ProjectPanel>>,
@@ -555,17 +556,22 @@ impl Sidebar {
             .into_iter()
             .enumerate()
         {
-            observers.push(cx.subscribe(input, move |this, _, event, cx| {
-                if matches!(event, gpui_component::input::InputEvent::PressEnter { .. }) {
-                    this.submit_worktree(cx);
-                } else if matches!(event, gpui_component::input::InputEvent::Change) {
-                    this.worktree_errors[index] = None;
-                    cx.notify();
-                }
-            }));
+            observers.push(
+                cx.subscribe_in(input, window, move |this, _, event, window, cx| {
+                    if matches!(event, gpui_component::input::InputEvent::PressEnter { .. }) {
+                        this.submit_worktree(cx);
+                    } else if matches!(event, gpui_component::input::InputEvent::Change) {
+                        this.worktree_errors[index] = None;
+                        this.worktree_field_changed(index, window, cx);
+                        cx.notify();
+                    }
+                }),
+            );
         }
         Self {
-            issue_flow: issue_worktree::IssueWorktreeState::new(window, cx),
+            worktree_branch_edited: false,
+            worktree_source_generation: 0,
+            worktree_source: String::new(),
             checkout_panel: checkout_panel::CheckoutPanel::default(),
             action_source_bounds: std::rc::Rc::default(),
             project_panel: None,
