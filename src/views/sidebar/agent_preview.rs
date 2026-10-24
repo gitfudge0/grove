@@ -329,7 +329,15 @@ impl Sidebar {
             .id("agent-peek")
             .debug_selector(|| "agent-peek".into())
             .role(gpui::Role::Dialog)
-            .aria_label(format!("{} activity preview", presentation.name))
+            .aria_label(format!(
+                "{provider} · {}{} · {} activity preview",
+                presentation.name,
+                agent
+                    .role
+                    .as_ref()
+                    .map_or(String::new(), |role| format!(" · {role}")),
+                presentation.status
+            ))
             .when(!closing, |panel| panel.track_focus(&focus).tab_index(0))
             .when(!closing, gpui::InteractiveElement::occlude)
             .w(width)
@@ -374,40 +382,50 @@ impl Sidebar {
                     .flex_shrink_0()
                     .min_w_0()
                     .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_MD))
+                    .flex_col()
+                    .gap(rpx(SPACE_XS))
                     .child(
                         div()
                             .min_w_0()
-                            .truncate()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(presentation.name.clone()),
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .text_size(rpx(TEXT_MICRO))
+                            .text_color(c::FG_DIM())
+                            .child(div().flex_shrink_0().child(icon(
+                                state.saved.provider.agent().icon_name(),
+                                ICON_SM,
+                                c::FG(),
+                            )))
+                            .when_some(agent.role.as_ref(), |row, role| {
+                                row.child(div().min_w_0().truncate().child(role.clone()))
+                            }),
                     )
                     .child(
-                        super::super::status::label(
-                            format!("agent-preview-status-{}", agent.id),
-                            super::super::status::session_kind(presentation.status),
-                            presentation.status,
-                            ICON_SM,
-                            cx,
-                        )
-                        .items_center()
-                        .flex_shrink_0(),
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_MD))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(presentation.name.clone()),
+                            )
+                            .child(
+                                super::super::status::label(
+                                    format!("agent-preview-status-{}", agent.id),
+                                    super::super::status::session_kind(presentation.status),
+                                    presentation.status,
+                                    ICON_SM,
+                                    cx,
+                                )
+                                .items_center()
+                                .flex_shrink_0(),
+                            ),
                     ),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(c::FG_DIM())
-                    .child(format!(
-                        "{provider}{}",
-                        agent
-                            .role
-                            .as_ref()
-                            .map_or(String::new(), |role| format!(" · {role}"))
-                    )),
             );
         let freshness = activity
             .as_ref()
