@@ -880,16 +880,70 @@ impl Runtime {
         wt_path: &str,
         cx: &mut Context<Self>,
     ) -> bool {
+        let entry = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .find(|p| p.path == project_path)
+            .and_then(|p| {
+                p.scripts.effective_entries().into_iter().find(|e| {
+                    matches!(e.kind, grove_core::storage::ProjectActionKind::Shell { .. })
+                })
+            });
+        let Some(entry) = entry else { return false };
+        self.spawn_project_script(project_path, wt_path, &entry.id, cx)
+    }
+
+    pub fn spawn_project_script(
+        &mut self,
+        project_path: &str,
+        wt_path: &str,
+        entry_id: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let command = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .find(|p| p.path == project_path)
+            .and_then(|p| {
+                p.scripts
+                    .effective_entries()
+                    .into_iter()
+                    .find(|e| e.id == entry_id)
+            })
+            .and_then(|e| match e.kind {
+                grove_core::storage::ProjectActionKind::Shell { command } => Some(command),
+                grove_core::storage::ProjectActionKind::Prompt { .. } => None,
+            });
+        let Some(command) = command else {
+            self.toast.update(cx, |toast, cx| {
+                toast.set_error("Shell script is no longer available.", cx);
+            });
+            return false;
+        };
+        self.spawn_checkout_command(project_path, wt_path, &command, cx)
+    }
+
+    pub fn spawn_checkout_command(
+        &mut self,
+        project_path: &str,
+        wt_path: &str,
+        command: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let target = (|| -> Result<Option<(String, String, String)>, String> {
             let projects = &cx.global::<SettingsState>().store.projects;
             let project = projects
                 .iter()
                 .find(|project| project.path == project_path && !project.archived)
                 .ok_or_else(|| "Project is no longer available.".to_string())?;
-            let script = match project.scripts.run.as_deref() {
-                Some(script) if !script.trim().is_empty() => script,
-                _ => return Ok(None),
-            };
+            let script = command;
+            if script.trim().is_empty() {
+                return Ok(None);
+            }
             if self.projects.read(cx).is_removing(&project.path) {
                 return Err("Cannot launch a script while this project is being removed.".into());
             }

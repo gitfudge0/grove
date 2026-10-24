@@ -1634,6 +1634,19 @@ impl Actor {
             }
             Action::PromptWithImages { text, images } => self.submit(0, text, images)?,
             Action::Submit { id, text, images } => self.submit(id, text, images)?,
+            Action::ProjectPrompt { id, text } => {
+                codex::validate_prompt(&text, &[])?;
+                if self.state.status == Status::Disconnected {
+                    self.state.rejected_submission = Some(id);
+                    return Err("Reconnect before sending a prompt".into());
+                }
+                self.state.queued_prompts.push(QueuedPrompt {
+                    id,
+                    text,
+                    images: Vec::new(),
+                });
+                self.state.accepted_submission = Some(id);
+            }
             Action::SubmitWithMode {
                 id,
                 text,
@@ -2737,6 +2750,17 @@ impl Actor {
                         // block, so their array index is not its stream index.
                         let item_id = self.assistant_block_id(id, index, block, &claimed);
                         self.block(&item_id, block);
+                        if block["type"] == "text" {
+                            if let Some(item) = self
+                                .state
+                                .saved
+                                .items
+                                .iter_mut()
+                                .find(|item| item["id"] == item_id)
+                            {
+                                item["groveCompleted"] = json!(true);
+                            }
+                        }
                         claimed.push(item_id);
                     }
                 }
@@ -3086,6 +3110,19 @@ impl Actor {
                 };
                 self.block(&id, block);
                 self.blocks.insert(index, item_id);
+            }
+            "content_block_stop" => {
+                if let Some(id) = self.blocks.get(&index) {
+                    if let Some(item) = self
+                        .state
+                        .saved
+                        .items
+                        .iter_mut()
+                        .find(|item| item["id"] == *id && item["type"] == "agentMessage")
+                    {
+                        item["groveCompleted"] = json!(true);
+                    }
+                }
             }
             "content_block_delta" => {
                 let Some(id) = self.blocks.get(&index) else {
@@ -4808,6 +4845,7 @@ mod tests {
         actor.message(json!({"type":"assistant","message":{"id":"m","content":[{"type":"text","text":"Hello!"}]}})).unwrap();
         assert_eq!(actor.state.saved.items.len(), 1);
         assert_eq!(actor.state.saved.items[0]["text"], "Hello!");
+        assert_eq!(actor.state.saved.items[0]["groveCompleted"], true);
         let tool = json!({"type":"tool_use","id":"tool1","name":"Bash","input":{"command":"pwd"}});
         actor.block("m-1", &tool);
         actor.tool_result(&json!({"tool_use_id":"tool1","content":"/tmp","is_error":false}));
@@ -4866,6 +4904,26 @@ mod tests {
             lines,
         });
         output
+    }
+    #[test]
+    fn project_prompt_preserves_composer_and_uses_native_queue() {
+        let mut actor = actor();
+        let _reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("busy".into());
+        actor.state.saved.draft = "same text".into();
+        actor.state.saved.draft_images = vec!["data:image/png;base64,aGVsbG8=".into()];
+        actor
+            .action(Action::ProjectPrompt {
+                id: 41,
+                text: "same text".into(),
+            })
+            .unwrap();
+        assert_eq!(actor.state.queued_prompts[0].text, "same text");
+        assert_eq!(actor.state.saved.draft, "same text");
+        assert_eq!(actor.state.saved.draft_images.len(), 1);
+        assert!(actor.state.queue_sending.is_empty());
     }
     #[test]
     fn startup_queue_waits_for_handshake_and_sends_images_once_in_order() {

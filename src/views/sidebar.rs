@@ -6,6 +6,7 @@ mod content;
 mod grid;
 mod multi_project;
 use multi_project::SidebarContext;
+mod issue_worktree;
 mod project_flyout;
 mod project_setup;
 mod projects;
@@ -273,8 +274,9 @@ fn terminal_directory_label(
         .or_else(|| initial.map(|cwd| ("home-launch-cwd", format!("Launched in {cwd}"))))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarEvent {
+    IssueWorktreeCreated { project: usize, path: String },
     SettingsRequested,
     NewMultiProjectSessionRequested,
 }
@@ -308,6 +310,7 @@ enum Action {
     ProjectFlyoutLaunchOptions(String),
     Launch(usize, String, Agent),
     RunScript(String, String),
+    RunNamedScript(String, String, String),
     Close(SessionId),
     ConfirmClose(SessionId),
     Retry(SessionId),
@@ -365,6 +368,7 @@ fn effective_rail_width(preferred: f32, logical_width: f32) -> f32 {
 }
 
 pub struct Sidebar {
+    issue_flow: issue_worktree::IssueWorktreeState,
     checkout_panel: checkout_panel::CheckoutPanel,
     action_source_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     project_panel: Option<Entity<projects::ProjectPanel>>,
@@ -561,6 +565,7 @@ impl Sidebar {
             }));
         }
         Self {
+            issue_flow: issue_worktree::IssueWorktreeState::new(window, cx),
             checkout_panel: checkout_panel::CheckoutPanel::default(),
             action_source_bounds: std::rc::Rc::default(),
             project_panel: None,
@@ -1761,7 +1766,10 @@ impl Sidebar {
         );
         let project_diff_button = self.mode == ViewMode::Project
             && matches!(&action, Action::OpenDiff(_) | Action::OpenWorktreeDiff(_));
-        let quiet_launch_control = matches!(&action, Action::Launch(..) | Action::RunScript(..));
+        let quiet_launch_control = matches!(
+            &action,
+            Action::Launch(..) | Action::RunScript(..) | Action::RunNamedScript(..)
+        );
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
         let confirm = matches!(
@@ -1864,7 +1872,10 @@ impl Sidebar {
                 cx.stop_propagation();
                 if matches!(
                     &click,
-                    Action::Launch(..) | Action::RunScript(..) | Action::RemoveWorktree(..)
+                    Action::Launch(..)
+                        | Action::RunScript(..)
+                        | Action::RunNamedScript(..)
+                        | Action::RemoveWorktree(..)
                 ) {
                     this.action_source_bounds.set(click_bounds.get());
                 }
@@ -1890,7 +1901,10 @@ impl Sidebar {
                         cx.stop_propagation();
                         if matches!(
                             &action,
-                            Action::Launch(..) | Action::RunScript(..) | Action::RemoveWorktree(..)
+                            Action::Launch(..)
+                                | Action::RunScript(..)
+                                | Action::RunNamedScript(..)
+                                | Action::RemoveWorktree(..)
                         ) {
                             this.action_source_bounds.set(key_bounds.get());
                         }
@@ -2047,6 +2061,14 @@ impl Sidebar {
     /// Mirror a successful launch from the shell palette into the canvas selection.
     /// Runtime already owns the active session; keeping this local selection in sync
     /// lets the existing canvas renderer create and focus its terminal view.
+    fn snippet_launched(&mut self, origin: SessionId, cx: &mut Context<Self>) {
+        if self.selection != Some(Selection::Session(origin)) {
+            return;
+        }
+        self.pending_canvas_focus = self.select_active_session(cx);
+        cx.notify();
+    }
+
     pub(crate) fn select_active_session(&mut self, cx: &mut Context<Self>) -> Option<SessionId> {
         let id = self.runtime.read(cx).state.read(cx).active_session()?;
         self.selection = Some(Selection::Session(id));
@@ -2439,11 +2461,12 @@ impl Sidebar {
                 .get(idx)
                 .is_some_and(|project| {
                     !project.archived
-                        && project
-                            .scripts
-                            .run
-                            .as_deref()
-                            .is_some_and(|script| !script.trim().is_empty())
+                        && project.scripts.effective_entries().iter().any(|entry| {
+                            matches!(
+                                entry.kind,
+                                grove_core::storage::ProjectActionKind::Shell { .. }
+                            )
+                        })
                 })
         })
     }
@@ -2529,6 +2552,71 @@ impl Sidebar {
             Some(Selection::Session(id)) => Some(id),
             _ => None,
         }
+    }
+    fn choose_project_script(
+        &mut self,
+        project_path: String,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_component::menu::{PopupMenu, PopupMenuItem};
+        let entries = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .find(|p| p.path == project_path)
+            .map(|p| p.scripts.effective_entries())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| matches!(e.kind, grove_core::storage::ProjectActionKind::Shell { .. }))
+            .collect::<Vec<_>>();
+        if entries.len() <= 1 {
+            self.run_script(project_path, path, cx);
+            return;
+        }
+        let focus = window.focused(cx);
+        let owner = cx.entity().downgrade();
+        let popup = PopupMenu::build(window, cx, move |mut popup, _, _| {
+            for entry in entries {
+                let owner = owner.clone();
+                let project_path = project_path.clone();
+                let path = path.clone();
+                popup = popup.item(PopupMenuItem::new(entry.name).on_click(
+                    move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            this.act(
+                                Action::RunNamedScript(
+                                    project_path.clone(),
+                                    path.clone(),
+                                    entry.id.clone(),
+                                ),
+                                window,
+                                cx,
+                            );
+                        });
+                    },
+                ));
+            }
+            popup
+        });
+        self.checkout_panel.popup_position = Some(window.mouse_position());
+        self.checkout_panel.popup_subscription = Some(cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _, _: &gpui::DismissEvent, window, cx| {
+                this.checkout_panel.popup = None;
+                this.checkout_panel.popup_subscription = None;
+                if let Some(focus) = &focus {
+                    focus.focus(window, cx);
+                }
+                cx.notify();
+            },
+        ));
+        popup.focus_handle(cx).focus(window, cx);
+        self.checkout_panel.popup = Some(popup);
+        cx.notify();
     }
     fn run_script(&mut self, project_path: String, path: String, cx: &mut Context<Self>) {
         let valid_target = self.snapshot.projects.iter().any(|project| {
@@ -2965,7 +3053,20 @@ impl Sidebar {
                     }
                 }
             }
-            Action::RunScript(project_path, path) => self.run_script(project_path, path, cx),
+            Action::RunScript(project_path, path) => {
+                self.choose_project_script(project_path, path, window, cx);
+            }
+            Action::RunNamedScript(project_path, path, id) => {
+                if self.runtime.update(cx, |runtime, cx| {
+                    runtime.spawn_project_script(&project_path, &path, &id, cx)
+                }) {
+                    if self.mode == ViewMode::Grid {
+                        self.mode = self.last_mode;
+                    }
+                    self.select_active_session(cx);
+                    cx.notify();
+                }
+            }
             Action::Close(id) => {
                 if self.project_flyout.as_ref() == Some(&SidebarContext::MultiProject) {
                     self.project_flyout_hide_task = None;
@@ -9801,7 +9902,15 @@ for line in sys.stdin:
                         state.select_session(second_id, &snap);
                         cx.notify();
                     });
-                assert_eq!(sidebar.select_active_session(cx), Some(second_id));
+                sidebar.snippet_launched(SessionId::from_raw(u64::MAX), cx);
+                assert_eq!(
+                    sidebar.selection,
+                    Some(Selection::Session(first_id)),
+                    "Hidden source cannot steal canvas focus"
+                );
+                sidebar.snippet_launched(first_id, cx);
+                assert_eq!(sidebar.selection, Some(Selection::Session(second_id)));
+                assert_eq!(sidebar.pending_canvas_focus, Some(second_id));
             });
         });
         draw(cx);

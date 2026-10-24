@@ -66,6 +66,21 @@ impl ProjectTree {
         }
     }
 
+    /// Register a verified Git worktree list for any project before presenting its launcher.
+    pub fn register_project_worktrees(
+        &mut self,
+        project: usize,
+        active: usize,
+        worktrees: Vec<Worktree>,
+    ) {
+        self.generation = self.generation.wrapping_add(1);
+        if project == active {
+            self.set_active_worktrees(project, worktrees);
+        } else {
+            self.wt_cache.insert(project, worktrees);
+        }
+    }
+
     /// Every writer of `worktrees` must go through here (or `switch_active_project`), or `active_idx` drifts.
     pub fn set_active_worktrees(&mut self, proj: usize, worktrees: Vec<Worktree>) {
         self.worktrees = worktrees;
@@ -342,11 +357,12 @@ impl ProjectTree {
         let mut projects = Vec::new();
         for (pi, p) in store.active_projects() {
             let is_git = self.is_repo_cached(&p.path, now);
-            let has_run = p
-                .scripts
-                .run
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty());
+            let has_run = p.scripts.effective_entries().iter().any(|entry| {
+                matches!(
+                    entry.kind,
+                    grove_core::storage::ProjectActionKind::Shell { .. }
+                )
+            });
             let worktrees = if pi == active_proj {
                 &self.worktrees
             } else {
@@ -718,5 +734,34 @@ mod tests {
         let idxs: Vec<usize> = snap.projects.iter().map(|p| p.idx).collect();
         assert_eq!(idxs, vec![0, 2]);
         assert_eq!(snap.total_projects, 3);
+    }
+}
+
+#[cfg(test)]
+mod issue_registration_tests {
+    use super::*;
+    #[test]
+    fn creation_registration_covers_inactive_project_and_invalidates_old_sweep() {
+        let mut tree = ProjectTree::new();
+        let wt = |path: &str| Worktree {
+            path: path.into(),
+            branch: "main".into(),
+            mtime: None,
+            is_main: false,
+        };
+        tree.set_active_worktrees(0, vec![wt("/main")]);
+        let stale_generation = tree.generation();
+        tree.register_project_worktrees(1, 0, vec![wt("/other"), wt("/new-issue")]);
+        assert_eq!(tree.worktrees_for_project(0, 0)[0].path, "/main");
+        assert!(tree
+            .worktrees_for_project(1, 0)
+            .iter()
+            .any(|w| w.path == "/new-issue"));
+        assert!(!tree.apply_sweep(stale_generation, HashMap::new()));
+        tree.register_project_worktrees(0, 0, vec![wt("/main"), wt("/active-issue")]);
+        assert!(tree
+            .worktrees_for_project(0, 0)
+            .iter()
+            .any(|w| w.path == "/active-issue"));
     }
 }

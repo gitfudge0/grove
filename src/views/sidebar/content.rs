@@ -324,6 +324,7 @@ impl Sidebar {
         if self.worktree_return_focus.is_none() {
             self.worktree_return_focus = window.focused(cx);
         }
+        self.issue_flow.reset(window, cx);
         self.pending_new_worktree = Some(idx);
         self.content_error = None;
         self.worktree_errors = [None, None, None];
@@ -338,6 +339,9 @@ impl Sidebar {
         cx.notify();
     }
     pub(super) fn submit_worktree(&mut self, cx: &mut Context<Self>) {
+        if self.issue_flow.busy {
+            return;
+        }
         let Some(idx) = self.pending_new_worktree else {
             return;
         };
@@ -371,7 +375,10 @@ impl Sidebar {
             Ok(path) => {
                 self.pending_new_worktree = None;
                 self.content_error = None;
-                self.select(Selection::Worktree(idx, path), cx);
+                self.select(Selection::Worktree(idx, path.clone()), cx);
+                if self.issue_flow.resolved.take().is_some() {
+                    cx.emit(super::SidebarEvent::IssueWorktreeCreated { project: idx, path });
+                }
             }
             Err(error) => {
                 let field = worktree_error_field(&error);
@@ -571,7 +578,21 @@ impl Sidebar {
                     })
                 })
                 .clone();
+            if newly_created {
+                self.observers.push(cx.subscribe(
+                    &view,
+                    move |this, _, event: &super::super::codex_view::CodexViewEvent, cx| {
+                        if matches!(
+                            event,
+                            super::super::codex_view::CodexViewEvent::ScriptLaunched
+                        ) {
+                            this.snippet_launched(id, cx);
+                        }
+                    },
+                ));
+            }
             view.update(cx, |view, cx| {
+                view.set_script_runtime(self.runtime.clone(), cx);
                 if view.agents_in_checkout != self.checkout_panel.agents_visible {
                     view.agents_in_checkout = self.checkout_panel.agents_visible;
                     cx.notify();
@@ -1198,9 +1219,15 @@ impl Sidebar {
             .and_then(|(_, value)| *value);
         let guidance = if main {
             match readiness {
-                Some(WorktreeReadiness::Ready) => "Create a separate worktree for an isolated branch.",
-                Some(WorktreeReadiness::NeedsGit) => "Initialize Git to create worktrees. Sessions in this folder still work.",
-                Some(WorktreeReadiness::NeedsCommit) => "Make the first commit before creating a worktree. Sessions in the main checkout still work.",
+                Some(WorktreeReadiness::Ready) => {
+                    "Create a separate worktree for an isolated branch."
+                }
+                Some(WorktreeReadiness::NeedsGit) => {
+                    "Initialize Git to create worktrees. Sessions in this folder still work."
+                }
+                Some(WorktreeReadiness::NeedsCommit) => {
+                    "Make the first commit before creating a worktree. Sessions in the main checkout still work."
+                }
                 None => "Checking Git before offering another worktree…",
             }
         } else {
@@ -1539,7 +1566,7 @@ impl Sidebar {
                 self.worktree_branch.read(cx).value().as_ref(),
                 self.worktree_base.read(cx).value().as_ref(),
             );
-            let enabled = errors.iter().all(Option::is_none);
+            let enabled = errors.iter().all(Option::is_none) && !self.issue_flow.busy;
             let editor = div()
                 .id("worktree-editor-scroll")
                 .size_full()
@@ -1567,6 +1594,7 @@ impl Sidebar {
                                     .text_color(c::FG_DIM())
                                     .child("Create a branch and isolated working directory."),
                             )
+                            .child(self.render_issue_worktree_fields(window, cx))
                             .child(form_field(
                                 "worktree-name-field",
                                 "Worktree name",
@@ -2391,9 +2419,9 @@ mod tests {
         });
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.grid_session_drag.is_none()));
-        assert!(sidebar.read_with(cx, |sidebar, cx| sidebar
-            .active_canvas_sessions(cx)
-            .is_empty()));
+        assert!(sidebar.read_with(cx, |sidebar, cx| {
+            sidebar.active_canvas_sessions(cx).is_empty()
+        }));
         cx.update(|_, cx| SettingsState::update(cx, |store| store.workspaces.select(1)));
         draw(cx);
         cx.simulate_mouse_up(
@@ -2677,9 +2705,11 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
-            .task_glance(id)
-            .is_some_and(super::super::task_glance::TaskGlance::all_done)));
+        assert!(sidebar.read_with(cx, |sidebar, _| {
+            sidebar
+                .task_glance(id)
+                .is_some_and(super::super::task_glance::TaskGlance::all_done)
+        }));
         assert!(cx.debug_bounds("header-tasks-1").is_some());
         assert!(cx.debug_bounds("grid-header-task-now-1").is_none());
         cx.simulate_keystrokes("enter");
@@ -2893,7 +2923,10 @@ mod tests {
             "start-opencode",
         ] {
             let row = cx.debug_bounds(selector).unwrap();
-            assert!(row.top() >= actions.top() && row.bottom() <= actions.bottom(), "{selector} must fit inside its clipping container: row={row:?}, actions={actions:?}");
+            assert!(
+                row.top() >= actions.top() && row.bottom() <= actions.bottom(),
+                "{selector} must fit inside its clipping container: row={row:?}, actions={actions:?}"
+            );
         }
         cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(540.)));
         draw(cx);

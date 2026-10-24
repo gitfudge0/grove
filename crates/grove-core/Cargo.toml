@@ -9,13 +9,14 @@ license.workspace = true
 description = "Grove's domain layer — git/tmux/session/storage/theme/upgrade and friends"
 
 [dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json.workspace = true
 markdown = "1.0.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 base64.workspace = true
 dirs.workspace = true
-ureq.workspace = true
+ureq = { workspace = true, features = ["json"] }
 url.workspace = true
 ring.workspace = true
 semver.workspace = true

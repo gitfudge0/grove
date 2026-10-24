@@ -2022,6 +2022,9 @@ impl Snapshot {
                     }
                 }
                 if message["method"] == "item/completed" {
+                    if item["type"] == "agentMessage" {
+                        item["groveCompleted"] = json!(true);
+                    }
                     if let Some(question) = QuestionRequest::from_async_message(&item) {
                         item["groveQuestionPending"] = json!(true);
                         if !self.questions.iter().any(|q| q.id == question.id) {
@@ -2455,6 +2458,11 @@ pub enum Action {
         effort: Option<String>,
         access: Option<String>,
     },
+    /// An explicit project action enters the native queue without consuming the composer.
+    ProjectPrompt {
+        id: u64,
+        text: String,
+    },
     SubmitWithMode {
         id: u64,
         text: String,
@@ -2536,6 +2544,11 @@ impl Handle {
     pub fn submit(&self, text: String, images: Vec<String>) -> Result<u64, String> {
         let id = self.3.fetch_add(1, Ordering::Relaxed);
         self.send(Action::Submit { id, text, images })?;
+        Ok(id)
+    }
+    pub fn project_prompt(&self, text: String) -> Result<u64, String> {
+        let id = self.3.fetch_add(1, Ordering::Relaxed);
+        self.send(Action::ProjectPrompt { id, text })?;
         Ok(id)
     }
     pub fn submit_with_mode(
@@ -3550,7 +3563,10 @@ impl Actor {
                     | Action::DraftReference(_)
             )
         {
-            if let Action::Submit { id, .. } | Action::SubmitWithMode { id, .. } = &action {
+            if let Action::Submit { id, .. }
+            | Action::SubmitWithMode { id, .. }
+            | Action::ProjectPrompt { id, .. } = &action
+            {
                 self.state.rejected_submission = Some(*id);
             }
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
@@ -3769,6 +3785,19 @@ impl Actor {
                 self.state.queue_steering.push(id);
                 self.request("turn/steer", json!({"threadId":self.state.saved.thread_id,"expectedTurnId":turn,"input":input}), Pending::Steer { submission: id, turn, draft, from_queue: true }).inspect_err(|_| { self.queue_paused = true; self.queue_ready = false; self.state.mark_queue_uncertain(); })?;
                 self.state.clear_error();
+            }
+            Action::ProjectPrompt { id, text } => {
+                let draft = self.state.saved.draft.clone();
+                let images = self.state.saved.draft_images.clone();
+                let reference = self.state.saved.draft_reference.clone();
+                let result = self.submit_mode(id, text, Vec::new(), SubmissionMode::Queue);
+                self.state.saved.draft = draft;
+                self.state.saved.draft_images = images;
+                self.state.saved.draft_reference = reference;
+                if let Err(error) = result {
+                    self.state.rejected_submission = Some(id);
+                    return Err(error);
+                }
             }
             Action::SubmitWithMode {
                 id,
@@ -5960,6 +5989,42 @@ mod tests {
     }
     #[test]
     #[cfg(unix)]
+    fn project_prompt_preserves_composer_and_uses_native_queue() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("busy".into());
+        actor.state.saved.draft = "same text".into();
+        actor.state.saved.draft_reference = Some(reference("preserved"));
+        actor.state.saved.draft_images = vec!["data:image/png;base64,aGVsbG8=".into()];
+        actor
+            .action(Action::ProjectPrompt {
+                id: 41,
+                text: "same text".into(),
+            })
+            .unwrap();
+        assert_eq!(actor.state.queued_prompts[0].text, "same text");
+        assert_eq!(actor.state.saved.draft, "same text");
+        assert_eq!(
+            actor.state.saved.draft_reference,
+            Some(reference("preserved"))
+        );
+        assert_eq!(actor.state.saved.draft_images.len(), 1);
+        assert!(actor.state.queue_sending.is_empty());
+        actor.state.turn_id = None;
+        actor.state.status = Status::Idle;
+        actor.queue_ready = true;
+        actor.dispatch_queue().unwrap();
+        assert_eq!(actor.state.queue_sending, vec![41]);
+        assert_eq!(actor.state.saved.draft, "same text");
+        assert_eq!(
+            actor.state.saved.draft_reference,
+            Some(reference("preserved"))
+        );
+        assert_eq!(actor.state.saved.draft_images.len(), 1);
+    }
+    #[test]
+    #[cfg(unix)]
     fn uncertain_delivery_requires_explicit_dismissal_then_resume() {
         let mut actor = actor();
         actor.process = Some(fixture_process());
@@ -6892,6 +6957,15 @@ mod tests {
             assert!(state.apply(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":delta}})));
         }
         state.apply(&json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"item-1","type":"agentMessage","text":"Hello world"}}}));
+        assert_eq!(
+            state
+                .saved
+                .items
+                .iter()
+                .find(|item| item["id"] == "item-1")
+                .unwrap()["groveCompleted"],
+            true
+        );
         assert_eq!(state.saved.items.len(), 1);
         assert_eq!(state.transcript(), "Hello world");
     }

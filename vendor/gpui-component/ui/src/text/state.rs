@@ -577,6 +577,14 @@ fn parse_content(
         ..NodeContext::default()
     };
 
+    // HTML nodes do not carry Markdown source spans. Reparse the complete HTML
+    // document on append rather than dropping its last block and parsing a suffix.
+    if options.append && format == TextViewFormat::Html {
+        let source = format!("{}{}", content.document.source, options.pending_text);
+        content.document = format::html::parse(&source, &mut node_cx)?;
+        return Ok(content);
+    }
+
     let mut source = String::new();
     if options.append
         && let Some(last_block) = content.document.blocks.pop()

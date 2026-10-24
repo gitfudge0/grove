@@ -80,6 +80,20 @@ impl CodexSession {
             cx.notify();
         }
     }
+    /// Project actions use the provider's visible queue and leave all composer data intact.
+    pub fn project_prompt(&mut self, text: String, cx: &mut Context<Self>) -> Result<u64, String> {
+        codex::validate_prompt(&text, &[])?;
+        if self.state.status == codex::Status::Disconnected
+            || (self.state.saved.provider == codex::Provider::Codex
+                && self.state.saved.thread_id.is_none())
+        {
+            return Err("Reconnect before sending a project prompt".into());
+        }
+        let id = self.handle.project_prompt(text)?;
+        self.state.clear_error();
+        cx.notify();
+        Ok(id)
+    }
     pub fn prompt(&mut self, text: String, cx: &mut Context<Self>) -> Result<(), String> {
         self.queue_prompt(text, Vec::new(), false, cx).map(|_| ())
     }

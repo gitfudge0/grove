@@ -16,7 +16,7 @@ use gpui::{
     Window,
 };
 use gpui_component::{input::InputState, scroll::ScrollableElement, Disableable};
-use grove_core::storage::ProjectScripts;
+use grove_core::storage::{ProjectAction, ProjectActionKind, ProjectScripts};
 
 /// Bound focus traversal even if every decision action is disabled.
 const FOCUS_SCAN_LIMIT: usize = 128;
@@ -54,6 +54,8 @@ pub(super) struct ProjectPanel {
     registry: Entity<SessionRegistry>,
     page: Page,
     fields: Vec<Entity<InputState>>,
+    script_entries: Vec<(String, bool, Entity<InputState>, Entity<InputState>)>,
+    review_prompt_id: Option<String>,
     archive_overflow: Option<String>,
     error: Option<String>,
     destination: Option<u64>,
@@ -121,12 +123,35 @@ impl ProjectPanel {
             cx.observe(&registry, |_, _, cx| cx.notify()),
             cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
         ];
+        let script_entries = project
+            .as_ref()
+            .map(|p| p.scripts.effective_entries())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| {
+                let (prompt, content) = match entry.kind {
+                    ProjectActionKind::Shell { command } => (false, command),
+                    ProjectActionKind::Prompt { template } => (true, template),
+                };
+                let name = cx.new(|cx| InputState::new(window, cx).default_value(entry.name));
+                let body = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .multi_line(true)
+                        .default_value(content)
+                });
+                (entry.id, prompt, name, body)
+            })
+            .collect();
         let panel = Self {
             workspace: cx.global::<SettingsState>().store.workspaces.active,
             service,
             registry,
             page,
             fields,
+            script_entries,
+            review_prompt_id: project
+                .as_ref()
+                .and_then(|p| p.scripts.review_prompt_id.clone()),
             archive_overflow: None,
             error: None,
             destination: None,
@@ -213,9 +238,32 @@ impl ProjectPanel {
             |index: usize| (!values[index].trim().is_empty()).then(|| values[index].clone());
         let scripts = ProjectScripts {
             setup: script(1),
-            run: script(2),
+            run: None,
+            entries: self
+                .script_entries
+                .iter()
+                .map(|(id, prompt, name, body)| ProjectAction {
+                    id: id.clone(),
+                    name: name.read(cx).value().to_string(),
+                    kind: if *prompt {
+                        ProjectActionKind::Prompt {
+                            template: body.read(cx).value().to_string(),
+                        }
+                    } else {
+                        ProjectActionKind::Shell {
+                            command: body.read(cx).value().to_string(),
+                        }
+                    },
+                })
+                .collect(),
+            review_prompt_id: self.review_prompt_id.clone(),
             teardown: script(3),
         };
+        if let Err(error) = scripts.validate() {
+            self.error = Some(error);
+            cx.notify();
+            return;
+        }
         match self.service.update(cx, |service, cx| {
             service.update_project(&path, values[0].clone(), scripts, cx)
         }) {
@@ -223,6 +271,134 @@ impl ProjectPanel {
             Err(error) => self.error = Some(error),
         }
         cx.notify();
+    }
+    fn render_scripts(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG))
+            .child(panel_section("SCRIPTS"));
+        list = list.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Prompt placeholders: {{pr_url}}, {{head_sha}}, {{base_branch}}, {{head_branch}}, {{checkout}}. PR context is always included."));
+        for (index, (id, prompt, name, body)) in self.script_entries.iter().enumerate() {
+            let mut controls = div().flex().flex_wrap().gap(rpx(SPACE_SM));
+            for (action, label, glyph) in [
+                ("up", "Move up", "icons/arrow-up.svg"),
+                ("down", "Move down", "icons/chev-down.svg"),
+                ("remove", "Remove", "icons/trash.svg"),
+                (
+                    "type",
+                    if *prompt { "Prompt" } else { "Shell" },
+                    "icons/reset.svg",
+                ),
+            ] {
+                controls = controls.child(
+                    project_action(
+                        format!("script-{id}-{action}").into(),
+                        label,
+                        Some(glyph),
+                        ProjectActionStyle::Mini,
+                        window,
+                        cx,
+                    )
+                    .disabled(
+                        (action == "up" && index == 0)
+                            || (action == "down" && index + 1 == self.script_entries.len()),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        match action {
+                            "up" if index > 0 => this.script_entries.swap(index, index - 1),
+                            "down" if index + 1 < this.script_entries.len() => {
+                                this.script_entries.swap(index, index + 1);
+                            }
+                            "remove" => {
+                                if this.review_prompt_id.as_ref()
+                                    == Some(&this.script_entries[index].0)
+                                {
+                                    this.review_prompt_id = None;
+                                }
+                                this.script_entries.remove(index);
+                            }
+                            "type" => {
+                                if this.review_prompt_id.as_ref()
+                                    == Some(&this.script_entries[index].0)
+                                {
+                                    this.review_prompt_id = None;
+                                }
+                                this.script_entries[index].1 = !this.script_entries[index].1;
+                            }
+                            _ => {}
+                        }
+                        cx.notify();
+                    })),
+                );
+            }
+            if *prompt {
+                let selected = self.review_prompt_id.as_ref() == Some(id);
+                let id = id.clone();
+                controls = controls.child(
+                    project_action(
+                        format!("script-review-{id}").into(),
+                        if selected {
+                            "Use built-in review"
+                        } else {
+                            "Use for PR review"
+                        },
+                        Some("icons/check.svg"),
+                        ProjectActionStyle::Mini,
+                        window,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.review_prompt_id = if selected { None } else { Some(id.clone()) };
+                        cx.notify();
+                    })),
+                );
+            }
+            list = list
+                .child(project_form_field(
+                    "script-entry-name",
+                    "Name",
+                    name,
+                    None,
+                    window,
+                    cx,
+                ))
+                .child(script_field(
+                    if *prompt {
+                        "Prompt template"
+                    } else {
+                        "Shell command"
+                    },
+                    body,
+                    window,
+                    cx,
+                ))
+                .child(controls);
+        }
+        list.child(
+            project_action(
+                "script-add".into(),
+                "Add script",
+                Some("icons/plus.svg"),
+                ProjectActionStyle::Mini,
+                window,
+                cx,
+            )
+            .on_click(cx.listener(|this, _, window, cx| {
+                let id = format!(
+                    "script-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                );
+                let name = cx.new(|cx| InputState::new(window, cx).default_value("New script"));
+                let body = cx.new(|cx| InputState::new(window, cx).multi_line(true));
+                this.script_entries.push((id, false, name, body));
+                cx.notify();
+            })),
+        )
     }
     fn move_project(&mut self, cx: &mut Context<Self>) {
         let Page::Move(path) = &self.page else { return };
@@ -378,6 +554,7 @@ fn script_field(
 ) -> impl IntoElement {
     let focused = input.read(cx).focus_handle(cx).is_focused(window);
     div()
+        .debug_selector(move || label.into())
         .min_w_0()
         .w_full()
         .h(rpx(TEXTAREA_H))
@@ -655,7 +832,7 @@ impl Render for ProjectPanel {
                     content = content
                         .child(panel_section("AUTOMATION"))
                         .child(script_field("Setup script", &self.fields[1], window, cx))
-                        .child(script_field("Run script", &self.fields[2], window, cx))
+                        .child(self.render_scripts(window, cx))
                         .child(script_field("Teardown script", &self.fields[3], window, cx))
                         .child(panel_section("PROJECT MANAGEMENT"));
                     if project.is_some() {
@@ -1407,6 +1584,164 @@ mod tests {
             ])
         }
     }
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes project script editor screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn project_scripts_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Workflow fixture".into(),
+                    path: "/tmp/grove-script-editor-fixture".into(),
+                    archived: false,
+                    worktree_dir: None,
+                    scripts: ProjectScripts {
+                        entries: vec![
+                            ProjectAction {
+                                id: "dev".into(),
+                                name:
+                                    "Development server with a deliberately long descriptive name"
+                                        .into(),
+                                kind: ProjectActionKind::Shell {
+                                    command: "npm run dev".into(),
+                                },
+                            },
+                            ProjectAction {
+                                id: "review".into(),
+                                name: "PR review".into(),
+                                kind: ProjectActionKind::Prompt {
+                                    template: "Review {{pr_url}} carefully".into(),
+                                },
+                            },
+                        ],
+                        review_prompt_id: Some("review".into()),
+                        ..Default::default()
+                    },
+                }],
+                ..Default::default()
+            }));
+        });
+        for width in [768., 1280.] {
+            let window = cx
+                .open_window(
+                    gpui::size(gpui::px(width), gpui::px(1200.)),
+                    |window, cx| {
+                        let registry = cx.new(|_| SessionRegistry::new());
+                        let state = cx.new(|cx| {
+                            crate::entities::workspace_state::WorkspaceState::new(
+                                &cx.global::<SettingsState>().store,
+                                MODAL_W_LG,
+                            )
+                        });
+                        let service = cx.new(|_| ProjectService::new(registry.clone(), state));
+                        let panel = cx.new(|cx| {
+                            ProjectPanel::new(
+                                Page::Edit("/tmp/grove-script-editor-fixture".into()),
+                                service,
+                                registry,
+                                window,
+                                cx,
+                            )
+                        });
+                        cx.new(|cx| {
+                            gpui_component::Root::new(panel, window, cx)
+                                .bordered(false)
+                                .bg(c::BG())
+                        })
+                    },
+                )
+                .unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            let path = format!("/tmp/grove-project-scripts-{width:.0}.png");
+            cx.capture_screenshot(window.into())
+                .unwrap()
+                .save(&path)
+                .unwrap();
+            eprintln!("Project scripts native fixture: {path}");
+            cx.update_window(window.into(), |_, window, _| window.remove_window())
+                .unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn named_script_editor_renders_shell_and_prompt_entries(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Workflow fixture".into(),
+                    path: "/tmp/grove-script-editor-fixture".into(),
+                    archived: false,
+                    worktree_dir: None,
+                    scripts: ProjectScripts {
+                        entries: vec![
+                            ProjectAction {
+                                id: "dev".into(),
+                                name:
+                                    "Development server with a deliberately long descriptive name"
+                                        .into(),
+                                kind: ProjectActionKind::Shell {
+                                    command: "npm run dev".into(),
+                                },
+                            },
+                            ProjectAction {
+                                id: "review".into(),
+                                name: "PR review".into(),
+                                kind: ProjectActionKind::Prompt {
+                                    template: "Review {{pr_url}} carefully".into(),
+                                },
+                            },
+                        ],
+                        review_prompt_id: Some("review".into()),
+                        ..Default::default()
+                    },
+                }],
+                ..Default::default()
+            }));
+        });
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let registry = cx.new(|_| SessionRegistry::new());
+            let state = cx.new(|cx| {
+                crate::entities::workspace_state::WorkspaceState::new(
+                    &cx.global::<SettingsState>().store,
+                    MODAL_W_LG,
+                )
+            });
+            let service = cx.new(|_| ProjectService::new(registry.clone(), state));
+            ProjectPanel::new(
+                Page::Edit("/tmp/grove-script-editor-fixture".into()),
+                service,
+                registry,
+                window,
+                cx,
+            )
+        });
+        for width in [768., 1280.] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1200.)));
+            draw(cx);
+            assert!(cx.debug_bounds("Shell command").is_some());
+            assert!(cx.debug_bounds("Prompt template").is_some());
+            panel.read_with(cx, |panel, _| {
+                assert_eq!(panel.script_entries.len(), 2);
+                assert_eq!(panel.review_prompt_id.as_deref(), Some("review"));
+            });
+        }
+    }
+
     #[gpui::test]
     fn all_action_contexts_share_complete_small_recipe(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
@@ -1675,6 +2010,9 @@ mod tests {
                 {
                     field.update(cx, |input, cx| input.set_value(value, window, cx));
                 }
+                let name = cx.new(|cx| InputState::new(window,cx).default_value("Run"));
+                let body = cx.new(|cx| InputState::new(window,cx).multi_line(true).default_value("echo run"));
+                panel.script_entries = vec![("test-run".into(),false,name,body)];
                 panel.fields[0].update(cx, |input, cx| input.set_value("", window, cx));
                 panel.save(cx);
                 assert!(panel.error.is_some());
@@ -1697,7 +2035,7 @@ mod tests {
                 let project = &cx.global::<SettingsState>().store.projects[0];
                 assert_eq!(project.name, "renamed");
                 assert_eq!(project.scripts.setup.as_deref(), Some("echo setup"));
-                assert_eq!(project.scripts.run.as_deref(), Some("echo run"));
+                assert!(matches!(&project.scripts.entries[0].kind, ProjectActionKind::Shell { command } if command == "echo run"));
                 assert_eq!(project.scripts.teardown.as_deref(), Some("echo teardown"));
                 panel.registry.update(cx, |registry, _| {
                     registry.insert_meta(
@@ -1727,13 +2065,8 @@ mod tests {
                     })
                     .unwrap();
                 assert!(!cx.global::<SettingsState>().store.projects[0].archived);
-                assert_eq!(
-                    cx.global::<SettingsState>().store.projects[0]
-                        .scripts
-                        .run
-                        .as_deref(),
-                    Some("echo run")
-                );
+                assert!(matches!(&cx.global::<SettingsState>().store.projects[0].scripts.entries[0].kind, ProjectActionKind::Shell { command } if command == "echo run"));
+                assert_eq!(cx.global::<SettingsState>().store.projects[0].scripts.entries[0].id,"test-run");
                 panel
                     .service
                     .update(cx, |service, cx| service.archive_project_by_path(&path, cx))

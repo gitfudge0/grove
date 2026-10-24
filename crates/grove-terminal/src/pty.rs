@@ -19,6 +19,7 @@ pub struct PtyHandle {
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
     rx_taken: bool,
+    exit_code: Option<u32>,
 }
 
 impl PtyHandle {
@@ -59,6 +60,7 @@ impl PtyHandle {
             child,
             rx,
             rx_taken: false,
+            exit_code: None,
         })
     }
 
@@ -114,8 +116,15 @@ impl PtyHandle {
         self.child.process_id()
     }
 
+    pub fn exit_code(&mut self) -> std::io::Result<Option<u32>> {
+        if self.exit_code.is_none() {
+            self.exit_code = self.child.try_wait()?.map(|status| status.exit_code());
+        }
+        Ok(self.exit_code)
+    }
+
     pub fn try_wait(&mut self) -> std::io::Result<bool> {
-        self.child.try_wait().map(|s| s.is_some())
+        self.exit_code().map(|code| code.is_some())
     }
 
     pub fn kill(&mut self) -> std::io::Result<()> {
@@ -141,6 +150,58 @@ mod tests {
 
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    #[cfg(unix)]
+    fn reports_nonzero_child_exit_code_without_inferring_success_from_eof() {
+        let mut command = CommandBuilder::new("sh");
+        command.arg("-c");
+        command.arg("exit 7");
+        let mut child = spawn(command, 24, 80).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(code) = child.exit_code().unwrap() {
+                assert_eq!(code, 7);
+                assert_eq!(child.exit_code().unwrap(), Some(7));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn eof_does_not_imply_a_successful_exit() {
+        let mut command = CommandBuilder::new("sh");
+        command.arg("-c");
+        command.arg("exec 0<&- 1>&- 2>&-; sleep 0.1; exit 7");
+        let mut child = spawn(command, 24, 80).unwrap();
+        let receiver = child.take_receiver().unwrap();
+        while receiver.recv_timeout(Duration::from_secs(5)).is_ok() {}
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(code) = child.exit_code().unwrap() {
+                assert_eq!(code, 7);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut command = CommandBuilder::new("sh");
+        command.arg("-c");
+        command.arg("exit 0");
+        let mut child = spawn(command, 24, 80).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(code) = child.exit_code().unwrap() {
+                assert_eq!(code, 0);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn child_pid_is_reported_while_the_child_lives() {

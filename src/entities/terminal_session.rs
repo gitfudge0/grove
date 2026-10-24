@@ -76,6 +76,8 @@ pub struct TerminalSession {
     last_output_at: Option<Instant>,
     /// Latched once [`Self::alive`] observes the child reaped: `try_wait` must never be called again after it.
     exited: bool,
+    exit_code: Option<u32>,
+    script_session: bool,
     /// `Some` implies `pty.is_none()`.
     spawn_error: Option<String>,
     /// Captured once at spawn — no cheap live handle to the pane's foreground process (`session.rs:511-522`).
@@ -156,6 +158,8 @@ impl TerminalSession {
             last_scroll_at: None,
             last_output_at: None,
             exited: false,
+            exit_code: None,
+            script_session: false,
             spawn_error,
             pane_pid,
             pending_attach: None,
@@ -187,6 +191,8 @@ impl TerminalSession {
             last_scroll_at: None,
             last_output_at: None,
             exited: false,
+            exit_code: None,
+            script_session: false,
             spawn_error: None,
             pane_pid: None,
             pending_attach: Some(name.to_string()),
@@ -231,10 +237,16 @@ impl TerminalSession {
     pub fn spawn_script(script: &str, cwd: &str, cx: &mut Context<Self>) -> Self {
         let shell = grove_core::env_path::login_shell();
         let mut cmd = CommandBuilder::new(&shell);
-        #[cfg(windows)]
-        cmd.arg("-Command");
-        #[cfg(not(windows))]
-        cmd.arg("-lc");
+        let shell_name = std::path::Path::new(&shell)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        cmd.arg(if matches!(shell_name.as_str(), "powershell" | "pwsh") {
+            "-Command"
+        } else {
+            "-lc"
+        });
         cmd.arg(script);
         apply_session_environment(
             &mut cmd,
@@ -270,6 +282,8 @@ impl TerminalSession {
             last_scroll_at: None,
             last_output_at: None,
             exited: false,
+            exit_code: None,
+            script_session: true,
             spawn_error,
             pane_pid: None,
             pending_attach: None,
@@ -642,8 +656,52 @@ impl TerminalSession {
         self.exited
     }
 
+    pub fn exit_code(&self) -> Option<u32> {
+        self.exit_code
+    }
+
     fn reader_closed(&mut self, cx: &mut Context<Self>) {
+        self.exit_code = self.exit_code.or_else(|| {
+            self.pty
+                .as_mut()
+                .and_then(|pty| pty.exit_code().ok().flatten())
+        });
         self.exited = true;
+        if self.script_session {
+            let outcome = self.exit_code.map_or_else(
+                || "\r\n[Terminal closed; process exit status unavailable]\r\n".into(),
+                |code| format!("\r\n[Process exited with code {code}]\r\n"),
+            );
+            self.term.process(outcome.as_bytes());
+        }
+        if self.script_session && self.exit_code.is_none() && self.pty.is_some() {
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(25))
+                    .await;
+                let done = this.update(cx, |this, cx| {
+                    let Some(pty) = this.pty.as_mut() else {
+                        return true;
+                    };
+                    match pty.exit_code() {
+                        Ok(Some(code)) => {
+                            this.exit_code = Some(code);
+                            this.term.process(
+                                format!("\r\n[Process exited with code {code}]\r\n").as_bytes(),
+                            );
+                            cx.notify();
+                            true
+                        }
+                        Ok(None) => false,
+                        Err(_) => true,
+                    }
+                });
+                if done.unwrap_or(true) {
+                    break;
+                }
+            })
+            .detach();
+        }
         cx.notify();
     }
 
@@ -655,7 +713,8 @@ impl TerminalSession {
             return false;
         };
         // A reaped child cannot come back: latch and never ask again.
-        if pty.try_wait().unwrap_or(false) {
+        if let Some(code) = pty.exit_code().ok().flatten() {
+            self.exit_code = Some(code);
             self.exited = true;
             return false;
         }

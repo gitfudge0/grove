@@ -1370,6 +1370,7 @@ mod tests {
             setup: Some("setup".into()),
             run: Some("run".into()),
             teardown: Some("teardown".into()),
+            ..Default::default()
         };
         apply_project_update(&mut store, 0, "new", scripts);
         assert_eq!(store.projects[0].name, "new");

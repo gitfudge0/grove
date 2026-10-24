@@ -763,7 +763,40 @@ struct MessageEditor {
     source_anchor: gpui::ScrollAnchor,
 }
 
+fn closed_shell_fence(fence: &str) -> bool {
+    let mut lines = fence.lines();
+    let first = lines.next().unwrap_or("").trim_start();
+    let marker = if first.starts_with("```") { '`' } else { '~' };
+    let count = first.chars().take_while(|c| *c == marker).count();
+    count >= 3
+        && lines.last().is_some_and(|last| {
+            last.trim().chars().count() >= count && last.trim().chars().all(|c| c == marker)
+        })
+}
+
+fn snippet_shell_supported(language: &str) -> bool {
+    let shell = grove_core::env_path::login_shell();
+    let shell = std::path::Path::new(&shell)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match language {
+        "sh" => matches!(shell.as_str(), "sh" | "bash" | "zsh"),
+        "bash" => shell == "bash",
+        "zsh" => shell == "zsh",
+        "powershell" | "pwsh" => matches!(shell.as_str(), "powershell" | "pwsh"),
+        _ => false,
+    }
+}
+
+pub(crate) enum CodexViewEvent {
+    ScriptLaunched,
+}
+impl gpui::EventEmitter<CodexViewEvent> for CodexView {}
+
 pub struct CodexView {
+    script_runtime: Option<Entity<crate::runtime::Runtime>>,
     preview_child: Option<String>,
     session: Entity<CodexSession>,
     pub(super) html: Entity<super::inline_html::HtmlSession>,
@@ -1051,10 +1084,19 @@ impl CodexView {
             tasks_expanded: true,
             task_cache: None,
             transcript_cache: None,
+            script_runtime: None,
             checkout_context: None,
             subscriptions,
         }
     }
+    pub(crate) fn set_script_runtime(
+        &mut self,
+        runtime: Entity<crate::runtime::Runtime>,
+        _cx: &mut Context<Self>,
+    ) {
+        self.script_runtime = Some(runtime);
+    }
+
     pub(crate) fn set_checkout_context(
         &mut self,
         location: String,
@@ -3917,12 +3959,38 @@ impl Render for CodexView {
                                     .style(markdown_style(window))
                                     .selectable(true);
                                 if kind == "agentMessage" {
-                                    view.code_block_actions(|block, _, _| {
-                                        copy_control(
-                                            "codex-copy-code",
-                                            "Copy code",
-                                            block.code().to_string(),
-                                        )
+                                    let owner = cx.entity().downgrade();
+                                    let source = text.clone();
+                                    let runtime = self.script_runtime.clone();
+                                    let cwd = state.saved.cwd.clone();
+                                    let finalized = (item["groveCompleted"] == true || item["status"] == "completed") && item["status"] != "inProgress" && self.preview_child.is_none();
+                                    view.code_block_actions(move |block, window, cx| {
+                                        let code = block.code().to_string();
+                                        let mut actions = div().flex().gap(rpx(SPACE_SM)).child(copy_control("codex-copy-code", "Copy code", code.clone()));
+                                        let language = block.lang().map(|s| s.to_string()).unwrap_or_default();
+                                        let closed = block.span.as_ref().and_then(|span| source.get(span.start..span.end)).is_some_and(closed_shell_fence);
+                                        if finalized && closed && !code.trim().is_empty() && snippet_shell_supported(&language) {
+                                            if let Some(runtime) = runtime.clone() {
+                                                let event_owner = owner.clone();
+                                                let cwd = cwd.clone();
+                                                let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
+                                                let available = owner.is_ok();
+                                                actions = actions.child(transcript_action("codex-run-code", if available { "Run" } else { "Checkout unavailable" }, false, window, cx)
+                                                    .disabled(!available)
+                                                    .debug_selector(|| "codex-run-code".into())
+                                                    .icon(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM)))
+                                                    .on_click(move |_, _, cx| {
+                                                        let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
+                                                        if let Ok(project) = owner {
+                                                            let launched = runtime.update(cx, |runtime, cx| runtime.spawn_checkout_command(&project, &cwd, &code, cx));
+                                                            if launched { let _ = event_owner.update(cx, |_,cx| cx.emit(CodexViewEvent::ScriptLaunched)); }
+                                                        }
+                                                    }));
+                                            } else {
+                                                actions = actions.child(transcript_action("codex-run-code", "Checkout unavailable", false, window, cx).disabled(true).debug_selector(|| "codex-run-code".into()).icon(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))));
+                                            }
+                                        }
+                                        actions
                                     })
                                 } else {
                                     view
@@ -10476,6 +10544,15 @@ impl CodexView {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_execution_requires_a_closed_fence() {
+        assert!(super::closed_shell_fence("```sh\necho hi\n```"));
+        assert!(super::closed_shell_fence("~~~~bash\nprintf x\n~~~~"));
+        assert!(!super::closed_shell_fence("```sh\necho hi"));
+        assert!(!super::closed_shell_fence("```sh\necho hi\n``"));
+        assert!(!super::closed_shell_fence("echo hi"));
+    }
+
     use super::*;
     use grove_core::codex::{Connection, Handle, SavedSession, Snapshot, Status};
     use serde_json::json;
@@ -18046,6 +18123,138 @@ mod tests {
     }
 
     #[gpui::test]
+    #[cfg(unix)]
+    fn codex_and_claude_snippet_run_selects_owned_terminal_and_preserves_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let root = std::env::temp_dir().join(format!(
+                "grove-snippet-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs_err::create_dir_all(&root).unwrap();
+            assert!(std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(&root)
+                .status()
+                .unwrap()
+                .success());
+            let path = root.canonicalize().unwrap().to_string_lossy().into_owned();
+            let (view, cx, _actions, updates) = fixture(cx);
+            let runtime = cx.update(|window, cx| {
+                cx.set_global(crate::settings::SettingsState::new(
+                    grove_core::storage::Store {
+                        projects: vec![grove_core::storage::Project {
+                            name: "Snippet fixture".into(),
+                            path: path.clone(),
+                            scripts: grove_core::storage::ProjectScripts::default(),
+                            archived: false,
+                            worktree_dir: None,
+                        }],
+                        ..Default::default()
+                    },
+                ));
+                cx.set_global(crate::zoom::CurrentPtyDims::default());
+                let runtime = cx.new(crate::runtime::Runtime::new);
+                view.update(cx, |view, cx| {
+                    view.set_script_runtime(runtime.clone(), cx);
+                    view.input
+                        .update(cx, |input, cx| input.set_value("unsent draft", window, cx));
+                });
+                runtime
+            });
+            let code = "printf '%s\n' ' first ' > snippet-output.txt\nprintf '%s\n' 'second' >> snippet-output.txt\npwd > snippet-cwd.txt";
+            let mut response = snapshot();
+            response.saved.provider = provider;
+            response.saved.cwd = path.clone();
+            response.saved.items.push(json!({"type":"agentMessage","id":"shell-answer","text":format!("```sh\n{code}\n```"),"groveCompleted":true}));
+            updates.send(response).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            let run = cx.debug_bounds("codex-run-code").unwrap().center();
+            // Dispatch the native click without polling the deterministic executor:
+            // a real PTY must not wake TestDispatcher from its bridge thread.
+            cx.update(|window, cx| {
+                use gpui::InputEvent as _;
+                window.dispatch_event(
+                    gpui::MouseDownEvent {
+                        position: run,
+                        button: gpui::MouseButton::Left,
+                        modifiers: gpui::Modifiers::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.dispatch_event(
+                    gpui::MouseUpEvent {
+                        position: run,
+                        button: gpui::MouseButton::Left,
+                        modifiers: gpui::Modifiers::default(),
+                        click_count: 1,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+            });
+            cx.update(|_, cx| {
+                let registry = runtime.read(cx).registry.read(cx);
+                let sessions = registry.all();
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(sessions[0].wt_path, path);
+                assert_eq!(sessions[0].agent, grove_core::agent::Agent::Terminal);
+                assert_eq!(
+                    runtime.read(cx).state.read(cx).active_session(),
+                    Some(sessions[0].id)
+                );
+                assert_eq!(
+                    view.read(cx).input.read(cx).value().as_ref(),
+                    "unsent draft"
+                );
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while fs_err::read_to_string(root.join("snippet-cwd.txt"))
+                .ok()
+                .is_none_or(|cwd| cwd.trim() != path)
+            {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert_eq!(
+                fs_err::read_to_string(root.join("snippet-output.txt")).unwrap(),
+                " first \nsecond\n"
+            );
+            assert_eq!(
+                fs_err::read_to_string(root.join("snippet-cwd.txt"))
+                    .unwrap()
+                    .trim(),
+                path
+            );
+            cx.update(|_, cx| {
+                let registry = runtime.read(cx).registry.clone();
+                let ids = registry
+                    .read(cx)
+                    .all()
+                    .iter()
+                    .map(|meta| meta.id)
+                    .collect::<Vec<_>>();
+                registry.update(cx, |registry, _| {
+                    for id in ids {
+                        registry.remove(id);
+                    }
+                });
+            });
+            fs_err::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[gpui::test]
     fn agent_code_blocks_and_finished_responses_copy_verbatim(cx: &mut gpui::TestAppContext) {
         let (_view, cx, _actions, updates) = fixture(cx);
         let text = "Run this:\n\n```sh\n  cargo test --workspace\n```";
@@ -18053,7 +18262,7 @@ mod tests {
         response
             .saved
             .items
-            .push(serde_json::json!({"type":"agentMessage", "id":"answer", "text":text}));
+            .push(serde_json::json!({"type":"agentMessage", "id":"answer", "text":text, "groveCompleted":true}));
         updates.send(response).unwrap();
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(40));
@@ -18061,6 +18270,7 @@ mod tests {
         let clipboard = |cx: &mut gpui::VisualTestContext| {
             cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text()))
         };
+        assert!(cx.debug_bounds("codex-run-code").is_some(), "Finalized shell fences retain a disabled Run control when checkout runtime is unavailable");
         let code = cx.debug_bounds("codex-copy-code").unwrap().center();
         cx.simulate_click(code, gpui::Modifiers::default());
         assert_eq!(

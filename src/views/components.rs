@@ -556,6 +556,52 @@ mod tests {
     use super::*;
     use gpui::AssetSource as _;
 
+    #[gpui::test]
+    fn readonly_html_updates_preserve_full_path_and_literal_copy(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        use gpui_component::text::TextViewState;
+        cx.update(gpui_component::init);
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::html("/tmp/project/", cx)));
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            state.set_text_incremental("/tmp/project/work&lt;&amp;&gt;.tree", cx);
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            assert_eq!(
+                state.source().as_str(),
+                "/tmp/project/work&lt;&amp;&gt;.tree"
+            );
+            state.select_all(cx);
+            assert_eq!(
+                state.selected_text().trim_end_matches('\n'),
+                "/tmp/project/work<&>.tree"
+            );
+        });
+        // The source remains identical on an ordinary rerender, preserving selection.
+        state.update(cx, |state, cx| {
+            state.set_text_incremental("/tmp/project/work&lt;&amp;&gt;.tree", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            state
+                .read_with(cx, |state, _| state.selected_text())
+                .trim_end_matches('\n'),
+            "/tmp/project/work<&>.tree"
+        );
+        state.update(cx, |state, cx| {
+            state.set_text_incremental("/tmp/other&amp;checkout", cx);
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            state.select_all(cx);
+            assert_eq!(
+                state.selected_text().trim_end_matches('\n'),
+                "/tmp/other&checkout"
+            );
+        });
+    }
+
     #[test]
     fn activity_labels_fit_without_premature_truncation() {
         let platform = gpui_platform::current_platform(true);

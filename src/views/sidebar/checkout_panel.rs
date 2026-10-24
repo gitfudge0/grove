@@ -59,6 +59,7 @@ pub(super) struct CheckoutPanel {
     pr_checked_at: Option<Instant>,
     pr_expanded: bool,
     pr_composing: bool,
+    pr_prompt_busy: bool,
     pr_merge: Option<PullRequest>,
     publish: Option<String>,
     expanded: bool,
@@ -68,10 +69,10 @@ pub(super) struct CheckoutPanel {
     confirmation_focus: Option<FocusHandle>,
     trigger_focus: HashMap<&'static str, FocusHandle>,
     source_bounds: HashMap<&'static str, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
-    popup: Option<Entity<PopupMenu>>,
-    popup_position: Option<gpui::Point<gpui::Pixels>>,
+    pub(super) popup: Option<Entity<PopupMenu>>,
+    pub(super) popup_position: Option<gpui::Point<gpui::Pixels>>,
     pub(super) narrow_content: Option<AnyElement>,
-    popup_subscription: Option<gpui::Subscription>,
+    pub(super) popup_subscription: Option<gpui::Subscription>,
     generation: u64,
     checked_at: Option<Instant>,
     restore_focus: bool,
@@ -529,39 +530,154 @@ impl Sidebar {
                     );
                 }
                 section = section.child(metadata);
-                if self.checkout_panel.pr_expanded {
-                    section = section.child(
-                        div()
-                            .id("checkout-pr-expanded")
-                            .debug_selector(|| "checkout-pr-expanded".into())
-                            .flex()
-                            .flex_col()
-                            .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
-                            .pr(rpx(SPACE_2XL))
-                            .py(rpx(SPACE_SM))
-                            .gap(rpx(SPACE_SM))
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(
-                                div()
-                                    .id("checkout-pr-checks")
-                                    .debug_selector(|| "checkout-pr-checks".into())
-                                    .child(super::super::status::label(
-                                        "checkout-pr-check-status",
-                                        pr_checks_kind(&pr),
-                                        pr.checks(),
-                                        ICON_SM,
-                                        cx,
-                                    )),
-                            )
-                            .child(super::super::status::label(
-                                "checkout-pr-review-status",
-                                pr_review_kind(&pr),
-                                pr.review_progress(),
-                                ICON_SM,
+                if pr.state == "OPEN" {
+                    let target = path.to_string();
+                    let request = pr.clone();
+                    let mut actions = div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(rpx(SPACE_SM))
+                        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                        .pr(rpx(SPACE_2XL));
+                    actions = actions.child(checkout_action("checkout-pr-review", "Review PR", false, window, cx)
+                        .icon(gpui_component::Icon::default().path("icons/git-pull-request.svg").size(rpx(ICON_SM)))
+                        .debug_selector(|| "checkout-pr-review".into())
+                        .disabled(self.checkout_panel.pr_prompt_busy || self.checkout_panel.pr_loading)
+                        .tooltip("Review this PR in the current chat using the project review prompt")
+                        .on_click(cx.listener(move |this, _, _, cx| this.checkout_pr_prompt(target.clone(), request.clone(), true, cx))));
+                    if pr.checks() == "Checks failed" {
+                        let target = path.to_string();
+                        let request = pr.clone();
+                        actions = actions.child(
+                            checkout_action(
+                                "checkout-pr-fix-ci",
+                                "Fix failed CI",
+                                false,
+                                window,
                                 cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/play.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .debug_selector(|| "checkout-pr-fix-ci".into())
+                            .disabled(
+                                self.checkout_panel.pr_prompt_busy
+                                    || self.checkout_panel.pr_loading,
+                            )
+                            .tooltip("Send failed CI context to the current chat")
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.checkout_pr_prompt(
+                                        target.clone(),
+                                        request.clone(),
+                                        false,
+                                        cx,
+                                    );
+                                },
                             )),
-                    );
+                        );
+                    }
+                    section = section.child(actions);
+                }
+                let reasons = state.map(|state| pr.readiness_reasons(state));
+                let refreshing = self.checkout_panel.pr_loading || self.checkout_panel.loading;
+                let (readiness, readiness_kind) = if refreshing {
+                    (
+                        "Merge readiness: refreshing".to_owned(),
+                        super::super::status::StatusKind::Working,
+                    )
+                } else if let Some(reasons) = &reasons {
+                    if reasons.is_empty() {
+                        (
+                            "Ready to merge".into(),
+                            super::super::status::StatusKind::Success,
+                        )
+                    } else {
+                        (
+                            format!("Not ready · {} blockers", reasons.len()),
+                            super::super::status::StatusKind::Warning,
+                        )
+                    }
+                } else {
+                    (
+                        "Merge readiness unavailable".into(),
+                        super::super::status::StatusKind::Unknown,
+                    )
+                };
+                section = section.child(
+                    div()
+                        .id("checkout-pr-readiness")
+                        .debug_selector(|| "checkout-pr-readiness".into())
+                        .min_w_0()
+                        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                        .pr(rpx(SPACE_2XL))
+                        .py(rpx(SPACE_SM))
+                        .text_size(rpx(TEXT_SMALL))
+                        .child(super::super::status::label(
+                            "checkout-pr-readiness-status",
+                            readiness_kind,
+                            readiness,
+                            ICON_SM,
+                            cx,
+                        )),
+                );
+                if self.checkout_panel.pr_expanded {
+                    let mut details = div()
+                        .id("checkout-pr-expanded")
+                        .debug_selector(|| "checkout-pr-expanded".into())
+                        .flex()
+                        .flex_col()
+                        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                        .pr(rpx(SPACE_2XL))
+                        .py(rpx(SPACE_SM))
+                        .gap(rpx(SPACE_SM))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(
+                            div()
+                                .id("checkout-pr-checks")
+                                .debug_selector(|| "checkout-pr-checks".into())
+                                .child(super::super::status::label(
+                                    "checkout-pr-check-status",
+                                    pr_checks_kind(&pr),
+                                    pr.checks(),
+                                    ICON_SM,
+                                    cx,
+                                )),
+                        )
+                        .child(super::super::status::label(
+                            "checkout-pr-review-status",
+                            pr_review_kind(&pr),
+                            pr.review_progress(),
+                            ICON_SM,
+                            cx,
+                        ));
+                    if !refreshing {
+                        if let Some(reasons) = reasons {
+                            for (index, reason) in reasons.into_iter().enumerate() {
+                                let kind = if reason.contains("unavailable")
+                                    || reason.contains("pending")
+                                {
+                                    super::super::status::StatusKind::Unknown
+                                } else {
+                                    super::super::status::StatusKind::Warning
+                                };
+                                details = details.child(super::super::status::label(
+                                    SharedString::from(format!("checkout-pr-gate-{index}")),
+                                    kind,
+                                    reason,
+                                    ICON_SM,
+                                    cx,
+                                ));
+                            }
+                        } else {
+                            details =
+                                details.child("Refresh checkout status to inspect merge gates");
+                        }
+                    }
+                    section = section.child(details);
                 }
             }
             Some(Ok(None)) => {
@@ -620,6 +736,72 @@ impl Sidebar {
             );
         }
         section.into_any_element()
+    }
+
+    fn checkout_pr_prompt(
+        &mut self,
+        path: String,
+        pr: PullRequest,
+        review: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.checkout_panel.pr_prompt_busy || self.checkout_panel.path.as_ref() != Some(&path) {
+            return;
+        }
+        let Some(Selection::Session(id)) = self.selection else {
+            self.checkout_panel.operation.pr_message =
+                Some("Open a native Codex or Claude chat in this checkout first".into());
+            cx.notify();
+            return;
+        };
+        let Some(session) = self.runtime.read(cx).registry.read(cx).codex(id).cloned() else {
+            return;
+        };
+        if session.read(cx).state.saved.cwd != path {
+            self.checkout_panel.operation.pr_message =
+                Some("The current chat belongs to another checkout".into());
+            cx.notify();
+            return;
+        }
+        let Some(Ok(state)) = self.checkout_panel.state.clone() else {
+            return;
+        };
+        let template = if review {
+            let scripts = self
+                .checkout_targets(cx)
+                .into_iter()
+                .find(|(_, p)| p == &path)
+                .map(|(idx, _)| {
+                    cx.global::<SettingsState>().store.projects[idx]
+                        .scripts
+                        .clone()
+                });
+            match scripts.map(|s| s.review_prompt().map(|p| p.unwrap_or("Review this pull request for correctness, regressions, security and test coverage. Lead with actionable findings and file references.").to_owned())).transpose() {
+                Ok(Some(template)) => Some(template),
+                Ok(None) => { self.checkout_panel.operation.pr_message = Some("Project configuration unavailable".into()); cx.notify(); return; }
+                Err(error) => { self.checkout_panel.operation.pr_message = Some(error); cx.notify(); return; }
+            }
+        } else {
+            None
+        };
+        let thread = session.read(cx).state.saved.thread_id.clone();
+        let generation = self.checkout_panel.generation;
+        self.checkout_panel.pr_prompt_busy = true;
+        self.checkout_panel.operation.pr_message = Some("Refreshing pull request context…".into());
+        cx.spawn(async move |this, cx| {
+            let target = path.clone();
+            let result = cx.background_executor().spawn(async move { checkout_pr::action_prompt(Path::new(&target), &state, &pr, template.as_deref()) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.checkout_panel.accepts_result(&path, generation) { return; }
+                this.checkout_panel.pr_prompt_busy = false;
+                let result = if this.selection != Some(Selection::Session(id)) || session.read(cx).state.saved.cwd != path || session.read(cx).state.saved.thread_id != thread {
+                    Err("Current chat changed while preparing the PR action. Retry in the intended chat".into())
+                } else { result.and_then(|prompt| session.update(cx, |session,cx| session.project_prompt(prompt,cx)).map(|_| ())) };
+                this.checkout_panel.operation.pr_message = Some(match result { Ok(()) => "PR action requested in the current chat".into(), Err(error) => error });
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
     }
 
     fn checkout_resolve_pr(&mut self, path: String, pr: PullRequest, cx: &mut Context<Self>) {
@@ -1254,6 +1436,7 @@ impl Sidebar {
                     self.checkout_panel.pr_checked_at = None;
                     self.checkout_panel.pr_expanded = false;
                     self.checkout_panel.pr_composing = false;
+                    self.checkout_panel.pr_prompt_busy = false;
                     self.checkout_panel.pr_merge = None;
                     self.checkout_panel.summary = None;
                     self.checkout_panel.expanded_categories.clear();
@@ -1277,41 +1460,62 @@ impl Sidebar {
                             this.act(Action::Reveal(target.clone()), window, cx);
                         })),
                 );
-                let target = path.clone();
-                let project_path = project.path.clone();
-                let has_script = project
+                let entries: Vec<_> = project
                     .scripts
-                    .run
-                    .as_deref()
-                    .is_some_and(|script| !script.trim().is_empty());
-                card = card
-                    .child(
-                        checkout_row(
-                            "checkout-script",
-                            if has_script {
-                                "Run script"
-                            } else {
-                                "Add project script"
-                            },
-                            if has_script { "play" } else { "plus" },
+                    .effective_entries()
+                    .into_iter()
+                    .filter(|entry| {
+                        matches!(
+                            entry.kind,
+                            grove_core::storage::ProjectActionKind::Shell { .. }
+                        )
+                    })
+                    .collect();
+                for entry in &entries {
+                    let project_path = project.path.clone();
+                    let target = path.clone();
+                    let entry_id = entry.id.clone();
+                    card = card.child(
+                        checkout_action(
+                            SharedString::from(format!("checkout-script-{}", entry.id)),
+                            entry.name.clone(),
+                            false,
                             window,
                             cx,
                         )
+                        .w_full()
+                        .min_w_0()
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/play.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .tooltip(format!("Run {} in a new terminal", entry.name))
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
                                 this.act(
-                                    if has_script {
-                                        Action::RunScript(project_path.clone(), target.clone())
-                                    } else {
-                                        Action::EditProject(project_path.clone())
-                                    },
+                                    Action::RunNamedScript(
+                                        project_path.clone(),
+                                        target.clone(),
+                                        entry_id.clone(),
+                                    ),
                                     window,
                                     cx,
                                 );
                             },
                         )),
-                    )
-                    .child(checkout_divider("checkout-divider"));
+                    );
+                }
+                if entries.is_empty() {
+                    let project_path = project.path.clone();
+                    card = card.child(
+                        checkout_row("checkout-script", "Add project script", "plus", window, cx)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.act(Action::EditProject(project_path.clone()), window, cx);
+                            })),
+                    );
+                }
+                card = card.child(checkout_divider("checkout-divider"));
                 let state = self.checkout_panel.state.clone().and_then(Result::ok);
                 if let Some(state) = state.as_ref() {
                     let identity = state.target_identity();
@@ -2469,6 +2673,60 @@ mod tests {
         assert!(!panel.accepts_result("/one", 1));
     }
 
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn checkout_pr_native_snapshots() {
+        use gpui::AppContext as _;
+        struct PrFixture(Entity<Sidebar>, CheckoutGitState);
+        impl gpui::Render for PrFixture {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.0.update(cx, |sidebar, cx| {
+                    sidebar.render_checkout_pr("/fixture", Some(&self.1), window, cx)
+                })
+            }
+        }
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        for (width, expanded) in [(280., true), (220., true), (280., false), (220., false)] {
+            let window = cx.open_window(gpui::size(gpui::px(width),gpui::px(700.)), |window,cx| {
+                let runtime = cx.new(crate::runtime::Runtime::new);
+                let sidebar = cx.new(|cx| { let mut sidebar = Sidebar::new(runtime,window,cx);
+                    sidebar.checkout_panel.pr_state = Some(Ok(Some(serde_json::from_value(serde_json::json!({"number":142,"title":"A long pull request title that must yield to fixed actions and wrap readiness", "url":"https://github.com/example/project/pull/142","state":"OPEN","isDraft":false,"headRefOid":"head","headRefName":"topic","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"CI / integration","status":"COMPLETED","conclusion":"FAILURE"}]})).unwrap())));
+                    sidebar.checkout_panel.pr_expanded = expanded; sidebar });
+                let repo = tempfile::tempdir().unwrap();
+                assert!(std::process::Command::new("git").current_dir(repo.path()).args(["init", "-b", "topic"]).output().unwrap().status.success());
+                let state = grove_core::checkout_git::inspect(repo.path()).unwrap();
+                let fixture = cx.new(|_| PrFixture(sidebar,state));
+                cx.new(|cx| gpui_component::Root::new(fixture,window,cx).bordered(false).bg(c::BG()))
+            }).unwrap();
+            cx.run_until_parked();
+            cx.update_window(window.into(), |_, window, cx| {
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            let image = cx.capture_screenshot(window.into()).unwrap();
+            let path = if expanded {
+                format!("/tmp/grove-pr-workflows-{width}.png")
+            } else {
+                format!("/tmp/grove-pr-workflows-{width}-collapsed.png")
+            };
+            image.save(&path).unwrap();
+        }
+    }
+
     /// Native Metal screenshots with channel-backed provider fixtures; no model calls.
     #[test]
     #[ignore = "requires macOS Metal renderer; writes screenshots to /tmp"]
@@ -3590,7 +3848,30 @@ mod tests {
                 cx.update(|window, cx| {
                     let _ = window.draw(cx);
                 });
+                // Expanded readiness shares the existing checkout scroll region.
+                // Scroll the actual panel, then prove lower actions are visible and clickable.
+                let panel = cx.debug_bounds("checkout-panel").unwrap();
                 let group_row = cx.debug_bounds(group.label()).unwrap();
+                if group_row.bottom() > panel.bottom() {
+                    cx.simulate_event(gpui::ScrollWheelEvent {
+                        position: panel.center(),
+                        delta: gpui::ScrollDelta::Pixels(gpui::point(
+                            gpui::px(0.),
+                            gpui::px(-2000.),
+                        )),
+                        modifiers: gpui::Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    });
+                    cx.run_until_parked();
+                    cx.update(|window, cx| {
+                        let _ = window.draw(cx);
+                    });
+                }
+                let group_row = cx.debug_bounds(group.label()).unwrap();
+                assert!(
+                    group_row.top() >= panel.top() && group_row.bottom() <= panel.bottom(),
+                    "checkout scrolling reveals the complete change category action"
+                );
                 cx.simulate_click(group_row.center(), gpui::Modifiers::default());
                 cx.run_until_parked();
                 cx.update(|window, cx| {
@@ -3606,6 +3887,22 @@ mod tests {
                     });
                 });
             }
+            let panel = cx.debug_bounds("checkout-panel").unwrap();
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: panel.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(2000.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let pr_row = cx.debug_bounds("checkout-pr").unwrap();
+            assert!(
+                pr_row.top() >= panel.top() && pr_row.bottom() <= panel.bottom(),
+                "checkout scrolling returns to PR actions"
+            );
         }
         // A server-ready PR exposes merge only with a synchronized, clean checkout.
         let (saved_state, saved_pr) = sidebar.read_with(cx, |sidebar, _| {

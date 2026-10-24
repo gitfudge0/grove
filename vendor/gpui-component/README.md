@@ -173,3 +173,10 @@ Applied to `ui/src` (source, not manifests):
 13. **Expanded accessibility state for compact disclosures.**
     `Button::aria_expanded` forwards the disclosure state to the existing base
     element without changing the shared button's geometry or activation.
+
+14. **Complete HTML source during incremental updates.**
+    HTML append updates reparse the full prior source plus the appended suffix.
+    HTML nodes have no Markdown source spans, so the Markdown last-block splice
+    could discard the existing HTML document and display only the suffix.
+    Dynamic selectable readonly values now retain their complete literal text;
+    Markdown incremental parsing remains unchanged.

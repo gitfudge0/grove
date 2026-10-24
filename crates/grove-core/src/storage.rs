@@ -35,6 +35,79 @@ pub struct ProjectScripts {
     pub run: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teardown: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<ProjectAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_prompt_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectAction {
+    pub id: String,
+    pub name: String,
+    #[serde(flatten)]
+    pub kind: ProjectActionKind,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProjectActionKind {
+    Shell { command: String },
+    Prompt { template: String },
+}
+impl ProjectScripts {
+    pub fn effective_entries(&self) -> Vec<ProjectAction> {
+        let mut entries = self.entries.clone();
+        if let Some(command) = self.run.as_ref().filter(|s| !s.trim().is_empty()) {
+            if !entries.iter().any(|entry| entry.id == "legacy-run") {
+                entries.insert(
+                    0,
+                    ProjectAction {
+                        id: "legacy-run".into(),
+                        name: "Run".into(),
+                        kind: ProjectActionKind::Shell {
+                            command: command.clone(),
+                        },
+                    },
+                );
+            }
+        }
+        entries
+    }
+    pub fn review_prompt(&self) -> std::result::Result<Option<&str>, String> {
+        let Some(id) = &self.review_prompt_id else {
+            return Ok(None);
+        };
+        match self.entries.iter().find(|entry| &entry.id == id) {
+            Some(ProjectAction {
+                kind: ProjectActionKind::Prompt { template },
+                ..
+            }) if !template.trim().is_empty() => Ok(Some(template)),
+            _ => Err(
+                "The PR review prompt is missing or invalid. Choose a prompt in project Scripts."
+                    .into(),
+            ),
+        }
+    }
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let mut ids = std::collections::HashSet::new();
+        let mut names = std::collections::HashSet::new();
+        for entry in self.effective_entries() {
+            if entry.id.trim().is_empty() || !ids.insert(entry.id.clone()) {
+                return Err("Script IDs must be unique and nonempty.".into());
+            }
+            if entry.name.trim().is_empty() || !names.insert(entry.name.trim().to_lowercase()) {
+                return Err("Script names must be unique and nonempty.".into());
+            }
+            let content = match &entry.kind {
+                ProjectActionKind::Shell { command } => command,
+                ProjectActionKind::Prompt { template } => template,
+            };
+            if content.trim().is_empty() {
+                return Err(format!("{} needs content.", entry.name));
+            }
+        }
+        self.review_prompt().map(|_| ())
+    }
 }
 
 /// A denormalized (not indexed) past-launch record so it survives project/worktree reordering.
@@ -1687,5 +1760,84 @@ mod workspace_tests {
         store.workspaces.rows.clear();
         store.normalize_workspaces();
         assert_eq!(store.workspaces.rows[0].projects, 2);
+    }
+}
+
+#[cfg(test)]
+mod project_script_tests {
+    use super::*;
+    #[test]
+    fn legacy_run_is_preserved_as_a_stable_named_shell_entry() {
+        let scripts: ProjectScripts = serde_json::from_str(
+            r#"{"setup":"prepare","run":"printf 'hello\\n'","teardown":"clean"}"#,
+        )
+        .unwrap();
+        let entries = scripts.effective_entries();
+        assert_eq!(entries[0].id, "legacy-run");
+        assert_eq!(
+            entries[0].kind,
+            ProjectActionKind::Shell {
+                command: "printf 'hello\\n'".into()
+            }
+        );
+        let migrated = ProjectScripts {
+            entries,
+            run: None,
+            ..scripts
+        };
+        let reloaded: ProjectScripts =
+            serde_json::from_str(&serde_json::to_string(&migrated).unwrap()).unwrap();
+        assert_eq!(reloaded.effective_entries(), migrated.effective_entries());
+        assert_eq!(reloaded.setup.as_deref(), Some("prepare"));
+        assert_eq!(reloaded.teardown.as_deref(), Some("clean"));
+    }
+    #[test]
+    fn review_reference_is_stable_and_rejects_deleted_or_shell_entries() {
+        let mut scripts = ProjectScripts {
+            entries: vec![ProjectAction {
+                id: "review".into(),
+                name: "Review".into(),
+                kind: ProjectActionKind::Prompt {
+                    template: "Review carefully".into(),
+                },
+            }],
+            review_prompt_id: Some("review".into()),
+            ..Default::default()
+        };
+        scripts.entries[0].name = "Renamed".into();
+        assert_eq!(scripts.review_prompt().unwrap(), Some("Review carefully"));
+        scripts.entries[0].kind = ProjectActionKind::Shell {
+            command: "echo nope".into(),
+        };
+        assert!(scripts.review_prompt().is_err());
+        scripts.entries.clear();
+        assert!(scripts.review_prompt().is_err());
+    }
+    #[test]
+    fn duplicate_names_and_empty_bodies_are_rejected() {
+        let entry = ProjectAction {
+            id: "one".into(),
+            name: "Tests".into(),
+            kind: ProjectActionKind::Shell {
+                command: "cargo test".into(),
+            },
+        };
+        let mut scripts = ProjectScripts {
+            entries: vec![
+                entry.clone(),
+                ProjectAction {
+                    id: "two".into(),
+                    name: " tests ".into(),
+                    ..entry
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(scripts.validate().is_err());
+        scripts.entries.pop();
+        scripts.entries[0].kind = ProjectActionKind::Prompt {
+            template: " ".into(),
+        };
+        assert!(scripts.validate().is_err());
     }
 }
