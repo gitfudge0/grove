@@ -3607,12 +3607,12 @@ impl Sidebar {
                             .child(
                                 div()
                                     .flex_shrink_0()
-                                    .size(rpx(ICON_LG))
+                                    .size(rpx(TEXT_SMALL))
                                     .id(("session-list-agent", id.raw()))
                                     .debug_selector(move || {
                                         format!("session-list-agent-{}", id.raw())
                                     })
-                                    .child(icon(meta.agent.icon_name(), ICON_LG, c::FG_DIM())),
+                                    .child(icon(meta.agent.icon_name(), TEXT_SMALL, c::FG_DIM())),
                             )
                             .child(
                                 div()
@@ -3628,10 +3628,10 @@ impl Sidebar {
                                     })
                                     .child(meta.project.clone()),
                             )
+                            .child(div().flex_1().min_w_0())
                             .when_some(tasks.as_ref(), |line, tasks| {
                                 line.child(task_glance::row_progress(id, tasks))
                             })
-                            .child(div().flex_1().min_w_0())
                             .child(motion::fast(
                                 div()
                                     .flex_shrink_0()
