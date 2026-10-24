@@ -211,3 +211,12 @@ EOF
     exit 1
     ;;
 esac
+
+# Installation has succeeded; retain artifacts on every earlier failure for
+# diagnosis. Clean the whole selected profile, including dependencies and bundles.
+if [ "$PREBUILT" = 0 ]; then
+  echo "Removing $PROFILE build artifacts..."
+  CLEAN_ARGS=(--profile "$PROFILE")
+  [ -z "$TARGET" ] || CLEAN_ARGS+=(--target "$TARGET")
+  cargo clean "${CLEAN_ARGS[@]}"
+fi

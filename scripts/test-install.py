@@ -11,7 +11,9 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'install.sh'
 
 class InstallerTests(unittest.TestCase):
     def run_installer(self, *, local=True, host='aarch64-apple-darwin',
-                      system='Darwin', arch='arm64', args=(), download_fails=False, build_target=''):
+                      system='Darwin', arch='arm64', args=(), download_fails=False, build_target='',
+                      build_succeeds=False, install_fails=False, fallback=False,
+                      clean_fails=False):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             commands = root / 'bin'
@@ -26,14 +28,26 @@ class InstallerTests(unittest.TestCase):
                 'sysctl': 'echo 1\n',
                 'rustc': f'echo "host: {host}"\n',
                 'rustup': 'exit 0\n',
-                'cargo': 'if [ "$2" = --version ]; then echo "cargo-bundle v0.12.0"; exit 0; fi\nexit 77\n',
+                'cargo': ('if [ "$2" = --version ]; then echo "cargo-bundle v0.12.0"; exit 0; fi\n'
+                          'if [ "$1" = clean ]; then exit ' + ('79' if clean_fails else '0') + '; fi\n' +
+                          ('exit 77\n' if not build_succeeds else
+                           'profile=local; target=""\n'
+                           'while [ "$#" -gt 0 ]; do case "$1" in '
+                           '--profile) shift; profile="$1";; --target) shift; target="$1";; esac; shift; done\n'
+                           'dir="$CARGO_TARGET_DIR${target:+/$target}/$profile"\n'
+                           '/bin/mkdir -p "$dir/bundle/osx/Grove.app/Contents/MacOS" "$dir/bundle/deb"\n'
+                           'touch "$dir/grove" "$dir/bundle/osx/Grove.app/Contents/MacOS/grove"\n' +
+                           ('' if fallback else 'touch "$dir/bundle/deb/grove.deb"\n'))),
                 'curl': ('exit 22\n' if download_fails else
                          'case "$*" in *url_effective*) echo https://github.com/gitfudge0/grove/releases/tag/v1.2.3;; esac\n'),
                 'dpkg': 'exit 0\n',
-                'sudo': 'exit 0\n',
+                'sudo': 'exit ' + ('76' if install_fails else '0') + '\n',
                 'git': 'exit 78\n',
-                'cp': 'case "$3" in */osx/) mkdir -p "$3/Grove.app";; esac\n',
+                'cp': ('exit 76\n' if install_fails else 'case "$3" in */osx/) mkdir -p "$3/Grove.app";; esac\n'),
                 'rm': 'exit 0\n',
+                'file': 'echo "Mach-O 64-bit executable arm64"\n',
+                'install': 'exit 0\n',
+                'update-desktop-database': 'exit 0\n',
                 'mkdir': 'case "$*" in *Applications*) exit 0;; *) exec /bin/mkdir "$@";; esac\n',
                 'hdiutil': 'exit 0\n',
                 'xattr': 'exit 0\n',
@@ -51,6 +65,45 @@ class InstallerTests(unittest.TestCase):
             result = subprocess.run(['/bin/bash', str(script), *args], env=env,
                                     text=True, capture_output=True)
             return result, log.read_text() if log.exists() else ''
+
+    def test_success_cleans_only_selected_profile_after_install(self):
+        cases = [
+            ({}, 'local', '', 'cp <-R>'),
+            ({'system': 'Linux', 'arch': 'x86_64'}, 'local', '', 'sudo <dpkg> <-i>'),
+            ({'args': ['--release']}, 'release', '', 'cp <-R>'),
+            ({'system': 'Linux', 'arch': 'x86_64', 'build_target': 'x86_64-unknown-linux-gnu'},
+             'local', 'x86_64-unknown-linux-gnu', 'sudo <dpkg> <-i>'),
+            ({'host': 'x86_64-apple-darwin'}, 'local', 'aarch64-apple-darwin', 'codesign '),
+            ({'system': 'Linux', 'arch': 'x86_64', 'fallback': True}, 'local', '', 'install <-Dm644>'),
+        ]
+        for options, profile, target, installation in cases:
+            with self.subTest(options=options):
+                result, log = self.run_installer(build_succeeds=True, **options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                clean = f'cargo <clean> <--profile> <{profile}>'
+                if target:
+                    clean += f' <--target> <{target}>'
+                self.assertEqual([line for line in log.splitlines() if line.startswith('cargo <clean>')], [clean])
+                self.assertLess(log.index(installation), log.index(clean))
+
+    def test_install_failure_retains_build_artifacts(self):
+        for system, arch in [('Darwin', 'arm64'), ('Linux', 'x86_64')]:
+            with self.subTest(system=system):
+                result, log = self.run_installer(system=system, arch=arch,
+                                                 build_succeeds=True, install_fails=True)
+                self.assertEqual(result.returncode, 76, result.stderr)
+                self.assertNotIn('cargo <clean>', log)
+
+    def test_build_failure_retains_build_artifacts(self):
+        result, log = self.run_installer()
+        self.assertEqual(result.returncode, 77)
+        self.assertNotIn('cargo <clean>', log)
+
+    def test_cleanup_failure_is_reported(self):
+        result, log = self.run_installer(build_succeeds=True, clean_fails=True)
+        self.assertEqual(result.returncode, 79)
+        self.assertIn('codesign ', log)
+        self.assertIn('cargo <clean> <--profile> <local>', log)
 
     def test_native_local_profile_uses_host_artifacts(self):
         result, log = self.run_installer()
