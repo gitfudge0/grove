@@ -8,7 +8,38 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub const GUIDANCE: &str = "Grove supports native rich plans (schema_version 1). When authoring an interactive plan or decision review, atomically write a local .grove-plan.json file and include a Markdown link to its absolute path in a completed assistant message. A bare path or a path in backticks will not import the plan. Use plan_id, immutable revision_id, title, optional summary describing the outcome, sources, changes, claims and scope. Claims have stable id, text (the heading), optional detail (the explanation), optional typed exhibit, html_links, decisions and children. Decisions have id,prompt,options (id,label,description),default. Supported exhibits: code(language,text), schema(text), calls(entries:id,title,detail), state_machine(states:id,label,screen; initial; transitions:from,to,label), image(path,alt), layout(nodes:id,kind,text,children), html_link(path,label). Layout kinds: row,column,text,surface,control. Assets must be local raster images or HTML under registered checkout roots; paths resolve relative to the document. HTML opens separately in a sandbox. Never embed HTML/scripts in native layouts. Keep document below 1 MiB, 200 claims, three claim levels and at most five children each. Native review feedback requires explicit Send response and never authorizes implementation. Approve & implement is a separate explicit user action authorizing the reviewed revision and resolved decisions in the same session; it does not change sandbox or tool permissions. Legacy packed HTML remains supported for explicit user requests or content the native format cannot represent.";
+pub const GUIDANCE: &str = r#"Grove supports native rich plans (schema_version 1). When authoring an interactive plan or decision review, atomically write a local .grove-plan.json file and include a Markdown link to its absolute path in a completed assistant message. A bare path or a path in backticks will not import the plan.
+Use the exact v1 JSON shapes below; valid JSON syntax alone does not establish schema validity. Required top-level fields: schema_version:1, plan_id, immutable revision_id, title. Include at least one claim. Optional summary is a string describing the outcome. Optional sources is an array of {text,attribution} quote objects (not file references). Optional changes is one counts object {files,changed,new,deleted}, all nonnegative integers (not an array of file changes). Optional scope is an array of strings (not an object). Omitted sources, claims and scope default to []; omitted changes defaults to zero counts.
+Claims have stable id, text (the heading), optional detail (the explanation), optional exhibit, html_links:[{path,label}], decisions and children. Decisions have id,prompt,options:[{id,label,description}], optional default containing an option ID. Claim, decision, call entry, layout node and state IDs must be nonempty and globally unique across the document; option IDs need only be unique within their decision. Change revision_id whenever document content or assets change.
+Every exhibit is an object tagged by "kind" (never "type"). Its remaining fields depend on kind: code {language,text, optional source}; schema {text}; calls {entries:[{id,title,detail, optional source}]}; state_machine {states:[{id,label, optional screen:another kind-tagged exhibit}],initial,transitions:[{from,to,label}]}; image {path,alt}; layout {nodes:[{id,kind,text,children}]}; html_link {path,label}. Layout node kind is row,column,text,surface or control; every node requires text, including containers (use ""), and children is an optional array of nodes. Never embed HTML/scripts in native layouts.
+Complete valid example (adapt its content and IDs):
+```json
+{
+  "schema_version": 1,
+  "plan_id": "example-plan",
+  "revision_id": "r1",
+  "title": "Example outcome",
+  "summary": "What this plan achieves",
+  "sources": [{"text": "Requested outcome", "attribution": "User request"}],
+  "changes": {"files": 2, "changed": 1, "new": 1, "deleted": 0},
+  "claims": [{
+    "id": "outcome", "text": "Deliver the outcome", "detail": "Why and how it works",
+    "exhibit": {"kind": "layout", "nodes": [{
+      "id": "preview", "kind": "column", "text": "", "children": [
+        {"id": "preview-label", "kind": "text", "text": "Preview", "children": []}
+      ]
+    }]},
+    "html_links": [],
+    "decisions": [{"id": "direction", "prompt": "Which direction?", "options": [
+      {"id": "proceed", "label": "Proceed", "description": "Use the proposed direction"},
+      {"id": "revise", "label": "Revise", "description": "Adjust the direction"}
+    ], "default": "proceed"}],
+    "children": []
+  }],
+  "scope": ["Included outcome"]
+}
+```
+Before linking, check the artifact against these v1 shapes and constraints, including nested exhibits and layout nodes. Do not claim importer validation from a JSON syntax check alone. Assets must be local raster images or HTML under registered checkout roots; paths resolve relative to the document. HTML opens separately in a sandbox. Keep document below 1 MiB, text fields below 64 KiB, total decoded raster assets below 20 MiB, 200 claims, three claim levels, at most five top-level claims and at most five children per claim. Direct the reader to Review response and Send response. Native review feedback requires explicit Send response and never authorizes implementation. Approve & implement is a separate explicit user action authorizing the reviewed revision and resolved decisions in the same session; it does not change sandbox or tool permissions. Legacy packed HTML remains supported for explicit user requests or content the native format cannot represent."#;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlanStore {
     #[serde(default)]
@@ -1025,6 +1056,37 @@ pub fn retry_import(saved: &mut SavedSession, message: &str, source: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn injected_authoring_example_imports_with_complete_v1_shapes() {
+        let example = GUIDANCE
+            .split_once("```json\n")
+            .expect("authoring guidance must include a self-contained JSON example")
+            .1
+            .split_once("\n```")
+            .unwrap()
+            .0;
+        let dir = tempfile::tempdir().unwrap();
+        fs_err::write(dir.path().join("plan.grove-plan.json"), example).unwrap();
+        let mut store = PlanStore::default();
+        import(&mut store, dir.path()).unwrap();
+        let doc = &store.revisions[0].document;
+        assert_eq!(doc.sources[0].attribution, "User request");
+        assert_eq!(doc.changes.files, 2);
+        assert_eq!(doc.changes.changed, 1);
+        assert_eq!(doc.changes.new, 1);
+        assert_eq!(doc.changes.deleted, 0);
+        assert_eq!(doc.scope, ["Included outcome"]);
+        let Some(Exhibit::Layout { nodes }) = &doc.claims[0].exhibit else {
+            panic!("example must demonstrate the kind-tagged layout exhibit");
+        };
+        assert_eq!(nodes[0].kind, "column");
+        assert_eq!(nodes[0].text, "");
+        assert_eq!(nodes[0].children[0].text, "Preview");
+        let decision = &doc.claims[0].decisions[0];
+        assert_eq!(decision.default.as_deref(), Some("proceed"));
+        assert_eq!(decision.options[0].id, "proceed");
+        assert!(store.errors.is_empty());
+    }
     fn approval_store() -> PlanStore {
         let mut store = PlanStore::default();
         store.revisions.push(PlanRevision {

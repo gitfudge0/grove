@@ -1,3 +1,9 @@
+# Grove 1.1.6
+
+## Native plans
+
+- Give Codex and Claude Code complete native plan schema guidance and an importable example to help agents produce valid plans.
+
 # Grove 1.1.5
 
 ## Project workflows

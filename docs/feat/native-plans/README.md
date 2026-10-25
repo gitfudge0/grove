@@ -25,10 +25,22 @@ Retry while preserving earlier revisions.
 The schema has `schema_version: 1`, `plan_id`, `revision_id`, `title`, optional `summary` (the intended outcome), `sources`
 (`attribution`, `text`), `changes` (`files`, `new`, `changed`, `deleted`), `claims` and `scope`.
 Each claim has `id`, `text` (a concise heading), optional `detail` (the explanation), optional `exhibit`, `html_links`, `decisions` and
-`children`. Keep claims at most three levels deep and five children per parent.
+`children`. Keep claims at most three levels deep, with at most five top-level
+claims and five children per parent. Claim, decision, call entry, layout node
+and state IDs are nonempty and globally unique; option IDs are scoped to
+their decision.
 Each decision has `id`, `prompt`, `options` (`id`, `label`, `description`) and an
 optional `default` containing an option ID. Recommendations are not accepted
 until the reader explicitly chooses them; an own answer remains free text.
+
+`sources` is an array of quoted evidence objects, not path/URL reference objects.
+`changes` is one object of nonnegative integer counts, not an array of file edits.
+`scope` is an array of strings. Every layout node requires `text`, including
+containers (use `""` when they have no text); `children` may be omitted.
+The shared provider guidance includes a self-contained JSON example covering
+these shapes, checked by a test through the production importer. JSON syntax
+checks alone do not prove a plan can be imported. The validator command above
+runs from the Grove repository; it is not a globally available provider tool.
 
 An exhibit uses a `kind` discriminator:
 
