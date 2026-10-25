@@ -243,6 +243,21 @@ fn main() {
         !unsafe { PtInRegion(region, 0, 0) }.as_bool(),
         "clipped pixels remain hit-testable"
     );
+    // Overlay exclusion removes its pixels and lets the host receive dismissal
+    // clicks; clearing it restores both the clip region and native input.
+    document.exclude(viewport, clip, Some(bounds(80., 90., 40., 30.)), &window);
+    assert_ne!(unsafe { GetWindowRgn(child, region) }, GDI_REGION_TYPE(0));
+    assert!(unsafe { PtInRegion(region, 21, 31) }.as_bool());
+    assert!(
+        !unsafe { PtInRegion(region, 70, 70) }.as_bool(),
+        "overlay exclusion left covered pixels in the native region"
+    );
+    assert!(!unsafe { IsWindowEnabled(child) }.as_bool());
+    document.exclude(viewport, clip, None, &window);
+    assert_ne!(unsafe { GetWindowRgn(child, region) }, GDI_REGION_TYPE(0));
+    assert!(unsafe { PtInRegion(region, 70, 70) }.as_bool());
+    assert!(!unsafe { PtInRegion(region, 0, 0) }.as_bool());
+    assert!(unsafe { IsWindowEnabled(child) }.as_bool());
     unsafe {
         let _ = DeleteObject(region.into());
     }
