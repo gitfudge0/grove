@@ -7,10 +7,11 @@ use std::{
 
 use gpui::{
     App, BorderStyle, Bounds, CursorStyle, Edges, Element, ElementId, GlobalElementId, Half,
-    HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, StyledText,
-    TextLayout, Window, point, px, quad,
+    HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, LineLayout,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
+    StyledText, TextLayout, Window, WrappedLineLayout, point, px, quad,
 };
+use smallvec::SmallVec;
 
 use crate::{
     ActiveTheme, WindowExt as _, global_state::GlobalState, input::Selection,
@@ -138,17 +139,18 @@ impl Inline {
         // self.paint_selected_bounds(Bounds::from_corners(selection_start, selection_end), window, cx);
 
         let mut selection: Option<Selection> = None;
+        let mut positions = PositionCursor::new(text_layout);
         let mut offset = 0;
         let mut chars = self.text.chars().peekable();
         while let Some(c) = chars.next() {
-            let Some(pos) = text_layout.position_for_index(offset) else {
+            let Some(pos) = positions.position(offset) else {
                 offset += c.len_utf8();
                 continue;
             };
 
             let next_offset = offset + c.len_utf8();
             let mut char_width = line_height.half();
-            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
+            if let Some(next_pos) = positions.position(next_offset) {
                 if next_pos.y == pos.y {
                     char_width = next_pos.x - pos.x;
                 }
@@ -177,57 +179,6 @@ impl Inline {
         }
 
         (true, true, selection)
-    }
-
-    fn text_line_bounds(
-        &self,
-        text_layout: &TextLayout,
-        line_height: Pixels,
-        mask_bounds: Bounds<Pixels>,
-    ) -> Vec<Bounds<Pixels>> {
-        let mut line_bounds = Vec::new();
-        let mut current_line_y = None;
-        let mut current_bounds: Option<Bounds<Pixels>> = None;
-        let mut offset = 0;
-
-        for c in self.text.chars() {
-            let next_offset = offset + c.len_utf8();
-            let Some(pos) = text_layout.position_for_index(offset) else {
-                offset = next_offset;
-                continue;
-            };
-
-            let mut char_width = line_height.half();
-            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
-                if next_pos.y == pos.y {
-                    char_width = next_pos.x - pos.x;
-                }
-            }
-
-            let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
-                .intersect(&mask_bounds);
-            if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
-                if current_line_y == Some(pos.y) {
-                    if let Some(current) = current_bounds.as_mut() {
-                        *current = current.union(&bounds);
-                    }
-                } else {
-                    if let Some(current) = current_bounds.take() {
-                        line_bounds.push(current);
-                    }
-                    current_line_y = Some(pos.y);
-                    current_bounds = Some(bounds);
-                }
-            }
-
-            offset = next_offset;
-        }
-
-        if let Some(current) = current_bounds {
-            line_bounds.push(current);
-        }
-
-        line_bounds
     }
 
     fn paint_selection(
@@ -412,7 +363,8 @@ impl Element for Inline {
 
         if is_selectable {
             if let Some(text_view_state) = GlobalState::global(cx).text_view_state().cloned() {
-                let text_bounds = self.text_line_bounds(
+                let text_bounds = text_line_bounds(
+                    &self.text,
                     &text_layout,
                     text_layout.line_height(),
                     window.content_mask().bounds,
@@ -522,6 +474,143 @@ impl Element for Inline {
     }
 }
 
+/// Union each visual row's per-char boxes inside `mask_bounds`.
+fn text_line_bounds(
+    text: &str,
+    text_layout: &TextLayout,
+    line_height: Pixels,
+    mask_bounds: Bounds<Pixels>,
+) -> Vec<Bounds<Pixels>> {
+    let mut line_bounds = Vec::new();
+    let mut current_line_y = None;
+    let mut current_bounds: Option<Bounds<Pixels>> = None;
+    let mut positions = PositionCursor::new(text_layout);
+    let mut offset = 0;
+
+    for c in text.chars() {
+        let next_offset = offset + c.len_utf8();
+        let Some(pos) = positions.position(offset) else {
+            offset = next_offset;
+            continue;
+        };
+
+        let mut char_width = line_height.half();
+        if let Some(next_pos) = positions.position(next_offset) {
+            if next_pos.y == pos.y {
+                char_width = next_pos.x - pos.x;
+            }
+        }
+
+        let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
+            .intersect(&mask_bounds);
+        if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+            if current_line_y == Some(pos.y) {
+                if let Some(current) = current_bounds.as_mut() {
+                    *current = current.union(&bounds);
+                }
+            } else {
+                if let Some(current) = current_bounds.take() {
+                    line_bounds.push(current);
+                }
+                current_line_y = Some(pos.y);
+                current_bounds = Some(bounds);
+            }
+        }
+
+        offset = next_offset;
+    }
+
+    if let Some(current) = current_bounds {
+        line_bounds.push(current);
+    }
+
+    line_bounds
+}
+
+/// `TextLayout::position_for_index` for non-decreasing indices in amortized O(1).
+///
+/// The layout's lookup rescans every line and glyph before the index, so calling it per char
+/// is quadratic: a pasted 52K-char log line took seconds per frame.
+struct PositionCursor {
+    lines: SmallVec<[Arc<WrappedLineLayout>; 1]>,
+    line_height: Pixels,
+    line: usize,
+    line_start: usize,
+    line_origin: Point<Pixels>,
+    row: usize,
+    row_start_x: Option<Pixels>,
+    /// (run, glyph) of the first glyph whose index reached the last query.
+    glyph: (usize, usize),
+}
+
+impl PositionCursor {
+    fn new(text_layout: &TextLayout) -> Self {
+        Self {
+            lines: text_layout.line_layouts(),
+            line_height: text_layout.line_height(),
+            line: 0,
+            line_start: 0,
+            line_origin: text_layout.bounds().origin,
+            row: 0,
+            row_start_x: None,
+            glyph: (0, 0),
+        }
+    }
+
+    fn position(&mut self, index: usize) -> Option<Point<Pixels>> {
+        let line = loop {
+            let line = self.lines.get(self.line)?.clone();
+            let line_end = self.line_start + line.len();
+            if index <= line_end {
+                break line;
+            }
+            self.line_origin.y += line.size(self.line_height).height;
+            self.line_start = line_end + 1;
+            self.line += 1;
+            self.row = 0;
+            self.row_start_x = None;
+            self.glyph = (0, 0);
+        };
+
+        let index = index - self.line_start;
+        let row_end = |row: usize| {
+            let boundary = &line.wrap_boundaries[row];
+            line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+        };
+        while self.row < line.wrap_boundaries.len() && index > row_end(self.row) {
+            self.row += 1;
+            self.row_start_x = None;
+        }
+        let row_start_x = match self.row_start_x {
+            Some(x) => x,
+            None => {
+                let row_start = self.row.checked_sub(1).map_or(0, row_end);
+                let x = self.x_for_index(&line.unwrapped_layout, row_start);
+                *self.row_start_x.insert(x)
+            }
+        };
+        let x = self.x_for_index(&line.unwrapped_layout, index) - row_start_x;
+        Some(self.line_origin + point(x, self.row as f32 * self.line_height))
+    }
+
+    /// `LineLayout::x_for_index`, resuming from the previous query's glyph.
+    fn x_for_index(&mut self, layout: &LineLayout, index: usize) -> Pixels {
+        let (mut run, mut glyph) = self.glyph;
+        while let Some(shaped) = layout.runs.get(run) {
+            match shaped.glyphs.get(glyph) {
+                Some(found) if found.index >= index => {
+                    self.glyph = (run, glyph);
+                    return found.position.x;
+                }
+                Some(_) => glyph += 1,
+                None => (run, glyph) = (run + 1, 0),
+            }
+        }
+        self.glyph = (run, glyph);
+        layout.width
+    }
+}
+
 fn selection_for_multi_click(
     text: &str,
     text_layout: &TextLayout,
@@ -586,8 +675,129 @@ fn point_in_text_selection(
 
 #[cfg(test)]
 mod tests {
-    use super::point_in_text_selection;
-    use gpui::{point, px};
+    use super::{PositionCursor, point_in_text_selection, text_line_bounds};
+    use gpui::{
+        Bounds, IntoElement, ParentElement, Pixels, StyledText, TestAppContext, TextLayout, div,
+        point, px, size,
+    };
+
+    fn laid_out(text: &str, width: Pixels, cx: &mut TestAppContext) -> TextLayout {
+        let styled = StyledText::new(text.to_owned());
+        let layout = styled.layout().clone();
+        let cx = cx.add_empty_window();
+        cx.draw(point(px(0.), px(0.)), size(width, px(100_000.)), |_, _| {
+            gpui::Styled::w(div(), width)
+                .child(styled)
+                .into_any_element()
+        });
+        layout
+    }
+
+    /// The per-char scan this file used before `PositionCursor`, kept as the expected output.
+    fn reference_line_bounds(
+        text: &str,
+        text_layout: &TextLayout,
+        line_height: Pixels,
+        mask_bounds: Bounds<Pixels>,
+    ) -> Vec<Bounds<Pixels>> {
+        let mut line_bounds = Vec::new();
+        let mut current_line_y = None;
+        let mut current_bounds: Option<Bounds<Pixels>> = None;
+        let mut offset = 0;
+        for c in text.chars() {
+            let next_offset = offset + c.len_utf8();
+            let Some(pos) = text_layout.position_for_index(offset) else {
+                offset = next_offset;
+                continue;
+            };
+            let mut char_width = line_height / 2.;
+            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
+                if next_pos.y == pos.y {
+                    char_width = next_pos.x - pos.x;
+                }
+            }
+            let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
+                .intersect(&mask_bounds);
+            if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+                if current_line_y == Some(pos.y) {
+                    if let Some(current) = current_bounds.as_mut() {
+                        *current = current.union(&bounds);
+                    }
+                } else {
+                    if let Some(current) = current_bounds.take() {
+                        line_bounds.push(current);
+                    }
+                    current_line_y = Some(pos.y);
+                    current_bounds = Some(bounds);
+                }
+            }
+            offset = next_offset;
+        }
+        if let Some(current) = current_bounds {
+            line_bounds.push(current);
+        }
+        line_bounds
+    }
+
+    #[gpui::test]
+    fn position_cursor_matches_layout_lookup(cx: &mut TestAppContext) {
+        let text = "first wrapped paragraph line with several words\n\nü naïve — wraps again here too\nlast";
+        let layout = laid_out(text, px(90.), cx);
+        assert!(
+            layout
+                .line_layouts()
+                .iter()
+                .any(|line| !line.wrap_boundaries.is_empty())
+        );
+        let mut cursor = PositionCursor::new(&layout);
+        for index in (0..=text.len() + 2)
+            .filter(|index| *index > text.len() || text.is_char_boundary(*index))
+        {
+            assert_eq!(
+                cursor.position(index),
+                layout.position_for_index(index),
+                "index {index}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn line_bounds_match_per_char_scan(cx: &mut TestAppContext) {
+        let text = "first wrapped paragraph line with several words\n\nü naïve — wraps again here too\nlast\n";
+        let layout = laid_out(text, px(90.), cx);
+        let line_height = layout.line_height();
+        let everything = Bounds::new(point(px(-10.), px(-10.)), size(px(1000.), px(1000.)));
+        let clipped = Bounds::new(
+            point(px(20.), line_height * 1.5),
+            size(px(40.), line_height * 3.),
+        );
+        for mask in [everything, clipped] {
+            assert_eq!(
+                text_line_bounds(text, &layout, line_height, mask),
+                reference_line_bounds(text, &layout, line_height, mask)
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn long_paragraph_line_bounds_stay_linear(cx: &mut TestAppContext) {
+        // A pasted crash report: one 52K-char line inside a 95K-char message.
+        let text = format!(
+            "{}\n{}",
+            "0x1a2b3c ".repeat(5_800),
+            "frame line\n".repeat(4_000)
+        );
+        let layout = laid_out(&text, px(420.), cx);
+        let mask = Bounds::new(point(px(0.), px(0.)), size(px(420.), px(800.)));
+        let started = std::time::Instant::now();
+        let bounds = text_line_bounds(&text, &layout, layout.line_height(), mask);
+        let elapsed = started.elapsed();
+        assert!(!bounds.is_empty());
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "took {elapsed:?}"
+        );
+    }
 
     #[test]
     fn test_point_in_text_selection() {

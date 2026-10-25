@@ -180,3 +180,10 @@ Applied to `ui/src` (source, not manifests):
     could discard the existing HTML document and display only the suffix.
     Dynamic selectable readonly values now retain their complete literal text;
     Markdown incremental parsing remains unchanged.
+
+15. **Linear selectable-text geometry per paint.** `Inline` registered its
+    per-row selection bounds (and resolved drag selections) by calling
+    `TextLayout::position_for_index` for every char; each call rescans all
+    earlier lines and glyphs, so a pasted 52K-char log line cost seconds per
+    frame. A forward-only `PositionCursor` in `text/inline.rs` returns the same
+    positions in amortized O(1); bounds and selections are unchanged.
