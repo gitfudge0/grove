@@ -15,7 +15,7 @@ use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Subscription,
     Window,
 };
-use gpui_component::{input::InputState, scroll::ScrollableElement, Disableable};
+use gpui_component::{input::InputState, scroll::ScrollableElement, Disableable, ElementExt as _};
 use grove_core::storage::{ProjectAction, ProjectActionKind, ProjectScripts};
 
 /// Compact reusable action register geometry.
@@ -95,6 +95,10 @@ pub(super) struct ProjectPanel {
 
     return_focus: Option<FocusHandle>,
     observers: Vec<Subscription>,
+    scroll: gpui::ScrollHandle,
+    scripts_anchor: gpui::ScrollAnchor,
+    draft_anchor: gpui::ScrollAnchor,
+    script_reveal: std::rc::Rc<std::cell::Cell<Option<bool>>>,
 }
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
 impl ProjectPanel {
@@ -179,7 +183,12 @@ impl ProjectPanel {
             .iter()
             .map(|(id, _, _, _)| (id.clone(), cx.focus_handle()))
             .collect();
+        let scroll = gpui::ScrollHandle::new();
         let panel = Self {
+            scripts_anchor: gpui::ScrollAnchor::for_handle(scroll.clone()),
+            draft_anchor: gpui::ScrollAnchor::for_handle(scroll.clone()),
+            scroll,
+            script_reveal: std::rc::Rc::default(),
             workspace: cx.global::<SettingsState>().store.workspaces.active,
             service,
             registry,
@@ -334,6 +343,16 @@ impl ProjectPanel {
         };
         cx.notify();
     }
+    pub(super) fn open_scripts(&mut self, add: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if add {
+            self.add_script(window, cx);
+        } else {
+            self.add_script_focus.focus(window, cx);
+        }
+        self.script_reveal.set(Some(add));
+        cx.notify();
+    }
+
     fn add_script(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let id = format!(
             "script-{}-{}",
@@ -353,6 +372,7 @@ impl ProjectPanel {
         self.observers
             .push(cx.observe(&body, |_, _, cx| cx.notify()));
         self.script_entries.push((id, false, name, body));
+        self.script_reveal.set(Some(true));
         cx.notify();
     }
     fn change_script(
@@ -540,7 +560,11 @@ impl ProjectPanel {
         }
         group
     }
-    fn render_scripts(&self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_scripts(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let add = project_action(
             "script-add".into(),
             "Add script",
@@ -551,17 +575,38 @@ impl ProjectPanel {
         )
         .track_focus(&self.add_script_focus)
         .on_click(cx.listener(|this, _, window, cx| this.add_script(window, cx)));
-        let mut list = div().flex().flex_col().child(
-            div()
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_LG))
-                .child(div().flex_1().min_w_0().child(register_heading(
-                    "Reusable actions",
-                    "Shell commands and agent prompts.",
-                )))
-                .child(add),
-        );
+        let mut list = div()
+            .id("project-scripts-register")
+            .debug_selector(|| "project-scripts-register".into())
+            .anchor_scroll(Some(self.scripts_anchor.clone()))
+            .on_prepaint({
+                let reveal = self.script_reveal.clone();
+                let register = self.scripts_anchor.clone();
+                let draft = self.draft_anchor.clone();
+                move |_, window, cx| {
+                    // The entry anchors must have completed their first layout before scrolling.
+                    if let Some(add) = reveal.take() {
+                        if add {
+                            draft.scroll_to(window, cx);
+                        } else {
+                            register.scroll_to(window, cx);
+                        }
+                    }
+                }
+            })
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .child(div().flex_1().min_w_0().child(register_heading(
+                        "Reusable actions",
+                        "Shell commands and agent prompts.",
+                    )))
+                    .child(add),
+            );
         if self.script_entries.is_empty() {
             list = list.child(
                 div()
@@ -582,25 +627,25 @@ impl ProjectPanel {
                 if *prompt { "Prompt" } else { "Shell" }
             );
             let focus = self.script_focus.get(id).unwrap_or(&self.add_script_focus);
-            let mut item =
-                div()
-                    .border_b_1()
-                    .border_color(c::BORDER_SOFT())
-                    .child(self.script_row(
-                        format!("script-row-{id}"),
-                        editor,
-                        focus,
-                        ScriptRowDetails {
-                            title,
-                            preview: script_preview(
-                                body.read(cx).value().as_ref(),
-                                "No content yet",
-                            ),
-                            glyph: Some(if *prompt { "reply" } else { "terminal" }),
-                            review: selected,
-                        },
-                        cx,
-                    ));
+            let mut item = div()
+                .id(gpui::SharedString::from(format!("script-item-{id}")))
+                .when(expanded, |item| {
+                    item.anchor_scroll(Some(self.draft_anchor.clone()))
+                })
+                .border_b_1()
+                .border_color(c::BORDER_SOFT())
+                .child(self.script_row(
+                    format!("script-row-{id}"),
+                    editor,
+                    focus,
+                    ScriptRowDetails {
+                        title,
+                        preview: script_preview(body.read(cx).value().as_ref(), "No content yet"),
+                        glyph: Some(if *prompt { "reply" } else { "terminal" }),
+                        review: selected,
+                    },
+                    cx,
+                ));
             if expanded {
                 let mut types = div().flex().items_center().gap(rpx(SPACE_SM));
                 for (action, label) in [("shell", "Shell"), ("prompt", "Prompt")] {
@@ -1856,13 +1901,19 @@ impl Render for ProjectPanel {
                     .debug_selector(|| "project-panel-scroll".into())
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .vertical_scrollbar(&self.scroll)
                     .px(rpx(SPACE_3XL))
                     .py(rpx(FORM_PAGE_PADDING_Y))
                     .flex()
+                    .items_start()
                     .justify_center()
                     .child(
                         div()
+                            .flex_none()
+                            .h_auto()
+                            .min_h_full()
                             .w_full()
                             .max_w(rpx(FORM_CONTENT_MAX_W))
                             .min_w_0()
@@ -2245,6 +2296,76 @@ mod tests {
             assert!(f32::from(row.left()) >= 0.);
             assert!(f32::from(row.right()) <= width);
         }
+    }
+
+    #[gpui::test]
+    fn panel_script_entry_point_reveals_new_name_after_many_entries(cx: &mut gpui::TestAppContext) {
+        let path = "/tmp/grove-many-scripts";
+        let entries = (0..15)
+            .map(|index| ProjectAction {
+                id: format!("saved-{index}"),
+                name: format!("Saved {index}"),
+                kind: ProjectActionKind::Shell {
+                    command: "echo saved".into(),
+                },
+            })
+            .collect();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Many scripts".into(),
+                    path: path.into(),
+                    archived: false,
+                    worktree_dir: None,
+                    scripts: ProjectScripts {
+                        entries,
+                        ..Default::default()
+                    },
+                }],
+                ..Default::default()
+            }));
+        });
+        let (panel, cx) = cx.add_window_view(|window, cx| {
+            let registry = cx.new(|_| SessionRegistry::new());
+            let state = cx.new(|cx| {
+                crate::entities::workspace_state::WorkspaceState::new(
+                    &cx.global::<SettingsState>().store,
+                    MODAL_W_LG,
+                )
+            });
+            let service = cx.new(|_| ProjectService::new(registry.clone(), state));
+            let mut panel =
+                ProjectPanel::new(Page::Edit(path.into()), service, registry, window, cx);
+            panel.open_scripts(true, window, cx);
+            panel
+        });
+        cx.simulate_resize(gpui::size(gpui::px(768.), gpui::px(720.)));
+        draw(cx);
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        draw(cx);
+        let name = cx.debug_bounds("script-entry-name").unwrap();
+        let scroll = cx.debug_bounds("project-panel-scroll").unwrap();
+        assert!(
+            name.top() >= scroll.top() && name.bottom() <= scroll.bottom(),
+            "new script name must be visible after existing scripts: {name:?} in {scroll:?}"
+        );
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                let entry = panel.script_entries.last().unwrap();
+                assert!(!entry.1, "Add starts a Shell entry");
+                assert!(entry.2.read(cx).focus_handle(cx).is_focused(window));
+                assert_eq!(
+                    cx.global::<SettingsState>().store.projects[0]
+                        .scripts
+                        .entries
+                        .len(),
+                    15
+                );
+            });
+        });
     }
 
     #[gpui::test]

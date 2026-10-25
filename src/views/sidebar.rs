@@ -296,6 +296,7 @@ enum Action {
     InitializeGit(String),
     RefreshGit(String),
     EditProject(String),
+    EditProjectScripts(String, bool),
     MoveProject(String),
     AddProject,
     ArchivedProjects,
@@ -2801,6 +2802,15 @@ impl Sidebar {
                     return;
                 }
                 self.open_project_panel(projects::Page::Edit(path), window, cx);
+            }
+            Action::EditProjectScripts(path, add) => {
+                if !self.project_path_is_active(&path, cx) {
+                    return;
+                }
+                self.open_project_panel(projects::Page::Edit(path), window, cx);
+                if let Some(panel) = &self.project_panel {
+                    panel.update(cx, |panel, cx| panel.open_scripts(add, window, cx));
+                }
             }
             Action::MoveProject(path) => {
                 if !self.project_path_is_active(&path, cx) {
