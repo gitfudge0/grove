@@ -22,4 +22,6 @@ Ende = "Ende"
 extend-exclude = [
     "crates/grove-terminal/tests/fixtures/*",
     "crates/grove-terminal/tests/expected/*",
+    # Unmodified upstream minified bundle; generated identifiers are not prose.
+    "vendor/pele/pele.global.js",
 ]

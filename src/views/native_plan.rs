@@ -488,7 +488,7 @@ impl NativePlan {
         self.expanded(cx)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(super) fn answer_preview_fixture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.choose("location", "alpha", cx);
         self.next_decision(window, cx);
