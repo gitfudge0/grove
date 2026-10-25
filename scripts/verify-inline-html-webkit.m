@@ -41,6 +41,25 @@ int main(int argc, const char **argv) {
         results[@"dynamic_js"] = evaluate(doc.web, @"new Function('return 6*7')()===42 && eval('21*2')===42");
         results[@"initial"] = evaluate(doc.web, @"JSON.stringify({title:document.title,doctype:document.compatMode,guard:typeof RTCPeerConnection,bridge:Object.keys(window.webkit?.messageHandlers||{})})");
         results[@"mutate"] = evaluate(doc.web, @"document.querySelector('#name').value='Retained edit';document.querySelector('#count').click();document.querySelector('#tasks').click();scrollTo(0,700);JSON.stringify({value:document.querySelector('#name').value,count:document.querySelector('#count').textContent,tab:document.body.dataset.tab,scroll:scrollY})");
+        grove_html_exclude(handle, 320, 80, 200, 240);
+        NSPoint covered = [doc.clip convertPoint:NSMakePoint(400, 160) toView:doc.clip.superview];
+        NSPoint uncovered = [doc.clip convertPoint:NSMakePoint(100, 160) toView:doc.clip.superview];
+        results[@"peek_hit_testing"] = @([doc.clip hitTest:covered] == nil && [doc.clip hitTest:uncovered] == nil);
+        CAShapeLayer *mask = (CAShapeLayer *)doc.clip.layer.mask;
+        results[@"peek_visual_mask"] = @(mask && !CGPathContainsPoint(mask.path, NULL, CGPointMake(400, 160), true) &&
+            CGPathContainsPoint(mask.path, NULL, CGPointMake(100, 160), true));
+        results[@"peek_document_retained"] = @(!doc.clip.hidden && [evaluate(doc.web,
+            @"JSON.stringify({value:document.querySelector('#name').value,count:document.querySelector('#count').textContent,tab:document.body.dataset.tab,scroll:scrollY})") isEqual:results[@"mutate"]]);
+        grove_html_exclude(handle, 0, 0, 0, 0);
+        results[@"peek_mask_cleared"] = @(doc.clip.layer.mask == nil && [doc.clip hitTest:covered] != nil);
+        [window makeFirstResponder:doc.web];
+        evaluate(doc.web, @"document.querySelector('#name').focus({preventScroll:true});document.querySelector('#name').setSelectionRange(2,2)");
+        pump(0.1);
+        BOOL restoredEdit = grove_html_route_edit_event(grove_html_edit_test_event(window, @"a", NSEventModifierFlagCommand));
+        pump(0.1);
+        results[@"peek_editing_restored"] = @((BOOL)(restoredEdit && [evaluate(doc.web,
+            @"(()=>{let e=document.querySelector('#name');return e.selectionStart===0&&e.selectionEnd===e.value.length})()") isEqual:@YES]));
+        evaluate(doc.web, @"scrollTo(0,700)");
         grove_html_hide(handle);
         grove_html_show(handle, (__bridge void *)window.contentView, 0, 0, 1000, 800, 20, 20, 600, 400);
         pump(0.1);

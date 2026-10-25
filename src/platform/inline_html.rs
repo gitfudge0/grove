@@ -207,6 +207,34 @@ impl NativeDocument {
         };
     }
 
+    /// Exclude a floating GPUI panel from both native pixels and hit testing.
+    /// This changes only the host mask, preserving the live document and viewport.
+    pub fn exclude(
+        &self,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        clip: gpui::Bounds<gpui::Pixels>,
+        exclusion: Option<gpui::Bounds<gpui::Pixels>>,
+        window: &gpui::Window,
+    ) {
+        #[cfg(all(any(target_os = "windows", target_os = "linux"), not(test)))]
+        self.backend.exclude(bounds, clip, exclusion, window);
+        #[cfg(all(target_os = "macos", not(test)))]
+        {
+            let exclusion = exclusion.unwrap_or_default();
+            // SAFETY: retained native owner, on the AppKit thread; logical points.
+            unsafe {
+                grove_html_exclude(
+                    self.handle.as_ptr(),
+                    f32::from(exclusion.origin.x).into(),
+                    f32::from(exclusion.origin.y).into(),
+                    f32::from(exclusion.size.width).into(),
+                    f32::from(exclusion.size.height).into(),
+                );
+            }
+        }
+        let _ = (bounds, clip, exclusion, window);
+    }
+
     pub fn show(
         &self,
         bounds: gpui::Bounds<gpui::Pixels>,
@@ -272,6 +300,7 @@ extern "C" {
     fn grove_html_hide_all();
     fn grove_html_hide_after_paint(handle: *mut std::ffi::c_void);
     fn grove_html_hide(handle: *mut std::ffi::c_void);
+    fn grove_html_exclude(handle: *mut std::ffi::c_void, x: f64, y: f64, width: f64, height: f64);
     fn grove_html_show(
         handle: *mut std::ffi::c_void,
         parent: *mut std::ffi::c_void,

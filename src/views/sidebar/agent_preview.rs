@@ -94,6 +94,7 @@ impl Sidebar {
         self.checkout_panel.peek_presence.set(true, cx);
         let focus = cx.focus_handle();
         if explicit {
+            crate::platform::inline_html::NativeDocument::focus_host(window);
             focus.focus(window, cx);
         }
         let Some(owner) = self
@@ -508,6 +509,8 @@ impl Sidebar {
                         cx.listener(|this, _, window, cx| this.dismiss_agent_peek(window, cx)),
                     ),
             );
+        // Measure after anchoring, pixel rounding and window clamping. All
+        // prepaint callbacks finish before any native HTML surface is painted.
         content = content.relative().when(closing, |panel| {
             panel.child(
                 div()
@@ -518,6 +521,23 @@ impl Sidebar {
                     .capture_any_mouse_up(|_, _, cx| cx.stop_propagation()),
             )
         });
+        // The borderless wrapper measures the full panel, including its hairline
+        // border; a canvas inside the bordered panel measures only its padding box.
+        let panel = div()
+            .relative()
+            .w(width)
+            .h(height)
+            .child(
+                gpui::canvas(
+                    |bounds, _, cx| {
+                        super::super::inline_html::exclude_native_html(Some(bounds), cx);
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(content);
         Some(
             gpui::deferred(
                 gpui::anchored()
@@ -526,7 +546,7 @@ impl Sidebar {
                     .position(gpui::point(right, y))
                     .snap_to_window_with_margin(margin)
                     .child(self.checkout_panel.peek_presence.render(
-                        content,
+                        panel,
                         "agent-peek-presence",
                         cx,
                     )),

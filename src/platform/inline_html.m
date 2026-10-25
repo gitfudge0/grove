@@ -5,9 +5,15 @@
 
 @interface GroveHTMLClip : NSView
 @property(nonatomic, strong) NSUndoManager *editingUndoManager;
+@property(nonatomic) NSRect exclusion;
+@property(nonatomic) BOOL passivePointer;
 @end
 @implementation GroveHTMLClip
 - (BOOL)isFlipped { return YES; }
+- (NSView *)hitTest:(NSPoint)point {
+    if (self.passivePointer) return nil;
+    return [super hitTest:point];
+}
 - (NSUndoManager *)undoManager {
     if (!_editingUndoManager) _editingUndoManager = [NSUndoManager new];
     return _editingUndoManager;
@@ -190,6 +196,27 @@ void grove_html_hide_after_paint(void *handle) {
         if (current && !current.disposed && current.paintGeneration == generation) grove_html_hide((__bridge void *)current);
     });
 }
+void grove_html_exclude(void *handle, double x, double y, double width, double height) {
+    GroveHTMLDocument *doc = (__bridge GroveHTMLDocument *)handle;
+    if (doc.disposed) return;
+    doc.clip.passivePointer = width > 0 && height > 0;
+    NSRect frame = doc.clip.frame;
+    // Rust coordinates are top-left logical window points, as is this flipped clip.
+    NSView *parent = doc.clip.superview;
+    CGFloat top = parent.isFlipped ? frame.origin.y : parent.bounds.size.height - NSMaxY(frame);
+    NSRect hole = NSIntersectionRect(doc.clip.bounds, NSMakeRect(x-frame.origin.x, y-top, width, height));
+    doc.clip.exclusion = hole;
+    if (NSIsEmptyRect(hole)) { doc.clip.layer.mask = nil; return; }
+    CAShapeLayer *mask = [CAShapeLayer layer];
+    CGMutablePathRef path = CGPathCreateMutable();
+    CGPathAddRect(path, NULL, NSRectToCGRect(doc.clip.bounds));
+    CGPathAddRect(path, NULL, NSRectToCGRect(hole));
+    mask.path = path;
+    mask.fillRule = kCAFillRuleEvenOdd;
+    doc.clip.layer.mask = mask;
+    CGPathRelease(path);
+}
+
 void grove_html_show(void *handle, void *parentPointer, double x, double y, double width, double height, double clipX, double clipY, double clipWidth, double clipHeight) {
     GroveHTMLDocument *doc = (__bridge GroveHTMLDocument *)handle;
     NSView *parent = (__bridge NSView *)parentPointer;

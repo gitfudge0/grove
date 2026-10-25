@@ -328,6 +328,7 @@ pub(super) struct HtmlUi {
     owner: Option<EntityId>,
     selected: Option<EntityId>,
     blocked: bool,
+    exclusion: Option<Bounds<Pixels>>,
 }
 impl gpui::Global for HtmlUi {}
 
@@ -343,8 +344,24 @@ pub(super) fn set_context(selected: Option<EntityId>, blocked: bool, cx: &mut Ap
         ui.expanded = None;
         ui.owner = None;
     }
+    if ui.selected != selected {
+        ui.exclusion = None;
+    }
     ui.selected = selected;
     ui.blocked = blocked;
+}
+
+// Populated while rendering the preview, before any native surface is painted.
+pub(super) fn exclude_native_html(bounds: Option<Bounds<Pixels>>, cx: &mut App) {
+    if !cx.has_global::<HtmlUi>() {
+        cx.set_global(HtmlUi::default());
+    }
+    cx.global_mut::<HtmlUi>().exclusion = bounds;
+}
+
+#[cfg(test)]
+pub(super) fn native_exclusion(cx: &App) -> Option<Bounds<Pixels>> {
+    cx.try_global::<HtmlUi>().and_then(|ui| ui.exclusion)
 }
 
 fn expanded(artifact: &Entity<HtmlArtifact>, cx: &App) -> bool {
@@ -1489,6 +1506,13 @@ impl gpui::Element for NativeElement {
         let generation = self.surface.generation.get().wrapping_add(1);
         self.surface.generation.set(generation);
         self.surface.native.show(bounds, *clip, window);
+        self.surface.native.exclude(
+            bounds,
+            *clip,
+            cx.try_global::<HtmlUi>()
+                .and_then(|ui| selected.is_none().then_some(ui.exclusion).flatten()),
+            window,
+        );
         let Some(id) = id else {
             self.surface.native.hide();
             return;

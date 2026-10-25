@@ -5,7 +5,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/platform/inline_html_linux.c");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         let mut build = cc::Build::new();
-        for package in ["webkit2gtk-4.1", "gtk+-3.0", "x11"] {
+        for package in ["webkit2gtk-4.1", "gtk+-3.0", "x11", "xext"] {
             let library = pkg_config::Config::new()
                 .cargo_metadata(false)
                 .probe(package)
@@ -20,7 +20,7 @@ fn main() {
             .file("src/platform/inline_html_linux.c")
             .compile("grove_inline_html_linux");
         // Native dependencies follow the archive that references their symbols.
-        for package in ["webkit2gtk-4.1", "gtk+-3.0", "x11"] {
+        for package in ["webkit2gtk-4.1", "gtk+-3.0", "x11", "xext"] {
             pkg_config::Config::new()
                 .probe(package)
                 .unwrap_or_else(|error| {

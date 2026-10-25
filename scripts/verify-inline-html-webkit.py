@@ -100,6 +100,8 @@ def main():
         require(raw.get('dynamic_js') is True, 'self-contained author JavaScript retains eval and Function semantics')
         require(initial.get('doctype') == 'CSS1Compat' and initial.get('title') == 'Inline HTML native fixture', 'author HTML loaded in standards mode')
         require(initial.get('guard') == 'undefined' and initial.get('bridge') == [], 'no RTC constructor or native message bridge')
+        for key in ['peek_hit_testing', 'peek_visual_mask', 'peek_document_retained', 'peek_mask_cleared', 'peek_editing_restored']:
+            require(raw.get(key) == 1, 'native peek exclusion: ' + key)
         expected = {'value': 'Retained edit', 'count': '1', 'tab': 'tasks', 'scroll': 700}
         require(decoded('mutate') == expected, 'author form/JS/tab/scroll are interactive')
         require(decoded('retained') == expected, 'same document retains edits/tab/scroll after hide and resize')

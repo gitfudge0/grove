@@ -40,6 +40,29 @@ impl Document {
             _ => LoadStatus::Failed,
         }
     }
+    pub(super) fn exclude(
+        &self,
+        _: Bounds<Pixels>,
+        _: Bounds<Pixels>,
+        exclusion: Option<Bounds<Pixels>>,
+        window: &Window,
+    ) {
+        let Some(handle) = self.handle.get() else {
+            return;
+        };
+        let rect = exclusion.unwrap_or_default();
+        let scale = f64::from(window.scale_factor());
+        // SAFETY: foreground-thread native owner; X11 coordinates are physical pixels.
+        unsafe {
+            grove_html_linux_exclude(
+                handle.as_ptr(),
+                f64::from(f32::from(rect.origin.x)) * scale,
+                f64::from(f32::from(rect.origin.y)) * scale,
+                f64::from(f32::from(rect.size.width)) * scale,
+                f64::from(f32::from(rect.size.height)) * scale,
+            );
+        }
+    }
     pub(super) fn show(&self, bounds: Bounds<Pixels>, clip: Bounds<Pixels>, window: &Window) {
         let Some(handle) = self.handle.get() else {
             return;
@@ -220,6 +243,7 @@ extern "C" {
         integrated: bool,
     );
     fn grove_html_linux_next_wheel(wheel: *mut Wheel) -> bool;
+    fn grove_html_linux_exclude(handle: *mut c_void, x: f64, y: f64, width: f64, height: f64);
     fn grove_html_linux_show(
         handle: *mut c_void,
         parent: std::ffi::c_ulong,

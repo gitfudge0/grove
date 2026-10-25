@@ -3,6 +3,7 @@
 #include <gdk/gdkx.h>
 #include <webkit2/webkit2.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/shape.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -308,6 +309,33 @@ void grove_html_linux_retire(void *handle) {
     Retirement *retirement = g_new(Retirement, 1);
     retirement->doc = doc; retirement->generation = doc->generation; doc->refs++;
     g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, retire, retirement, retired);
+}
+void grove_html_linux_exclude(void *handle, double x, double y, double width, double height) {
+    GroveLinuxHtml *doc = handle;
+    if (doc->disposed || !doc->visible) return;
+    XWindowAttributes attributes;
+    if (!XGetWindowAttributes(doc->display, doc->clip, &attributes)) return;
+    Region region = XCreateRegion();
+    XRectangle full = {0, 0, attributes.width, attributes.height};
+    XUnionRectWithRegion(&full, region, region);
+    if (width > 0 && height > 0) {
+        Region hole = XCreateRegion();
+        XRectangle rectangle = {(short)floor(x-attributes.x), (short)floor(y-attributes.y),
+            (unsigned short)(ceil(x+width)-floor(x)), (unsigned short)(ceil(y+height)-floor(y))};
+        XUnionRectWithRegion(&rectangle, hole, hole);
+        XSubtractRegion(region, hole, region);
+        XDestroyRegion(hole);
+    }
+    XShapeCombineRegion(doc->display, doc->clip, ShapeBounding, 0, 0, region, ShapeSet);
+    if (width > 0 && height > 0) {
+        Region passive = XCreateRegion();
+        XShapeCombineRegion(doc->display, doc->clip, ShapeInput, 0, 0, passive, ShapeSet);
+        XDestroyRegion(passive);
+    } else {
+        XShapeCombineRegion(doc->display, doc->clip, ShapeInput, 0, 0, region, ShapeSet);
+    }
+    XDestroyRegion(region);
+    XFlush(doc->display);
 }
 void grove_html_linux_show(void *handle, unsigned long parent, double x, double y,
     double width, double height, double clip_x, double clip_y, double clip_width, double clip_height, double scale) {

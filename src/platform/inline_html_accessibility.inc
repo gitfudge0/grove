@@ -57,7 +57,8 @@ static id grove_html_ax_native_hit(NSView *node, NSView *root, NSPoint screenPoi
             if (document.clip != child || !grove_html_ax_owns(document, root)) continue;
             NSPoint windowPoint = [root.window convertPointFromScreen:screenPoint];
             NSPoint localPoint = [document.clip convertPoint:windowPoint fromView:nil];
-            if (!NSPointInRect(localPoint, document.clip.visibleRect)) continue;
+            if (document.clip.passivePointer || !NSPointInRect(localPoint, document.clip.visibleRect) ||
+                NSPointInRect(localPoint, document.clip.exclusion)) continue;
             id hit = [document.web accessibilityHitTest:screenPoint];
             if (hit) return hit;
         }

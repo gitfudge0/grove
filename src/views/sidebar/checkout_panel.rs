@@ -3706,14 +3706,14 @@ mod tests {
                     );
                     sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
                     assert!(
-                        sidebar.html_overlay_open(),
-                        "preview must cover native HTML"
+                        !sidebar.html_overlay_open(),
+                        "preview must preserve native HTML outside its mask"
                     );
                     sidebar.dismiss_agent_peek(window, cx);
                     assert!(sidebar.checkout_panel.peek.as_ref().unwrap().closing);
                     assert!(
-                        sidebar.html_overlay_open(),
-                        "HTML stays hidden during dismissal"
+                        !sidebar.html_overlay_open(),
+                        "HTML remains visible during dismissal"
                     );
                     assert!(sidebar.checkout_panel.agent_focus["first-child"].is_focused(window));
                     sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
@@ -3730,7 +3730,7 @@ mod tests {
                         "old dismissal must not remove reopened {} preview",
                         provider.label()
                     );
-                    assert!(sidebar.html_overlay_open(), "reopening keeps HTML hidden");
+                    assert!(!sidebar.html_overlay_open(), "reopening preserves HTML");
                     sidebar.dismiss_agent_peek(window, cx);
                 });
             });
@@ -3754,8 +3754,8 @@ mod tests {
                     };
                     sidebar.open_agent_peek(id, "first-child".into(), true, window, cx);
                     assert!(
-                        sidebar.html_overlay_open(),
-                        "static preview covers native HTML"
+                        !sidebar.html_overlay_open(),
+                        "static preview preserves native HTML"
                     );
                     sidebar.dismiss_agent_peek(window, cx);
                     assert!(sidebar.checkout_panel.peek.is_none());
@@ -4057,6 +4057,31 @@ mod tests {
                 );
                 assert!(activity.left() >= card.left());
                 assert!(activity.right() < card.right());
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.open_agent_peek(id, "old-running".into(), true, window, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                let preview = cx.debug_bounds("agent-peek").unwrap();
+                assert_eq!(
+                    cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
+                    Some(preview),
+                    "{} preview mask follows narrow layout and zoom",
+                    provider.label()
+                );
+                cx.simulate_keystrokes("escape");
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                assert_eq!(
+                    cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
+                    None
+                );
             }
             cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
             cx.update(|window, cx| {
@@ -4094,6 +4119,12 @@ mod tests {
                 "hover keeps composer focus"
             );
             let hover_preview = cx.debug_bounds("agent-peek").unwrap();
+            assert_eq!(
+                cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
+                Some(hover_preview),
+                "{} preview mask matches the painted panel",
+                provider.label()
+            );
             // A short crossing outside both surfaces must not dismiss the preview.
             cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
             cx.run_until_parked();
@@ -4112,6 +4143,14 @@ mod tests {
             cx.simulate_keystrokes("escape");
             cx.run_until_parked();
             assert!(sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_none()));
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert_eq!(
+                cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
+                None,
+                "dismissal clears the native mask"
+            );
             cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
             cx.run_until_parked();
             cx.executor().advance_clock(Duration::from_millis(221));
@@ -4138,11 +4177,23 @@ mod tests {
                 .as_ref()
                 .is_some_and(|peek| peek.explicit)));
             let preview = cx.debug_bounds("agent-peek").unwrap();
+            assert_eq!(
+                cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
+                Some(preview)
+            );
             let composer = cx.debug_bounds("codex-composer").unwrap();
             assert!(preview.bottom() <= composer.top());
             cx.simulate_keystrokes("escape");
             cx.run_until_parked();
             assert!(sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.peek.is_none()));
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert_eq!(
+                cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
+                None,
+                "dismissal clears the native mask"
+            );
             cx.update(|window, cx| {
                 sidebar.update(cx, |sidebar, cx| {
                     sidebar.checkout_panel.agent_focus["old-running"].focus(window, cx);
@@ -4262,6 +4313,33 @@ mod tests {
                 sidebar.update(cx, |sidebar, cx| sidebar.toggle_zen(window, cx));
             });
             cx.run_until_parked();
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.open_agent_peek(id, "old-running".into(), true, window, cx);
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx
+                .update(|_, cx| super::super::super::inline_html::native_exclusion(cx))
+                .is_some());
+            cx.update(|_, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.selection = Some(Selection::Project(0));
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert_eq!(
+                cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
+                None,
+                "leaving the session clears its preview mask"
+            );
         }
     }
 

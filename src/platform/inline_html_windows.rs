@@ -19,11 +19,13 @@ use windows::{
     core::{w, Interface, BOOL},
     Win32::{
         Foundation::{LPARAM, POINT, RECT, WPARAM},
-        Graphics::Gdi::{ClientToScreen, CreateRectRgn, DeleteObject, SetWindowRgn},
+        Graphics::Gdi::{
+            ClientToScreen, CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_DIFF,
+        },
         UI::{
             Input::KeyboardAndMouse::{
-                GetFocus, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
-                VK_SHIFT,
+                EnableWindow, GetFocus, GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LBUTTON,
+                VK_MBUTTON, VK_RBUTTON, VK_SHIFT,
             },
             WindowsAndMessaging::{
                 GetAncestor, GetClientRect, IsChild, IsWindowVisible, KillTimer, PostMessageW,
@@ -441,6 +443,78 @@ impl Document {
                 (Rc::downgrade(&self.state), self.state.generation.get()),
             );
         });
+    }
+
+    pub fn exclude(
+        &self,
+        bounds: Bounds<Pixels>,
+        clip: Bounds<Pixels>,
+        exclusion: Option<Bounds<Pixels>>,
+        window: &Window,
+    ) {
+        let view = self.state.view.borrow();
+        let Some(view) = view.as_ref() else {
+            return;
+        };
+        // A disabled child passes the first outside click to its GPUI host,
+        // matching the existing preview dismissal behavior while retaining pixels.
+        // SAFETY: Wry owns this live native child HWND on the current UI thread.
+        unsafe {
+            let _ = EnableWindow(view.hwnd(), exclusion.is_none());
+        }
+        let scale = f64::from(window.scale_factor());
+        let rect = |rect: Bounds<Pixels>, outward: bool| {
+            let round_start = |n: f64| if outward { n.floor() } else { n.ceil() };
+            let round_end = |n: f64| if outward { n.ceil() } else { n.floor() };
+            unsafe {
+                CreateRectRgn(
+                    round_start(
+                        (f64::from(f32::from(rect.origin.x))
+                            - f64::from(f32::from(bounds.origin.x)))
+                            * scale,
+                    ) as i32,
+                    round_start(
+                        (f64::from(f32::from(rect.origin.y))
+                            - f64::from(f32::from(bounds.origin.y)))
+                            * scale,
+                    ) as i32,
+                    round_end(
+                        (f64::from(f32::from(rect.origin.x + rect.size.width))
+                            - f64::from(f32::from(bounds.origin.x)))
+                            * scale,
+                    ) as i32,
+                    round_end(
+                        (f64::from(f32::from(rect.origin.y + rect.size.height))
+                            - f64::from(f32::from(bounds.origin.y)))
+                            * scale,
+                    ) as i32,
+                )
+            }
+        };
+        // SAFETY: owned regions, live Wry HWND. SetWindowRgn transfers ownership.
+        unsafe {
+            let region = rect(clip, false);
+            if region.0.is_null() {
+                let _ = view.set_visible(false);
+                return;
+            }
+            if let Some(exclusion) = exclusion {
+                let hole = rect(exclusion, true);
+                if hole.0.is_null()
+                    || CombineRgn(Some(region), Some(region), Some(hole), RGN_DIFF).0 == 0
+                {
+                    let _ = DeleteObject(hole.into());
+                    let _ = DeleteObject(region.into());
+                    let _ = view.set_visible(false);
+                    return;
+                }
+                let _ = DeleteObject(hole.into());
+            }
+            if SetWindowRgn(view.hwnd(), Some(region), true) == 0 {
+                let _ = DeleteObject(region.into());
+                let _ = view.set_visible(false);
+            }
+        }
     }
 
     pub fn show(&self, bounds: Bounds<Pixels>, clip: Bounds<Pixels>, window: &Window) {

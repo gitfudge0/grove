@@ -2265,11 +2265,7 @@ impl Sidebar {
     }
 
     pub(super) fn html_overlay_open(&self) -> bool {
-        !self.navigation_available()
-            || self.project_flyout.is_some()
-            // Native webviews sit above GPUI paint, including deferred previews.
-            // Keep them hidden through the preview's dismissal animation too.
-            || self.checkout_panel.peek.is_some()
+        !self.navigation_available() || self.project_flyout.is_some()
     }
 
     pub(crate) fn highlights_blocked(&self) -> bool {
@@ -4930,6 +4926,7 @@ impl Focusable for Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        super::inline_html::exclude_native_html(None, cx);
         self.sync(window, cx);
         self.sync_age_timer(cx);
         if self.project_flyout.is_some() {

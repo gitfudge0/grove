@@ -41,7 +41,7 @@ new Image().src='{target}';
 try{{new RTCPeerConnection({{iceServers:[{{urls:'stun:127.0.0.1:{udp.getsockname()[1]}'}}]}})}}catch{{}}
 try{{new WebSocket('ws://127.0.0.1:{server.server_port}/socket')}}catch{{}}
 </script></body></html>''')
-    flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "webkit2gtk-4.1", "x11"], text=True))
+    flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "webkit2gtk-4.1", "x11", "xext"], text=True))
     binary = directory / "native-probe"
     subprocess.run(["cc", "-Wall", "-Wextra", "-Werror=implicit-function-declaration", "-Wno-deprecated-declarations", str(root / "scripts/verify-inline-html-linux.c"), "-o", str(binary), *flags, "-lm", "-ldl"], check=True)
     environment = os.environ.copy()
