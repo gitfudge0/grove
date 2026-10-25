@@ -2956,6 +2956,10 @@ mod tests {
         cx.simulate_keystrokes("escape escape");
         draw(cx);
         cx.update(|_, cx| assert!(!shell.read(cx).launcher.read(cx).is_open()));
+        // The closing launcher occludes the window until its exit motion ends.
+        cx.executor()
+            .advance_clock(crate::views::motion::Presence::duration() * 2);
+        draw(cx);
         cx.update(|window, cx| {
             shell
                 .read(cx)

@@ -298,6 +298,11 @@ impl TerminalSession {
         let Some(rx) = rx else {
             return Task::ready(());
         };
+        // gpui's TestScheduler aborts the whole test binary when a foreign thread wakes one of its tasks, which real shell output does after the spawning test ends.
+        if cfg!(test) {
+            drop(rx);
+            return Task::ready(());
+        }
         let (tx, mut chunks) = mpsc::unbounded::<Vec<u8>>();
         std::thread::Builder::new()
             .name("grove-gpui-pty-bridge".into())

@@ -8717,7 +8717,10 @@ fn collapsed_draft_preview(text: &str) -> String {
 /// Complete the token around a collapsed caret without replacing later draft text.
 fn completion_trigger(text: &str, cursor: usize) -> Option<(std::ops::Range<usize>, char, &str)> {
     let prefix = text.get(..cursor)?;
-    let start = prefix.rfind(char::is_whitespace).map_or(0, |at| at + 1);
+    let start = prefix
+        .char_indices()
+        .rfind(|(_, ch)| ch.is_whitespace())
+        .map_or(0, |(at, ch)| at + ch.len_utf8());
     let token = &prefix[start..];
     let trigger = token.chars().next()?;
     if !(matches!(trigger, '@' | '$') || trigger == '/' && start == 0) {
@@ -13702,6 +13705,16 @@ mod tests {
         assert_eq!(trailing_trigger("email@example.com"), None);
         assert_eq!(trailing_trigger("inspect /tmp"), None);
         assert_eq!(trailing_trigger("@src/ "), None);
+    }
+
+    #[test]
+    fn completion_trigger_steps_past_multibyte_whitespace() {
+        // U+00A0 is whitespace but two bytes wide; the token starts after all of it.
+        let text = "see\u{a0}@src next";
+        let cursor = "see\u{a0}@src".len();
+        assert_eq!(completion_trigger(text, cursor), Some((5..9, '@', "src")));
+        let text = "Image 1\u{a0} We";
+        assert_eq!(completion_trigger(text, "Image 1\u{a0}".len()), None);
     }
 
     #[gpui::test]
