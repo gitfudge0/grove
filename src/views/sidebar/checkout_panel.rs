@@ -4695,7 +4695,7 @@ mod tests {
                     // refreshes must not replace it during slow parallel runs.
                     sidebar.checkout_panel.checked_at = None;
                     sidebar.checkout_panel.pr_checked_at =
-                        Some(Instant::now() + Duration::from_secs(3600));
+                        Some(Instant::now() + Duration::from_hours(1));
                     sidebar.checkout_panel.pr_state = Some(Ok(Some(serde_json::from_value(serde_json::json!({
                         "number":142,"url":"https://github.com/example/project/pull/142","state":"OPEN","isDraft":false,"headRefOid":"fixture","reviewDecision":"APPROVED","mergeable":"CONFLICTING",
                         "latestReviews":[{"state":"APPROVED"}],"reviewRequests":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]
