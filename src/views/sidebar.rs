@@ -178,7 +178,7 @@ fn group_sessions_for_list(
                 .then_with(|| entries[*b].id.cmp(&entries[*a].id))
         });
     }
-    ["NEEDS YOU", "REVIEW", "WORKING", "IDLE"]
+    ["Needs you", "Review", "Working", "Idle"]
         .into_iter()
         .zip(groups)
         .filter(|(_, group)| !group.is_empty())
@@ -1683,7 +1683,12 @@ impl Sidebar {
         };
         let mut run = window.text_style().to_run(label.len());
         run.font.weight = gpui::FontWeight::MEDIUM;
-        let font_size = rpx(TEXT_SMALL).to_pixels(window.rem_size());
+        let heading_size = if self.mode == ViewMode::List {
+            TEXT_MICRO
+        } else {
+            TEXT_SMALL
+        };
+        let font_size = rpx(heading_size).to_pixels(window.rem_size());
         let label_width = crate::views::components::truncation_safe_label_width(
             label,
             font_size,
@@ -1698,7 +1703,7 @@ impl Sidebar {
             .flex()
             .items_center()
             .gap(rpx(SPACE_SM))
-            .text_size(rpx(TEXT_SMALL))
+            .text_size(rpx(heading_size))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(c::FG_DIM())
             .child(motion::fast(
@@ -1748,9 +1753,22 @@ impl Sidebar {
                         .child(icon("archive", ICON_SM, c::FG_DIM())),
                     )
                     .child(
-                        self.control("projects-add", "Add project", Action::AddProject, cx)
-                            .debug_selector(|| "projects-add".into())
-                            .child(icon("plus", ICON_SM, c::FG_DIM())),
+                        self.control(
+                            "projects-add",
+                            if self.mode == ViewMode::List {
+                                "New session"
+                            } else {
+                                "Add project"
+                            },
+                            if self.mode == ViewMode::List {
+                                Action::NewMultiProjectSession
+                            } else {
+                                Action::AddProject
+                            },
+                            cx,
+                        )
+                        .debug_selector(|| "projects-add".into())
+                        .child(icon("plus", ICON_SM, c::FG_DIM())),
                     ),
             )
             .into_any_element()
@@ -2126,6 +2144,7 @@ impl Sidebar {
         let entries: Vec<_> = registry
             .all()
             .iter()
+            .filter(|meta| multi_project::project_names(meta).is_none())
             .filter(|meta| {
                 self.snapshot
                     .projects
@@ -2185,9 +2204,14 @@ impl Sidebar {
                 order
             }
             ViewMode::List => self
-                .list_session_groups(cx)
+                .multi_project_sessions(cx)
                 .into_iter()
-                .flat_map(|(_, ids)| ids)
+                .map(|meta| meta.id)
+                .chain(
+                    self.list_session_groups(cx)
+                        .into_iter()
+                        .flat_map(|(_, ids)| ids),
+                )
                 .collect(),
             ViewMode::Grid => self
                 .active_canvas_sessions(cx)
@@ -2404,9 +2428,14 @@ impl Sidebar {
                 .copied()
                 .find(|id| workspace_ids.contains(id))
                 .or_else(|| {
-                    self.list_session_groups(cx)
+                    self.multi_project_sessions(cx)
                         .into_iter()
-                        .flat_map(|(_, ids)| ids)
+                        .map(|meta| meta.id)
+                        .chain(
+                            self.list_session_groups(cx)
+                                .into_iter()
+                                .flat_map(|(_, ids)| ids),
+                        )
                         .find(|id| {
                             workspace_ids.contains(id)
                                 && activity.state_of(*id) == ActivityState::WaitingForInput
@@ -4754,16 +4783,24 @@ impl Sidebar {
     fn list(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let groups = self.list_session_groups(cx);
         let mut body = div().flex().flex_col().gap(rpx(SPACE_SM));
-        let mut number = 0;
+        let multi = self.multi_project_sessions(cx);
+        let mut number = multi.len();
+        if !multi.is_empty() {
+            body = body.child(self.multi_project_section(&multi, window, cx));
+        }
         for (group, items) in &groups {
             body = body.child(
                 div()
                     .px(rpx(SPACE_LG))
                     .pt(rpx(SPACE_LG))
-                    .text_size(rpx(TEXT_SMALL))
+                    .text_size(rpx(TEXT_MICRO))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(c::FG_DIM())
-                    .child(format!("{group} · {}", items.len())),
+                    .child(
+                        div()
+                            .debug_selector(|| "session-list-section-heading".into())
+                            .child(format!("{group} · {}", items.len())),
+                    ),
             );
             for id in items {
                 if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(*id).cloned() {
@@ -4778,7 +4815,7 @@ impl Sidebar {
                 div()
                     .p(rpx(SPACE_2XL))
                     .text_color(c::FG_DIM())
-                    .child("No sessions yet. Start an agent from Project view."),
+                    .child("No sessions yet. Start one with +."),
             );
         }
         body.into_any_element()
@@ -5121,7 +5158,11 @@ impl Render for Sidebar {
             .when(!collapsed && self.mode != ViewMode::Project, |rail| {
                 rail.child(
                     div()
-                        .px(rpx(SPACE_3XL))
+                        .px(rpx(if self.mode == ViewMode::List && self.compact_rail {
+                            SPACE_SM + SPACE_LG
+                        } else {
+                            SPACE_3XL
+                        }))
                         .pt(rpx(SPACE_LG))
                         .child(self.navigation_heading(window, cx)),
                 )
@@ -5701,6 +5742,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
         collapsed: bool,
         projects: bool,
+        list: bool,
     ) {
         cx.update(|cx| {
             gpui_component::init(cx);
@@ -5735,6 +5777,9 @@ mod tests {
             })
             .detach();
             sidebar.update(cx, |sidebar, cx| {
+                if list {
+                    sidebar.mode = ViewMode::List;
+                }
                 assert!(sidebar.multi_project_sessions(cx).is_empty());
                 assert_eq!(sidebar.snapshot.projects.is_empty(), !projects);
                 if collapsed {
@@ -5744,7 +5789,10 @@ mod tests {
         });
         cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
         draw(cx);
-        let launch_id = if collapsed {
+        let launch_id = if list {
+            assert!(cx.debug_bounds("multi-project-empty").is_none());
+            "projects-add"
+        } else if collapsed {
             let anchor = cx
                 .debug_bounds("multi-project-anchor")
                 .expect("empty compact sidebar must expose the cross-project launcher");
@@ -5754,10 +5802,10 @@ mod tests {
             });
             draw(cx);
             assert!(cx.debug_bounds("multi-project-session-flyout").is_some());
-            assert!(cx.debug_bounds("multi-project-flyout-empty").is_some());
+            assert!(cx.debug_bounds("multi-project-flyout-empty").is_none());
             "multi-project-flyout-new"
         } else {
-            assert!(cx.debug_bounds("multi-project-empty").is_some());
+            assert!(cx.debug_bounds("multi-project-empty").is_none());
             "multi-project-new"
         };
         let launch = cx
@@ -5769,23 +5817,28 @@ mod tests {
     }
 
     #[gpui::test]
+    fn session_view_plus_requests_session_launcher(cx: &mut gpui::TestAppContext) {
+        assert_empty_cross_project_launch(cx, false, true, true);
+    }
+
+    #[gpui::test]
     fn empty_expanded_sidebar_can_launch_cross_project_session(cx: &mut gpui::TestAppContext) {
-        assert_empty_cross_project_launch(cx, false, false);
+        assert_empty_cross_project_launch(cx, false, false, false);
     }
 
     #[gpui::test]
     fn empty_compact_sidebar_can_launch_cross_project_session(cx: &mut gpui::TestAppContext) {
-        assert_empty_cross_project_launch(cx, true, false);
+        assert_empty_cross_project_launch(cx, true, false, false);
     }
 
     #[gpui::test]
     fn populated_expanded_sidebar_can_launch_cross_project_session(cx: &mut gpui::TestAppContext) {
-        assert_empty_cross_project_launch(cx, false, true);
+        assert_empty_cross_project_launch(cx, false, true, false);
     }
 
     #[gpui::test]
     fn populated_compact_sidebar_can_launch_cross_project_session(cx: &mut gpui::TestAppContext) {
-        assert_empty_cross_project_launch(cx, true, true);
+        assert_empty_cross_project_launch(cx, true, true, false);
     }
 
     #[gpui::test]
@@ -7987,10 +8040,10 @@ mod tests {
         assert_eq!(
             group_sessions_for_list(&rows, now),
             vec![
-                ("NEEDS YOU", vec![4, 3]),
-                ("REVIEW", vec![5, 2]),
-                ("WORKING", vec![7, 6, 1]),
-                ("IDLE", vec![0, 8]),
+                ("Needs you", vec![4, 3]),
+                ("Review", vec![5, 2]),
+                ("Working", vec![7, 6, 1]),
+                ("Idle", vec![0, 8]),
             ]
         );
     }
@@ -8052,9 +8105,9 @@ mod tests {
         assert_eq!(
             group_sessions_for_list(&rows, now),
             vec![
-                ("NEEDS YOU", vec![1, 0]),
-                ("WORKING", vec![2, 4]),
-                ("IDLE", vec![3, 5]),
+                ("Needs you", vec![1, 0]),
+                ("Working", vec![2, 4]),
+                ("Idle", vec![3, 5]),
             ]
         );
     }
@@ -8080,7 +8133,7 @@ mod tests {
         ];
         assert_eq!(
             group_sessions_for_list(&rows, now),
-            vec![("NEEDS YOU", vec![0]), ("WORKING", vec![1]),]
+            vec![("Needs you", vec![0]), ("Working", vec![1]),]
         );
         assert_eq!(rows[0].status, "Failed");
         assert_eq!(rows[1].status, "Starting");
@@ -8150,7 +8203,12 @@ mod tests {
                             (Agent::Codex, "a-very-long-project-name", "Repair very long session navigation titles without hiding meaningful actions", ActivityState::WaitingForInput),
                         ] {
                             let id = registry.update(cx, |registry, _| {
-                                let id = registry.insert_meta(project.into(), format!("/tmp/{project}"), agent);
+                                let id = if agent == Agent::Claude {
+                                    registry.insert_meta_with_context(project.into(), format!("/tmp/{project}"), agent,
+                                        vec![grove_core::session_meta::ContextRoot { project: "a-very-long-project-name".into(), wt_path: "/tmp/a-very-long-project-name".into() }], None)
+                                } else {
+                                    registry.insert_meta(project.into(), format!("/tmp/{project}"), agent)
+                                };
                                 registry.set_restored_title(id, Some(title.into()));
                                 id
                             });
@@ -8300,9 +8358,20 @@ mod tests {
     }
 
     #[gpui::test]
+    fn session_view_cross_project_cards_align_and_keep_shortcut_order(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        assert_session_list_cards(cx, true);
+    }
+
+    #[gpui::test]
     fn sessions_list_cards_keep_inset_and_controls_inside_narrow_rail(
         cx: &mut gpui::TestAppContext,
     ) {
+        assert_session_list_cards(cx, false);
+    }
+
+    fn assert_session_list_cards(cx: &mut gpui::TestAppContext, list_only: bool) {
         use crate::entities::workspace_state::{SnapshotProject, SnapshotWorktree};
         let repo = ChangedGitRepo::new();
         let path = repo.path();
@@ -8329,7 +8398,20 @@ mod tests {
                 .into_iter()
                 .map(|agent| {
                     registry.update(cx, |registry, _| {
-                        registry.insert_meta("demo".into(), path.clone(), agent)
+                        if list_only && agent == Agent::Claude {
+                            registry.insert_meta_with_context(
+                                "demo".into(),
+                                path.clone(),
+                                agent,
+                                vec![grove_core::session_meta::ContextRoot {
+                                    project: "other".into(),
+                                    wt_path: "/other".into(),
+                                }],
+                                None,
+                            )
+                        } else {
+                            registry.insert_meta("demo".into(), path.clone(), agent)
+                        }
                     })
                 })
                 .collect::<Vec<_>>();
@@ -8389,6 +8471,16 @@ mod tests {
                 let close = cx.debug_bounds(close_id).unwrap();
                 assert!(card.left() >= rail.left() + gpui::px(SPACE_LG - 1.0));
                 assert!(card.right() <= rail.right() - gpui::px(SPACE_LG - 1.0));
+                assert_eq!(
+                    cx.debug_bounds("sidebar-heading-label").unwrap().left(),
+                    card.left()
+                );
+                assert_eq!(
+                    cx.debug_bounds("session-list-section-heading")
+                        .unwrap()
+                        .left(),
+                    card.left()
+                );
                 assert!(card.size.height >= gpui::px(SESSION_LIST_CARD_H));
                 assert!(close.left() >= card.left() && close.right() <= card.right());
                 assert!(close.top() >= card.top() && close.bottom() <= card.bottom());
@@ -8443,6 +8535,21 @@ mod tests {
                 Some(Selection::Session(SessionId::from_raw(2)))
             );
         }
+        if list_only {
+            sidebar.read_with(cx, |sidebar, cx| {
+                assert_eq!(
+                    sidebar.visible_session_order(cx),
+                    vec![SessionId::from_raw(2), SessionId::from_raw(1)]
+                );
+                let grouped: Vec<_> = sidebar
+                    .list_session_groups(cx)
+                    .into_iter()
+                    .flat_map(|(_, ids)| ids)
+                    .collect();
+                assert_eq!(grouped, vec![SessionId::from_raw(1)]);
+                assert_eq!(sidebar.multi_project_sessions(cx).len(), 1);
+            });
+        }
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.age_timer.is_some()));
         let before = sidebar.read_with(cx, |sidebar, _| sidebar.age_ticks);
         cx.executor().advance_clock(SESSION_AGE_REFRESH);
@@ -8451,6 +8558,9 @@ mod tests {
             sidebar.read_with(cx, |sidebar, _| sidebar.age_ticks),
             before + 1
         );
+        if list_only {
+            return;
+        }
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
         });

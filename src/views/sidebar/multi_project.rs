@@ -135,7 +135,13 @@ impl Sidebar {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(rpx(if flyout { TEXT_TITLE } else { TEXT_SMALL }))
+                    .text_size(rpx(if flyout {
+                        TEXT_TITLE
+                    } else if self.mode == ViewMode::List {
+                        TEXT_MICRO
+                    } else {
+                        TEXT_SMALL
+                    }))
                     .font_weight(if flyout {
                         gpui::FontWeight::SEMIBOLD
                     } else {
@@ -182,26 +188,23 @@ impl Sidebar {
             .gap(rpx(SPACE_XS))
             .child(
                 div()
-                    .px(rpx(HIERARCHY_INSET))
+                    .px(rpx(if self.mode == ViewMode::List {
+                        SPACE_LG
+                    } else {
+                        HIERARCHY_INSET
+                    }))
                     .mb(rpx(SPACE_SM))
                     .child(self.multi_project_header(sessions.len(), false, cx)),
             );
-        if sessions.is_empty() {
-            section = section.child(
-                div()
-                    .id("multi-project-empty")
-                    .debug_selector(|| "multi-project-empty".into())
-                    .px(rpx(HIERARCHY_INSET))
-                    .py(rpx(SPACE_SM))
-                    .text_size(rpx(TEXT_MICRO))
-                    .text_color(c::FG_DIM())
-                    .whitespace_normal()
-                    .child("No cross-project sessions yet. Start one with +."),
-            );
-        }
         for (index, meta) in sessions.iter().enumerate() {
-            section =
-                section.child(self.session_row(meta, false, Some(index + 1), false, window, cx));
+            section = section.child(self.session_row(
+                meta,
+                self.mode == ViewMode::List,
+                Some(index + 1),
+                false,
+                window,
+                cx,
+            ));
         }
         section
             .child(
@@ -303,17 +306,6 @@ impl Sidebar {
             .p(rpx(SPACE_2XL))
             .gap(rpx(SPACE_SM))
             .child(self.multi_project_header(sessions.len(), true, cx));
-        if sessions.is_empty() {
-            body = body.child(
-                div()
-                    .id("multi-project-flyout-empty")
-                    .debug_selector(|| "multi-project-flyout-empty".into())
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .whitespace_normal()
-                    .child("No cross-project sessions yet. Start one with +."),
-            );
-        }
         let mut actions = Vec::new();
         let mut indices = Vec::new();
         for (index, meta) in sessions.iter().enumerate() {

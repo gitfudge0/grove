@@ -72,6 +72,8 @@ Settings, Archive, and Add project form the bottom utility group; Add terminal s
 
 Compact session and standalone-terminal tiles center the 16px identity glyph on the rail. Status overlays its lower-right corner: a 10px glyph within 12px circular clearance, positioned at the tile center (18px from the left, 16px from the top of the 36 × 32px tile). Clearance reveals the actual rail or interaction fill, including Frosted appearance. Status remains decorative within the session target; Close retains its upper-right slot.
 
+Session view includes a leading cross-project session section when populated, followed by single-project sessions grouped by attention and activity. Sessions appear once and keyboard shortcuts follow that visible order. Its header plus opens the session launcher. Section headers use small sentence-case type and align with the session card left edges. Empty cross-project sections keep their launcher without explanatory placeholder copy.
+
 ### Compact project list
 
 - Collapsed project anchors use short, collision-safe text identifiers and open-session counts. Hovering anywhere in a project section, including its session tiles, opens the named worktree/session list without changing selection or keyboard focus. The hover list stays open while crossing into or interacting with it, and closes shortly after leaving the project section and list. Clicking an anchor or opening by keyboard makes the list persistent until dismissal or selection; selecting a direct rail session suppresses reopening until the pointer leaves that project section. Menus and overlays block automatic hover lists.
