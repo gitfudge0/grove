@@ -428,6 +428,7 @@ pub struct Sidebar {
     project_toggle_focus: HashMap<String, FocusHandle>,
     menu_return_focus: Option<FocusHandle>,
     project_menu_bounds: HashMap<usize, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
+    session_close_focus: HashMap<SessionId, FocusHandle>,
     session_close_bounds:
         HashMap<SessionId, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
     home_close_bounds: HashMap<SessionId, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
@@ -631,6 +632,7 @@ impl Sidebar {
             menu_trigger_bounds: std::rc::Rc::default(),
             menu_popup_bounds: std::rc::Rc::default(),
             project_menu_bounds: HashMap::new(),
+            session_close_focus: HashMap::new(),
             session_close_bounds: HashMap::new(),
             home_close_bounds: HashMap::new(),
             confirm_focus: cx.focus_handle(),
@@ -908,6 +910,14 @@ impl Sidebar {
             .flat_map(|project| &project.sessions)
         {
             self.session_close_bounds.entry(*id).or_default();
+            if !self.session_close_focus.contains_key(id) {
+                let handle = cx.focus_handle().tab_stop(true);
+                self.observers
+                    .push(cx.on_focus_in(&handle, window, |_, _, cx| cx.notify()));
+                self.observers
+                    .push(cx.on_focus_out(&handle, window, |_, _, _, cx| cx.notify()));
+                self.session_close_focus.insert(*id, handle);
+            }
         }
         for meta in self.runtime.read(cx).registry.read(cx).home_terminals() {
             self.home_close_bounds.entry(meta.id).or_default();
@@ -3828,19 +3838,6 @@ impl Sidebar {
             .gap(rpx(SPACE_SM))
             .items_center()
             .rounded(rpx(SESSION_ROW_RADIUS))
-            .child(motion::fast(
-                div()
-                    .id(("session-tree-status", id.raw()))
-                    .debug_selector(move || format!("session-tree-status-{}", id.raw()))
-                    .size(rpx(ICON_MD))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(session_status_icon(id, status, cx)),
-                format!("session-status-tree-{}-{status}", id.raw()),
-                cx,
-            ))
             .child(
                 div()
                     .id(("session-agent", id.raw()))
@@ -3897,13 +3894,39 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .justify_end()
+                    .gap(rpx(SPACE_SM))
                     .when_some(tasks.as_ref(), |slot, tasks| {
-                        slot.child(
-                            div()
-                                .group_hover("session-row", Styled::invisible)
-                                .child(task_glance::row_progress(id, tasks)),
-                        )
+                        slot.child(task_glance::row_progress(id, tasks))
                     })
+                    .child(
+                        div()
+                            .size(rpx(CONTROL_H))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .group_hover("session-row", Styled::invisible)
+                            .when(
+                                self.session_close_focus
+                                    .get(&id)
+                                    .is_some_and(|focus| focus.is_focused(window)),
+                                Styled::invisible,
+                            )
+                            .child(motion::fast(
+                                div()
+                                    .id(("session-tree-status", id.raw()))
+                                    .debug_selector(move || {
+                                        format!("session-tree-status-{}", id.raw())
+                                    })
+                                    .size(rpx(ICON_MD))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(session_status_icon(id, status, cx)),
+                                format!("session-status-tree-{}-{status}", id.raw()),
+                                cx,
+                            )),
+                    )
                     .child(
                         self.control(
                             ("close-session", id.raw()),
@@ -3912,13 +3935,23 @@ impl Sidebar {
                             cx,
                         )
                         .absolute()
-                        .inset_0()
-                        .w_full()
-                        .h_full()
+                        .right_0()
+                        .top_0()
+                        .size(rpx(CONTROL_H))
                         .debug_selector(move || format!("session-tree-close-{}", id.raw()))
+                        .when_some(
+                            self.session_close_focus.get(&id),
+                            gpui::InteractiveElement::track_focus,
+                        )
                         .opacity(0.0)
                         .group_hover("session-row", |button| button.opacity(1.0))
                         .focus_visible(|button| button.opacity(1.0))
+                        .when(
+                            self.session_close_focus
+                                .get(&id)
+                                .is_some_and(|focus| focus.is_focused(window)),
+                            |button| button.opacity(1.0),
+                        )
                         .when_some(
                             self.session_close_bounds.get(&id).cloned(),
                             |button, bounds| {
@@ -4358,16 +4391,7 @@ impl Sidebar {
             for (worktree_position, worktree) in project.worktrees.iter().enumerate() {
                 let path = worktree.path.clone();
                 let worktree_name = sidebar_worktree_name(&worktree.name, worktree.is_main);
-                let project_path = cx
-                    .global::<SettingsState>()
-                    .store
-                    .projects
-                    .get(idx)
-                    .map(|project| project.path.clone());
-                let has_run_script = project.has_run && project_path.is_some();
-                let action_count = WORKTREE_LAUNCH_AGENTS.len()
-                    + has_run_script as usize
-                    + (!worktree.is_main) as usize;
+                let action_count = WORKTREE_LAUNCH_AGENTS.len() + (!worktree.is_main) as usize;
                 let launch_width = WORKTREE_ACTION_W * action_count as f32;
                 let selection = Selection::Worktree(idx, path.clone());
                 let selected = self.selection == Some(selection.clone());
@@ -4392,22 +4416,6 @@ impl Sidebar {
                     .flex_shrink_0()
                     .items_center()
                     .opacity(if show_launchers { 1.0 } else { 0.0 });
-                if let Some(project_path) = project_path.filter(|_| has_run_script) {
-                    launches = launches.child(
-                        self.control(
-                            SharedString::from(format!("run-script-{path}")),
-                            format!("Run script in {} · {}", project.name, worktree_name),
-                            Action::RunScript(project_path, path.clone()),
-                            cx,
-                        )
-                        .size(rpx(WORKTREE_ACTION_W))
-                        .debug_selector({
-                            let path = path.clone();
-                            move || format!("run-script-{path}")
-                        })
-                        .child(icon("play", ICON_SM, c::FG_DIM())),
-                    );
-                }
                 for (n, agent) in WORKTREE_LAUNCH_AGENTS.into_iter().enumerate() {
                     let agent_name = match agent {
                         Agent::Codex => "Codex",
@@ -8214,6 +8222,29 @@ mod tests {
                         .save(&path)
                         .unwrap();
                     eprintln!("Native session-list fixture: {path}");
+                    for focused in [false, true] {
+                        cx.update_window(window.into(), |_, window, cx| {
+                            fixture_sidebar.as_ref().unwrap().update(cx, |sidebar, cx| {
+                                sidebar.mode = ViewMode::Project;
+                                if focused {
+                                    sidebar.session_close_focus[&SessionId::from_raw(1)]
+                                        .focus(window, cx);
+                                }
+                                cx.notify();
+                            });
+                            let _ = window.draw(cx);
+                        })
+                        .unwrap();
+                        let path = format!(
+                            "/tmp/grove-session-tree-{}-{width:.0}-rem{rem:.0}-focus{focused}.png",
+                            if light { "light" } else { "dark" }
+                        );
+                        cx.capture_screenshot(window.into())
+                            .unwrap()
+                            .save(&path)
+                            .unwrap();
+                        eprintln!("Native session-tree fixture: {path}");
+                    }
                     cx.update_window(window.into(), |_, window, _| window.remove_window())
                         .unwrap();
                 }
@@ -9678,38 +9709,57 @@ for line in sys.stdin:
             );
             let row = cx.debug_bounds("session-1").unwrap();
             assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
-            assert!(status.right() <= launcher.left());
+            assert!(title.right() <= status.left());
             assert!(launcher.right() <= title.left());
             let progress = cx.debug_bounds("session-tasks-1").unwrap();
             let trailing = cx.debug_bounds("session-tree-trailing-1").unwrap();
             assert!(title.right() <= progress.left());
-            assert_eq!(progress.right(), close.right());
+            assert!(progress.right() <= close.left());
             assert_eq!(f32::from(row.right() - close.right()), HIERARCHY_INSET);
-            assert_eq!(close, trailing);
+            assert_eq!(close.right(), trailing.right());
             assert_eq!(
-                f32::from(status.left() - row.left()),
+                f32::from(launcher.left() - row.left()),
                 HIERARCHY_INSET + SPACE_LG
             );
-            // Row hover reveals Close in its reserved slot and hides overlapping progress.
+            // Row hover swaps status for Close without moving title or task progress.
             cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
             draw(cx);
             assert_eq!(cx.debug_bounds("session-tree-title-1").unwrap(), title);
             assert_eq!(cx.debug_bounds("session-tree-close-1").unwrap(), close);
-            assert!(cx.debug_bounds("session-tasks-1").is_none());
+            assert!(cx.debug_bounds("session-tree-status-1").is_none());
+            assert_eq!(cx.debug_bounds("session-tasks-1").unwrap(), progress);
             cx.simulate_mouse_move(progress.center(), None, gpui::Modifiers::default());
             draw(cx);
-            assert!(cx.debug_bounds("session-tasks-1").is_none());
+            assert_eq!(cx.debug_bounds("session-tasks-1").unwrap(), progress);
             assert_eq!(cx.debug_bounds("session-tree-close-1").unwrap(), close);
             cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
             draw(cx);
-            assert!(cx.debug_bounds("session-tasks-1").is_none());
+            assert_eq!(cx.debug_bounds("session-tasks-1").unwrap(), progress);
             let empty_slot = cx.debug_bounds("session-tree-trailing-2").unwrap();
             assert_eq!(cx.debug_bounds("session-tree-close-2").unwrap(), empty_slot);
             assert_eq!(f32::from(empty_slot.size.width), CONTROL_H);
             assert!(status.top() >= row.top() && status.bottom() <= row.bottom());
             assert!(title.top() >= row.top() && title.bottom() <= row.bottom());
             assert!(close.bottom() <= row.bottom());
-            // The longest launcher row includes script, all agents, and Delete; dense controls
+            cx.simulate_mouse_move(
+                gpui::point(gpui::px(900.0), gpui::px(740.0)),
+                None,
+                gpui::Modifiers::default(),
+            );
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.session_close_focus[&SessionId::from_raw(1)].focus(window, cx);
+                });
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("session-tree-status-1").is_none());
+            assert_eq!(cx.debug_bounds("session-tree-title-1").unwrap(), title);
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| sidebar.focus.focus(window, cx));
+            });
+            draw(cx);
+            assert_eq!(cx.debug_bounds("session-tree-status-1").unwrap(), status);
+            // The longest launcher row includes all agents and Delete; dense controls
             // retain their shared size without covering the truncated worktree title at narrow widths.
             for path in ["/grove-spacing-main", "/grove-spacing-feature"] {
                 let selector = |prefix: &str| -> &'static str {
@@ -9729,7 +9779,7 @@ for line in sys.stdin:
                         Box::leak(format!("launch-{path}-{index}").into_boxed_str())
                     })
                     .collect();
-                controls.push(selector("run-script-"));
+                assert!(cx.debug_bounds(selector("run-script-")).is_none());
                 if path.ends_with("feature") {
                     controls.push(selector("delete-worktree-"));
                 }
@@ -9752,7 +9802,7 @@ for line in sys.stdin:
     }
 
     #[gpui::test]
-    fn run_script_sidebar_control_and_normal_canvas_lifecycle(cx: &mut gpui::TestAppContext) {
+    fn run_script_excluded_from_sidebar_and_normal_canvas_lifecycle(cx: &mut gpui::TestAppContext) {
         struct ScriptRepo(std::path::PathBuf);
         impl Drop for ScriptRepo {
             fn drop(&mut self) {
@@ -9848,24 +9898,13 @@ for line in sys.stdin:
         let worktree = cx.debug_bounds(worktree_selector).unwrap();
         cx.simulate_mouse_move(worktree.center(), None, gpui::Modifiers::default());
         draw(cx);
-        assert!(cx.debug_bounds(run_selector).is_some());
+        assert!(cx.debug_bounds(run_selector).is_none());
         assert!(cx.debug_bounds(actions_selector).unwrap().right() <= actions_right);
         assert!(cx.debug_bounds(count_selector).is_none());
-        assert!(cx
-            .debug_bounds(worktree_selector)
-            .unwrap()
-            .contains(&cx.debug_bounds(run_selector).unwrap().center()));
-        let run = cx.debug_bounds(run_selector).unwrap().center();
-        cx.simulate_mouse_down(run, gpui::MouseButton::Left, gpui::Modifiers::default());
-        cx.simulate_mouse_up(run, gpui::MouseButton::Left, gpui::Modifiers::default());
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
                 assert_eq!(sidebar.selection, Some(Selection::Project(0)));
                 assert!(sidebar.runtime.read(cx).registry.read(cx).all().is_empty());
-                assert!(sidebar
-                    .content_error
-                    .as_deref()
-                    .is_some_and(|error| error.starts_with("terminal failed:")));
                 let focus = window.focused(cx);
                 sidebar.act(Action::RunScript(path.clone(), path.clone()), window, cx);
                 assert_eq!(window.focused(cx), focus);

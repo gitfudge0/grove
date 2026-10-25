@@ -86,11 +86,11 @@ Compact session and standalone-terminal tiles center the 16px identity glyph on 
 
 - Expanded project navigation follows the approved focused hierarchy: project names use 14px semibold type; worktrees inset 8px use 12px medium names in single-line rows, with branch names available in hover tooltips and accessible labels. Nesting and typography distinguish row types without explicit Project or Worktree labels. Worktrees and their sessions share one nested row inset beneath the project.
 
-- Sessions use 32px single-line rows: activity glyph, blue launcher icon, and 12px normal session title. Session items contain no Git diff metadata. Worktree Git counts (+added green and −removed red) appear only when changes exist; clean and unavailable states have no visible placeholder. Worktree launcher options replace those counts on hover or keyboard focus; the Git changes action remains keyboard reachable and reveals itself when focused.
+- Sessions use 32px single-line rows: blue launcher icon, 12px normal session title, and a fixed trailing activity glyph. Session items contain no Git diff metadata. Worktree Git counts (+added green and −removed red) appear only when changes exist; clean and unavailable states have no visible placeholder. Worktree launcher options exclude script-run actions and replace those counts on hover or keyboard focus; the Git changes action remains keyboard reachable and reveals itself when focused.
 
 - Working and Starting use a rotating blue open ring (static with reduced motion), Needs you an amber circle-dot, Done a green circle-check, Idle a muted hollow circle, Exited a muted stopped mark, and Failed a red circle-cross. Launcher and status text do not appear in the row; full session titles, launcher names, status, and multi-project root identities remain in accessible labels and hover tooltips.
 
-- Titles truncate before the fixed icon and trailing close columns. Selection uses neutral fill; the close control appears on hover or keyboard focus in its own slot and never covers counts. Git changes remain clickable and keyboard accessible. Launcher controls appear on worktree hover and keyboard focus. The compact rail, project flyout, and list/grid layouts retain their separate approved treatments.
+- Titles truncate before the fixed trailing task and status columns. Selection uses neutral fill; hovering the row or focusing Close replaces the trailing status with Close in the same slot without moving or covering task progress. Git changes remain clickable and keyboard accessible. Launcher controls appear on worktree hover and keyboard focus. The compact rail, project flyout, and list/grid layouts retain their separate approved treatments.
 
 ## Workspace and checkout flows
 
