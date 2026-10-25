@@ -459,7 +459,7 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// Shell actions keep a distinct identity and a fixed, independently focusable Run slot.
+    /// Typed scripts retain their identity and a fixed, independently focusable Run slot.
     fn render_checkout_scripts(
         &mut self,
         project: &grove_core::storage::Project,
@@ -468,12 +468,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         use grove_core::storage::ProjectActionKind;
-        let entries: Vec<_> = project
-            .scripts
-            .effective_entries()
-            .into_iter()
-            .filter(|entry| matches!(entry.kind, ProjectActionKind::Shell { .. }))
-            .collect();
+        let entries: Vec<_> = project.scripts.effective_entries().into_iter().collect();
         let show_all = self.checkout_panel.scripts_show_all.contains(&project.path);
         let add_path = project.path.clone();
         let manage_path = project.path.clone();
@@ -499,39 +494,27 @@ impl Sidebar {
                             .gap(rpx(SPACE_SM))
                             .text_size(rpx(TEXT_SMALL))
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .child("Scripts")
-                            .child(
-                                div()
-                                    .text_color(c::FG_DIM())
-                                    .child(entries.len().to_string()),
-                            ),
+                            .text_color(c::FG_DIM())
+                            .child("Scripts"),
                     )
                     .child(script_control_tooltip(
                         "checkout-script-add-tooltip",
-                        "Add shell script",
-                        checkout_action(
-                            "checkout-script-add",
-                            "Add shell script",
-                            false,
-                            window,
-                            cx,
-                        )
-                        .debug_selector(|| "checkout-script-add".into())
-                        .icon_only()
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/plus.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
+                        "Add script",
+                        checkout_action("checkout-script-add", "Add script", false, window, cx)
+                            .debug_selector(|| "checkout-script-add".into())
+                            .icon_only()
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/plus.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 this.act(
                                     Action::EditProjectScripts(add_path.clone(), true),
                                     window,
                                     cx,
                                 );
-                            },
-                        )),
+                            })),
                     ))
                     .child(script_control_tooltip(
                         "checkout-script-manage-tooltip",
@@ -566,8 +549,9 @@ impl Sidebar {
         } else {
             SCRIPT_VISIBLE_ROWS
         }) {
-            let ProjectActionKind::Shell { command } = &entry.kind else {
-                continue;
+            let (command, prompt) = match &entry.kind {
+                ProjectActionKind::Shell { command } => (command, false),
+                ProjectActionKind::Prompt { template } => (template, true),
             };
             let context = format!("{}\n{}", entry.name, command);
             let project_path = project.path.clone();
@@ -638,7 +622,11 @@ impl Sidebar {
                             }
                         }
                     })
-                    .child(icon("terminal", ICON_SM, c::FG_DIM()))
+                    .child(icon(
+                        if prompt { "reply" } else { "terminal" },
+                        ICON_SM,
+                        c::FG_DIM(),
+                    ))
                     .child(
                         div()
                             .id(SharedString::from(format!(
@@ -660,10 +648,22 @@ impl Sidebar {
                     )
                     .child(script_control_tooltip(
                         SharedString::from(format!("checkout-script-run-tooltip-{}", entry.id)),
-                        format!("{context}\nRun in a new terminal in this checkout."),
+                        format!(
+                            "{context}\n{}",
+                            if prompt {
+                                "Send to the current chat."
+                            } else {
+                                "Run in a new terminal in this checkout."
+                            }
+                        ),
                         checkout_action(
                             SharedString::from(format!("checkout-script-run-{}", entry.id)),
-                            format!("Run {} in this checkout: {}", entry.name, command),
+                            format!(
+                                "{} {}: {}",
+                                if prompt { "Send prompt" } else { "Run script" },
+                                entry.name,
+                                command
+                            ),
                             false,
                             window,
                             cx,
@@ -673,6 +673,9 @@ impl Sidebar {
                             move || format!("checkout-script-run-{id}")
                         })
                         .icon_only()
+                        .w(rpx(CONTROL_H))
+                        .h(rpx(CONTROL_H))
+                        .rounded(rpx(RADIUS_CONTROL).to_pixels(window.rem_size()))
                         .flex_shrink_0()
                         .with_focus_handle(focus)
                         .icon(
@@ -730,13 +733,26 @@ impl Sidebar {
         }
         if entries.is_empty() {
             let project_path = project.path.clone();
-            section = section.child(div().px(rpx(SPACE_2XL)).py(rpx(SPACE_LG))
-                .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                .child("No shell scripts. Add a reusable command to run in this checkout. Agent prompts are managed in project settings."))
-                .child(checkout_row("checkout-script", "Add script", "plus", window, cx)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.act(Action::EditProjectScripts(project_path.clone(), true), window, cx);
-                    })));
+            section = section
+                .child(
+                    div()
+                        .px(rpx(SPACE_2XL))
+                        .py(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("No scripts yet. Add a shell command or prompt."),
+                )
+                .child(
+                    checkout_row("checkout-script", "Add script", "plus", window, cx).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.act(
+                                Action::EditProjectScripts(project_path.clone(), true),
+                                window,
+                                cx,
+                            );
+                        }),
+                    ),
+                );
         } else {
             if entries.len() > SCRIPT_VISIBLE_ROWS {
                 let project_path = project.path.clone();
@@ -769,14 +785,6 @@ impl Sidebar {
                     })),
                 );
             }
-            section = section.child(
-                div()
-                    .px(rpx(SPACE_2XL))
-                    .py(rpx(SPACE_SM))
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Run opens a new terminal in this checkout."),
-            );
         }
         section
     }
@@ -902,20 +910,12 @@ impl Sidebar {
                 }
                 section = section.child(metadata);
                 if pr.state == "OPEN" {
-                    let target = path.to_string();
-                    let request = pr.clone();
                     let mut actions = div()
                         .flex()
                         .flex_wrap()
                         .gap(rpx(SPACE_SM))
                         .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
                         .pr(rpx(SPACE_2XL));
-                    actions = actions.child(checkout_action("checkout-pr-review", "Review PR", false, window, cx)
-                        .icon(gpui_component::Icon::default().path("icons/git-pull-request.svg").size(rpx(ICON_SM)))
-                        .debug_selector(|| "checkout-pr-review".into())
-                        .disabled(self.checkout_panel.pr_prompt_busy || self.checkout_panel.pr_loading)
-                        .tooltip("Review this PR in the current chat using the project review prompt")
-                        .on_click(cx.listener(move |this, _, _, cx| this.checkout_pr_prompt(target.clone(), request.clone(), true, cx))));
                     if pr.checks() == "Checks failed" {
                         let target = path.to_string();
                         let request = pr.clone();
@@ -940,12 +940,7 @@ impl Sidebar {
                             .tooltip("Send failed CI context to the current chat")
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    this.checkout_pr_prompt(
-                                        target.clone(),
-                                        request.clone(),
-                                        false,
-                                        cx,
-                                    );
+                                    this.checkout_pr_prompt(target.clone(), request.clone(), cx);
                                 },
                             )),
                         );
@@ -1109,13 +1104,7 @@ impl Sidebar {
         section.into_any_element()
     }
 
-    fn checkout_pr_prompt(
-        &mut self,
-        path: String,
-        pr: PullRequest,
-        review: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn checkout_pr_prompt(&mut self, path: String, pr: PullRequest, cx: &mut Context<Self>) {
         if self.checkout_panel.pr_prompt_busy || self.checkout_panel.path.as_ref() != Some(&path) {
             return;
         }
@@ -1137,31 +1126,13 @@ impl Sidebar {
         let Some(Ok(state)) = self.checkout_panel.state.clone() else {
             return;
         };
-        let template = if review {
-            let scripts = self
-                .checkout_targets(cx)
-                .into_iter()
-                .find(|(_, p)| p == &path)
-                .map(|(idx, _)| {
-                    cx.global::<SettingsState>().store.projects[idx]
-                        .scripts
-                        .clone()
-                });
-            match scripts.map(|s| s.review_prompt().map(|p| p.unwrap_or("Review this pull request for correctness, regressions, security and test coverage. Lead with actionable findings and file references.").to_owned())).transpose() {
-                Ok(Some(template)) => Some(template),
-                Ok(None) => { self.checkout_panel.operation.pr_message = Some("Project configuration unavailable".into()); cx.notify(); return; }
-                Err(error) => { self.checkout_panel.operation.pr_message = Some(error); cx.notify(); return; }
-            }
-        } else {
-            None
-        };
         let thread = session.read(cx).state.saved.thread_id.clone();
         let generation = self.checkout_panel.generation;
         self.checkout_panel.pr_prompt_busy = true;
         self.checkout_panel.operation.pr_message = Some("Refreshing pull request context…".into());
         cx.spawn(async move |this, cx| {
             let target = path.clone();
-            let result = cx.background_executor().spawn(async move { checkout_pr::action_prompt(Path::new(&target), &state, &pr, template.as_deref()) }).await;
+            let result = cx.background_executor().spawn(async move { checkout_pr::action_prompt(Path::new(&target), &state, &pr) }).await;
             let _ = this.update(cx, |this, cx| {
                 if !this.checkout_panel.accepts_result(&path, generation) { return; }
                 this.checkout_panel.pr_prompt_busy = false;
@@ -2153,6 +2124,7 @@ impl Sidebar {
                             .px(rpx(SPACE_2XL))
                             .text_size(rpx(TEXT_SMALL))
                             .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(c::FG_DIM())
                             .child("Scripts"),
                     )
                     .child(
@@ -2903,6 +2875,122 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn codex_and_claude_named_prompt_dispatch_preserves_drafts(cx: &mut gpui::TestAppContext) {
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            let project = scripts_project(0);
+            let path = project.path.clone();
+            cx.update(|cx| {
+                gpui_component::init(cx);
+                c::sync_component_theme(cx);
+                cx.set_global(SettingsState::new(grove_core::storage::Store {
+                    projects: vec![project.clone()],
+                    ..Default::default()
+                }));
+                cx.set_global(crate::zoom::CurrentPtyDims::default());
+                cx.set_global(crate::zoom::ZoomState::new(1.0));
+            });
+            let (handle, actions) = grove_core::codex::Handle::channel();
+            let (_updates, receive) = std::sync::mpsc::channel();
+            let saved = grove_core::codex::SavedSession {
+                rich_plans: grove_core::rich_plan::PlanStore::default(),
+                claude_resume: None,
+                edit_checkpoints: Vec::new(),
+                pending_edit: None,
+                provider,
+                composer: grove_core::codex::ComposerSettings::default(),
+                context: None,
+                key: "named-script-fixture".into(),
+                project: project.name.clone(),
+                cwd: path.clone(),
+                label: provider.label().into(),
+                title: None,
+                title_generation: None,
+                roots: Vec::new(),
+                thread_id: Some("fixture-thread".into()),
+                items: Vec::new(),
+                work_periods: Vec::new(),
+                draft: "Keep my draft".into(),
+                draft_images: vec!["data:image/png;base64,aGVsbG8=".into()],
+                draft_reference: None,
+                config_args: Vec::new(),
+                native_config_version: 1,
+            };
+            let mut snapshot = grove_core::codex::Snapshot::new(saved);
+            snapshot.status = grove_core::codex::Status::Idle;
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(
+                    snapshot,
+                    grove_core::codex::Connection {
+                        handle: handle.clone(),
+                        updates: receive.into(),
+                    },
+                    cx,
+                )
+            });
+            let session_for_view = session.clone();
+            let (sidebar, cx) = cx.add_window_view(|window, cx| {
+                let runtime = cx.new(crate::runtime::Runtime::new);
+                let registry = runtime.read(cx).registry.clone();
+                let id = registry.update(cx, |registry, _| {
+                    let id =
+                        registry.insert_meta(project.name.clone(), path.clone(), provider.agent());
+                    registry.attach_codex(id, session_for_view, handle);
+                    id
+                });
+                let mut sidebar = Sidebar::new(runtime, window, cx);
+                sidebar.selection = Some(Selection::Session(id));
+                sidebar.initial_selection_pending = false;
+                sidebar
+            });
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.act(
+                        Action::RunNamedScript(path.clone(), path.clone(), "prompt-only".into()),
+                        window,
+                        cx,
+                    );
+                    assert!(sidebar.content_error.is_none());
+                });
+            });
+            let submitted: Vec<_> = actions
+                .try_iter()
+                .filter_map(|action| match action {
+                    grove_core::codex::Action::ProjectPrompt { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(submitted, vec!["Review the changes".to_owned()]);
+            session.read_with(cx, |session, _| {
+                assert_eq!(session.state.saved.draft, "Keep my draft");
+                assert_eq!(session.state.saved.draft_images.len(), 1);
+            });
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.act(
+                        Action::RunNamedScript(
+                            path.clone(),
+                            "/wrong/checkout".into(),
+                            "prompt-only".into(),
+                        ),
+                        window,
+                        cx,
+                    );
+                    assert_eq!(
+                        sidebar.content_error.as_deref(),
+                        Some("The current chat belongs to another checkout")
+                    );
+                });
+            });
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, grove_core::codex::Action::ProjectPrompt { .. })));
+        }
+    }
+
     #[test]
     fn commit_jobs_and_cancellation_follow_their_checkout_across_navigation() {
         let mut panel = CheckoutPanel::default();
@@ -3049,7 +3137,7 @@ mod tests {
             id: "prompt-only".into(),
             name: "Review".into(),
             kind: ProjectActionKind::Prompt {
-                template: "Review {{pr_url}}".into(),
+                template: "Review the changes".into(),
             },
         });
         grove_core::storage::Project {
@@ -3188,6 +3276,26 @@ mod tests {
             let _ = window.draw(cx);
         });
         assert!(cx.debug_bounds("checkout-script-shell-6").is_some());
+        assert!(cx.debug_bounds("checkout-script-prompt-only").is_some());
+        let prompt_run = cx.debug_bounds("checkout-script-run-prompt-only").unwrap();
+        assert_eq!(prompt_run.size.width, prompt_run.size.height);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.act(
+                    Action::RunNamedScript(
+                        project.path.clone(),
+                        project.path.clone(),
+                        "prompt-only".into(),
+                    ),
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    sidebar.content_error.as_deref(),
+                    Some("Open a native Codex or Claude chat in this checkout first")
+                );
+            });
+        });
         let disclosure = cx.debug_bounds("checkout-scripts-disclosure").unwrap();
         cx.simulate_click(disclosure.center(), gpui::Modifiers::default());
         cx.run_until_parked();
@@ -3260,12 +3368,16 @@ mod tests {
             ("narrow", 220., 16., 7, false, false),
             ("focus", 280., 16., 7, true, false),
             ("bottom-context", 220., 16., 7, true, false),
+            ("prompt-only", 280., 16., 0, false, false),
             ("empty", 280., 16., 0, false, false),
             ("add-many", 768., 16., 15, false, false),
             ("manage", 768., 16., 7, false, false),
             ("light-zoom", 280., 20., 7, false, true),
         ] {
-            let project = scripts_project(count);
+            let mut project = scripts_project(count);
+            if label == "empty" {
+                project.scripts.entries.clear();
+            }
             cx.update(|cx| {
                 cx.set_global(SettingsState::new(grove_core::storage::Store {
                     projects: vec![project.clone()],

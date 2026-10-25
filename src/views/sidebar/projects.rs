@@ -36,7 +36,6 @@ struct ScriptRowDetails {
     title: String,
     preview: String,
     glyph: Option<&'static str>,
-    review: bool,
 }
 
 /// Bound focus traversal even if every decision action is disabled.
@@ -76,7 +75,6 @@ pub(super) struct ProjectPanel {
     page: Page,
     fields: Vec<Entity<InputState>>,
     script_entries: Vec<(String, bool, Entity<InputState>, Entity<InputState>)>,
-    review_prompt_id: Option<String>,
     expanded_script: Option<ScriptEditor>,
     script_error: Option<(String, bool, String)>,
     script_focus: std::collections::HashMap<String, FocusHandle>,
@@ -200,9 +198,6 @@ impl ProjectPanel {
             script_focus,
             lifecycle_focus: [cx.focus_handle(), cx.focus_handle()],
             add_script_focus: cx.focus_handle(),
-            review_prompt_id: project
-                .as_ref()
-                .and_then(|p| p.scripts.review_prompt_id.clone()),
             archive_overflow: None,
             error: None,
             destination: None,
@@ -307,7 +302,7 @@ impl ProjectPanel {
                     },
                 })
                 .collect(),
-            review_prompt_id: self.review_prompt_id.clone(),
+            review_prompt_id: None,
             teardown: script(3),
         };
         self.script_error = None;
@@ -386,16 +381,9 @@ impl ProjectPanel {
             return;
         };
         match action {
-            "up" if index > 0 => self.script_entries.swap(index, index - 1),
-            "down" if index + 1 < self.script_entries.len() => {
-                self.script_entries.swap(index, index + 1);
-            }
             "remove" => {
                 self.script_entries.remove(index);
                 self.script_focus.remove(id);
-                if self.review_prompt_id.as_deref() == Some(id) {
-                    self.review_prompt_id = None;
-                }
                 if self.expanded_script == Some(ScriptEditor::Action(id.into())) {
                     self.expanded_script = None;
                 }
@@ -409,9 +397,6 @@ impl ProjectPanel {
             }
             "shell" | "prompt" => {
                 self.script_entries[index].1 = action == "prompt";
-                if action == "shell" && self.review_prompt_id.as_deref() == Some(id) {
-                    self.review_prompt_id = None;
-                }
             }
             _ => {}
         }
@@ -429,7 +414,6 @@ impl ProjectPanel {
             title,
             preview,
             glyph,
-            review,
         } = details;
         let expanded = self.expanded_script.as_ref() == Some(&editor);
         let keyboard_editor = editor.clone();
@@ -462,8 +446,7 @@ impl ProjectPanel {
             .flex()
             .items_center()
             .hover(|s| s.bg(c::BG_HOVER()))
-            .focus_visible(|s| s.bg(c::BG_HOVER()))
-            .when(expanded, |s| s.bg(c::BG_HOVER()));
+            .focus_visible(|s| s.bg(c::BG_HOVER()));
         if let Some(glyph) = glyph {
             row = row.child(icon(glyph, ICON_MD, c::FG_DIM()));
         }
@@ -493,15 +476,6 @@ impl ProjectPanel {
                 )
             });
         row.child(copy)
-            .when(review, |s| {
-                s.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("PR review"),
-                )
-            })
             .child(icon(
                 if expanded { "chev-down" } else { "chev-right" },
                 ICON_MD,
@@ -540,7 +514,6 @@ impl ProjectPanel {
                             title: label.into(),
                             preview: script_preview(&value, "Not configured"),
                             glyph: None,
-                            review: false,
                         },
                         cx,
                     ));
@@ -617,10 +590,9 @@ impl ProjectPanel {
                     .child("No scripts yet. Add a shell command or agent prompt."),
             );
         }
-        for (index, (id, prompt, name, body)) in self.script_entries.iter().enumerate() {
+        for (id, prompt, name, body) in &self.script_entries {
             let editor = ScriptEditor::Action(id.clone());
             let expanded = self.expanded_script.as_ref() == Some(&editor);
-            let selected = self.review_prompt_id.as_ref() == Some(id);
             let title = format!(
                 "{} · {}",
                 name.read(cx).value(),
@@ -642,7 +614,6 @@ impl ProjectPanel {
                         title,
                         preview: script_preview(body.read(cx).value().as_ref(), "No content yet"),
                         glyph: Some(if *prompt { "reply" } else { "terminal" }),
-                        review: selected,
                     },
                     cx,
                 ));
@@ -677,7 +648,7 @@ impl ProjectPanel {
                     .script_error
                     .as_ref()
                     .filter(|(error_id, _, _)| error_id == id);
-                let mut edit = div()
+                let edit = div()
                     .min_w_0()
                     .flex()
                     .flex_col()
@@ -723,17 +694,8 @@ impl ProjectPanel {
                             .filter(|(_, name, _)| !*name)
                             .map(|(_, _, message)| message.as_str()),
                     ));
-                if *prompt {
-                    let id = id.clone();
-                    edit = edit.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Available variables: {{pr_url}}, {{head_sha}}, {{base_branch}}, {{head_branch}}, {{checkout}}. PR context is always included."))
-                        .child(project_action(format!("script-review-{id}").into(), if selected { "Use built-in review" } else { "Use for PR review" }, Some("icons/check.svg"), ProjectActionStyle::Mini, window, cx).on_click(cx.listener(move |this, _, _, cx| { this.review_prompt_id = if selected { None } else { Some(id.clone()) }; cx.notify(); })));
-                }
                 let mut controls = div().flex().flex_wrap().gap(rpx(SPACE_SM));
-                for (action, label, glyph) in [
-                    ("up", "Move up", "icons/arrow-up.svg"),
-                    ("down", "Move down", "icons/chev-down.svg"),
-                    ("remove", "Remove", "icons/trash.svg"),
-                ] {
+                for (action, label, glyph) in [("remove", "Remove", "icons/trash.svg")] {
                     let id = id.clone();
                     controls = controls.child(
                         project_action(
@@ -744,10 +706,6 @@ impl ProjectPanel {
                             window,
                             cx,
                         )
-                        .disabled(
-                            (action == "up" && index == 0)
-                                || (action == "down" && index + 1 == self.script_entries.len()),
-                        )
                         .on_click(cx.listener(
                             move |this, _, window, cx| this.change_script(&id, action, window, cx),
                         )),
@@ -757,17 +715,7 @@ impl ProjectPanel {
             }
             list = list.child(item);
         }
-        list.child(
-            div()
-                .pt(rpx(SPACE_LG))
-                .text_size(rpx(TEXT_SMALL))
-                .text_color(c::FG_DIM())
-                .child(if self.review_prompt_id.is_none() {
-                    "PR review: Built-in review"
-                } else {
-                    "PR review uses the assigned prompt above."
-                }),
-        )
+        list
     }
     fn move_project(&mut self, cx: &mut Context<Self>) {
         let Page::Move(path) = &self.page else { return };
@@ -1004,7 +952,8 @@ impl Render for ProjectPanel {
             .min_w_0()
             .flex()
             .items_center()
-            .justify_between()
+            .justify_start()
+            .flex_wrap()
             .gap(rpx(SPACE_2XL));
         let mut heading = title.to_owned();
         let mut description: String = match page {
@@ -1641,7 +1590,7 @@ impl Render for ProjectPanel {
                             content = content.child(div().text_color(if status.errors.is_empty() { c::FG_DIM() } else { c::RED() })
                                 .child(crate::views::status::label("project-removal-result", if status.unregistered { crate::views::status::StatusKind::Success } else { crate::views::status::StatusKind::Failed }, if status.unregistered { "Project registration removed. The main project folder remains on disk." }
                                     else { "Project could not be unregistered. Review the errors above." }, ICON_SM, cx)));
-                            footer = footer.child(div()).child(
+                            footer = footer.child(
                                 project_action(
                                     "project-panel-cancel".into(),
                                     "Done",
@@ -1653,7 +1602,7 @@ impl Render for ProjectPanel {
                                 .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
                             );
                         } else {
-                            footer = footer.child(div()).child(
+                            footer = footer.child(
                                 project_action(
                                     "project-removing".into(),
                                     "Removing…",
@@ -2047,7 +1996,7 @@ mod tests {
                                 id: "review".into(),
                                 name: "PR review".into(),
                                 kind: ProjectActionKind::Prompt {
-                                    template: "Review {{pr_url}} carefully".into(),
+                                    template: "Review the changes carefully".into(),
                                 },
                             },
                         ],
@@ -2143,7 +2092,7 @@ mod tests {
                                 id: "review".into(),
                                 name: "PR review".into(),
                                 kind: ProjectActionKind::Prompt {
-                                    template: "Review {{pr_url}} carefully".into(),
+                                    template: "Review the changes carefully".into(),
                                 },
                             },
                         ],
@@ -2193,10 +2142,9 @@ mod tests {
             });
             panel.read_with(cx, |panel, _| {
                 assert_eq!(panel.script_entries.len(), 2);
-                assert_eq!(panel.review_prompt_id.as_deref(), Some("review"));
             });
         }
-        // Disclosure keeps the same input entities; row identity survives ordering changes.
+        // Disclosure and type changes preserve the same unsaved input entities.
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.toggle_script(ScriptEditor::Action("review".into()), cx);
@@ -2212,18 +2160,17 @@ mod tests {
                     input.set_value("echo unsaved setup", window, cx);
                 });
                 panel.toggle_script(ScriptEditor::Action("review".into()), cx);
-                panel.change_script("review", "up", window, cx);
                 assert_eq!(
                     panel.expanded_script,
                     Some(ScriptEditor::Action("review".into()))
                 );
-                assert_eq!(panel.script_entries[0].0, "review");
+                assert_eq!(panel.script_entries[1].0, "review");
                 assert_eq!(
-                    panel.script_entries[0].2.read(cx).value().as_ref(),
+                    panel.script_entries[1].2.read(cx).value().as_ref(),
                     "Review draft"
                 );
                 assert_eq!(
-                    panel.script_entries[0].3.read(cx).value().as_ref(),
+                    panel.script_entries[1].3.read(cx).value().as_ref(),
                     "Unsaved {{pr_url}}"
                 );
                 assert_eq!(
@@ -2231,16 +2178,13 @@ mod tests {
                     "echo unsaved setup"
                 );
                 panel.change_script("review", "shell", window, cx);
-                assert_eq!(panel.review_prompt_id, None);
                 assert_eq!(
-                    panel.script_entries[0].3.read(cx).value().as_ref(),
+                    panel.script_entries[1].3.read(cx).value().as_ref(),
                     "Unsaved {{pr_url}}"
                 );
                 panel.change_script("review", "prompt", window, cx);
-                panel.review_prompt_id = Some("review".into());
                 panel.change_script("review", "remove", window, cx);
                 assert_eq!(panel.expanded_script, None);
-                assert_eq!(panel.review_prompt_id, None);
                 assert!(panel.script_focus["dev"].is_focused(window));
                 panel.add_script(window, cx);
                 let added = panel.script_entries.last().unwrap();

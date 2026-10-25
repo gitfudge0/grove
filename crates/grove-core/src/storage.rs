@@ -37,7 +37,8 @@ pub struct ProjectScripts {
     pub teardown: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<ProjectAction>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Read old configurations without retaining the retired built-in review assignment.
+    #[serde(default, skip_serializing)]
     pub review_prompt_id: Option<String>,
 }
 
@@ -73,21 +74,6 @@ impl ProjectScripts {
         }
         entries
     }
-    pub fn review_prompt(&self) -> std::result::Result<Option<&str>, String> {
-        let Some(id) = &self.review_prompt_id else {
-            return Ok(None);
-        };
-        match self.entries.iter().find(|entry| &entry.id == id) {
-            Some(ProjectAction {
-                kind: ProjectActionKind::Prompt { template },
-                ..
-            }) if !template.trim().is_empty() => Ok(Some(template)),
-            _ => Err(
-                "The PR review prompt is missing or invalid. Choose a prompt in project Scripts."
-                    .into(),
-            ),
-        }
-    }
     pub fn validate(&self) -> std::result::Result<(), String> {
         let mut ids = std::collections::HashSet::new();
         let mut names = std::collections::HashSet::new();
@@ -106,7 +92,7 @@ impl ProjectScripts {
                 return Err(format!("{} needs content.", entry.name));
             }
         }
-        self.review_prompt().map(|_| ())
+        Ok(())
     }
 }
 
@@ -1792,26 +1778,17 @@ mod project_script_tests {
         assert_eq!(reloaded.teardown.as_deref(), Some("clean"));
     }
     #[test]
-    fn review_reference_is_stable_and_rejects_deleted_or_shell_entries() {
-        let mut scripts = ProjectScripts {
-            entries: vec![ProjectAction {
-                id: "review".into(),
-                name: "Review".into(),
-                kind: ProjectActionKind::Prompt {
-                    template: "Review carefully".into(),
-                },
-            }],
-            review_prompt_id: Some("review".into()),
-            ..Default::default()
-        };
-        scripts.entries[0].name = "Renamed".into();
-        assert_eq!(scripts.review_prompt().unwrap(), Some("Review carefully"));
-        scripts.entries[0].kind = ProjectActionKind::Shell {
-            command: "echo nope".into(),
-        };
-        assert!(scripts.review_prompt().is_err());
-        scripts.entries.clear();
-        assert!(scripts.review_prompt().is_err());
+    fn retired_review_assignment_does_not_block_plain_scripts_or_reserialize() {
+        let scripts: ProjectScripts = serde_json::from_str(
+            r#"{"review_prompt_id":"deleted","entries":[{"id":"prompt","name":"Review","type":"prompt","template":"Review exactly {{literal}}"}]}"#,
+        ).unwrap();
+        assert!(scripts.validate().is_ok());
+        let saved = serde_json::to_value(&scripts).unwrap();
+        assert!(saved.get("review_prompt_id").is_none());
+        assert_eq!(
+            saved["entries"][0]["template"],
+            "Review exactly {{literal}}"
+        );
     }
     #[test]
     fn duplicate_names_and_empty_bodies_are_rejected() {

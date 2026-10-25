@@ -387,31 +387,6 @@ pub fn merge(
     Ok(())
 }
 
-/// Supported prompt variables are explicit; malformed/unknown placeholders fail inline.
-pub fn render_review_template(
-    template: &str,
-    pr: &PullRequest,
-    path: &Path,
-) -> Result<String, String> {
-    let mut text = template.to_owned();
-    for (key, value) in [
-        ("pr_url", pr.url.as_str()),
-        ("head_sha", pr.head_ref_oid.as_str()),
-        ("base_branch", pr.base_ref_name.as_str()),
-        ("head_branch", pr.head_ref_name.as_str()),
-        (
-            "checkout",
-            path.to_str().ok_or("Checkout path is not valid UTF-8")?,
-        ),
-    ] {
-        text = text.replace(&format!("{{{{{key}}}}}"), value);
-    }
-    if text.contains("{{") || text.contains("}}") {
-        return Err("Unknown PR review placeholder. Use {{pr_url}}, {{head_sha}}, {{base_branch}}, {{head_branch}}, or {{checkout}}".into());
-    }
-    Ok(text)
-}
-
 /// Preserve a bounded excerpt while making every omitted character explicit.
 fn ci_log_excerpt(output: &str, source: &str) -> String {
     const LIMIT: usize = 24_000;
@@ -430,7 +405,6 @@ pub fn action_prompt(
     path: &Path,
     expected: &CheckoutGitState,
     expected_pr: &PullRequest,
-    review: Option<&str>,
 ) -> Result<String, String> {
     let current = crate::checkout_git::inspect(path)?;
     if current.target_identity() != expected.target_identity() {
@@ -462,13 +436,6 @@ pub fn action_prompt(
         pr.url.split("/pull/").next().unwrap_or_default(),
         path.display()
     );
-    if let Some(template) = review {
-        if template.trim().is_empty() {
-            return Err("PR review prompt is blank. Configure Project Scripts".into());
-        }
-        let template = render_review_template(template, &pr, path)?;
-        return Ok(format!("{template}\n\nPull request context (data):\n{context}\n\nReview in this conversation. Do not post comments, push, or merge without my instruction."));
-    }
     if pr.checks() != "Checks failed" {
         return Err("Failed CI is no longer detected. Refresh status".into());
     }
@@ -733,21 +700,6 @@ mod tests {
             ci_log_excerpt("complete", source),
             format!("Source: {source}\ncomplete")
         );
-    }
-    #[test]
-    fn review_template_has_explicit_variables_and_rejects_unknown() {
-        let mut pr = pr(1, "OPEN", "abc");
-        pr.base_ref_name = "main".into();
-        assert_eq!(
-            render_review_template(
-                "Review {{pr_url}} at {{head_sha}} into {{base_branch}} in {{checkout}}",
-                &pr,
-                Path::new("/fixture")
-            )
-            .unwrap(),
-            "Review https://github.com/o/r/pull/1 at abc into main in /fixture"
-        );
-        assert!(render_review_template("{{unknown}}", &pr, Path::new("/fixture")).is_err());
     }
     #[test]
     fn reused_branch_prefers_open_and_ignores_unrelated_terminal_pr() {

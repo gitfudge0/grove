@@ -3080,7 +3080,53 @@ impl Sidebar {
                 self.choose_project_script(project_path, path, window, cx);
             }
             Action::RunNamedScript(project_path, path, id) => {
-                if self.runtime.update(cx, |runtime, cx| {
+                let entry = cx
+                    .global::<SettingsState>()
+                    .store
+                    .projects
+                    .iter()
+                    .find(|project| project.path == project_path)
+                    .and_then(|project| {
+                        project
+                            .scripts
+                            .effective_entries()
+                            .into_iter()
+                            .find(|entry| entry.id == id)
+                    });
+                if let Some(grove_core::storage::ProjectAction {
+                    kind: grove_core::storage::ProjectActionKind::Prompt { template },
+                    ..
+                }) = entry
+                {
+                    let result = match self.selection {
+                        Some(Selection::Session(session_id)) => self
+                            .runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .codex(session_id)
+                            .cloned()
+                            .ok_or_else(|| {
+                                "Open a native Codex or Claude chat in this checkout first"
+                                    .to_owned()
+                            })
+                            .and_then(|session| {
+                                if session.read(cx).state.saved.cwd != path {
+                                    return Err(
+                                        "The current chat belongs to another checkout".into()
+                                    );
+                                }
+                                session
+                                    .update(cx, |session, cx| session.project_prompt(template, cx))
+                                    .map(|_| ())
+                            }),
+                        _ => {
+                            Err("Open a native Codex or Claude chat in this checkout first".into())
+                        }
+                    };
+                    self.content_error = result.err();
+                    cx.notify();
+                } else if self.runtime.update(cx, |runtime, cx| {
                     runtime.spawn_project_script(&project_path, &path, &id, cx)
                 }) {
                     if self.mode == ViewMode::Grid {
@@ -3090,6 +3136,7 @@ impl Sidebar {
                     cx.notify();
                 }
             }
+
             Action::Close(id) => {
                 if self.project_flyout.as_ref() == Some(&SidebarContext::MultiProject) {
                     self.project_flyout_hide_task = None;
