@@ -593,11 +593,31 @@ impl ProjectPanel {
         for (id, prompt, name, body) in &self.script_entries {
             let editor = ScriptEditor::Action(id.clone());
             let expanded = self.expanded_script.as_ref() == Some(&editor);
-            let title = format!(
-                "{} · {}",
-                name.read(cx).value(),
-                if *prompt { "Prompt" } else { "Shell" }
-            );
+            let title = if expanded {
+                let saved = match &self.page {
+                    Page::Edit(path) => cx
+                        .global::<SettingsState>()
+                        .store
+                        .projects
+                        .iter()
+                        .find(|project| &project.path == path)
+                        .is_some_and(|project| {
+                            project
+                                .scripts
+                                .effective_entries()
+                                .iter()
+                                .any(|entry| &entry.id == id)
+                        }),
+                    _ => false,
+                };
+                if saved { "Edit script" } else { "New script" }.into()
+            } else {
+                format!(
+                    "{} · {}",
+                    name.read(cx).value(),
+                    if *prompt { "Prompt" } else { "Shell" }
+                )
+            };
             let focus = self.script_focus.get(id).unwrap_or(&self.add_script_focus);
             let mut item = div()
                 .id(gpui::SharedString::from(format!("script-item-{id}")))
@@ -654,16 +674,6 @@ impl ProjectPanel {
                     .flex_col()
                     .gap(rpx(SPACE_LG))
                     .py(rpx(SPACE_2XL))
-                    .child(project_form_field(
-                        "script-entry-name",
-                        "Name",
-                        name,
-                        validation
-                            .filter(|(_, name, _)| *name)
-                            .map(|(_, _, message)| message.as_str()),
-                        window,
-                        cx,
-                    ))
                     .child(
                         div()
                             .flex()
@@ -678,14 +688,31 @@ impl ProjectPanel {
                             )
                             .child(types),
                     )
+                    .child(
+                        div()
+                            .debug_selector(|| "script-execution-hint".into())
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(if *prompt {
+                                "Sends literal content to the current chat."
+                            } else {
+                                "Runs in a terminal for the current checkout."
+                            }),
+                    )
+                    .child(project_form_field(
+                        "script-entry-name",
+                        "Name",
+                        name,
+                        validation
+                            .filter(|(_, name, _)| *name)
+                            .map(|(_, _, message)| message.as_str()),
+                        window,
+                        cx,
+                    ))
                     .child(crate::views::components::attached_validation(
                         gpui::SharedString::from(format!("script-body-{id}")),
                         script_field(
-                            if *prompt {
-                                "Prompt template"
-                            } else {
-                                "Shell command"
-                            },
+                            if *prompt { "Prompt" } else { "Shell command" },
                             body,
                             window,
                             cx,
@@ -694,28 +721,31 @@ impl ProjectPanel {
                             .filter(|(_, name, _)| !*name)
                             .map(|(_, _, message)| message.as_str()),
                     ));
-                let mut controls = div().flex().flex_wrap().gap(rpx(SPACE_SM));
-                for (action, label, glyph) in [("remove", "Remove", "icons/trash.svg")] {
-                    let id = id.clone();
-                    controls = controls.child(
-                        project_action(
-                            format!("script-{id}-{action}").into(),
-                            label,
-                            Some(glyph),
-                            ProjectActionStyle::Mini,
-                            window,
-                            cx,
-                        )
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| this.change_script(&id, action, window, cx),
-                        )),
-                    );
-                }
+                let remove_id = id.clone();
+                let controls = div().flex().flex_wrap().gap(rpx(SPACE_SM)).child(
+                    project_action(
+                        format!("script-{id}-remove").into(),
+                        "Remove script",
+                        Some("icons/trash.svg"),
+                        ProjectActionStyle::Quiet,
+                        window,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.change_script(&remove_id, "remove", window, cx);
+                    })),
+                );
                 item = item.child(edit.child(controls));
             }
             list = list.child(item);
         }
-        list
+        list.child(
+            div()
+                .pt(rpx(SPACE_2XL))
+                .text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG_DIM())
+                .child("Changes apply when you save this project."),
+        )
     }
     fn move_project(&mut self, cx: &mut Context<Self>) {
         let Page::Move(path) = &self.page else { return };
@@ -2012,6 +2042,8 @@ mod tests {
             (1280., 16., Some(ScriptEditor::Action("review".into()))),
             (768., 20., Some(ScriptEditor::Action("dev".into()))),
             (420., 16., Some(ScriptEditor::Setup)),
+            (420., 16., Some(ScriptEditor::Action("dev".into()))),
+            (420., 16., Some(ScriptEditor::Action("review".into()))),
         ] {
             let state_name = match &expanded {
                 None => "collapsed",
@@ -2124,15 +2156,25 @@ mod tests {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1200.)));
             draw(cx);
             assert!(cx.debug_bounds("Shell command").is_none());
-            assert!(cx.debug_bounds("Prompt template").is_none());
-            for (id, label) in [("dev", "Shell command"), ("review", "Prompt template")] {
+            assert!(cx.debug_bounds("Prompt").is_none());
+            for (id, label) in [("dev", "Shell command"), ("review", "Prompt")] {
                 cx.update(|_, cx| {
                     panel.update(cx, |panel, cx| {
                         panel.toggle_script(ScriptEditor::Action(id.into()), cx);
                     });
                 });
                 draw(cx);
-                assert!(cx.debug_bounds(label).is_some());
+                let hint = cx.debug_bounds("script-execution-hint").unwrap();
+                let name = cx.debug_bounds("script-entry-name").unwrap();
+                let content = cx.debug_bounds(label).unwrap();
+                assert!(
+                    hint.bottom() <= name.top(),
+                    "execution context precedes Name"
+                );
+                assert!(
+                    name.bottom() <= content.top(),
+                    "Name precedes script content"
+                );
             }
             cx.update(|_, cx| {
                 panel.update(cx, |panel, cx| {
