@@ -19,8 +19,6 @@ use gpui_component::{input::InputState, scroll::ScrollableElement, Disableable, 
 use grove_core::storage::{ProjectAction, ProjectActionKind, ProjectScripts};
 
 /// Compact reusable action register geometry.
-const PROJECT_NAME_BASIS_W: f32 = 180.;
-const PROJECT_FOLDER_BASIS_W: f32 = 260.;
 const LIFECYCLE_ROW_MIN_H: f32 = 40.;
 const LIFECYCLE_LABEL_W: f32 = 96.;
 const SCRIPT_ROW_MIN_H: f32 = 54.;
@@ -445,7 +443,6 @@ impl ProjectPanel {
             .gap(rpx(SPACE_LG))
             .flex()
             .items_center()
-            .hover(|s| s.bg(c::BG_HOVER()))
             .focus_visible(|s| s.bg(c::BG_HOVER()));
         if let Some(glyph) = glyph {
             row = row.child(icon(glyph, ICON_MD, c::FG_DIM()));
@@ -977,6 +974,8 @@ impl Render for ProjectPanel {
             .flex_col()
             .gap(rpx(SPACE_2XL));
         let mut footer = div()
+            .debug_selector(|| "project-panel-actions".into())
+            .flex_none()
             .w_full()
             .max_w(rpx(FORM_CONTENT_MAX_W))
             .min_w_0()
@@ -1185,40 +1184,37 @@ impl Render for ProjectPanel {
                                 .w_full()
                                 .min_w_0()
                                 .flex()
-                                .flex_wrap()
-                                .items_center()
+                                .flex_col()
                                 .gap(rpx(SPACE_2XL))
+                                .child(div().min_w_0().w_full().child(project_form_field(
+                                    "project-name",
+                                    "Project name",
+                                    &self.fields[0],
+                                    if invalid_name {
+                                        self.error.as_deref()
+                                    } else {
+                                        None
+                                    },
+                                    window,
+                                    cx,
+                                )))
                                 .child(
                                     div()
                                         .min_w_0()
-                                        .flex_1()
-                                        .flex_basis(rpx(PROJECT_NAME_BASIS_W))
-                                        .child(project_form_field(
-                                            "project-name",
-                                            "Project name",
-                                            &self.fields[0],
-                                            if invalid_name {
-                                                self.error.as_deref()
-                                            } else {
-                                                None
-                                            },
-                                            window,
-                                            cx,
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .flex_basis(rpx(PROJECT_FOLDER_BASIS_W))
+                                        .w_full()
                                         .debug_selector(|| "Project folder".into())
                                         .text_size(rpx(TEXT_SMALL))
                                         .text_color(c::FG_DIM())
                                         .child("Project folder")
-                                        .child(crate::views::components::readonly_value(
-                                            "project-folder-path",
-                                            path.clone(),
-                                        )),
+                                        .child(
+                                            crate::views::components::readonly_value(
+                                                "project-folder-path",
+                                                path.clone(),
+                                            )
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .line_height(rpx(CARD_LINE_SM_H))
+                                            .text_color(c::FG_DIM()),
+                                        ),
                                 ),
                         )
                         .child(self.render_lifecycle(window, cx))
@@ -1238,15 +1234,20 @@ impl Render for ProjectPanel {
                     }
                     footer = footer
                         .child(
-                            project_action(
-                                "project-panel-cancel".into(),
-                                "Cancel",
-                                None,
-                                ProjectActionStyle::Quiet,
-                                window,
-                                cx,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                            div()
+                                .debug_selector(|| "project-panel-cancel-action".into())
+                                .flex_none()
+                                .child(
+                                    project_action(
+                                        "project-panel-cancel".into(),
+                                        "Cancel",
+                                        None,
+                                        ProjectActionStyle::Quiet,
+                                        window,
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                                ),
                         )
                         .child(
                             project_action(
@@ -2094,6 +2095,28 @@ mod tests {
                 .save(&path)
                 .unwrap();
             eprintln!("Project scripts native fixture: {path}");
+            if width == 768. && rem == 16. && expanded.is_none() {
+                // Setup's center in this fixed native fixture, observed in the rest capture.
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position: gpui::point(gpui::px(384.), gpui::px(344.)),
+                            pressed_button: None,
+                            modifiers: gpui::Modifiers::default(),
+                        }),
+                        cx,
+                    );
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+                let hover_path = path.replace(".png", "-hover.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&hover_path)
+                    .unwrap();
+                eprintln!("Project scripts native hover fixture: {hover_path}");
+            }
             cx.update_window(window.into(), |_, window, _| window.remove_window())
                 .unwrap();
         }
@@ -2269,14 +2292,17 @@ mod tests {
             draw(cx);
             let field = cx.debug_bounds("project-name").unwrap();
             let folder = cx.debug_bounds("Project folder").unwrap();
-            if width <= 420. {
-                assert!(
-                    folder.top() >= field.bottom(),
-                    "identity must stack at narrow widths"
-                );
-                assert_eq!(field.left(), folder.left());
-                assert_eq!(field.right(), folder.right());
-            }
+            assert!(
+                folder.top() >= field.bottom(),
+                "project folder must stay below the full-width name"
+            );
+            assert_eq!(field.left(), folder.left());
+            assert_eq!(field.right(), folder.right());
+            let actions = cx.debug_bounds("project-panel-actions").unwrap();
+            assert_eq!(field.left(), actions.left());
+            let cancel = cx.debug_bounds("project-panel-cancel-action").unwrap();
+            assert_eq!(field.left(), cancel.left());
+            assert_eq!(field.right(), actions.right());
             assert!(f32::from(folder.right()) <= width);
             let row = cx.debug_bounds("script-row-dev").unwrap();
             assert!(f32::from(row.left()) >= 0.);
@@ -2606,7 +2632,14 @@ mod tests {
             let footer = cx.debug_bounds("project-panel-footer").unwrap();
             assert!(f32::from(field.left()) >= 0.);
             assert!(f32::from(field.right()) <= width);
-            assert!(folder.left() >= field.right());
+            assert!(folder.top() >= field.bottom());
+            assert_eq!(field.left(), folder.left());
+            assert_eq!(field.right(), folder.right());
+            let actions = cx.debug_bounds("project-panel-actions").unwrap();
+            assert_eq!(field.left(), actions.left());
+            let cancel = cx.debug_bounds("project-panel-cancel-action").unwrap();
+            assert_eq!(field.left(), cancel.left());
+            assert_eq!(field.right(), actions.right());
             assert!(f32::from(folder.right()) <= width);
             assert!(f32::from(scroll.top()) < f32::from(footer.top()));
             assert!(f32::from(footer.bottom()) <= height);

@@ -5974,7 +5974,7 @@ mod tests {
             assert_eq!(worktrees.left(), title.left());
             assert!(worktrees.right() <= row.right());
             assert!(cx.debug_bounds("session-tree-worktrees-2").is_none());
-            assert!(status.right() <= agent.left());
+            assert!(cx.debug_bounds("session-tree-title-1").unwrap().right() <= status.left());
             assert!(agent.right() <= title.left());
             assert!(title.right() <= row.right());
         }
@@ -8574,7 +8574,7 @@ mod tests {
         let second = cx.debug_bounds("session-agent-2").unwrap();
         assert_eq!(worktree.left() - project.left(), gpui::px(SPACE_LG));
         let status = cx.debug_bounds("session-tree-status-1").unwrap();
-        assert!(status.right() <= first.left());
+        assert!(cx.debug_bounds("session-tree-title-1").unwrap().right() <= status.left());
         assert!(first.right() <= cx.debug_bounds("session-tree-title-1").unwrap().left());
         assert_eq!(first.left(), second.left());
         // Expanded session items omit checkout metadata; only the worktree owns changes.
@@ -8696,11 +8696,15 @@ mod tests {
         let row_selector: &'static str = Box::leak(format!("worktree-{path}").into_boxed_str());
         let row = cx.debug_bounds(row_selector).unwrap();
         let session = cx.debug_bounds("session-1").unwrap();
-        let status = cx.debug_bounds("session-tree-status-1").unwrap();
+        let agent = cx.debug_bounds("session-agent-1").unwrap();
         assert_eq!(
-            status.left() - session.left(),
+            agent.left() - session.left(),
             gpui::px(HIERARCHY_INSET + SPACE_LG)
         );
+        // Hovering a session replaces its trailing status with Close.
+        let close = cx.debug_bounds("session-tree-close-1").unwrap();
+        assert!(title.right() <= close.left());
+        assert!(close.right() <= session.right());
         let worktree_title: &'static str =
             Box::leak(format!("worktree-title-{path}").into_boxed_str());
         assert_eq!(
@@ -11406,7 +11410,7 @@ for line in sys.stdin:
         assert!(cx.debug_bounds("session-1").is_some());
         let agent = cx.debug_bounds("session-agent-1").unwrap();
         let status = cx.debug_bounds("session-tree-status-1").unwrap();
-        assert!(status.right() <= agent.left());
+        assert!(cx.debug_bounds("session-tree-title-1").unwrap().right() <= status.left());
         assert!(agent.right() <= cx.debug_bounds("session-tree-title-1").unwrap().left());
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {

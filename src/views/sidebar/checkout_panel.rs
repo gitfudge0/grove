@@ -753,38 +753,36 @@ impl Sidebar {
                         }),
                     ),
                 );
-        } else {
-            if entries.len() > SCRIPT_VISIBLE_ROWS {
-                let project_path = project.path.clone();
-                section = section.child(
-                    checkout_action(
-                        "checkout-scripts-disclosure",
-                        if show_all {
-                            "Show fewer".to_owned()
-                        } else {
-                            format!("Show all {} scripts", entries.len())
-                        },
-                        false,
-                        window,
-                        cx,
-                    )
-                    .debug_selector(|| "checkout-scripts-disclosure".into())
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/chev-down.svg")
-                            .size(rpx(ICON_SM))
-                            .when(show_all, |glyph| glyph.rotate(gpui::percentage(0.5))),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.checkout_panel.scripts_show_all.remove(&project_path) {
-                            this.checkout_panel
-                                .scripts_show_all
-                                .insert(project_path.clone());
-                        }
-                        cx.notify();
-                    })),
-                );
-            }
+        } else if entries.len() > SCRIPT_VISIBLE_ROWS {
+            let project_path = project.path.clone();
+            section = section.child(
+                checkout_action(
+                    "checkout-scripts-disclosure",
+                    if show_all {
+                        "Show fewer".to_owned()
+                    } else {
+                        format!("Show all {} scripts", entries.len())
+                    },
+                    false,
+                    window,
+                    cx,
+                )
+                .debug_selector(|| "checkout-scripts-disclosure".into())
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/chev-down.svg")
+                        .size(rpx(ICON_SM))
+                        .when(show_all, |glyph| glyph.rotate(gpui::percentage(0.5))),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.checkout_panel.scripts_show_all.remove(&project_path) {
+                        this.checkout_panel
+                            .scripts_show_all
+                            .insert(project_path.clone());
+                    }
+                    cx.notify();
+                })),
+            );
         }
         section
     }
@@ -4693,8 +4691,11 @@ mod tests {
                     let state = checkout_git::inspect(fixture.path()).unwrap();
                     sidebar.checkout_panel.pr_identity = Some(state.target_identity());
                     sidebar.checkout_panel.state = Some(Ok(state));
-                    sidebar.checkout_panel.checked_at = Some(Instant::now());
-                    sidebar.checkout_panel.pr_checked_at = Some(Instant::now());
+                    // This layout fixture owns synthetic Git/PR state; periodic
+                    // refreshes must not replace it during slow parallel runs.
+                    sidebar.checkout_panel.checked_at = None;
+                    sidebar.checkout_panel.pr_checked_at =
+                        Some(Instant::now() + Duration::from_secs(3600));
                     sidebar.checkout_panel.pr_state = Some(Ok(Some(serde_json::from_value(serde_json::json!({
                         "number":142,"url":"https://github.com/example/project/pull/142","state":"OPEN","isDraft":false,"headRefOid":"fixture","reviewDecision":"APPROVED","mergeable":"CONFLICTING",
                         "latestReviews":[{"state":"APPROVED"}],"reviewRequests":[],"statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]

@@ -778,7 +778,10 @@ pub fn boolean_choices<T: 'static>(
 }
 
 /// Literal selectable readonly text; HTML escaping prevents paths becoming markup.
-pub fn readonly_value(id: impl Into<gpui::ElementId>, value: String) -> impl IntoElement {
+pub fn readonly_value(
+    id: impl Into<gpui::ElementId>,
+    value: String,
+) -> gpui_component::text::TextView {
     let escaped = value
         .replace('&', "&amp;")
         .replace('<', "&lt;")

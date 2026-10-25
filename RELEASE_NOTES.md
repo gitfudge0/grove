@@ -1,3 +1,24 @@
+# Grove 1.1.5
+
+## Project workflows
+
+- Manage setup and teardown commands alongside reusable shell commands and agent prompts in a simpler inline script editor.
+- Run named scripts from the checkout panel, send prompts to the current matching chat, and run completed shell code blocks in checkout-owned terminals.
+- Create worktrees with explicit names, branches and base revisions while preserving manual branch edits.
+- Inspect pull request merge readiness and send failed CI context to the current conversation.
+
+## Conversations and navigation
+
+- Review native plans from the checkout sidebar with anchored previews, decision navigation and explicit approval to implement.
+- Refine session cards, project navigation, subagent previews and shared status indicators.
+- Preserve inline HTML when agent previews close and improve rendering performance for very long transcript messages.
+- Add code-copy feedback, fix Unicode completion boundaries and support Pele diagrams.
+
+## Access and installation
+
+- Keep session permission choices reversible and apply acknowledged Claude access changes after restoring defaults.
+- Reject corrupt macOS executables during installation and clean build artifacts after a successful install.
+
 # Grove 1.1.3
 
 ## Checkout tools
