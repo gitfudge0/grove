@@ -574,6 +574,9 @@ impl Sidebar {
                 })
                 .clone();
             if newly_created {
+                // The tools section precedes the canvas in render order. Publish the
+                // newly constructed plan entities on the next parent render.
+                cx.notify();
                 self.observers.push(cx.subscribe(
                     &view,
                     move |this, _, event: &super::super::codex_view::CodexViewEvent, cx| {

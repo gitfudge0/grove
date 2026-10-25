@@ -119,7 +119,7 @@ fn main() -> Result<(), String> {
         return Err("Codex did not confirm the requested workspace-write sandbox".into());
     }
     let thread = ready.saved.thread_id.clone();
-    let prompt = r#"This is a bounded native-plan review smoke test. Only write the following schema-v1 JSON document atomically to smoke.grove-plan.json in this disposable working directory, then reply with a Markdown link to it. Do not implement anything or access other directories. JSON: {"schema_version":1,"plan_id":"smoke","revision_id":"r1","title":"Native plan smoke","claims":[{"id":"claim","text":"Keep this smoke bounded","decisions":[{"id":"choice","prompt":"Review choice","options":[{"id":"keep","label":"Keep scope"}],"default":"keep"}]}]}"#;
+    let prompt = r#"This is a bounded native-plan review smoke test. Only write the following schema-v1 JSON document atomically to smoke.grove-plan.json in this disposable working directory, then reply with a Markdown link to it. Do not implement anything or access other directories. JSON: {"schema_version":1,"plan_id":"smoke","revision_id":"r1","title":"Native plan smoke","claims":[{"id":"claim","text":"On explicit approval, implement only by writing approval-result.txt in this disposable cwd with exactly APPROVAL_SMOKE_OK and a newline. Do not access other directories or change any other files.","decisions":[{"id":"choice","prompt":"Review choice","options":[{"id":"keep","label":"Keep scope"}],"default":"keep"}]}]}"#;
     connection.handle.send(Action::Prompt(prompt.into()))?;
     let imported = wait(&connection, |s| {
         !s.rich_plan_empty() && s.status == Status::Done
@@ -189,6 +189,44 @@ fn main() -> Result<(), String> {
         ));
     }
     println!("PASS {provider:?} explicit same-session feedback, duplicate click suppression, preserved composer draft");
+    connection.handle.send(Action::ApprovePlan {
+        plan_id: "smoke".into(),
+        revision_id: "r2".into(),
+    })?;
+    connection.handle.send(Action::ApprovePlan {
+        plan_id: "smoke".into(),
+        revision_id: "r2".into(),
+    })?;
+    let approved = wait(&connection, |s| {
+        s.status == Status::Done
+            && matches!(
+                s.saved.rich_plans.revisions[1].review.approval,
+                ResponseDelivery::Sent { .. }
+            )
+    })?;
+    if approved.saved.thread_id != thread
+        || approved.saved.draft != "Unrelated composer draft must survive"
+    {
+        return Err("Approval changed provider session or composer draft".into());
+    }
+    let approvals = approved
+        .saved
+        .items
+        .iter()
+        .filter(|item| {
+            item["type"] == "userMessage"
+                && codex::item_text(item).starts_with("# Explicit plan approval:")
+        })
+        .count();
+    if approvals != 1 {
+        return Err(format!("Expected one explicit approval, saw {approvals}"));
+    }
+    if fs_err::read_to_string(cwd.join("approval-result.txt")).map_err(|e| e.to_string())?
+        != "APPROVAL_SMOKE_OK\n"
+    {
+        return Err("Approved bounded implementation did not produce expected file".into());
+    }
+    println!("PASS {provider:?} feedback then explicit approval in same session, duplicate suppression, preserved draft, bounded implementation observed");
     connection
         .handle
         .stop_completion(false)
@@ -206,7 +244,13 @@ fn main() -> Result<(), String> {
     ) {
         return Err("Confirmed delivery was not persisted".into());
     }
-    println!("PASS persisted rich plan and confirmed delivery after stop");
+    if !matches!(
+        recovered.rich_plans.revisions[1].review.approval,
+        ResponseDelivery::Sent { .. }
+    ) {
+        return Err("Confirmed approval was not persisted".into());
+    }
+    println!("PASS persisted rich plan, feedback, and explicit approval after stop");
     Ok(())
 }
 trait RichPlanEmpty {

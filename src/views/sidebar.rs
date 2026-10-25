@@ -5,6 +5,7 @@ mod collapsed;
 mod content;
 mod grid;
 mod multi_project;
+mod plan_preview;
 use multi_project::SidebarContext;
 mod project_flyout;
 mod project_setup;
@@ -5133,6 +5134,15 @@ impl Render for Sidebar {
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape"
+                    && this.checkout_panel.plan_peek.is_some()
+                    && !this.confirmation_open()
+                {
+                    this.dismiss_plan_peek(window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape"
                     && this.checkout_panel.peek.is_some()
                     && !this.confirmation_open()
                 {
@@ -5316,6 +5326,9 @@ impl Render for Sidebar {
                     .h_full()
                     .bg(c::BG())
                     .child(content)
+                    .when_some(super::native_plan::render_expanded(cx), |canvas, plan| {
+                        canvas.child(gpui::deferred(plan))
+                    })
                     .when(confirming && !self.project_decision, |d| {
                         d.child(
                             div()
@@ -5329,6 +5342,9 @@ impl Render for Sidebar {
                     }),
             )
             .when_some(self.render_agent_peek(window, cx), |root, peek| {
+                root.child(peek)
+            })
+            .when_some(self.render_plan_peek(window, cx), |root, peek| {
                 root.child(peek)
             })
             .when(self.checkout_confirmation_open(), |root| {

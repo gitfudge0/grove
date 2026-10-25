@@ -75,6 +75,14 @@ fn script_control_tooltip(
 #[derive(Default)]
 pub(super) struct CheckoutPanel {
     pub(super) agents_visible: bool,
+    pub(super) plan_peek: Option<super::plan_preview::PlanPeek>,
+    pub(super) plan_peek_task: Option<gpui::Task<()>>,
+    pub(super) plan_close_task: Option<gpui::Task<()>>,
+    pub(super) plan_hover_target: Option<gpui::EntityId>,
+    pub(super) plan_focus: HashMap<gpui::EntityId, FocusHandle>,
+    pub(super) plan_bounds:
+        HashMap<gpui::EntityId, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
+    pub(super) plan_presence: motion::Presence,
     agent_disclosures: HashMap<SessionId, AgentDisclosure>,
     pub(super) agent_observer: Option<(gpui::EntityId, gpui::Subscription)>,
     pub(super) peek: Option<AgentPeek>,
@@ -103,7 +111,7 @@ pub(super) struct CheckoutPanel {
     pr_prompt_busy: bool,
     pr_merge: Option<PullRequest>,
     publish: Option<String>,
-    expanded: bool,
+    pub(super) expanded: bool,
     chosen_root: Option<String>,
     root_owner: Option<Selection>,
     return_focus: Option<FocusHandle>,
@@ -1759,6 +1767,7 @@ impl Sidebar {
             self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
         }
         let has_agents = self.selected_session_has_agents(cx);
+        let has_plan = !self.selected_native_plans(cx).is_empty();
         let agents_only = self.is_zen() || targets.is_empty();
         if self.mode == ViewMode::Grid && !self.is_zen()
             || self.project_panel.is_some()
@@ -1769,8 +1778,8 @@ impl Sidebar {
                 .settings_panel
                 .as_ref()
                 .is_some_and(|panel| panel.read(cx).is_open())
-            || (targets.is_empty() && !has_agents)
-            || (self.is_zen() && !has_agents)
+            || (targets.is_empty() && !has_agents && !has_plan)
+            || (self.is_zen() && !has_agents && !has_plan)
         {
             return self.render_content_body(window, cx);
         }
@@ -2174,6 +2183,11 @@ impl Sidebar {
                     );
             }
         }
+        if let Some(plan) = self.render_checkout_plan(window, cx) {
+            card = card
+                .child(checkout_divider("checkout-plan-divider"))
+                .child(plan);
+        }
         if let Some(agents) = self.render_checkout_agents(window, cx) {
             card = card
                 .child(checkout_divider("checkout-agents-divider"))
@@ -2206,7 +2220,13 @@ impl Sidebar {
             panel = panel.child(
                 transcript_action(
                     "checkout-summary",
-                    if has_agents { "Agents" } else { "Checkout" },
+                    if has_plan {
+                        "Plan"
+                    } else if has_agents {
+                        "Agents"
+                    } else {
+                        "Checkout"
+                    },
                     false,
                     window,
                     cx,

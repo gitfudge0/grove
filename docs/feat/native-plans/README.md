@@ -51,21 +51,37 @@ Keep documents below 1 MiB, individual text fields below 64 KiB and total decode
 raster assets below 20 MiB. Unsupported versions, unsafe paths, invalid IDs,
 missing assets and conflicting revisions fail validation.
 
-The transcript shows a compact entry with an Open plan action and unanswered
-decision count. The expanded editorial document uses a numbered claim spine;
-evidence and decisions start visible, and claim disclosure preferences persist.
-Existing version 1 documents without summary/detail remain valid and display
-only their authored content. Recommendations never count as answers.
+The transcript retains an Open plan entry. The selected conversation's right tools
+also show **Plan** above Agents, listing the newest revision of each plan. Hover
+for an anchored peek; click or use the keyboard to keep it open. The peek shows
+the authored outcome, main changes and one editable decision. **Next decision**
+advances through unanswered choices. **Expand** fills the conversation area with
+a single readable document while workspace navigation remains available. Claim
+disclosure and revision-specific answers/comments persist between surfaces.
 
-Readers inspect claims, choose answers, write comments and inspect **Review
-response** before **Send response**. Feedback is bound to this plan revision and
-session, persists across restart, and uses the normal provider queue while busy.
-Sending feedback does not authorize implementation or change permission mode.
-The existing composer draft remains independent. A confirmed send cannot be
-sent again; uncertain delivery after restart is not automatically replayed.
-Copy response is available when dispatch cannot be used. Older reviews remain
-on their original revisions; feedback is never silently copied to a changed
-target. Compare and explicitly re-enter feedback on the new revision if needed.
+Both surfaces keep their action bar outside the scrolling body. **Review
+response** replaces the document with the exact feedback that **Copy response**
+and explicit **Send response** deliver. **Back to plan** preserves the review.
+Feedback is bound to its plan revision and session, persists across restart,
+and uses the normal provider queue while busy. Sending feedback does not
+authorize implementation or change permission mode.
+
+**Approve & implement** is a distinct explicit user action, available in peek
+and expanded views. It sends approval and chosen answers to the same owning
+agent/session, asking it to implement that immutable revision. A valid explicit
+option or nonblank own answer is required for every decision; recommendations
+do not count. Plans without decisions can be approved immediately. Superseded
+revisions cannot be approved. Approval and feedback have separate delivery
+journals, so sending feedback does not consume approval. Busy approval is queued
+and revalidated before dispatch; duplicate or uncertain deliveries are not
+replayed. Permission and sandbox policy remain unchanged.
+
+The existing composer draft, images and references remain independent. Failed
+delivery stays visible; Copy response remains available when dispatch cannot be
+used. Older reviews remain on their original revisions; feedback is never
+silently copied to a changed target. Compare and explicitly re-enter feedback
+on a new revision if needed. Version 1 documents without summary/detail remain
+valid and display only their authored content.
 
 This repository owns the authoring example, validator and provider capability
 instructions. Installed external `fudge:plan` skill copies are not modified.
@@ -73,7 +89,8 @@ Both providers receive shared workflow guidance on new and resumed sessions:
 Grove controls supported presentation and response delivery even when a skill
 prescribes a different format or handoff. Keep the skill's substantive planning
 method, but deliver interactive plans and decision reviews using this native
-contract, a Markdown artifact link, and **Review response** / **Send response**.
+contract, a Markdown artifact link, and **Review response** / **Send response**. User approval uses the separate
+**Approve & implement** control; generated content and comments never approve.
 A bare or backticked path does not import a plan. Ordinary short prose plans need
 no artifact. Explicit user preferences, project domain constraints, safety and
 permission boundaries still apply. Legacy HTML is a fallback for an explicit user
@@ -88,7 +105,9 @@ rendering and interaction; they do not prove a live provider boundary.
 
 For **each of Codex and Claude**, start a real session, ask it to generate and
 link a valid native plan, expand and answer a decision, add a comment, and send
-the reviewed response. Verify the same session receives one response, both idle
+the reviewed response. Also explicitly approve a safe disposable plan and verify
+implementation begins in the same session with chosen answers. Verify one
+delivery per action, both idle
 and while busy, while a pre-existing composer draft remains intact. Revise the
 plan, switch sessions, restart Grove, and confirm revision-specific feedback is
 retained. Confirm invalid import/retry, linked HTML/return and legacy HTML.

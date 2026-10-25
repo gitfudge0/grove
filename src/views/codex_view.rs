@@ -897,6 +897,61 @@ pub struct CodexView {
     subscriptions: Vec<Subscription>,
 }
 impl CodexView {
+    fn sync_native_plans(&mut self, cx: &mut Context<Self>) {
+        let plan_keys: HashSet<_> = self
+            .session
+            .read(cx)
+            .state
+            .saved
+            .rich_plans
+            .revisions
+            .iter()
+            .map(|p| (p.document.plan_id.clone(), p.document.revision_id.clone()))
+            .collect();
+        self.native_plans.retain(|key, _| plan_keys.contains(key));
+        for (plan_id, revision_id) in plan_keys {
+            let key = (plan_id.clone(), revision_id.clone());
+            if !self.native_plans.contains_key(&key) {
+                let session = self.session.clone();
+                let html = self.html.clone();
+                let view = cx.new(|cx| {
+                    super::native_plan::NativePlan::new(session, html, plan_id, revision_id, cx)
+                });
+                self.subscriptions.push(cx.observe(&view, |this, _, cx| {
+                    this.smooth_follow = false;
+                    cx.notify();
+                }));
+                self.native_plans.insert(key, view);
+            }
+        }
+    }
+
+    /// Latest immutable revision of each plan, in conversation order.
+    pub(super) fn native_plans_for_sidebar(
+        &self,
+        cx: &App,
+    ) -> Vec<Entity<super::native_plan::NativePlan>> {
+        let mut seen = HashSet::new();
+        let mut plans: Vec<_> = self
+            .session
+            .read(cx)
+            .state
+            .saved
+            .rich_plans
+            .revisions
+            .iter()
+            .rev()
+            .filter(|r| seen.insert(r.document.plan_id.clone()))
+            .filter_map(|r| {
+                self.native_plans
+                    .get(&(r.document.plan_id.clone(), r.document.revision_id.clone()))
+                    .cloned()
+            })
+            .collect();
+        plans.reverse();
+        plans
+    }
+
     pub(super) fn child_preview(
         session: Entity<CodexSession>,
         child: String,
@@ -928,7 +983,10 @@ impl CodexView {
         });
         let card_focus = cx.focus_handle();
         let mut subscriptions = vec![
-            cx.observe(&session, |_, _, cx| cx.notify()),
+            cx.observe(&session, |this, _, cx| {
+                this.sync_native_plans(cx);
+                cx.notify();
+            }),
             cx.observe(&input, |this, _, cx| {
                 this.validate_picked_tokens(cx);
                 this.refresh_files(cx);
@@ -993,7 +1051,7 @@ impl CodexView {
                 this.close_menu(cx);
             }
         }));
-        Self {
+        let mut view = Self {
             preview_child: None,
             session,
             html,
@@ -1091,7 +1149,9 @@ impl CodexView {
             script_runtime: None,
             checkout_context: None,
             subscriptions,
-        }
+        };
+        view.sync_native_plans(cx);
+        view
     }
     pub(crate) fn set_script_runtime(
         &mut self,
@@ -2902,29 +2962,7 @@ impl Render for CodexView {
         {
             self.close_menu(cx);
         }
-        let plan_keys: HashSet<_> = state
-            .saved
-            .rich_plans
-            .revisions
-            .iter()
-            .map(|p| (p.document.plan_id.clone(), p.document.revision_id.clone()))
-            .collect();
-        self.native_plans.retain(|key, _| plan_keys.contains(key));
-        for (plan_id, revision_id) in plan_keys {
-            let key = (plan_id.clone(), revision_id.clone());
-            if !self.native_plans.contains_key(&key) {
-                let session = self.session.clone();
-                let html = self.html.clone();
-                let view = cx.new(|cx| {
-                    super::native_plan::NativePlan::new(session, html, plan_id, revision_id, cx)
-                });
-                self.subscriptions.push(cx.observe(&view, |this, _, cx| {
-                    this.smooth_follow = false;
-                    cx.notify();
-                }));
-                self.native_plans.insert(key, view);
-            }
-        }
+        self.sync_native_plans(cx);
         // Each completed message points to its exact imported revision, even when
         // a file path is later reused or a previous revision is linked again.
         let native_links = state

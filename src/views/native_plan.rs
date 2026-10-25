@@ -22,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Default)]
 struct PlanUi {
     expanded: Option<WeakEntity<NativePlan>>,
+    peek: Option<WeakEntity<NativePlan>>,
     owner: Option<EntityId>,
     blocked: bool,
 }
@@ -34,20 +35,28 @@ pub(super) fn set_context(owner: Option<EntityId>, blocked: bool, cx: &mut App) 
     let ui = cx.global_mut::<PlanUi>();
     if ui.owner != owner {
         ui.expanded = None;
+        ui.peek = None;
     }
     ui.owner = owner;
     ui.blocked = blocked;
 }
 
+/// Inline webviews are native surfaces above GPUI paint; keep them behind plan review.
+/// An explicitly expanded linked HTML document remains handled by HtmlUi.
+pub(super) fn blocks_inline_html(cx: &App) -> bool {
+    cx.try_global::<PlanUi>()
+        .is_some_and(|ui| ui.peek.is_some() || ui.expanded.is_some())
+}
+
 pub(super) fn inline(plan: &Entity<NativePlan>, cx: &App) -> AnyElement {
     if cx
         .try_global::<PlanUi>()
-        .and_then(|ui| ui.expanded.as_ref())
+        .and_then(|ui| ui.expanded.as_ref().or(ui.peek.as_ref()))
         .is_some_and(|p| p.entity_id() == plan.entity_id())
     {
         div()
             .text_color(c::FG_DIM())
-            .child("Plan expanded · use Return to conversation above")
+            .child("Plan open beside the conversation")
             .into_any_element()
     } else {
         plan.clone().into_any_element()
@@ -63,11 +72,16 @@ pub(super) fn render_expanded(cx: &mut App) -> Option<AnyElement> {
     Some(
         div()
             .id("native-plan-expanded")
+            .debug_selector(|| "native-plan-expanded".into())
             .absolute()
             .inset_0()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
             .occlude()
             .bg(c::BG())
-            .p(rpx(SPACE_3XL))
             .child(plan)
             .into_any_element(),
     )
@@ -95,6 +109,10 @@ pub(super) struct NativePlan {
     return_focus: FocusHandle,
     source_focus: Option<FocusHandle>,
     error: Option<String>,
+    scroll: gpui::ScrollHandle,
+    decision_anchors: HashMap<String, gpui::ScrollAnchor>,
+    decision_focus: HashMap<String, FocusHandle>,
+    active_decision: Option<String>,
 }
 
 // Editorial document dimensions are local to this view, not application chrome.
@@ -111,6 +129,36 @@ fn entries(value: &Value) -> Vec<Value> {
 fn target_key(kind: &str, id: &str) -> String {
     json!([kind, id]).to_string()
 }
+fn decision_answered(decision: &Value, review: &Value) -> bool {
+    let id = string(decision, "id");
+    review["own_answers"][&id]
+        .as_str()
+        .is_some_and(|s| !s.trim().is_empty())
+        || review["answers"][&id].as_str().is_some_and(|answer| {
+            entries(&decision["options"])
+                .iter()
+                .any(|o| o["id"] == answer)
+        })
+}
+
+fn flattened_decisions(claims: &Value) -> Vec<(Value, Vec<String>)> {
+    fn visit(claims: &Value, parents: &[String], result: &mut Vec<(Value, Vec<String>)>) {
+        for claim in entries(claims) {
+            let mut path = parents.to_vec();
+            path.push(string(&claim, "id"));
+            result.extend(
+                entries(&claim["decisions"])
+                    .into_iter()
+                    .map(|d| (d, path.clone())),
+            );
+            visit(&claim["children"], &path, result);
+        }
+    }
+    let mut result = Vec::new();
+    visit(claims, &[], &mut result);
+    result
+}
+
 fn decision_counts(claims: &Value, review: &Value) -> (usize, usize) {
     let mut total = 0;
     let mut unanswered = 0;
@@ -210,6 +258,10 @@ impl NativePlan {
                     matches!(
                         r.review.delivery,
                         grove_core::rich_plan::ResponseDelivery::Queued { .. }
+                            | grove_core::rich_plan::ResponseDelivery::Uncertain { .. }
+                    ) || matches!(
+                        r.review.approval,
+                        grove_core::rich_plan::ResponseDelivery::Queued { .. }
                             | grove_core::rich_plan::ResponseDelivery::Sent { .. }
                             | grove_core::rich_plan::ResponseDelivery::Uncertain { .. }
                     )
@@ -228,6 +280,9 @@ impl NativePlan {
                     .is_some_and(|r| {
                         !matches!(
                             r.review.delivery,
+                            grove_core::rich_plan::ResponseDelivery::Draft
+                        ) || !matches!(
+                            r.review.approval,
                             grove_core::rich_plan::ResponseDelivery::Draft
                         )
                     })
@@ -258,6 +313,10 @@ impl NativePlan {
             return_focus: cx.focus_handle().tab_stop(true),
             source_focus: None,
             error: None,
+            scroll: gpui::ScrollHandle::new(),
+            decision_anchors: HashMap::new(),
+            decision_focus: HashMap::new(),
+            active_decision: None,
         }
     }
 
@@ -277,8 +336,10 @@ impl NativePlan {
             .unwrap_or_default();
         if let Some(review) = &self.local_review {
             let delivery = snapshot["review"]["delivery"].clone();
+            let approval = snapshot["review"]["approval"].clone();
             snapshot["review"] = serde_json::to_value(review).unwrap_or_default();
             snapshot["review"]["delivery"] = delivery;
+            snapshot["review"]["approval"] = approval;
         }
         snapshot
     }
@@ -363,6 +424,137 @@ impl NativePlan {
         self.save_review(review, cx);
     }
 
+    pub(super) fn title_and_status(&self, cx: &App) -> (String, String) {
+        let snapshot = self.snapshot(cx);
+        let (total, pending) =
+            decision_counts(&snapshot["document"]["claims"], &snapshot["review"]);
+        let status = match snapshot["review"]["approval"]["status"].as_str() {
+            Some("queued") => "Approval queued".into(),
+            Some("sent") => "Approved · sent to agent".into(),
+            Some("uncertain") => "Check approval delivery".into(),
+            Some("failed") => "Approval failed".into(),
+            _ if matches!(
+                snapshot["review"]["delivery"]["status"].as_str(),
+                Some("queued" | "sending")
+            ) =>
+            {
+                "Feedback queued".into()
+            }
+            _ if snapshot["review"]["delivery"]["status"] == "uncertain" => {
+                "Check feedback delivery".into()
+            }
+            _ if pending > 0 => format!(
+                "{pending} {} need you",
+                if pending == 1 {
+                    "decision"
+                } else {
+                    "decisions"
+                }
+            ),
+            _ if total > 0 => "Ready for approval".into(),
+            _ => "No decisions requested".into(),
+        };
+        (string(&snapshot["document"], "title"), status)
+    }
+
+    pub(super) fn show_peek(&mut self, source: Option<FocusHandle>, cx: &mut Context<Self>) {
+        self.source_focus = source;
+        if !cx.has_global::<PlanUi>() {
+            cx.set_global(PlanUi::default());
+        }
+        if !self.expanded(cx) {
+            crate::platform::inline_html::NativeDocument::hide_all();
+            cx.global_mut::<PlanUi>().peek = Some(cx.entity().downgrade());
+            cx.notify();
+            cx.refresh_windows();
+        }
+    }
+
+    pub(super) fn dismiss_peek(&mut self, cx: &mut Context<Self>) {
+        if let Some(ui) = cx.try_global::<PlanUi>() {
+            if ui
+                .peek
+                .as_ref()
+                .is_some_and(|p| p.entity_id() == self.identity)
+            {
+                cx.global_mut::<PlanUi>().peek = None;
+                cx.notify();
+                cx.refresh_windows();
+            }
+        }
+    }
+
+    pub(super) fn is_expanded(&self, cx: &App) -> bool {
+        self.expanded(cx)
+    }
+
+    #[cfg(test)]
+    pub(super) fn answer_preview_fixture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose("location", "alpha", cx);
+        self.next_decision(window, cx);
+        self.choose("checks", "beta", cx);
+    }
+
+    fn dispatch(&mut self, approve: bool, cx: &mut Context<Self>) {
+        if self.send_pending {
+            return;
+        }
+        self.error = None;
+        self.send_pending = true;
+        self.session.update(cx, |session, cx| {
+            session.send(
+                if approve {
+                    Action::ApprovePlan {
+                        plan_id: self.plan_id.clone(),
+                        revision_id: self.revision_id.clone(),
+                    }
+                } else {
+                    Action::SendPlanResponse {
+                        plan_id: self.plan_id.clone(),
+                        revision_id: self.revision_id.clone(),
+                    }
+                },
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    fn next_decision(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let snapshot = self.snapshot(cx);
+        let decisions = flattened_decisions(&snapshot["document"]["claims"]);
+        let start = self
+            .active_decision
+            .as_ref()
+            .and_then(|id| decisions.iter().position(|(d, _)| string(d, "id") == *id))
+            .map_or(0, |i| i + 1);
+        let next = (0..decisions.len())
+            .map(|offset| (start + offset) % decisions.len())
+            .find(|i| !decision_answered(&decisions[*i].0, &snapshot["review"]));
+        if let Some(i) = next {
+            let (decision, ancestors) = &decisions[i];
+            let id = string(decision, "id");
+            for parent in ancestors {
+                self.open.insert(target_key("claim", parent));
+            }
+            self.active_decision = Some(id.clone());
+            self.review_open = false;
+            cx.notify();
+            // Expanded ancestors must be laid out before scrolling to their decision.
+            let owner = cx.entity().downgrade();
+            window.on_next_frame(move |window, cx| {
+                let _ = owner.update(cx, |this, cx| {
+                    if let Some(anchor) = this.decision_anchors.get(&id) {
+                        anchor.scroll_to(window, cx);
+                    }
+                    if let Some(focus) = this.decision_focus.get(&id) {
+                        focus.focus(window, cx);
+                    }
+                });
+            });
+        }
+    }
+
     fn expanded(&self, cx: &App) -> bool {
         cx.try_global::<PlanUi>()
             .and_then(|ui| ui.expanded.as_ref())
@@ -390,9 +582,11 @@ impl NativePlan {
         if !cx.has_global::<PlanUi>() {
             cx.set_global(PlanUi::default());
         }
+        crate::platform::inline_html::NativeDocument::hide_all();
         let entity = cx.entity().downgrade();
         let ui = cx.global_mut::<PlanUi>();
         ui.expanded = (!expanded).then_some(entity);
+        ui.peek = None;
         ui.owner = Some(self.html.entity_id());
         if expanded {
             self.source_focus
@@ -400,7 +594,9 @@ impl NativePlan {
                 .unwrap_or_else(|| self.expand_focus.clone())
                 .focus(window, cx);
         } else {
-            self.source_focus = window.focused(cx);
+            if self.source_focus.is_none() {
+                self.source_focus = window.focused(cx);
+            }
             self.return_focus.focus(window, cx);
         }
         cx.notify();
@@ -894,6 +1090,136 @@ impl NativePlan {
         body.into_any_element()
     }
 
+    fn decision(
+        &mut self,
+        decision: &Value,
+        snapshot: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut body = div().flex().flex_col().gap(rpx(SPACE_LG)).min_w_0();
+        let decision_id = string(decision, "id");
+        let own_active = snapshot["review"]["own_answers"][&decision_id]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty());
+        let answer = snapshot["review"]["answers"][&decision_id]
+            .as_str()
+            .filter(|_| !own_active)
+            .map(str::to_owned);
+        body = body.child(
+            div()
+                .border_t_1()
+                .border_color(c::BORDER_SOFT())
+                .pt(rpx(SPACE_3XL))
+                .text_size(rpx(TEXT_SMALL))
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .text_color(if answer.is_some() || own_active {
+                    StatusKind::Success.color()
+                } else {
+                    StatusKind::NeedsInput.color()
+                })
+                .child(status::mark(
+                    format!("decision-answer-status-{decision_id}"),
+                    if answer.is_some() || own_active {
+                        StatusKind::Success
+                    } else {
+                        StatusKind::NeedsInput
+                    },
+                    ICON_SM,
+                    cx,
+                ))
+                .child(if answer.is_some() || own_active {
+                    "Decision · answer recorded"
+                } else {
+                    "Decision · needs your judgment"
+                }),
+        );
+        body = body.child(self.text(
+            format!("decision-{decision_id}"),
+            string(decision, "prompt"),
+            window,
+        ));
+        for option in entries(&decision["options"]) {
+            let option_id = string(&option, "id");
+            let key = decision_id.clone();
+            let value = option_id.clone();
+            let default = decision["default"].as_str() == Some(&option_id);
+            let label = format!(
+                "{}{}",
+                string(&option, "label"),
+                if default { " (recommended)" } else { "" }
+            );
+            let keyboard_key = key.clone();
+            let keyboard_value = value.clone();
+            body = body.child(
+                question_choice(
+                    format!("option-{decision_id}-{option_id}"),
+                    label,
+                    string(&option, "description"),
+                    false,
+                    answer.as_deref() == Some(&option_id),
+                )
+                .debug_selector(move || format!("native-plan-option-{value}"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.choose(&key, &option_id, cx);
+                }))
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.choose(&keyboard_key, &keyboard_value, cx);
+                            cx.stop_propagation();
+                        }
+                    },
+                )),
+            );
+        }
+        body = body.child(
+            div().text_color(c::FG_DIM()).child(
+                if answer.is_some()
+                    || snapshot["review"]["own_answers"][&decision_id]
+                        .as_str()
+                        .is_some_and(|s| !s.trim().is_empty())
+                {
+                    "Answer recorded"
+                } else {
+                    "Recommendation has not been accepted"
+                },
+            ),
+        );
+        body = body.child(div().text_color(c::FG_DIM()).child("Your own answer"));
+        body = body.child(
+            self.input(
+                "own_answers",
+                decision_id.clone(),
+                snapshot["review"]["own_answers"][&decision_id]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                window,
+                cx,
+            ),
+        );
+
+        let id = string(decision, "id");
+        let anchor = self
+            .decision_anchors
+            .entry(id.clone())
+            .or_insert_with(|| gpui::ScrollAnchor::for_handle(self.scroll.clone()))
+            .clone();
+        let focus = self
+            .decision_focus
+            .entry(id.clone())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        body.id(format!("plan-decision-{id}"))
+            .debug_selector(move || format!("native-plan-decision-{id}"))
+            .track_focus(&focus)
+            .anchor_scroll(Some(anchor))
+            .into_any_element()
+    }
+
     fn claim(
         &mut self,
         claim: &Value,
@@ -1025,109 +1351,7 @@ impl NativePlan {
                 body = body.child(self.html_link(&link, snapshot, window, cx));
             }
             for decision in entries(&claim["decisions"]) {
-                let decision_id = string(&decision, "id");
-                let own_active = snapshot["review"]["own_answers"][&decision_id]
-                    .as_str()
-                    .is_some_and(|s| !s.trim().is_empty());
-                let answer = snapshot["review"]["answers"][&decision_id]
-                    .as_str()
-                    .filter(|_| !own_active)
-                    .map(str::to_owned);
-                body = body.child(
-                    div()
-                        .border_t_1()
-                        .border_color(c::BORDER_SOFT())
-                        .pt(rpx(SPACE_3XL))
-                        .text_size(rpx(TEXT_SMALL))
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_SM))
-                        .text_color(if answer.is_some() || own_active {
-                            StatusKind::Success.color()
-                        } else {
-                            StatusKind::NeedsInput.color()
-                        })
-                        .child(status::mark(
-                            format!("decision-answer-status-{decision_id}"),
-                            if answer.is_some() || own_active {
-                                StatusKind::Success
-                            } else {
-                                StatusKind::NeedsInput
-                            },
-                            ICON_SM,
-                            cx,
-                        ))
-                        .child(if answer.is_some() || own_active {
-                            "Decision · answer recorded"
-                        } else {
-                            "Decision · needs your judgment"
-                        }),
-                );
-                body = body.child(self.text(
-                    format!("decision-{decision_id}"),
-                    string(&decision, "prompt"),
-                    window,
-                ));
-                for option in entries(&decision["options"]) {
-                    let option_id = string(&option, "id");
-                    let key = decision_id.clone();
-                    let value = option_id.clone();
-                    let default = decision["default"].as_str() == Some(&option_id);
-                    let label = format!(
-                        "{}{}",
-                        string(&option, "label"),
-                        if default { " (recommended)" } else { "" }
-                    );
-                    let keyboard_key = key.clone();
-                    let keyboard_value = value.clone();
-                    body = body.child(
-                        question_choice(
-                            format!("option-{decision_id}-{option_id}"),
-                            label,
-                            string(&option, "description"),
-                            false,
-                            answer.as_deref() == Some(&option_id),
-                        )
-                        .debug_selector(move || format!("native-plan-option-{value}"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.choose(&key, &option_id, cx);
-                        }))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.choose(&keyboard_key, &keyboard_value, cx);
-                                    cx.stop_propagation();
-                                }
-                            },
-                        )),
-                    );
-                }
-                body = body.child(
-                    div().text_color(c::FG_DIM()).child(
-                        if answer.is_some()
-                            || snapshot["review"]["own_answers"][&decision_id]
-                                .as_str()
-                                .is_some_and(|s| !s.trim().is_empty())
-                        {
-                            "Answer recorded"
-                        } else {
-                            "Recommendation has not been accepted"
-                        },
-                    ),
-                );
-                body = body.child(div().text_color(c::FG_DIM()).child("Your own answer"));
-                body = body.child(
-                    self.input(
-                        "own_answers",
-                        decision_id.clone(),
-                        snapshot["review"]["own_answers"][&decision_id]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_owned(),
-                        window,
-                        cx,
-                    ),
-                );
+                body = body.child(self.decision(&decision, snapshot, window, cx));
             }
             for (index, child) in entries(&claim["children"]).iter().enumerate() {
                 body = body.child(div().pl(rpx(SPACE_3XL)).child(self.claim(
@@ -1204,20 +1428,11 @@ impl Render for NativePlan {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot(cx);
         let doc = &snapshot["document"];
-        let extra_counts = format!(
-            "{}{}",
-            if doc["changes"]["new"].as_u64().unwrap_or_default() > 0 {
-                format!(" · {} new", doc["changes"]["new"])
-            } else {
-                String::new()
-            },
-            if doc["changes"]["deleted"].as_u64().unwrap_or_default() > 0 {
-                format!(" · {} deleted", doc["changes"]["deleted"])
-            } else {
-                String::new()
-            }
-        );
         let expanded = self.expanded(cx);
+        let peek = cx
+            .try_global::<PlanUi>()
+            .and_then(|ui| ui.peek.as_ref())
+            .is_some_and(|p| p.entity_id() == self.identity);
         if !self.restored {
             self.restored = true;
             self.open.extend(
@@ -1228,38 +1443,26 @@ impl Render for NativePlan {
         }
         let marker = target_key("presentation", "editorial");
         if !self.open.contains(&marker) {
-            // A nonempty legacy disclosure set records an intentional choice.
             if self.open.is_empty() {
                 initial_claims(&doc["claims"], &mut self.open);
             }
             self.open.insert(marker);
         }
-        if expanded && !self.send_pending && !review_locked(&snapshot) {
-            let mut review = snapshot["review"].clone();
-            let mut viewed = entries(&review["viewed_decisions"]);
-            visible_decisions(&doc["claims"], &self.open, &mut viewed);
-            if viewed != entries(&review["viewed_decisions"]) {
-                review["viewed_decisions"] = json!(viewed);
-                self.save_review(review, cx);
-                cx.notify();
-            }
-        }
-        let (decision_total, unanswered) = decision_counts(&doc["claims"], &snapshot["review"]);
-        let decision_status = decision_status(decision_total, unanswered);
+        let (total, unanswered) = decision_counts(&doc["claims"], &snapshot["review"]);
+        let progress = if total == 0 {
+            "No decisions requested".into()
+        } else {
+            format!("{} of {total} answered", total - unanswered)
+        };
         let mut body = div()
             .flex()
             .flex_col()
             .gap(rpx(SPACE_2XL))
             .min_w_0()
-            .text_size(rpx(TEXT_BODY))
-            .text_color(c::FG())
-            .bg(c::BG())
             .w_full()
             .when(expanded, |s| s.max_w(rpx(PLAN_READING_WIDTH)).mx_auto())
             .p(rpx(SPACE_3XL));
         let title = div()
-            .when(!expanded, gpui::Styled::flex_1)
-            .when(expanded, gpui::Styled::w_full)
             .min_w_0()
             .text_size(rpx(if expanded {
                 PLAN_TITLE_SIZE
@@ -1271,7 +1474,9 @@ impl Render for NativePlan {
         let navigation = transcript_action(
             "plan-expand",
             if expanded {
-                "Return to conversation"
+                "Conversation"
+            } else if peek {
+                "Expand"
             } else {
                 "Open plan"
             },
@@ -1281,10 +1486,11 @@ impl Render for NativePlan {
         )
         .icon(
             gpui_component::Icon::default()
-                .path(gpui::SharedString::from(format!(
-                    "icons/{}.svg",
-                    if expanded { "unified" } else { "zen" }
-                )))
+                .path(if expanded {
+                    "icons/unified.svg"
+                } else {
+                    "icons/zen.svg"
+                })
                 .size(rpx(ICON_SM)),
         )
         .debug_selector(|| "native-plan-expand".into())
@@ -1294,303 +1500,380 @@ impl Render for NativePlan {
             self.expand_focus.clone()
         })
         .on_click(cx.listener(|this, _, window, cx| this.toggle_expansion(window, cx)));
-        let mut header = div().flex().items_start().gap(rpx(SPACE_LG)).min_w_0();
-        if expanded {
-            header = header.flex_col().child(navigation).child(title);
-        } else {
-            header = header.child(title).child(navigation);
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_LG))
+            .min_w_0()
+            .child(div().flex_1().min_w_0().child(title))
+            .child(navigation);
+        let mut fixed_header = Some(header);
+        if !expanded && !peek {
+            if let Some(header) = fixed_header.take() {
+                body = body.child(header);
+            }
         }
-        body = body.child(header);
         if let Some(summary) = doc["summary"].as_str().filter(|s| !s.is_empty()) {
             body = body.child(self.text("plan-summary".into(), summary.into(), window));
         }
         body = body.child(
-            status::label(
-                "plan-proposal-status",
-                StatusKind::Pending,
-                format!(
-                    "Proposed · Revision {}{}",
-                    self.revision_id,
-                    if doc["changes"]["files"].as_u64().unwrap_or_default() > 0 {
-                        format!(
-                            " · {} files · {} changed{}",
-                            doc["changes"]["files"], doc["changes"]["changed"], extra_counts
-                        )
-                    } else {
-                        String::new()
-                    }
-                ),
-                ICON_SM,
-                cx,
-            )
-            .text_size(rpx(TEXT_SMALL)),
-        );
-        body = body.child(
             div()
-                .debug_selector(|| "native-plan-decisions".into())
+                .text_color(c::FG_DIM())
                 .text_size(rpx(TEXT_SMALL))
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_SM))
-                .text_color(if decision_total == 0 {
-                    StatusKind::Idle.color()
-                } else if unanswered > 0 {
-                    StatusKind::NeedsInput.color()
-                } else {
-                    StatusKind::Success.color()
-                })
-                .child(status::mark(
-                    "plan-decisions-status",
-                    if decision_total == 0 {
-                        StatusKind::Idle
-                    } else if unanswered > 0 {
-                        StatusKind::NeedsInput
+                .child(format!(
+                    "{} · {} · Revision {}",
+                    if self.session.read(cx).state.saved.provider
+                        == grove_core::codex::Provider::Claude
+                    {
+                        "Claude"
                     } else {
-                        StatusKind::Success
+                        "Codex"
                     },
-                    ICON_SM,
-                    cx,
-                ))
-                .child(decision_status.clone()),
+                    self.session
+                        .read(cx)
+                        .state
+                        .saved
+                        .title
+                        .as_deref()
+                        .unwrap_or(&self.session.read(cx).state.saved.label),
+                    self.revision_id
+                )),
         );
-        if !expanded {
+        if !expanded && !peek {
             return div()
                 .id("native-plan-card")
                 .debug_selector(|| "native-plan-card".into())
-                .child(body);
-        }
-        let why = target_key("why", "");
-        let toggle_why = why.clone();
-        body = body.child(
-            div().flex().child(
-                transcript_action(why.clone(), "Why · original requests", false, window, cx)
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/question.svg")
-                            .size(rpx(ICON_SM)),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle_why, cx))),
-            ),
-        );
-        if self.open.contains(&why) {
-            for (index, source) in entries(&doc["sources"]).iter().enumerate() {
-                body = body.child(self.text(
-                    format!("quote-{index}"),
-                    format!(
-                        "{}: {}",
-                        string(source, "attribution"),
-                        string(source, "text")
-                    ),
-                    window,
-                ));
-            }
-        }
-        for (index, claim) in entries(&doc["claims"]).iter().enumerate() {
-            body =
-                body.child(self.claim(claim, format!("{:02}", index + 1), &snapshot, window, cx));
-        }
-        for scope in entries(&doc["scope"]) {
-            body = body.child(
-                div()
-                    .text_color(c::FG_DIM())
-                    .child(format!("– {}", scope.as_str().unwrap_or_default())),
-            );
-        }
-        if self.comments_open.contains(&target_key("plan", "")) {
-            body = body.child(self.comment(&target_key("plan", ""), &snapshot, window, cx));
-        }
-        if !self.review_open {
-            if let Some(error) = &self.error {
-                body = body.child(status::label(
-                    "plan-error-status",
-                    StatusKind::Failed,
-                    error.clone(),
-                    ICON_SM,
-                    cx,
-                ));
-            }
-        }
-        body = body.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .border_t_1()
-                .border_color(c::BORDER_SOFT())
-                .pt(rpx(SPACE_3XL))
-                .gap(rpx(SPACE_LG))
                 .child(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(format!(
-                            "{decision_status} · feedback requires Send response"
-                        )),
-                )
-                .child(
-                    transcript_action("plan-comment", "Comment", false, window, cx)
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/plus.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.comments_open.insert(target_key("plan", ""));
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    transcript_action("plan-review", "Review response", true, window, cx)
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/check.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .debug_selector(|| "native-plan-review".into())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.review_open = !this.review_open;
-                            cx.notify();
-                        })),
-                ),
-        );
-        if self.review_open {
-            let response = self
-                .session
-                .read(cx)
-                .state
-                .saved
-                .rich_plans
-                .revisions
-                .iter()
-                .find(|r| {
-                    r.document.plan_id == self.plan_id && r.document.revision_id == self.revision_id
-                })
-                .map(|r| {
-                    let mut r = r.clone();
-                    if let Ok(review) = serde_json::from_value(snapshot["review"].clone()) {
-                        r.review = review;
-                    }
-                    r.response_text()
-                })
-                .unwrap_or_default();
-            let delivery = &snapshot["review"]["delivery"];
-            let status = delivery
-                .as_str()
-                .unwrap_or_else(|| delivery["status"].as_str().unwrap_or("draft"));
-            let delivery_kind = match status {
-                "draft" | "queued" => StatusKind::Pending,
-                "sending" => StatusKind::Working,
-                "sent" => StatusKind::Success,
-                "uncertain" => StatusKind::Warning,
-                "failed" => StatusKind::Failed,
-                _ => StatusKind::Unknown,
-            };
-            let locked =
-                self.send_pending || matches!(status, "queued" | "sending" | "sent" | "uncertain");
-            body = body
-                .child(div().text_size(rpx(TEXT_TITLE)).child("Review response"))
-                .child(
-                    div()
-                        .text_color(c::FG_DIM())
-                        .child(format!("{} · Revision {}", self.plan_id, self.revision_id)),
-                )
-                .child(status::label(
-                    "plan-delivery-status",
-                    delivery_kind,
-                    status.to_owned(),
-                    ICON_SM,
-                    cx,
-                ))
-                .when_some(self.error.clone(), |body, error| {
                     body.child(
                         div()
-                            .debug_selector(|| "native-plan-send-error".into())
-                            .child(status::label(
-                                "plan-send-error-status",
-                                StatusKind::Failed,
-                                error,
-                                ICON_SM,
-                                cx,
-                            )),
-                    )
+                            .text_color(c::FG_DIM())
+                            .text_size(rpx(TEXT_SMALL))
+                            .child(decision_status(total, unanswered)),
+                    ),
+                );
+        }
+        let response = self
+            .session
+            .read(cx)
+            .state
+            .saved
+            .rich_plans
+            .revision(&self.plan_id, &self.revision_id)
+            .map(|r| {
+                let mut r = r.clone();
+                if let Ok(review) = serde_json::from_value(snapshot["review"].clone()) {
+                    r.review = review;
+                }
+                r.response_text()
+            })
+            .unwrap_or_default();
+        if self.review_open {
+            // Review occupies the same body, rather than being appended after a long plan.
+            body = div().flex().flex_col().gap(rpx(SPACE_2XL)).min_w_0().w_full()
+                .when(expanded, |s| s.max_w(rpx(PLAN_READING_WIDTH)).mx_auto()).p(rpx(SPACE_3XL))
+                .child(div().text_size(rpx(TEXT_TITLE)).font_weight(gpui::FontWeight::SEMIBOLD).child("Review your response"))
+                .child(div().text_color(c::FG_DIM()).child("Exact feedback to your agent. Sending feedback does not approve implementation."))
+                .child(self.text("plan-response-text".into(), response.clone(), window));
+        } else if peek {
+            body = body.child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child("Main changes"),
+            );
+            for claim in entries(&doc["claims"]) {
+                body = body.child(self.text(
+                    format!("peek-claim-{}", string(&claim, "id")),
+                    string(&claim, "text"),
+                    window,
+                ));
+            }
+            let decisions = flattened_decisions(&doc["claims"]);
+            let active = self
+                .active_decision
+                .as_ref()
+                .and_then(|id| decisions.iter().find(|(d, _)| string(d, "id") == *id))
+                .or_else(|| {
+                    decisions
+                        .iter()
+                        .find(|(d, _)| !decision_answered(d, &snapshot["review"]))
                 })
-                .when(status == "failed", |body| {
-                    body.child(div().child(status::label(
-                        "plan-delivery-error-status",
+                .or_else(|| decisions.first());
+            if let Some((decision, _)) = active {
+                self.active_decision = Some(string(decision, "id"));
+                body = body.child(self.decision(decision, &snapshot, window, cx));
+            }
+            if self.comments_open.contains(&target_key("plan", "")) {
+                body = body.child(self.comment(&target_key("plan", ""), &snapshot, window, cx));
+            }
+        } else {
+            let why = target_key("why", "");
+            let toggle = why.clone();
+            body = body.child(
+                div().flex().child(
+                    transcript_action(why.clone(), "Why · original requests", false, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/question.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle, cx))),
+                ),
+            );
+            if self.open.contains(&why) {
+                for (i, source) in entries(&doc["sources"]).iter().enumerate() {
+                    body = body.child(self.text(
+                        format!("quote-{i}"),
+                        format!(
+                            "{}: {}",
+                            string(source, "attribution"),
+                            string(source, "text")
+                        ),
+                        window,
+                    ));
+                }
+            }
+            for (i, claim) in entries(&doc["claims"]).iter().enumerate() {
+                body =
+                    body.child(self.claim(claim, format!("{:02}", i + 1), &snapshot, window, cx));
+            }
+            for scope in entries(&doc["scope"]) {
+                body = body.child(
+                    div()
+                        .text_color(c::FG_DIM())
+                        .child(scope.as_str().unwrap_or_default().to_owned()),
+                );
+            }
+            if self.comments_open.contains(&target_key("plan", "")) {
+                body = body.child(self.comment(&target_key("plan", ""), &snapshot, window, cx));
+            }
+        }
+        let feedback_status = snapshot["review"]["delivery"]["status"]
+            .as_str()
+            .unwrap_or("draft");
+        let approval_status = snapshot["review"]["approval"]["status"]
+            .as_str()
+            .unwrap_or("draft");
+        let feedback_locked = self.send_pending
+            || matches!(feedback_status, "queued" | "sending" | "sent" | "uncertain");
+        let feedback_pending = matches!(feedback_status, "queued" | "sending" | "uncertain");
+        let approval_locked = self.send_pending
+            || feedback_pending
+            || matches!(approval_status, "queued" | "sending" | "sent" | "uncertain");
+        let stale = self
+            .session
+            .read(cx)
+            .state
+            .saved
+            .rich_plans
+            .revisions
+            .iter()
+            .rev()
+            .find(|r| r.document.plan_id == self.plan_id)
+            .is_none_or(|r| r.document.revision_id != self.revision_id);
+        let reason = if stale {
+            "A newer revision is available. Open the current plan.".into()
+        } else if approval_status == "sent" {
+            "Approval sent to your agent".into()
+        } else if approval_status == "queued" {
+            "Approval queued for your agent".into()
+        } else if approval_status == "uncertain" {
+            "Approval delivery is uncertain. Check the conversation before retrying.".into()
+        } else if feedback_pending {
+            "Wait for feedback delivery before approving".into()
+        } else if unanswered > 0 {
+            format!(
+                "Answer {unanswered} {} to approve",
+                if unanswered == 1 {
+                    "decision"
+                } else {
+                    "decisions"
+                }
+            )
+        } else {
+            "Ready for your approval".into()
+        };
+        let mut actions = div().flex().flex_wrap().items_center().gap(rpx(SPACE_LG));
+        if unanswered > 0 {
+            actions = actions.child(
+                transcript_action("plan-next-decision", "Next decision", false, window, cx)
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/chev-down.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .debug_selector(|| "native-plan-next-decision".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.next_decision(window, cx))),
+            );
+        }
+        if !self.review_open {
+            actions = actions.child(
+                transcript_action("plan-comment", "Comment", false, window, cx)
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/plus.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.comments_open.insert(target_key("plan", ""));
+                        cx.notify();
+                    })),
+            );
+        }
+        actions = actions
+            .child(
+                div()
+                    .flex_auto()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_color(c::FG_DIM())
+                    .text_size(rpx(TEXT_SMALL))
+                    .debug_selector(|| "native-plan-progress".into())
+                    .child(progress),
+            )
+            .child(
+                transcript_action(
+                    "plan-review",
+                    if self.review_open {
+                        "Back to plan"
+                    } else {
+                        "Review response"
+                    },
+                    false,
+                    window,
+                    cx,
+                )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path(if self.review_open {
+                            "icons/unified.svg"
+                        } else {
+                            "icons/check.svg"
+                        })
+                        .size(rpx(ICON_SM)),
+                )
+                .debug_selector(|| "native-plan-review".into())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.review_open = !this.review_open;
+                    this.scroll
+                        .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+                    cx.notify();
+                })),
+            );
+        if self.review_open {
+            actions = actions
+                .child(
+                    transcript_action("plan-copy-response", "Copy response", false, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/copy.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                response.clone(),
+                            ));
+                        }),
+                )
+                .child(
+                    transcript_action("plan-send-response", "Send response", true, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/arrow-up.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .debug_selector(|| "native-plan-send".into())
+                        .disabled(feedback_locked)
+                        .on_click(cx.listener(|this, _, _, cx| this.dispatch(false, cx))),
+                );
+        }
+        actions = actions.child(
+            transcript_action("plan-approve", "Approve & implement", true, window, cx)
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/check.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .debug_selector(|| "native-plan-approve".into())
+                .disabled(unanswered > 0 || stale || approval_locked)
+                .on_click(cx.listener(|this, _, _, cx| this.dispatch(true, cx))),
+        );
+        let mut footer = div()
+            .id("native-plan-footer")
+            .debug_selector(|| "native-plan-footer".into())
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_SM))
+            .p(rpx(SPACE_2XL))
+            .bg(c::SURFACE_RAISED())
+            .border_t_1()
+            .border_color(c::BORDER_SOFT())
+            .child(actions)
+            .child(
+                div()
+                    .text_color(c::FG_DIM())
+                    .text_size(rpx(TEXT_SMALL))
+                    .child(reason),
+            );
+        if feedback_status != "draft" {
+            footer = footer.child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child(format!("Feedback {feedback_status}")),
+            );
+        }
+        if let Some(error) = self
+            .error
+            .clone()
+            .or_else(|| {
+                snapshot["review"]["approval"]["error"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                snapshot["review"]["delivery"]["error"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+        {
+            footer = footer.child(
+                div()
+                    .debug_selector(|| "native-plan-send-error".into())
+                    .child(status::label(
+                        "plan-error-status",
                         StatusKind::Failed,
-                        string(delivery, "error"),
+                        error,
                         ICON_SM,
                         cx,
-                    )))
-                })
-                .child(self.text(
-                    "plan-response-text".into(),
-                    response_preview(&response),
-                    window,
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .justify_end()
-                        .gap(rpx(SPACE_LG))
-                        .child(
-                            transcript_action(
-                                "plan-copy-response",
-                                "Copy response",
-                                false,
-                                window,
-                                cx,
-                            )
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path("icons/copy.svg")
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    response.clone(),
-                                ));
-                            }),
-                        )
-                        .child(
-                            transcript_action(
-                                "plan-send-response",
-                                "Send response",
-                                true,
-                                window,
-                                cx,
-                            )
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path("icons/arrow-up.svg")
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .debug_selector(|| "native-plan-send".into())
-                            .disabled(locked)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.error = None;
-                                this.send_pending = true;
-                                this.session.update(cx, |session, cx| {
-                                    session.send(
-                                        Action::SendPlanResponse {
-                                            plan_id: this.plan_id.clone(),
-                                            revision_id: this.revision_id.clone(),
-                                        },
-                                        cx,
-                                    );
-                                });
-                                cx.notify();
-                            })),
-                        ),
-                );
+                    )),
+            );
         }
         div()
             .id("native-plan-card")
             .debug_selector(|| "native-plan-card".into())
-            .when(expanded, |s| s.size_full().overflow_y_scroll())
-            .child(body)
+            .size_full()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .text_size(rpx(TEXT_BODY))
+            .text_color(c::FG())
+            .bg(c::BG())
+            .when_some(fixed_header, |surface, header| {
+                surface.child(header.flex_shrink_0().p(rpx(SPACE_3XL)).pb_0())
+            })
+            .child(
+                div()
+                    .id("native-plan-body")
+                    .debug_selector(|| "native-plan-body".into())
+                    .min_h_0()
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(body),
+            )
+            .child(footer)
             .on_key_down(
                 cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" && expanded {
@@ -1602,26 +1885,12 @@ impl Render for NativePlan {
     }
 }
 
-fn response_preview(response: &str) -> String {
-    // Only presentation markers generated by response_text are removed. The
-    // original payload remains the source for Copy response and Send response.
-    response
-        .lines()
-        .enumerate()
-        .map(|(index, line)| {
-            if index == 0 {
-                line.strip_prefix("# ").unwrap_or(line)
-            } else {
-                line.strip_prefix("> ").unwrap_or(line)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn review_locked(snapshot: &Value) -> bool {
     matches!(
         snapshot["review"]["delivery"]["status"].as_str(),
+        Some("queued" | "sending" | "uncertain")
+    ) || matches!(
+        snapshot["review"]["approval"]["status"].as_str(),
         Some("queued" | "sending" | "sent" | "uncertain")
     )
 }
@@ -1702,7 +1971,8 @@ mod tests {
                     gpui_component::Theme::global_mut(cx).font_size =
                         gpui::px(crate::zoom::REM_BASE * zoom);
                 });
-                for mode in ["entry", "plan", "response"] {
+                for mode in ["entry", "peek", "plan", "response"] {
+                    let nested_claim = json!({"id":"verification","text":"Verify the approved change before delivery.", "decisions":[{"id":"verification-choice","prompt":"Which checks should run?","options":[{"id":"focused","label":"Focused checks","description":"Exercise changed interactions before delivery."}]}]});
                     let saved: SavedSession = serde_json::from_value(json!({
                         "key":"plan-brief-qa","provider":"codex","project":"QA","cwd":"/tmp",
                         "label":"QA","roots":[],"thread_id":"qa-thread","items":[],
@@ -1715,7 +1985,7 @@ mod tests {
                                     "exhibit":{"kind":"schema","text":"Authenticated session → eligibility → invitation → enrollment"},
                                     "decisions":[{"id":"targeting","prompt":"Who sees the invitation?", "default":"eligible",
                                         "options":[{"id":"eligible","label":"Eligible signed-in users","description":"Show the invitation to people whose workspace qualifies."},
-                                            {"id":"admins","label":"Workspace administrators only","description":"Let administrators introduce early access to the workspace."}]}]}],
+                                            {"id":"admins","label":"Workspace administrators only","description":"Let administrators introduce early access to the workspace."}]}], "children":[nested_claim]}],
                                 "scope":["No email delivery or billing changes."]}}]}
                     })).unwrap();
                     let state = Snapshot::new(saved);
@@ -1724,7 +1994,10 @@ mod tests {
                     let mut captured = None;
                     let window = cx
                         .open_window(
-                            gpui::size(gpui::px(width), gpui::px(1200.0)),
+                            gpui::size(
+                                gpui::px(width),
+                                gpui::px(if mode == "peek" { 620. } else { 1200.0 }),
+                            ),
                             |window, cx| {
                                 let session = cx.new(|cx| {
                                     CodexSession::from_connection(
@@ -1756,7 +2029,8 @@ mod tests {
                         .unwrap();
                     cx.update_window(window.into(), |_, window, cx| {
                         captured.as_ref().unwrap().update(cx, |view, cx| {
-                            if mode != "entry" { view.reveal(window, cx); }
+                            if mode == "peek" { view.show_peek(None, cx); }
+                            else if mode != "entry" { view.reveal(window, cx); }
                             if mode == "response" {
                                 view.choose("targeting", "eligible", cx);
                                 view.set_feedback("comments", &target_key("claim", "audience"), "Keep tenant context server-derived.\nVerify repeat enrollment.".into(), cx);
@@ -1847,15 +2121,6 @@ mod tests {
             panic!("expected inert code")
         };
         assert_eq!(code.value, source);
-    }
-
-    #[test]
-    fn response_preview_hides_generated_markers_without_interpreting_feedback() {
-        let payload = "# Plan review: Test\nPlan: test · Revision: r1\n\nAnswer [choice] Where?:\n> [link](https://example.com)\n> <script>inert</script>\n";
-        assert_eq!(
-            response_preview(payload),
-            "Plan review: Test\nPlan: test · Revision: r1\n\nAnswer [choice] Where?:\n[link](https://example.com)\n<script>inert</script>"
-        );
     }
 
     fn exercise_review(provider: Provider, cx: &mut gpui::TestAppContext) {

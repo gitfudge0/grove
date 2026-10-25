@@ -2432,6 +2432,10 @@ pub enum Action {
         plan_id: String,
         revision_id: String,
     },
+    ApprovePlan {
+        plan_id: String,
+        revision_id: String,
+    },
     RetryPlanImport {
         message_id: String,
         source: String,
@@ -3458,6 +3462,10 @@ impl Actor {
         {
             return Ok(());
         }
+        if let Err(error) = self.state.saved.rich_plans.validate_dispatch(prompt.id) {
+            self.state.queued_prompts.retain(|p| p.id != prompt.id);
+            return Err(error);
+        }
         self.state.queue_sending.push(prompt.id);
         self.capture_edit_checkpoint();
         self.request(
@@ -3522,15 +3530,30 @@ impl Actor {
         revision_id: &str,
         persist_saved: impl Fn(&SavedSession) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.deliver_plan(plan_id, revision_id, false, persist_saved)
+    }
+    fn deliver_plan(
+        &mut self,
+        plan_id: &str,
+        revision_id: &str,
+        approve: bool,
+        persist_saved: impl Fn(&SavedSession) -> Result<(), String>,
+    ) -> Result<(), String> {
         if self.process.is_none() || self.state.saved.thread_id.is_none() {
             return Err("Reconnect before sending plan feedback".into());
         }
-        if let Some((id, text)) = self
-            .state
-            .saved
-            .rich_plans
-            .prepare_delivery(plan_id, revision_id)?
-        {
+        let prepared = if approve {
+            self.state
+                .saved
+                .rich_plans
+                .prepare_approval(plan_id, revision_id)?
+        } else {
+            self.state
+                .saved
+                .rich_plans
+                .prepare_delivery(plan_id, revision_id)?
+        };
+        if let Some((id, text)) = prepared {
             // Journal before any provider write. Recovery never replays an ambiguous send.
             if let Err(error) = persist_saved(&self.state.saved) {
                 self.state.saved.rich_plans.fail_delivery(id, &error);
@@ -3593,6 +3616,10 @@ impl Actor {
                 crate::rich_plan::retry_import(&mut self.state.saved, &message_id, &source)?;
                 persist(&self.state.saved)?;
             }
+            Action::ApprovePlan {
+                plan_id,
+                revision_id,
+            } => self.deliver_plan(&plan_id, &revision_id, true, persist)?,
             Action::SendPlanResponse {
                 plan_id,
                 revision_id,
@@ -4323,7 +4350,7 @@ impl Actor {
                 return Ok(());
             }
             if let Pending::QueuedTurn { id } = &request.kind {
-                let rich = self.state.saved.rich_plans.revisions.iter().any(|r|matches!(r.review.delivery, crate::rich_plan::ResponseDelivery::Queued{id:held} if held==*id));
+                let rich = self.state.saved.rich_plans.is_delivery(*id);
                 if rich {
                     self.state.saved.rich_plans.fail_delivery(
                         *id,
@@ -8510,6 +8537,30 @@ mod tests {
     }
     #[test]
     #[cfg(unix)]
+    fn native_plan_approval_stale_queue_never_reaches_provider() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.saved.rich_plans = serde_json::from_value(json!({"revisions":[{"message_id":"plan-message","source":"plan.grove-plan.json","document":{"schema_version":1,"plan_id":"plan","revision_id":"r1","title":"Native","claims":[{"id":"claim","text":"Bounded"}]},"assets":[]}]})).unwrap();
+        actor.state.saved.draft = "independent composer".into();
+
+        actor.deliver_plan("plan", "r1", true, |_| Ok(())).unwrap();
+        let mut next = actor.state.saved.rich_plans.revisions[0].clone();
+        next.document.revision_id = "r2".into();
+        next.review = crate::rich_plan::ReviewState::default();
+        actor.state.saved.rich_plans.revisions.push(next);
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        actor.queue_ready = true;
+        assert!(actor.dispatch_queue().unwrap_err().contains("outdated"));
+        assert!(actor.pending.is_empty());
+        assert!(actor.state.queued_prompts.is_empty());
+        assert!(matches!(
+            actor.state.saved.rich_plans.revisions[0].review.approval,
+            crate::rich_plan::ResponseDelivery::Failed { .. }
+        ));
+    }
+    #[test]
+    #[cfg(unix)]
     fn native_plan_actor_journals_before_dispatch_and_never_duplicates_feedback() {
         let mut actor = actor();
         actor.process = Some(fixture_process());
@@ -8571,6 +8622,72 @@ mod tests {
             .saved
             .rich_plans
             .prepare_delivery("plan", "r1")
+            .unwrap()
+            .is_none());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn native_plan_approval_journals_queues_and_confirms_without_touching_draft() {
+        let mut actor = actor();
+        actor.process = Some(fixture_process());
+        actor.state.saved.rich_plans = serde_json::from_value(json!({"revisions":[{"message_id":"plan-message","source":"plan.grove-plan.json","document":{"schema_version":1,"plan_id":"plan","revision_id":"r1","title":"Native","claims":[{"id":"claim","text":"Bounded"}]},"assets":[]}]})).unwrap();
+        actor.state.saved.draft = "independent composer".into();
+
+        assert!(actor
+            .deliver_plan("plan", "r1", true, |_| Err("disk full".into()))
+            .is_err());
+        assert!(actor.state.queued_prompts.is_empty());
+        assert!(actor.pending.is_empty());
+        let journal = std::cell::RefCell::new(Vec::new());
+        for _ in 0..2 {
+            actor
+                .deliver_plan("plan", "r1", true, |saved| {
+                    journal
+                        .borrow_mut()
+                        .push(serde_json::to_vec(saved).unwrap());
+                    Ok(())
+                })
+                .unwrap();
+        }
+        assert_eq!(journal.borrow().len(), 1);
+        assert_eq!(actor.state.queued_prompts.len(), 1);
+        assert!(actor.pending.is_empty());
+        let id = actor.state.queued_prompts[0].id;
+        assert!(!actor.state.queue_editable(id));
+        assert!(actor.state.begin_queue_edit(id).is_err());
+        actor.state.remove_queued(id).unwrap();
+        assert!(matches!(
+            actor.state.saved.rich_plans.revisions[0].review.approval,
+            crate::rich_plan::ResponseDelivery::Draft
+        ));
+        actor.deliver_plan("plan", "r1", true, |_| Ok(())).unwrap();
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        actor.queue_ready = true;
+        actor.dispatch_queue().unwrap();
+        assert_eq!(actor.pending.len(), 1);
+        actor
+            .message(json!({"id":actor.seq,"result":{"turn":{"id":"feedback-turn"}}}))
+            .unwrap();
+        assert!(matches!(
+            actor.state.saved.rich_plans.revisions[0].review.approval,
+            crate::rich_plan::ResponseDelivery::Sent { .. }
+        ));
+        let seq = actor.seq;
+        actor
+            .deliver_plan("plan", "r1", true, |_| {
+                panic!("confirmed feedback must not be journaled again")
+            })
+            .unwrap();
+        assert_eq!(actor.seq, seq);
+        assert_eq!(actor.state.saved.draft, "independent composer");
+        let mut restarted = Snapshot::new(
+            serde_json::from_slice(&serde_json::to_vec(&actor.state.saved).unwrap()).unwrap(),
+        );
+        assert!(restarted
+            .saved
+            .rich_plans
+            .prepare_approval("plan", "r1")
             .unwrap()
             .is_none());
     }
