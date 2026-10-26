@@ -20,6 +20,11 @@ pub struct DisplayMap {
 }
 
 impl DisplayMap {
+    pub fn set_text_replacements(&mut self, replacements: Vec<crate::input::TextReplacement>, cx: &mut App) {
+        self.wrap_map.set_text_replacements(replacements, cx);
+        self.rebuild_fold_projection();
+    }
+
     pub fn new(font: Font, font_size: Pixels, wrap_width: Option<Pixels>) -> Self {
         Self {
             wrap_map: WrapMap::new(font, font_size, wrap_width),

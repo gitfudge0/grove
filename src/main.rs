@@ -144,21 +144,10 @@ fn main() {
             }
 
             let bounds = Bounds::centered(None, size(px(WINDOW_W), px(WINDOW_H)), cx);
-            let sidebar_appearance = cx
-                .global::<settings::SettingsState>()
-                .store
-                .sidebar_appearance;
             let opts = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(WINDOW_MIN_W), px(WINDOW_MIN_H))),
-                window_background: match sidebar_appearance {
-                    grove_core::storage::SidebarAppearance::Frosted => {
-                        WindowBackgroundAppearance::Blurred
-                    }
-                    grove_core::storage::SidebarAppearance::Solid => {
-                        WindowBackgroundAppearance::Opaque
-                    }
-                },
+                window_background: WindowBackgroundAppearance::Opaque,
                 app_owns_titlebar_drag: true,
                 titlebar: Some(TitlebarOptions {
                     title: None,

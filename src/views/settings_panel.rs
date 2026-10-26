@@ -14,13 +14,10 @@ use crate::{
 };
 use gpui::{
     div, prelude::*, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    ScrollHandle, Subscription, Window, WindowBackgroundAppearance,
+    ScrollHandle, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use grove_core::{
-    agent::Agent,
-    storage::{SidebarAppearance, Store},
-};
+use grove_core::{agent::Agent, storage::Store};
 use grove_core::{app_theme, theme::ThemeKind};
 use std::collections::HashSet;
 
@@ -463,21 +460,6 @@ impl SettingsPanel {
         body
     }
 
-    fn set_sidebar_appearance(
-        &mut self,
-        appearance: SidebarAppearance,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.save(cx, |store| store.sidebar_appearance = appearance) {
-            window.set_background_appearance(match appearance {
-                SidebarAppearance::Frosted => WindowBackgroundAppearance::Blurred,
-                SidebarAppearance::Solid => WindowBackgroundAppearance::Opaque,
-            });
-            cx.refresh_windows();
-        }
-    }
-
     fn set_zoom(&mut self, delta: f32, cx: &mut Context<Self>) {
         let current = cx.global::<ZoomState>().zoom;
         let next = if delta == 0.0 {
@@ -766,7 +748,6 @@ impl SettingsPanel {
         let store = &cx.global::<SettingsState>().store;
         let active_theme = grove_core::theme::current();
         let theme_label = app_theme::by_id(&active_theme.name).map_or("Grove", |item| item.label);
-        let sidebar_appearance = store.sidebar_appearance;
         let zoom = cx.global::<ZoomState>().zoom;
         let tmux_on = store.tmux_enabled.unwrap_or(false);
         let tmux_available = grove_core::tmux::available();
@@ -798,31 +779,6 @@ impl SettingsPanel {
             .child(crate::icons::icon("chev-right", ICON_MD, c::FG_DIM()))
             .on_click(
                 cx.listener(|this, _, window, cx| this.open_nested(Page::Themes, window, cx)),
-            );
-        let sidebar_appearances = Self::choices()
-            .child(
-                self.choice(
-                    "settings-sidebar-frosted",
-                    "Frosted sidebar",
-                    sidebar_appearance == SidebarAppearance::Frosted,
-                    true,
-                )
-                .child("Frosted")
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.set_sidebar_appearance(SidebarAppearance::Frosted, window, cx);
-                })),
-            )
-            .child(
-                self.choice(
-                    "settings-sidebar-solid",
-                    "Solid sidebar",
-                    sidebar_appearance == SidebarAppearance::Solid,
-                    true,
-                )
-                .child("Solid")
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.set_sidebar_appearance(SidebarAppearance::Solid, window, cx);
-                })),
             );
         let zoom_control = Self::choices()
             .child(
@@ -883,11 +839,6 @@ impl SettingsPanel {
                         "Theme",
                         "Choose a theme for the entire app",
                         themes,
-                    ))
-                    .child(Self::setting_row(
-                        "Sidebar",
-                        "Blurred backdrop or solid color",
-                        sidebar_appearances,
                     ))
                     .child(Self::setting_row(
                         "App size",

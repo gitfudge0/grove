@@ -17,18 +17,18 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use grove_core::agent::Agent;
-use grove_core::storage::SidebarAppearance;
 
 const TRAFFIC_LIGHT_D: f32 = 12.0;
 const TRAFFIC_CONTROL_W: f32 = 18.0;
 // Fixed traffic lights, workspace glyphs/insets, and Settings/Collapse hit targets.
 const WORKSPACE_HEADER_RAIL_MIN_W: f32 = TRAFFIC_CONTROL_W * 3.0
-    + SPACE_2XL * 4.0
+    + SPACE_LG
+    + SIDEBAR_CONTENT_INSET * 2.0
+    + SPACE_2XL
     + CHROME_CONTROL_H * 2.0
     + ICON_MD
     + ICON_SM
-    + SPACE_MD * 2.0
-    + SPACE_SM;
+    + SPACE_MD * 2.0;
 const SWITCHER_TOP: f32 = APPBAR_TOTAL_H + SPACE_3XL * 2.0;
 const SWITCHER_MIN_H: f32 = APPBAR_H * 3.0 + SPACE_2XL;
 const SWITCHER_MAX_H: f32 = MODAL_SCROLL_MAX_H + APPBAR_H * 3.0;
@@ -370,16 +370,11 @@ impl Shell {
         let workspace_in_rail = self.sidebar.read(cx).rail_width(window, cx)
             >= WORKSPACE_HEADER_RAIL_MIN_W + update_control_width
                 - if fullscreen {
-                    TRAFFIC_CONTROL_W * 3.0
+                    TRAFFIC_CONTROL_W * 3.0 + SPACE_LG
                 } else {
                     0.0
                 };
         let workspace_in_appbar = !grid && !collapsed && rail_visible && !workspace_in_rail;
-        let solid_sidebar = cx
-            .global::<crate::settings::SettingsState>()
-            .store
-            .sidebar_appearance
-            == SidebarAppearance::Solid;
         let header = div()
             .id("app-header")
             .debug_selector(|| "app-header".into())
@@ -399,7 +394,7 @@ impl Shell {
                     .group("traffic-lights")
                     .h_full()
                     .pt(rpx(APPBAR_TOP_INSET))
-                    .px(rpx(SPACE_2XL))
+                    .px(rpx(SIDEBAR_CONTENT_INSET))
                     .flex_shrink_0()
                     .when(
                         collapsed || fullscreen && (!rail_visible || grid || workspace_in_appbar),
@@ -415,17 +410,17 @@ impl Shell {
                                     if rail_visible {
                                         0.0
                                     } else {
-                                        TRAFFIC_CONTROL_W * 3.0 + SPACE_2XL * 2.0
+                                        TRAFFIC_CONTROL_W * 3.0 + SIDEBAR_CONTENT_INSET * 2.0
                                     },
                                 )))
                                 .border_r_1()
                                 .border_color(c::BORDER())
-                                .when(solid_sidebar, |segment| segment.bg(c::BG_RAIL()))
+                                .bg(c::BG_RAIL())
                         },
                     )
                     .when(workspace_in_appbar && !fullscreen, |segment| {
                         segment
-                            .w(rpx(TRAFFIC_CONTROL_W * 3.0 + SPACE_2XL * 2.0))
+                            .w(rpx(TRAFFIC_CONTROL_W * 3.0 + SIDEBAR_CONTENT_INSET * 2.0))
                             .border_r_0()
                     })
                     .when(!collapsed, |segment| {
@@ -476,10 +471,14 @@ impl Shell {
                     .when(
                         !grid && !collapsed && rail_visible && workspace_in_rail,
                         |segment| {
-                            segment.child(
-                                self.sidebar
-                                    .update(cx, |sidebar, cx| sidebar.workspace_header(cx)),
-                            )
+                            segment
+                                .when(!fullscreen, |segment| {
+                                    segment.child(div().w(rpx(SPACE_LG)).flex_shrink_0())
+                                })
+                                .child(
+                                    self.sidebar
+                                        .update(cx, |sidebar, cx| sidebar.workspace_header(cx)),
+                                )
                         },
                     ),
             )
@@ -1509,9 +1508,6 @@ impl Render for Shell {
                 }),
                 cx.observe_window_activation(window, move |_, window, cx| {
                     let active = window.is_window_active();
-                    if active && !cfg!(test) {
-                        crate::platform::window_chrome::refresh_native_backdrop(window);
-                    }
                     runtime.update(cx, |runtime, cx| {
                         runtime
                             .activity
@@ -1526,9 +1522,10 @@ impl Render for Shell {
             ]);
         }
 
-        // AppKit may restore the native buttons during fullscreen transitions.
+        // Keep native controls available in the system's fullscreen titlebar,
+        // and hide them when Grove's custom window chrome takes over again.
         if !cfg!(test) {
-            crate::platform::window_chrome::hide_native_buttons(window);
+            crate::platform::window_chrome::sync_native_buttons(window);
         }
         window.set_rem_size(gpui::px(cx.global::<crate::zoom::ZoomState>().rem_size()));
         div()
@@ -1742,8 +1739,7 @@ impl Render for Shell {
                             })
                             .child(self.header(window, cx))
                             .when(self.sidebar.read(cx).confirmation_open(), |header| {
-                                // Block header controls without tinting the transparent
-                                // titlebar above the frosted sidebar.
+                                // Block header controls while preserving their chrome surface.
                                 header.child(div().absolute().inset_0().occlude().on_mouse_down(
                                     MouseButton::Left,
                                     |_, _, cx| {
@@ -2720,6 +2716,13 @@ mod tests {
                             );
                         }
                     }
+                    if !fullscreen {
+                        let traffic = cx.debug_bounds("window-fullscreen").unwrap();
+                        assert!(
+                            workspace.left() - traffic.right() >= gpui::px(SPACE_LG * zoom),
+                            "workspace must clear traffic controls at {zoom}x, width {width}"
+                        );
+                    }
                     if fullscreen {
                         assert!(
                             workspace.left()
@@ -2736,6 +2739,20 @@ mod tests {
                     assert!(settings.right() <= collapse.left());
                     assert!(collapse.right() <= header.right(), "width={width} zoom={zoom} fullscreen={fullscreen} collapse={collapse:?} header={header:?}");
                     assert_eq!(collapse.center().y, workspace.center().y);
+                    let rail = cx.debug_bounds("sidebar-rail").unwrap();
+                    if collapse.right() <= rail.right() {
+                        let add = cx.debug_bounds("projects-add").unwrap();
+                        assert_eq!(
+                            collapse.right(),
+                            add.right(),
+                            "header and navigation trailing slots differ at {zoom}x, width {width}"
+                        );
+                        if fullscreen {
+                            let workspace_icon = cx.debug_bounds("workspace-picker-icon").unwrap();
+                            let heading = cx.debug_bounds("sidebar-heading-label").unwrap();
+                            assert_eq!(workspace_icon.left(), heading.left(), "workspace identity and section heading differ at {zoom}x, width {width}");
+                        }
+                    }
                 }
             }
         }

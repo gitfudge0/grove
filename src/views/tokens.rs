@@ -124,6 +124,8 @@ pub const CARD_SM_LINES: f32 = 2.0;
 /// The Settings cards' label indent: card hairline (1px) + row inset (`SPACE_2XL`) = 13px.
 pub const CARD_LABEL_INDENT: f32 = SPACE_2XL + 1.0;
 
+/// Shared outer content inset for the expanded sidebar and its appbar segment.
+pub const SIDEBAR_CONTENT_INSET: f32 = SPACE_3XL;
 /// Reference app header geometry.
 pub const APPBAR_H: f32 = 40.0;
 /// Top breathing room above the shared window/workspace control row.

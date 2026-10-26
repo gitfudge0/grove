@@ -129,14 +129,6 @@ pub enum AppearancePreference {
     Light,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SidebarAppearance {
-    #[default]
-    Frosted,
-    Solid,
-}
-
 impl Project {
     pub fn worktree_dir(&self) -> &str {
         self.worktree_dir.as_deref().unwrap_or(&self.name)
@@ -458,8 +450,6 @@ pub struct Store {
     /// Standalone app theme identity; legacy appearance is migration input only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_theme: Option<String>,
-    #[serde(default)]
-    pub sidebar_appearance: SidebarAppearance,
     /// None means the user has not made the one-time tmux/native choice yet.
     #[serde(default)]
     pub tmux_enabled: Option<bool>,
@@ -844,7 +834,6 @@ pub(crate) mod tests {
             default_agent: Some(Agent::Claude),
             theme: Some("dark".into()),
             appearance: Some(AppearancePreference::System),
-            sidebar_appearance: SidebarAppearance::Solid,
             tmux_enabled: Some(true),
             native_agents_enabled: true,
             ui_zoom: Some(1.25),
@@ -888,7 +877,6 @@ pub(crate) mod tests {
         assert_eq!(recovered.default_agent, Some(Agent::Claude));
         assert!(recovered.theme.is_none());
         assert_eq!(recovered.appearance, Some(AppearancePreference::System));
-        assert_eq!(recovered.sidebar_appearance, SidebarAppearance::Solid);
         assert_eq!(recovered.tmux_enabled, Some(true));
         assert!(recovered.native_agents_enabled);
         assert!((recovered.ui_zoom.unwrap() - 1.25).abs() < f32::EPSILON);
@@ -912,13 +900,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn sidebar_appearance_defaults_to_frosted_for_existing_settings() {
-        let store: Store = serde_json::from_str(r#"{"projects":[]}"#).expect("legacy store");
-        assert_eq!(store.sidebar_appearance, SidebarAppearance::Frosted);
-        assert_eq!(
-            Store::default().sidebar_appearance,
-            SidebarAppearance::Frosted
-        );
+    fn sidebar_appearance_migrates_to_solid_and_is_not_saved() {
+        for json in [
+            r#"{"projects":[]}"#,
+            r#"{"sidebar_appearance":"frosted"}"#,
+            r#"{"sidebar_appearance":"solid"}"#,
+        ] {
+            let store: Store = serde_json::from_str(json).expect("legacy store");
+            let saved = serde_json::to_value(&store).expect("save migrated store");
+            assert!(saved.get("sidebar_appearance").is_none());
+        }
     }
 
     #[test]

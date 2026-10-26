@@ -343,11 +343,6 @@ pub fn BG_RAIL() -> Hsla {
     chrome(ChromeRole::Rail)
 }
 
-/// Sidebar tint over the compositor's blurred window background.
-pub fn BG_RAIL_GLASS() -> Hsla {
-    alpha(BG_RAIL(), if !is_dark() { 0.54 } else { 0.50 })
-}
-
 pub fn BG_STRIP() -> Hsla {
     chrome(ChromeRole::Strip)
 }

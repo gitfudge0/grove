@@ -79,7 +79,7 @@ impl Sidebar {
             Action::Select(Selection::Session(_) | Selection::Home(_))
         );
         // Cut out the backing circle rather than paint over the agent: the actual
-        // rail (including Frosted), selected, hover and focus fill shows through.
+        // rail, selected, hover and focus fill shows through.
         let glyph = if status_overlay {
             format!("compact-status-{glyph}")
         } else {

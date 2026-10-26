@@ -367,6 +367,7 @@ pub struct InputState {
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
     pub(super) text_align: TextAlign,
     pub(super) decorations: DecorationCollections,
+    pub(super) text_replacements: Vec<super::TextReplacement>,
 
     pub(crate) mask_pattern: MaskPattern,
     pub(super) mask_pattern_set: bool,
@@ -482,6 +483,7 @@ impl InputState {
             mask_pattern_set: false,
             text_align: TextAlign::Left,
             decorations: DecorationCollections::default(),
+            text_replacements: Vec::new(),
             lsp: Lsp::default(),
             diagnostic_popover: None,
             context_menu_content: None,
@@ -1000,6 +1002,26 @@ impl InputState {
         // Can't call display_map.set_text here (needs cx); set during prepare_if_need in element.rs.
         self._pending_update = true;
         self
+    }
+
+    pub(super) fn visible_text_replacements(&self, focused: bool) -> Vec<super::TextReplacement> {
+        let cursor = self.cursor();
+        self.text_replacements.iter().filter(|replacement| {
+            // Syntax under an active source caret or IME composition is editable.
+            let caret_inside = focused && self.selected_range.is_empty()
+                && replacement.range.start <= cursor && cursor < replacement.range.end;
+            let marked = self.ime_marked_range.as_ref().is_some_and(|marked|
+                replacement.range.start < marked.end && marked.start < replacement.range.end);
+            !caret_inside && !marked
+        }).cloned().collect()
+    }
+
+    /// Set a presentation projection without editing the literal buffer or undo history.
+    pub fn set_text_replacements(&mut self, replacements: Vec<super::TextReplacement>, cx: &mut Context<Self>) {
+        if self.text_replacements == replacements { return; }
+        self.text_replacements = replacements;
+        self.display_map.set_text_replacements(self.text_replacements.clone(), cx);
+        cx.notify();
     }
 
     pub fn value(&self) -> SharedString {

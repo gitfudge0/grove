@@ -19,7 +19,7 @@ use gpui::{
 use gpui_component::{
     input::{
         IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp, TextDecoration,
-        TextDecorationCollection,
+        TextDecorationCollection, TextReplacement,
     },
     menu::{PopupMenu, PopupMenuItem},
     text::{TextSelectionSnapshot, TextView, TextViewState, TextViewStyle},
@@ -85,6 +85,98 @@ fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
         visit(&root, gpui::HighlightStyle::default(), &mut decorations);
     }
     decorations
+}
+
+/// Keep Markdown in the input model while projecting syntax into native text.
+fn composer_markdown_replacements(text: &str) -> Vec<TextReplacement> {
+    use markdown::mdast::Node;
+    fn hide(range: std::ops::Range<usize>, out: &mut Vec<TextReplacement>) {
+        if !range.is_empty() {
+            out.push(TextReplacement {
+                range,
+                text: String::new(),
+                font_scale: 1.,
+            });
+        }
+    }
+    fn visit(node: &Node, text: &str, out: &mut Vec<TextReplacement>) {
+        let Some(position) = node.position() else {
+            return;
+        };
+        let range = position.start.offset..position.end.offset;
+        match node {
+            Node::Heading(heading) => {
+                if let Some(first) = heading.children.first().and_then(Node::position) {
+                    let prefix = range.start..first.start.offset;
+                    // ATX headings; setext underlines remain literal until supported.
+                    if text
+                        .get(prefix.clone())
+                        .is_some_and(|s| s.trim_start().starts_with('#'))
+                    {
+                        out.push(TextReplacement {
+                            range: prefix,
+                            text: String::new(),
+                            font_scale: match heading.depth {
+                                1 => 1.25,
+                                2 => 1.125,
+                                _ => 1.,
+                            },
+                        });
+                        if let Some(last) = heading.children.last().and_then(Node::position) {
+                            hide(last.end.offset..range.end, out);
+                        }
+                    }
+                }
+            }
+            Node::ListItem(_) => {
+                let line = text[range.clone()].lines().next().unwrap_or("");
+                let marker_end = line.find([' ', '\t']).unwrap_or(0);
+                let marker = &line[..marker_end];
+                if matches!(marker, "-" | "*" | "+") {
+                    out.push(TextReplacement {
+                        range: range.start..range.start + marker_end,
+                        text: "•".into(),
+                        font_scale: 1.,
+                    });
+                }
+            }
+            Node::Strong(_)
+            | Node::Emphasis(_)
+            | Node::Delete(_)
+            | Node::Link(_)
+            | Node::LinkReference(_) => {
+                if let Some(children) = node.children() {
+                    if let (Some(first), Some(last)) = (
+                        children.first().and_then(Node::position),
+                        children.last().and_then(Node::position),
+                    ) {
+                        hide(range.start..first.start.offset, out);
+                        hide(last.end.offset..range.end, out);
+                    }
+                }
+            }
+            Node::InlineCode(_) => {
+                let source = &text[range.clone()];
+                let ticks = source.bytes().take_while(|b| *b == b'`').count();
+                if ticks > 0 && source.len() >= ticks * 2 {
+                    hide(range.start..range.start + ticks, out);
+                    hide(range.end - ticks..range.end, out);
+                }
+            }
+            _ => {}
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                visit(child, text, out);
+            }
+        }
+    }
+    let mut replacements = Vec::new();
+    if let Ok(root) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) {
+        visit(&root, text, &mut replacements);
+    }
+    replacements.sort_by_key(|r| (r.range.start, r.range.end));
+    replacements
 }
 
 /// Yolo belongs to the saved native launch recipe, never to a later access choice.
@@ -3010,6 +3102,10 @@ impl Render for CodexView {
             .is_none_or(|(previous, theme, _)| previous != &source || *theme != generation)
         {
             let decorations = composer_markdown_decorations(&source);
+            let replacements = composer_markdown_replacements(&source);
+            self.input.update(cx, |input, cx| {
+                input.set_text_replacements(replacements, cx);
+            });
             self.markdown_source = Some((source, generation, decorations));
         }
         // An identical programmatic replacement may adjust decorations even
@@ -10797,6 +10893,159 @@ mod tests {
         assert!(super::composer_markdown_decorations("**unfinished").is_empty());
     }
 
+    #[test]
+    fn composer_markdown_projects_headings_lists_and_inline_syntax() {
+        let source = "## Heading 2\n- A **bold** item with `code` and [link](https://example.com)\n1. Ordered 🦀";
+        let replacements = super::composer_markdown_replacements(source);
+        let mut rendered = String::new();
+        let mut previous = 0;
+        for replacement in &replacements {
+            assert!(replacement.range.start >= previous);
+            rendered.push_str(&source[previous..replacement.range.start]);
+            rendered.push_str(&replacement.text);
+            previous = replacement.range.end;
+        }
+        rendered.push_str(&source[previous..]);
+        assert_eq!(
+            rendered,
+            "Heading 2\n• A bold item with code and link\n1. Ordered 🦀"
+        );
+        assert!(replacements.iter().any(|r| r.font_scale > 1.));
+        assert!(super::composer_markdown_replacements("**unfinished").is_empty());
+    }
+
+    #[gpui::test]
+    fn composer_markdown_preserves_source_navigation_copy_and_ime_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::EntityInputHandler as _;
+        let (view, cx, _, _) = fixture(cx);
+        let source = "## Heading 2\n- **é🦀** item\n1. Ordered";
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session
+                        .update(cx, |session, _| session.state.saved.provider = provider);
+                    view.input.update(cx, |input, cx| {
+                        input.set_value(source, window, cx);
+                        input.set_selected_range(3..3, cx);
+                        input.focus(window, cx);
+                    });
+                });
+            });
+            draw(cx);
+            let bounds = cx.debug_bounds("codex-composer-input").unwrap();
+            let (heading, item) = cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.input.update(cx, |input, cx| {
+                        let heading = input.bounds_for_range(3..3, bounds, window, cx).unwrap();
+                        let item_start = source.find('é').unwrap();
+                        let utf16 = source[..item_start].encode_utf16().count();
+                        let item = input
+                            .bounds_for_range(utf16..utf16, bounds, window, cx)
+                            .unwrap();
+                        assert!(
+                            item.top() > heading.top(),
+                            "projected source offsets retain separate rows"
+                        );
+                        (heading, item)
+                    })
+                })
+            });
+            cx.simulate_click(
+                heading.origin + gpui::point(gpui::px(0.1), heading.size.height / 2.),
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.input.read(cx).cursor(),
+                    3,
+                    "clicking rendered heading begins after source hashes"
+                );
+            });
+            cx.simulate_click(
+                item.origin + gpui::point(gpui::px(0.1), item.size.height / 2.),
+                gpui::Modifiers::default(),
+            );
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.input.read(cx).cursor(),
+                    source.find('é').unwrap(),
+                    "clicking Unicode list content maps through hidden strong and bullet syntax"
+                );
+            });
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.input
+                        .update(cx, |input, cx| input.set_selected_range(3..3, cx));
+                });
+            });
+            draw(cx);
+            cx.simulate_keystrokes("left");
+            draw(cx);
+            view.read_with(cx, |view, cx| assert_eq!(view.input.read(cx).cursor(), 2));
+            cx.simulate_keystrokes("right");
+            draw(cx);
+            view.read_with(cx, |view, cx| assert_eq!(view.input.read(cx).cursor(), 3));
+            cx.simulate_keystrokes("cmd-a cmd-c");
+            cx.update(|_, cx| {
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some(source)
+                );
+            });
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.input.update(cx, |input, cx| {
+                        input.set_selected_range(source.len()..source.len(), cx);
+                        input.replace_and_mark_text_in_range(None, "日本", Some(2..2), window, cx);
+                    });
+                });
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    format!("{source}日本")
+                );
+                assert_eq!(view.input.read(cx).cursor(), source.len() + "日本".len());
+            });
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.input.update(cx, |input, cx| {
+                        input.replace_text_in_range(None, "日本語", window, cx);
+                    });
+                });
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    format!("{source}日本語")
+                );
+            });
+            cx.simulate_keystrokes("cmd-z");
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    source,
+                    "presentation does not add undo edits"
+                );
+            });
+            cx.simulate_keystrokes("cmd-shift-z");
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    format!("{source}日本語")
+                );
+            });
+        }
+    }
+
     #[gpui::test]
     fn composer_markdown_keeps_literal_draft_caret_and_picked_tokens(
         cx: &mut gpui::TestAppContext,
@@ -11745,6 +11994,76 @@ mod tests {
         });
         (view.unwrap(), cx, actions, updates)
     }
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn composer_markdown_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            c::sync_component_theme(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        for width in [1024.0, 600.0, 360.0] {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let mut state = snapshot();
+                state.saved.provider = provider;
+                state.saved.items = vec![
+                    json!({"type":"agentMessage", "id":"snippet", "text":"Copy this code:\n\n```sh\n  cargo test --workspace\n```", "groveCompleted":true}),
+                ];
+                state.saved.draft = "## Heading 2\n- This is a **bold** list item\n- Second item with `code` and [link](https://example.com)\n1. Ordered 🦀 é item\nNormal paragraph after heading and lists, with enough additional Unicode text é🦀 to wrap at narrow widths.".into();
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let connection = Connection {
+                    handle,
+                    updates: receive.into(),
+                };
+                let mut retained = None;
+                let window = cx
+                    .open_window(
+                        gpui::size(gpui::px(width), gpui::px(600.0)),
+                        |window, cx| {
+                            let session =
+                                cx.new(|cx| CodexSession::from_connection(state, connection, cx));
+                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                            retained = Some(chat.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(chat, window, cx)
+                                    .bordered(false)
+                                    .bg(c::BG())
+                            })
+                        },
+                    )
+                    .unwrap();
+                {
+                    for _ in 0..4 {
+                        cx.advance_clock(std::time::Duration::from_millis(16));
+                        cx.run_until_parked();
+                        cx.update_window(window.into(), |_, window, cx| {
+                            window.simulate_next_frame(cx);
+                            let _ = window.draw(cx);
+                        })
+                        .unwrap();
+                    }
+                    let path = format!("/tmp/grove-composer-markdown-{provider:?}-{width:.0}.png");
+                    cx.capture_screenshot(window.into())
+                        .unwrap()
+                        .save(&path)
+                        .unwrap();
+                    eprintln!("Native composer Markdown fixture: {path}");
+                }
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
     #[cfg(target_os = "macos")]

@@ -33,7 +33,7 @@ use gpui::{
     Focusable, MouseButton, MouseMoveEvent, ScrollHandle, SharedString, Stateful, Window,
 };
 use gpui_component::input::InputState;
-use grove_core::{agent::Agent, storage::SidebarAppearance};
+use grove_core::agent::Agent;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -50,18 +50,12 @@ const WORKTREE_LAUNCH_AGENTS: [Agent; 4] = [
     Agent::Terminal,
 ];
 
-fn rail_background(cx: &App) -> gpui::Hsla {
-    match cx.global::<SettingsState>().store.sidebar_appearance {
-        SidebarAppearance::Frosted => c::BG_RAIL_GLASS(),
-        SidebarAppearance::Solid => c::BG_RAIL(),
-    }
-}
 /// Below this width, a setup editor temporarily owns the full canvas.
 const EDITOR_FULL_WIDTH_BREAKPOINT: f32 = 640.0;
 const HEAD_H: f32 = 36.0;
 const ROW_H: f32 = 28.0;
 // Expanded project navigation keeps session activity, identity and changes on one line.
-const HIERARCHY_INSET: f32 = SPACE_LG;
+const HIERARCHY_INSET: f32 = SIDEBAR_CONTENT_INSET - SPACE_LG;
 const HIERARCHY_GAP: f32 = 7.0;
 const HIERARCHY_ICON_SLOT: f32 = 18.0;
 const HIERARCHY_ICON: f32 = 15.0;
@@ -1676,7 +1670,6 @@ impl Sidebar {
             .h_full()
             .flex()
             .items_center()
-            .ml(rpx(SPACE_SM))
             .on_mouse_down(MouseButton::Left, |event, window, cx| {
                 if event.click_count == 2 {
                     window.titlebar_double_click();
@@ -1780,6 +1773,7 @@ impl Sidebar {
             .min_w_0()
             .flex()
             .flex_wrap()
+            .justify_end()
             .items_center()
             .gap(rpx(SPACE_SM))
             .text_size(rpx(heading_size))
@@ -4651,6 +4645,7 @@ impl Sidebar {
                         .h_auto()
                         .flex_shrink_0()
                         .gap(rpx(SPACE_MD))
+                        .pr(rpx((CONTROL_H - ICON_MD) / 2.0))
                         .text_size(rpx(HIERARCHY_META_TEXT))
                         .when(state.added > 0, |chip| {
                             chip.child(
@@ -4889,7 +4884,7 @@ impl Sidebar {
             .child(
                 div()
                     .h(rpx(HEAD_H))
-                    .px(rpx(SPACE_LG))
+                    .px(rpx(SIDEBAR_CONTENT_INSET))
                     .flex()
                     .items_center()
                     .child(
@@ -4900,6 +4895,7 @@ impl Sidebar {
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
                             .font_weight(gpui::FontWeight::MEDIUM)
+                            .debug_selector(|| "sidebar-terminals-heading".into())
                             .child("Terminals"),
                     )
                     .child(
@@ -4917,6 +4913,7 @@ impl Sidebar {
                             Action::FoldTerminals,
                             cx,
                         )
+                        .debug_selector(|| "sidebar-terminals-fold".into())
                         .child(motion::fast(
                             icon(
                                 if self.terminals_collapsed {
@@ -5161,7 +5158,7 @@ impl Render for Sidebar {
             .flex_col()
             .border_r_1()
             .border_color(c::BORDER())
-            .bg(rail_background(cx))
+            .bg(c::BG_RAIL())
             .text_size(rpx(TEXT_BODY))
             .line_height(rpx(SPACE_3XL))
             .font_weight(gpui::FontWeight::NORMAL)
@@ -5193,11 +5190,7 @@ impl Render for Sidebar {
             .when(!collapsed && self.mode != ViewMode::Project, |rail| {
                 rail.child(
                     div()
-                        .px(rpx(if self.mode == ViewMode::List && self.compact_rail {
-                            SPACE_SM + SPACE_LG
-                        } else {
-                            SPACE_3XL
-                        }))
+                        .px(rpx(SIDEBAR_CONTENT_INSET))
                         .pt(rpx(SPACE_LG))
                         .child(self.navigation_heading(window, cx)),
                 )
@@ -5210,11 +5203,7 @@ impl Render for Sidebar {
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .p(rpx(if self.compact_rail {
-                        SPACE_SM
-                    } else {
-                        SPACE_LG
-                    }))
+                    .p(rpx(if collapsed { SPACE_SM } else { SPACE_LG }))
                     .when(empty && !collapsed && self.mode != ViewMode::Project, |d| {
                         d.child(
                             div()
@@ -8915,7 +8904,7 @@ for line in sys.stdin:
             let runtime = cx.new(Runtime::new);
             Sidebar::new(runtime, window, cx)
         });
-        for zoom in [0.6, 1.0, 2.0] {
+        for zoom in [0.6, 1.0, 1.5, 2.0] {
             cx.update(|window, _| window.set_rem_size(gpui::px(16.0 * zoom)));
             draw(cx);
             let row = cx.debug_bounds("project-0").unwrap();
@@ -8932,6 +8921,15 @@ for line in sys.stdin:
                 (f32::from(count.left() - heading.right()) - SPACE_SM * zoom).abs() <= 1.0,
                 "project count is not adjacent to its title at {zoom}x"
             );
+            let project_icon = cx.debug_bounds("project-folder-toggle-0").unwrap();
+            assert_eq!(heading.left(), project_icon.left());
+            let project_action = cx.debug_bounds("project-menu-0").unwrap();
+            let add = cx.debug_bounds("projects-add").unwrap();
+            assert_eq!(project_action.right(), add.right());
+            let terminal_heading = cx.debug_bounds("sidebar-terminals-heading").unwrap();
+            let terminal_fold = cx.debug_bounds("sidebar-terminals-fold").unwrap();
+            assert!(f32::from(heading.left() - terminal_heading.left()).abs() <= 1.0);
+            assert!(f32::from(add.right() - terminal_fold.right()).abs() <= 1.0);
             let centers = ["sidebar-view", "sidebar-grid", "projects-add"]
                 .map(|id| f32::from(cx.debug_bounds(id).unwrap().center().x));
             for pair in centers.windows(2) {

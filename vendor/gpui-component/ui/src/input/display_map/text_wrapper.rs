@@ -115,6 +115,7 @@ pub(crate) struct TextWrapper {
     wrap_width: Option<Pixels>,
     pub(crate) lines: SumTree<LineItem>,
 
+    replacements: Vec<crate::input::TextReplacement>,
     _initialized: bool,
 }
 
@@ -127,8 +128,15 @@ impl TextWrapper {
             font_size,
             wrap_width,
             lines: SumTree::new(&()),
+            replacements: Vec::new(),
             _initialized: false,
         }
+    }
+
+    pub(crate) fn set_text_replacements(&mut self, replacements: Vec<crate::input::TextReplacement>, cx: &mut App) {
+        if self.replacements == replacements { return; }
+        self.replacements = replacements;
+        self.update_all(&self.text.clone(), cx);
     }
 
     #[inline]
@@ -269,15 +277,21 @@ impl TextWrapper {
         let mut new_lines = vec![];
         let wrap_width = self.wrap_width;
 
+        let mut line_base = new_range.start;
         for line in Rope::from(changed_text.slice(new_range)).iter_lines() {
             let line_str = line.to_string();
+            let projection = (!self.replacements.is_empty()).then(||
+                crate::input::projection::TextProjection::new(&line_str, &self.replacements, line_base));
+            let projected_text = projection.as_ref().map_or(line_str.as_str(), |p| p.text.as_str());
+            let font_scale = projection.as_ref().map_or(1., |p| p.font_scale);
             let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
             let mut prev_boundary_ix = 0;
 
             if let Some(wrap_width) = wrap_width {
-                for boundary in wrap_line(&line_str, wrap_width) {
-                    wrapped_lines.push(prev_boundary_ix..boundary.ix);
-                    prev_boundary_ix = boundary.ix;
+                for boundary in wrap_line(projected_text, wrap_width / font_scale) {
+                    let source_boundary = projection.as_ref().map_or(boundary.ix, |p| p.to_source(boundary.ix));
+                    wrapped_lines.push(prev_boundary_ix..source_boundary);
+                    prev_boundary_ix = source_boundary;
                 }
             }
 
@@ -285,6 +299,7 @@ impl TextWrapper {
                 wrapped_lines.push(prev_boundary_ix..line.len());
             }
 
+            line_base += line.len() + 1;
             new_lines.push(LineItem {
                 len: line.len(),
                 wrapped_lines,
@@ -388,6 +403,7 @@ impl WrapDisplayPoint {
 
 pub(crate) struct LineLayout {
     len: usize,
+    projection: Option<crate::input::projection::TextProjection>,
     pub(crate) wrapped_lines: SmallVec<[ShapedLine; 1]>,
     pub(crate) longest_width: Pixels,
     pub(crate) whitespace_indicators: Option<WhitespaceIndicators>,
@@ -399,6 +415,7 @@ impl LineLayout {
     pub(crate) fn new() -> Self {
         Self {
             len: 0,
+            projection: None,
             longest_width: px(0.),
             wrapped_lines: SmallVec::new(),
             whitespace_chars: Vec::new(),
@@ -420,6 +437,15 @@ impl LineLayout {
             .unwrap_or_default();
         self.longest_width = width;
         self.wrapped_lines = wrapped_lines;
+    }
+
+    pub(crate) fn with_projection(mut self, projection: crate::input::projection::TextProjection, source_len: usize) -> Self {
+        self.len = source_len;
+        self.projection = Some(projection);
+        self
+    }
+    fn source_index(&self, offset: usize) -> usize {
+        self.projection.as_ref().map_or(offset, |p| p.to_source(offset))
     }
 
     pub(crate) fn with_whitespaces(mut self, indicators: Option<WhitespaceIndicators>) -> Self {
@@ -463,6 +489,7 @@ impl LineLayout {
         last_layout: &LastLayout,
         line_end_affinity: bool,
     ) -> Option<Point<Pixels>> {
+        let offset = self.projection.as_ref().map_or(offset, |p| p.to_display(offset));
         let mut acc_len = 0;
         let mut offset_y = px(0.);
 
@@ -507,12 +534,12 @@ impl LineLayout {
                     ix = ix.saturating_sub(c_len);
                 }
 
-                return acc_len + ix;
+                return self.source_index(acc_len + ix);
             }
             acc_len += line.text.len();
         }
 
-        acc_len
+        self.source_index(acc_len)
     }
 
     pub(crate) fn closest_index_for_position(
@@ -533,7 +560,7 @@ impl LineLayout {
                     let c_len = line.text.chars().last().map(|c| c.len_utf8()).unwrap_or(0);
                     ix = ix.saturating_sub(c_len);
                 }
-                return Some(offset + ix);
+                return Some(self.source_index(offset + ix));
             }
 
             offset += line.text.len();
@@ -555,7 +582,7 @@ impl LineLayout {
             let line_bottom = line_top + last_layout.line_height;
             if pos.y >= line_top && pos.y < line_bottom {
                 let ix = line.index_for_x(pos.x - x_offset)?;
-                return Some(offset + ix);
+                return Some(self.source_index(offset + ix));
             }
 
             offset += line.text.len();

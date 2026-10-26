@@ -894,7 +894,7 @@ impl Render for WorkspaceManager {
                             self.state.name(self.state.active)
                         ))
                         .h(rpx(SELECTOR_H))
-                        .px(rpx(SPACE_2XL))
+                        .pr(rpx(SPACE_2XL))
                         .relative()
                         .min_w_0()
                         .max_w(rpx(MENU_W))
@@ -919,7 +919,11 @@ impl Render for WorkspaceManager {
                             .left_0()
                             .size_full(),
                         )
-                        .child(icon("folder", ICON_MD, c::FG_DIM()))
+                        .child(
+                            div()
+                                .debug_selector(|| "workspace-picker-icon".into())
+                                .child(icon("folder", ICON_MD, c::FG_DIM())),
+                        )
                         .child(motion::fast(
                             div()
                                 .min_w_0()
