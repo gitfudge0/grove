@@ -26,7 +26,7 @@ fn missing_agent_message(agent: Agent) -> String {
 
 /// A palette row has an appbar-height body plus the design system's 8px row breathing room.
 const ROW_H: f32 = APPBAR_H + SPACE_LG;
-const OVERLAY_TOP: f32 = APPBAR_H + SPACE_3XL * 2.0;
+const OVERLAY_TOP: f32 = APPBAR_TOTAL_H + SPACE_3XL * 2.0;
 const PANEL_MAX_H: f32 = MODAL_SCROLL_MAX_H + APPBAR_H * 4.0;
 /// Keeps the title, search, one row, and footer readable at the minimum 320×200 window.
 const PANEL_MIN_H: f32 = APPBAR_H * 4.0 + SPACE_2XL * 2.0;

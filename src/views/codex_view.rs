@@ -5968,7 +5968,7 @@ impl CodexView {
         let width =
             COMPOSER_MENU_W.min(f32::from(window.viewport_size().width) / scale - SPACE_3XL);
         let height = COMPOSER_MENU_MAX_H
-            .min(f32::from(window.viewport_size().height) / scale - APPBAR_H - SPACE_3XL);
+            .min(f32::from(window.viewport_size().height) / scale - APPBAR_TOTAL_H - SPACE_3XL);
         let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
             popup = popup
                 .action_context(context)

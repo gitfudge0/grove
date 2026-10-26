@@ -29,7 +29,7 @@ const WORKSPACE_HEADER_RAIL_MIN_W: f32 = TRAFFIC_CONTROL_W * 3.0
     + ICON_SM
     + SPACE_MD * 2.0
     + SPACE_SM;
-const SWITCHER_TOP: f32 = APPBAR_H + SPACE_3XL * 2.0;
+const SWITCHER_TOP: f32 = APPBAR_TOTAL_H + SPACE_3XL * 2.0;
 const SWITCHER_MIN_H: f32 = APPBAR_H * 3.0 + SPACE_2XL;
 const SWITCHER_MAX_H: f32 = MODAL_SCROLL_MAX_H + APPBAR_H * 3.0;
 
@@ -328,7 +328,8 @@ impl Shell {
     }
 
     fn header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let fullscreen_label = if window.is_fullscreen() {
+        let fullscreen = window.is_fullscreen();
+        let fullscreen_label = if fullscreen {
             "Exit full screen"
         } else {
             "Enter full screen"
@@ -367,7 +368,12 @@ impl Shell {
             0.0
         };
         let workspace_in_rail = self.sidebar.read(cx).rail_width(window, cx)
-            >= WORKSPACE_HEADER_RAIL_MIN_W + update_control_width;
+            >= WORKSPACE_HEADER_RAIL_MIN_W + update_control_width
+                - if fullscreen {
+                    TRAFFIC_CONTROL_W * 3.0
+                } else {
+                    0.0
+                };
         let workspace_in_appbar = !grid && !collapsed && rail_visible && !workspace_in_rail;
         let solid_sidebar = cx
             .global::<crate::settings::SettingsState>()
@@ -380,7 +386,7 @@ impl Shell {
             .flex()
             .items_center()
             .flex_shrink_0()
-            .h(rpx(APPBAR_H))
+            .h(rpx(APPBAR_TOTAL_H))
             .when(collapsed, |header| {
                 header.pl(rpx(self.sidebar.read(cx).rail_width(window, cx)))
             })
@@ -392,23 +398,32 @@ impl Shell {
                     .debug_selector(|| "header-rail-segment".into())
                     .group("traffic-lights")
                     .h_full()
+                    .pt(rpx(APPBAR_TOP_INSET))
                     .px(rpx(SPACE_2XL))
                     .flex_shrink_0()
-                    .when(collapsed, |segment| segment.w_0().px_0())
-                    .when(!grid && !collapsed, |segment| {
-                        segment
-                            .w(rpx(self.sidebar.read(cx).rail_width(window, cx).max(
-                                if rail_visible {
-                                    0.0
-                                } else {
-                                    TRAFFIC_CONTROL_W * 3.0 + SPACE_2XL * 2.0
-                                },
-                            )))
-                            .border_r_1()
-                            .border_color(c::BORDER())
-                            .when(solid_sidebar, |segment| segment.bg(c::BG_RAIL()))
-                    })
-                    .when(workspace_in_appbar, |segment| {
+                    .when(
+                        collapsed || fullscreen && (!rail_visible || grid || workspace_in_appbar),
+                        |segment| segment.w_0().px_0(),
+                    )
+                    .when(
+                        !grid
+                            && !collapsed
+                            && (!fullscreen || rail_visible && !workspace_in_appbar),
+                        |segment| {
+                            segment
+                                .w(rpx(self.sidebar.read(cx).rail_width(window, cx).max(
+                                    if rail_visible {
+                                        0.0
+                                    } else {
+                                        TRAFFIC_CONTROL_W * 3.0 + SPACE_2XL * 2.0
+                                    },
+                                )))
+                                .border_r_1()
+                                .border_color(c::BORDER())
+                                .when(solid_sidebar, |segment| segment.bg(c::BG_RAIL()))
+                        },
+                    )
+                    .when(workspace_in_appbar && !fullscreen, |segment| {
                         segment
                             .w(rpx(TRAFFIC_CONTROL_W * 3.0 + SPACE_2XL * 2.0))
                             .border_r_0()
@@ -424,7 +439,7 @@ impl Shell {
                     })
                     .flex()
                     .items_center()
-                    .when(!collapsed, |segment| {
+                    .when(!collapsed && !fullscreen, |segment| {
                         segment
                             .child(
                                 traffic("window-close", "Close window", c::WINDOW_CLOSE(), "close")
@@ -473,7 +488,9 @@ impl Shell {
                     .flex()
                     .items_center()
                     .flex_1()
+                    .min_w_0()
                     .h_full()
+                    .pt(rpx(APPBAR_TOP_INSET))
                     .bg(c::BG_STRIP())
                     .when(workspace_in_appbar, |header| {
                         header.child(
@@ -1716,7 +1733,12 @@ impl Render for Shell {
                             .relative()
                             .flex_shrink_0()
                             .when(!grid, |header| {
-                                header.absolute().top_0().left_0().w_full().h(rpx(APPBAR_H))
+                                header
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .w_full()
+                                    .h(rpx(APPBAR_TOTAL_H))
                             })
                             .child(self.header(window, cx))
                             .when(self.sidebar.read(cx).confirmation_open(), |header| {
@@ -2631,12 +2653,15 @@ mod tests {
         let header = cx.debug_bounds("app-header").unwrap();
         let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
         assert_eq!(canvas.top(), header.bottom());
-        assert_eq!(f32::from(header.size.height), APPBAR_H);
+        assert_eq!(f32::from(header.size.height), APPBAR_TOTAL_H);
         let grid = cx
             .debug_bounds("sidebar-grid")
             .expect("grid control in app header");
         assert!(header.contains(&grid.center()));
-        assert_eq!(grid.center().y, header.center().y);
+        assert_eq!(
+            grid.center().y,
+            header.center().y + gpui::px(APPBAR_TOP_INSET / 2.)
+        );
         assert!(cx.debug_bounds("sidebar-settings").is_none());
         assert!(cx.debug_bounds("settings").is_none());
     }
@@ -2661,11 +2686,67 @@ mod tests {
     }
 
     #[gpui::test]
+    fn header_top_inset_and_fullscreen_controls_follow_window_state(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (_, cx) = cx.add_window_view(Shell::new);
+        for zoom in [1.0, 1.5] {
+            cx.update(|_, cx| cx.set_global(crate::zoom::ZoomState::new(zoom)));
+            for width in [1280.0, 500.0, 320.0] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.0)));
+                for fullscreen in [false, true, false] {
+                    cx.update(|window, _| {
+                        if window.is_fullscreen() != fullscreen {
+                            window.toggle_fullscreen();
+                        }
+                    });
+                    draw(cx);
+                    let header = cx.debug_bounds("app-header").unwrap();
+                    assert_eq!(header.size.height, gpui::px(APPBAR_TOTAL_H * zoom));
+                    let workspace = cx.debug_bounds("workspace-picker").unwrap();
+                    assert_eq!(
+                        workspace.center().y,
+                        header.top() + gpui::px((APPBAR_TOP_INSET + APPBAR_H / 2.) * zoom)
+                    );
+                    for id in ["window-close", "window-minimize", "window-fullscreen"] {
+                        assert_eq!(
+                            cx.debug_bounds(id).is_none(),
+                            fullscreen,
+                            "{id} fullscreen={fullscreen}"
+                        );
+                        if !fullscreen {
+                            assert_eq!(
+                                cx.debug_bounds(id).unwrap().center().y,
+                                workspace.center().y
+                            );
+                        }
+                    }
+                    if fullscreen {
+                        assert!(
+                            workspace.left()
+                                <= header.left() + gpui::px((SPACE_2XL + SPACE_SM) * zoom)
+                        );
+                        let segment = cx.debug_bounds("header-rail-segment").unwrap();
+                        if segment.size.width == gpui::px(0.) {
+                            assert_eq!(segment.left(), header.left());
+                        }
+                    }
+                    let settings = cx.debug_bounds("sidebar-settings").unwrap();
+                    let collapse = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
+                    assert!(workspace.right() <= settings.left());
+                    assert!(settings.right() <= collapse.left());
+                    assert!(collapse.right() <= header.right(), "width={width} zoom={zoom} fullscreen={fullscreen} collapse={collapse:?} header={header:?}");
+                    assert_eq!(collapse.center().y, workspace.center().y);
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
     fn sidebar_workspace_control_traverses_and_activates(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
         for zoom in [1.0, 1.5] {
-            cx.update(|window, _| window.set_rem_size(gpui::px(16.0 * zoom)));
+            cx.update(|_, cx| cx.set_global(crate::zoom::ZoomState::new(zoom)));
             for width in [1280.0, 500.0, 320.0] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.0)));
                 draw(cx);
@@ -2694,7 +2775,7 @@ mod tests {
                 }
             }
         }
-        cx.update(|window, _| window.set_rem_size(gpui::px(16.0)));
+        cx.update(|_, cx| cx.set_global(crate::zoom::ZoomState::new(1.0)));
         cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(600.0)));
         draw(cx);
         let rail = cx.debug_bounds("sidebar-rail").expect("sidebar rail");
@@ -2708,7 +2789,10 @@ mod tests {
             segment.bottom()
         );
         let workspace_header = cx.debug_bounds("sidebar-workspace-header").unwrap();
-        assert_eq!(segment.top(), workspace_header.top());
+        assert_eq!(
+            segment.top() + gpui::px(APPBAR_TOP_INSET),
+            workspace_header.top()
+        );
         assert_eq!(
             cx.debug_bounds("canvas-section-header").unwrap().top(),
             rail.top()

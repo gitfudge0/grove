@@ -2198,7 +2198,7 @@ impl Sidebar {
                 panel.max_h(window.viewport_size().height * NARROW_HEIGHT_FRACTION)
             })
             .p(rpx(SPACE_3XL))
-            .when(wide, |panel| panel.pt(rpx(APPBAR_H + SPACE_3XL)))
+            .when(wide, |panel| panel.pt(rpx(APPBAR_TOTAL_H + SPACE_3XL)))
             .overflow_y_scroll()
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && this.checkout_panel.expanded {
@@ -4661,7 +4661,7 @@ mod tests {
             let _ = window.draw(cx);
         });
         let card = cx.debug_bounds("checkout-card").unwrap();
-        assert!(card.top() >= gpui::px(APPBAR_H + SPACE_3XL));
+        assert!(card.top() >= gpui::px(APPBAR_TOTAL_H + SPACE_3XL));
         let divider = cx.debug_bounds("checkout-divider").unwrap();
         assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
         assert!(divider.right() >= card.right() - gpui::px(SPACE_XS));

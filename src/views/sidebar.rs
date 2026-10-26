@@ -5172,7 +5172,7 @@ impl Render for Sidebar {
                     div()
                         .id("sidebar-appbar-spacer")
                         .debug_selector(|| "sidebar-appbar-spacer".into())
-                        .h(rpx(APPBAR_H))
+                        .h(rpx(APPBAR_TOTAL_H))
                         .flex_shrink_0(),
                 )
             })
@@ -5692,7 +5692,8 @@ mod tests {
                             .top_0()
                             .left_0()
                             .w(rpx(width))
-                            .h(rpx(APPBAR_H))
+                            .h(rpx(APPBAR_TOTAL_H))
+                            .pt(rpx(APPBAR_TOP_INSET))
                             .child(
                                 self.sidebar
                                     .update(cx, |sidebar, cx| sidebar.workspace_header(cx)),

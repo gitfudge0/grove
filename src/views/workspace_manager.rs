@@ -429,7 +429,8 @@ impl WorkspaceManager {
         let width =
             width.min((f32::from(window.viewport_size().width) / scale - SPACE_3XL).max(0.0));
         let max_height =
-            (f32::from(window.viewport_size().height) / scale - APPBAR_H - SPACE_3XL).max(FIELD_H);
+            (f32::from(window.viewport_size().height) / scale - APPBAR_TOTAL_H - SPACE_3XL)
+                .max(FIELD_H);
         let popup_bounds = self.popup_bounds.clone();
         let mut panel = div()
             .id("workspace-popup")

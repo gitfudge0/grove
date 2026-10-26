@@ -126,6 +126,10 @@ pub const CARD_LABEL_INDENT: f32 = SPACE_2XL + 1.0;
 
 /// Reference app header geometry.
 pub const APPBAR_H: f32 = 40.0;
+/// Top breathing room above the shared window/workspace control row.
+pub const APPBAR_TOP_INSET: f32 = SPACE_LG;
+/// Full chrome extent; APPBAR_H remains the usable control row height.
+pub const APPBAR_TOTAL_H: f32 = APPBAR_H + APPBAR_TOP_INSET;
 pub const CHROME_CONTROL_H: f32 = 24.0;
 pub const TEXT_BRAND: f32 = 15.0;
 pub const RADIUS_CHROME: f32 = 8.0;

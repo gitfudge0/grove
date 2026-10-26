@@ -857,7 +857,12 @@ impl Sidebar {
         });
         let header_status = task_progress.unwrap_or(status);
         header = header
-            .h(rpx(if grid { SESSION_HEADER_H } else { APPBAR_H }))
+            .h(rpx(if grid {
+                SESSION_HEADER_H
+            } else {
+                APPBAR_TOTAL_H
+            }))
+            .when(!grid, |header| header.pt(rpx(APPBAR_TOP_INSET)))
             .child(
                 div()
                     .id(gpui::SharedString::from(format!(
@@ -1970,7 +1975,8 @@ fn canvas_section_header(title: String) -> impl gpui::IntoElement {
     div()
         .id("canvas-section-header")
         .debug_selector(|| "canvas-section-header".into())
-        .h(rpx(APPBAR_H))
+        .h(rpx(APPBAR_TOTAL_H))
+        .pt(rpx(APPBAR_TOP_INSET))
         .flex_shrink_0()
         .min_w_0()
         .px(rpx(SPACE_3XL))
@@ -2784,14 +2790,18 @@ mod tests {
             close.left() >= header.left() && close.right() <= header.right(),
             "{header:?} {close:?}"
         );
-        assert_eq!(f32::from(header.size.height), APPBAR_H);
+        assert_eq!(f32::from(header.size.height), APPBAR_TOTAL_H);
         let worktree = cx.debug_bounds("session-header-worktree-1").unwrap();
         let title = cx.debug_bounds("session-header-title-1").unwrap();
         assert!(worktree.right() < title.left());
         assert!(title.right() <= close.left());
         for zone in ["terminal-header-left-1", "terminal-header-right-1"] {
             let bounds = cx.debug_bounds(zone).unwrap();
-            assert!(f32::from(bounds.center().y - header.center().y).abs() < 1.);
+            assert!(
+                f32::from(bounds.center().y - header.center().y - gpui::px(APPBAR_TOP_INSET / 2.))
+                    .abs()
+                    < 1.
+            );
         }
 
         cx.update(|window, cx| {
@@ -2867,7 +2877,7 @@ mod tests {
         let header = cx.debug_bounds("canvas-section-header").unwrap();
         let scroll = cx.debug_bounds("canvas-empty-scroll").unwrap();
         let card = cx.debug_bounds("canvas-empty-card").unwrap();
-        assert_eq!(f32::from(header.size.height), APPBAR_H);
+        assert_eq!(f32::from(header.size.height), APPBAR_TOTAL_H);
         assert!(header.bottom() <= scroll.top());
         assert!(card.left() >= canvas.left() && card.right() <= canvas.right());
         assert!((f32::from(card.center().x - canvas.center().x)).abs() < 1.);
