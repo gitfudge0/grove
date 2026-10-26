@@ -6,7 +6,7 @@ use std::{
     process::Command,
 };
 
-use gpui::{AppContext as _, Context, Entity, EventEmitter, Task};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use grove_core::{git, storage};
 
 use crate::entities::{
@@ -63,6 +63,7 @@ pub struct WorktreeRemoval {
 pub struct ProjectService {
     registry: Entity<SessionRegistry>,
     state: Entity<WorkspaceState>,
+    inline_scripts: Vec<(String, String, gpui::WeakEntity<TerminalSession>)>,
     teardown_session: Option<Entity<TerminalSession>>,
     teardown_poll: Option<Task<()>>,
     teardown_target: Option<(String, String)>,
@@ -102,6 +103,43 @@ pub(crate) fn worktree_prerequisite(path: &str) -> Result<(), &'static str> {
 impl EventEmitter<ProjectEvent> for ProjectService {}
 
 impl ProjectService {
+    pub(crate) fn track_inline_script(
+        &mut self,
+        project: String,
+        checkout: String,
+        terminal: &Entity<TerminalSession>,
+    ) {
+        self.inline_scripts
+            .retain(|(_, _, session)| session.upgrade().is_some());
+        self.inline_scripts
+            .push((project, checkout, terminal.downgrade()));
+    }
+
+    fn ensure_no_inline_scripts(&self, path: &str, cx: &App) -> Result<(), String> {
+        if self
+            .inline_scripts
+            .iter()
+            .any(|(project, checkout, terminal)| {
+                (project == path
+                    || path_within_worktree(
+                        checkout,
+                        path,
+                        Path::new(path).canonicalize().ok().as_deref(),
+                    ))
+                    && terminal
+                        .upgrade()
+                        .is_some_and(|terminal| !terminal.read(cx).has_exited())
+            })
+        {
+            Err(
+                "Stop running scripts in this checkout before removing, moving, or archiving it."
+                    .into(),
+            )
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn project_git_initialized(&mut self, cx: &mut Context<Self>) {
         cx.emit(ProjectEvent::TreeInvalidated);
     }
@@ -109,6 +147,7 @@ impl ProjectService {
         Self {
             registry,
             state,
+            inline_scripts: Vec::new(),
             teardown_session: None,
             teardown_poll: None,
             teardown_target: None,
@@ -175,6 +214,7 @@ impl ProjectService {
         open_destination: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        self.ensure_no_inline_scripts(path, cx)?;
         let store = &cx.global::<SettingsState>().store;
         project_index(&store.projects, path)
             .ok_or_else(|| "Project no longer exists.".to_string())?;
@@ -232,7 +272,7 @@ impl ProjectService {
             .ok_or_else(|| "Project no longer exists.".to_string())?;
         let name = validated_name(&store.projects, &name, Some(path))?;
         let old_name = store.projects[idx].name.clone();
-        self.archive_blockers(path, cx)?;
+        self.registered_project_blockers(path, cx)?;
         if old_name != name {
             grove_core::session_meta::validate_project_ownership(&store.projects)?;
             if store
@@ -396,6 +436,15 @@ impl ProjectService {
 
     /// Archive is blocked by every registered session, including exited sessions.
     pub fn archive_blockers(
+        &self,
+        path: &str,
+        cx: &Context<Self>,
+    ) -> Result<Vec<SessionId>, String> {
+        self.ensure_no_inline_scripts(path, cx)?;
+        self.registered_project_blockers(path, cx)
+    }
+
+    fn registered_project_blockers(
         &self,
         path: &str,
         cx: &Context<Self>,
@@ -660,6 +709,7 @@ impl ProjectService {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         self.ensure_not_removing(project_path)?;
+        self.ensure_no_inline_scripts(wt_path, cx)?;
         if self.teardown_target.is_some()
             || self
                 .worktree_removals

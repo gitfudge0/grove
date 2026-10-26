@@ -102,6 +102,9 @@ impl DecorationCollections {
         else {
             return false;
         };
+        if *current == decorations {
+            return false;
+        }
         *current = decorations;
         true
     }
@@ -279,6 +282,19 @@ mod tests {
             collections.get(second),
             Some(&[TextDecoration::new(5..6, second_style)][..])
         );
+    }
+
+    #[test]
+    fn unchanged_decorations_do_not_request_another_input_render() {
+        let decoration = TextDecoration::new(0..4, HighlightStyle::default());
+        let mut collections = DecorationCollections::default();
+        let id = collections.create(vec![decoration.clone()]);
+        assert!(!collections.set(id, vec![decoration.clone()]));
+        collections.adjust_for_edit(&(0..4), 0);
+        assert!(collections.set(id, vec![decoration.clone()]));
+        assert!(!collections.set(id, vec![decoration]));
+        assert!(collections.set(id, Vec::new()));
+        assert!(!collections.set(id, Vec::new()));
     }
 
     #[test]

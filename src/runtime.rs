@@ -88,6 +88,18 @@ fn resolve_multi_root_worktree(
     Err(format!("{selected_path}: worktree is no longer available"))
 }
 
+#[derive(Clone)]
+pub(crate) struct ScriptRun {
+    pub id: u64,
+    pub project_path: String,
+    pub checkout_path: String,
+    pub script_id: String,
+    pub name: String,
+    pub command: String,
+    pub terminal: Entity<TerminalSession>,
+    _observer: std::rc::Rc<gpui::Subscription>,
+}
+
 pub struct Runtime {
     pub state: Entity<WorkspaceState>,
     pub registry: Entity<SessionRegistry>,
@@ -97,6 +109,8 @@ pub struct Runtime {
     pub shell_environment: Entity<ShellEnvironment>,
     pub toast: Entity<ToastState>,
     pub projects: Entity<crate::project_service::ProjectService>,
+    pub(crate) script_runs: Vec<ScriptRun>,
+    next_script_run: u64,
     last_pty_dims: (u16, u16),
     pending_managed_launch: Option<PendingManagedLaunch>,
     pub(crate) restoring_codex: bool,
@@ -132,6 +146,9 @@ impl Runtime {
         }
         let observers = vec![
             cx.on_app_quit(|runtime, cx| {
+                for run in &runtime.script_runs {
+                    run.terminal.update(cx, TerminalSession::stop_script);
+                }
                 let stopped = runtime
                     .registry
                     .update(cx, |registry, _| registry.stop_codex_sessions());
@@ -163,6 +180,8 @@ impl Runtime {
             shell_environment,
             toast,
             projects,
+            script_runs: Vec::new(),
+            next_script_run: 0,
             last_pty_dims: (dims.rows, dims.cols),
             pending_managed_launch: None,
             restoring_codex: !cfg!(test)
@@ -183,6 +202,29 @@ impl Runtime {
         cx: &mut Context<Self>,
     ) {
         use crate::project_service::ProjectEvent;
+        self.script_runs.retain(|run| {
+            let exists = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .iter()
+                .any(|project| {
+                    project.path == run.project_path
+                        && !project.archived
+                        && project.scripts.effective_entries().iter().any(|entry| {
+                            entry.id == run.script_id
+                                && matches!(
+                                    entry.kind,
+                                    grove_core::storage::ProjectActionKind::Shell { .. }
+                                )
+                        })
+                })
+                && std::path::Path::new(&run.checkout_path).exists();
+            if !exists {
+                run.terminal.update(cx, TerminalSession::stop_script);
+            }
+            exists
+        });
         let idx = self.state.read(cx).proj_idx();
         let active = cx
             .global::<SettingsState>()
@@ -924,7 +966,7 @@ impl Runtime {
             });
             return false;
         };
-        self.spawn_checkout_command(project_path, wt_path, &command, cx)
+        self.spawn_checkout_command_inner(project_path, wt_path, &command, Some(entry_id), cx)
     }
 
     pub fn spawn_checkout_command(
@@ -932,6 +974,17 @@ impl Runtime {
         project_path: &str,
         wt_path: &str,
         command: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.spawn_checkout_command_inner(project_path, wt_path, command, None, cx)
+    }
+
+    fn spawn_checkout_command_inner(
+        &mut self,
+        project_path: &str,
+        wt_path: &str,
+        command: &str,
+        script_id: Option<&str>,
         cx: &mut Context<Self>,
     ) -> bool {
         let target = (|| -> Result<Option<(String, String, String)>, String> {
@@ -985,6 +1038,39 @@ impl Runtime {
                 toast.set_error(format!("terminal failed: {error}"), cx);
             });
             return false;
+        }
+        if let Some(script_id) = script_id {
+            let id = self.next_script_run;
+            self.next_script_run += 1;
+            let name = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .iter()
+                .find(|project| project.path == project_path)
+                .and_then(|project| {
+                    project
+                        .scripts
+                        .effective_entries()
+                        .into_iter()
+                        .find(|entry| entry.id == script_id)
+                })
+                .map_or_else(|| "Script".to_string(), |entry| entry.name);
+            self.projects.update(cx, |projects, _| {
+                projects.track_inline_script(project_path.to_owned(), cwd.clone(), &session);
+            });
+            self.script_runs.push(ScriptRun {
+                id,
+                project_path: project_path.to_owned(),
+                checkout_path: cwd,
+                script_id: script_id.to_owned(),
+                name,
+                command: script,
+                terminal: session.clone(),
+                _observer: std::rc::Rc::new(cx.observe(&session, |_, _, cx| cx.notify())),
+            });
+            cx.notify();
+            return true;
         }
         self.state.update(cx, |state, cx| {
             state.set_open_agent_menu(None);
@@ -1320,7 +1406,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn run_script_uses_worktree_cwd_and_selects_native_session(cx: &mut gpui::TestAppContext) {
+    fn run_script_uses_worktree_cwd_without_selecting_session(cx: &mut gpui::TestAppContext) {
         let repo = git_fixture();
         let canonical = repo.path().canonicalize().unwrap();
         let path = canonical.to_str().unwrap();
@@ -1329,21 +1415,16 @@ mod tests {
         let runtime = cx.update(|cx| {
             let runtime = init_script_runtime(cx, script_project(path, &script));
             assert!(runtime.update(cx, |runtime, cx| runtime.spawn_run_script(path, path, cx)));
-            let registry = runtime.read(cx).registry.read(cx);
-            let sessions = registry.all();
-            assert_eq!(sessions.len(), 1);
-            assert_eq!(sessions[0].project, "script fixture");
-            assert_eq!(sessions[0].wt_path, path);
-            assert_eq!(sessions[0].agent, Agent::Terminal);
-            assert!(!sessions[0].tmux);
-            assert!(registry.wt_shells(path).is_empty());
+            let state = runtime.read(cx);
+            assert!(state.registry.read(cx).is_empty());
+            assert_eq!(state.script_runs.len(), 1);
+            let run = &state.script_runs[0];
+            assert_eq!(run.project_path, path);
+            assert_eq!(run.checkout_path, path);
+            assert_eq!(run.command, script);
+            assert!(state.state.read(cx).active_session().is_none());
             assert_eq!(
-                runtime.read(cx).state.read(cx).active_session(),
-                Some(sessions[0].id)
-            );
-            let session = registry.session(sessions[0].id).unwrap();
-            assert_eq!(
-                session.read(cx).backend(),
+                run.terminal.read(cx).backend(),
                 &crate::entities::terminal_session::Backend::Native
             );
             runtime
@@ -1394,31 +1475,153 @@ mod tests {
     }
 
     #[gpui::test]
-    fn repeated_run_scripts_have_distinct_closeable_session_ids(cx: &mut gpui::TestAppContext) {
+    fn repeated_run_scripts_have_distinct_inline_ids_and_removal_guard(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let repo = git_fixture();
         let canonical = repo.path().canonicalize().unwrap();
         let path = canonical.to_str().unwrap();
         cx.update(|cx| {
-            let runtime = init_script_runtime(cx, script_project(path, "true"));
+            let runtime = init_script_runtime(cx, script_project(path, "sleep 30"));
             assert!(runtime.update(cx, |runtime, cx| runtime.spawn_run_script(path, path, cx)));
-            let first = runtime.read(cx).registry.read(cx).all()[0].id;
             assert!(runtime.update(cx, |runtime, cx| runtime.spawn_run_script(path, path, cx)));
-            let registry = runtime.read(cx).registry.read(cx);
-            assert_eq!(registry.len(), 2);
-            let second = registry.all()[1].id;
-            assert_ne!(first, second);
-            assert!(registry.session(first).is_some());
-            assert!(registry.session(second).is_some());
-            assert!(registry.wt_shells(path).is_empty());
-            assert_eq!(
-                runtime.read(cx).state.read(cx).active_session(),
-                Some(second)
+            let state = runtime.read(cx);
+            assert!(state.registry.read(cx).is_empty());
+            assert_eq!(state.script_runs.len(), 2);
+            let first = state.script_runs[0].clone();
+            let second = state.script_runs[1].clone();
+            assert_ne!(first.id, second.id);
+            assert_eq!(first.script_id, second.script_id);
+            let service = state.projects.clone();
+            assert!(service
+                .update(cx, |service, cx| service.archive_blockers(path, cx))
+                .is_err());
+            first.terminal.update(cx, TerminalSession::stop_script);
+            second.terminal.update(cx, TerminalSession::stop_script);
+            runtime.update(cx, |runtime, _| {
+                runtime.script_runs.retain(|run| run.id != first.id);
+            });
+            assert_eq!(runtime.read(cx).script_runs.len(), 1);
+            assert_eq!(runtime.read(cx).script_runs[0].id, second.id);
+        });
+    }
+
+    #[gpui::test]
+    fn script_edits_preserve_run_snapshots_and_stop_retyped_or_deleted_runs(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use grove_core::storage::{ProjectAction, ProjectActionKind, ProjectScripts};
+        let repo = git_fixture();
+        let path = repo
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let scripts = ProjectScripts {
+            entries: vec![ProjectAction {
+                id: "stable-action".into(),
+                name: "Original".into(),
+                kind: ProjectActionKind::Shell {
+                    command: "sleep 30".into(),
+                },
+            }],
+            ..Default::default()
+        };
+        let runtime = cx.update(|cx| {
+            let mut project = script_project(&path, "");
+            project.scripts = scripts.clone();
+            let runtime = init_script_runtime(cx, project);
+            assert!(
+                runtime.update(cx, |runtime, cx| runtime.spawn_project_script(
+                    &path,
+                    &path,
+                    "stable-action",
+                    cx
+                ))
             );
-            runtime.update(cx, |runtime, cx| runtime.kill_session(first, cx));
-            let registry = runtime.read(cx).registry.read(cx);
-            assert_eq!(registry.len(), 1);
-            assert_eq!(registry.all()[0].id, second);
-            assert!(registry.session(first).is_none());
+            runtime
+        });
+        let (service, original) = cx.update(|cx| {
+            let state = runtime.read(cx);
+            (state.projects.clone(), state.script_runs[0].clone())
+        });
+        cx.update(|cx| {
+            assert!(service
+                .update(cx, |service, cx| service.archive_project_by_path(&path, cx))
+                .is_err());
+            let mut renamed = scripts.clone();
+            renamed.entries[0].name = "Renamed".into();
+            renamed.entries[0].kind = ProjectActionKind::Shell {
+                command: "sleep 31".into(),
+            };
+            service
+                .update(cx, |service, cx| {
+                    service.update_project(&path, "script fixture".into(), renamed, cx)
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let state = runtime.read(cx);
+            assert_eq!(state.script_runs.len(), 1);
+            assert_eq!(state.script_runs[0].id, original.id);
+            assert_eq!(state.script_runs[0].name, "Original");
+            assert_eq!(state.script_runs[0].command, "sleep 30");
+            assert_eq!(state.script_runs[0].checkout_path, path);
+            assert!(!original.terminal.read(cx).has_exited());
+            let mut prompt = scripts.clone();
+            prompt.entries[0].kind = ProjectActionKind::Prompt {
+                template: "Review the changes".into(),
+            };
+            service
+                .update(cx, |service, cx| {
+                    service.update_project(&path, "script fixture".into(), prompt, cx)
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(runtime.read(cx).script_runs.is_empty());
+            assert!(original.terminal.read(cx).has_exited());
+            service
+                .update(cx, |service, cx| {
+                    service.update_project(&path, "script fixture".into(), scripts.clone(), cx)
+                })
+                .unwrap();
+        });
+        cx.run_until_parked();
+        let deleted = cx.update(|cx| {
+            assert!(
+                runtime.update(cx, |runtime, cx| runtime.spawn_project_script(
+                    &path,
+                    &path,
+                    "stable-action",
+                    cx
+                ))
+            );
+            let deleted = runtime.read(cx).script_runs[0].clone();
+            assert_ne!(deleted.id, original.id);
+            service
+                .update(cx, |service, cx| {
+                    service.update_project(
+                        &path,
+                        "script fixture".into(),
+                        ProjectScripts::default(),
+                        cx,
+                    )
+                })
+                .unwrap();
+            deleted
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(runtime.read(cx).script_runs.is_empty());
+            assert!(deleted.terminal.read(cx).has_exited());
+            assert!(service
+                .update(cx, |service, cx| service.archive_blockers(&path, cx))
+                .unwrap()
+                .is_empty());
         });
     }
 

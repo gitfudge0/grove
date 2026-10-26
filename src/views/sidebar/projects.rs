@@ -42,7 +42,7 @@ const FOCUS_SCAN_LIMIT: usize = 128;
 const DESTINATION_ROW_H: f32 = 44.;
 
 #[derive(Clone)]
-pub(super) enum ProjectPanelEvent {
+pub(in crate::views) enum ProjectPanelEvent {
     Closed,
     Selected(String),
     Decision(bool),
@@ -55,7 +55,7 @@ pub(super) enum ProjectPanelEvent {
     },
 }
 #[derive(Clone, PartialEq)]
-pub(super) enum Page {
+pub(in crate::views) enum Page {
     Edit(String),
     Remove(String),
     Move(String),
@@ -66,7 +66,7 @@ enum Decision {
     Archive,
     Delete(String),
 }
-pub(super) struct ProjectPanel {
+pub(in crate::views) struct ProjectPanel {
     pub(super) workspace: u64,
     service: Entity<ProjectService>,
     registry: Entity<SessionRegistry>,
@@ -90,6 +90,7 @@ pub(super) struct ProjectPanel {
     focus: FocusHandle,
 
     return_focus: Option<FocusHandle>,
+    settings_origin: bool,
     observers: Vec<Subscription>,
     scroll: gpui::ScrollHandle,
     scripts_anchor: gpui::ScrollAnchor,
@@ -98,7 +99,7 @@ pub(super) struct ProjectPanel {
 }
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
 impl ProjectPanel {
-    pub(super) fn new(
+    pub(in crate::views) fn new(
         page: Page,
         service: Entity<ProjectService>,
         registry: Entity<SessionRegistry>,
@@ -208,6 +209,7 @@ impl ProjectPanel {
             focus: cx.focus_handle(),
 
             return_focus: None,
+            settings_origin: false,
             observers,
         };
         if let Page::Remove(path) = &panel.page {
@@ -269,7 +271,12 @@ impl ProjectPanel {
         cx.emit(ProjectPanelEvent::Decision(true));
         cx.notify();
     }
-    fn save(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::views) fn in_settings(mut self) -> Self {
+        self.settings_origin = true;
+        self
+    }
+
+    pub(super) fn save(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         let Page::Edit(path) = &self.page else { return };
         let path = path.clone();
@@ -323,7 +330,7 @@ impl ProjectPanel {
         match self.service.update(cx, |service, cx| {
             service.update_project(&path, values[0].clone(), scripts, cx)
         }) {
-            Ok(()) => cx.emit(ProjectPanelEvent::Selected(path)),
+            Ok(()) => cx.emit(ProjectPanelEvent::Closed),
             Err(error) => self.error = Some(error),
         }
         cx.notify();
@@ -355,7 +362,7 @@ impl ProjectPanel {
                 .unwrap_or_default()
                 .as_nanos()
         );
-        let name = cx.new(|cx| InputState::new(window, cx).default_value("New script"));
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder("New script"));
         let body = cx.new(|cx| InputState::new(window, cx).multi_line(true));
         self.script_focus.insert(id.clone(), cx.focus_handle());
         self.expanded_script = Some(ScriptEditor::Action(id.clone()));
@@ -543,7 +550,7 @@ impl ProjectPanel {
             window,
             cx,
         )
-        .track_focus(&self.add_script_focus)
+        .with_focus_handle(self.add_script_focus.clone())
         .on_click(cx.listener(|this, _, window, cx| this.add_script(window, cx)));
         let mut list = div()
             .id("project-scripts-register")
@@ -1785,7 +1792,11 @@ impl Render for ProjectPanel {
                         .child(
                             project_action(
                                 "project-panel-cancel".into(),
-                                "Back to Projects",
+                                if self.settings_origin {
+                                    "Back to General"
+                                } else {
+                                    "Back to Projects"
+                                },
                                 Some("icons/arrow-left.svg"),
                                 ProjectActionStyle::Quiet,
                                 window,
@@ -1846,9 +1857,7 @@ impl Render for ProjectPanel {
                         this.close(cx);
                     }
                     cx.stop_propagation();
-                } else if event.keystroke.key == "tab"
-                    && (this.is_decision() || matches!(this.page, Page::Move(_)))
-                {
+                } else if event.keystroke.key == "tab" {
                     window.prevent_default();
                     for _ in 0..FOCUS_SCAN_LIMIT {
                         if event.keystroke.modifiers.shift {
@@ -2260,6 +2269,11 @@ mod tests {
                 assert!(added.2.read(cx).focus_handle(cx).is_focused(window));
                 let added_id = added.0.clone();
                 let added_name = added.2.clone();
+                assert!(
+                    added_name.read(cx).value().is_empty(),
+                    "New script is a placeholder, never draft content"
+                );
+                added_name.update(cx, |input, cx| input.set_value("Build", window, cx));
                 panel.save(cx);
                 assert!(matches!(&panel.script_error, Some((id, false, _)) if id == &added_id));
                 added_name.update(cx, |input, cx| input.set_value("", window, cx));

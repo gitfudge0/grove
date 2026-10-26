@@ -39,6 +39,54 @@ use std::{
 
 const CODE_COPY_FEEDBACK_MS: u64 = 1200;
 
+/// Paint Markdown source without replacing text or changing editor mode. Leaf
+/// spans are ordered and disjoint, so nested emphasis composes correctly with
+/// independent picked-file/image decorations and UTF-8 cursor offsets.
+fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
+    use markdown::mdast::Node;
+    fn visit(node: &Node, mut style: gpui::HighlightStyle, out: &mut Vec<TextDecoration>) {
+        match node {
+            Node::Strong(_) | Node::Heading(_) => {
+                style.font_weight = Some(gpui::FontWeight::BOLD);
+            }
+            Node::Emphasis(_) => style.font_style = Some(gpui::FontStyle::Italic),
+            Node::Delete(_) => {
+                style.strikethrough = Some(gpui::StrikethroughStyle {
+                    thickness: gpui::px(1.),
+                    color: None,
+                });
+            }
+            Node::Link(_) | Node::LinkReference(_) => {
+                style.underline = Some(gpui::UnderlineStyle {
+                    thickness: gpui::px(1.),
+                    ..Default::default()
+                });
+            }
+            Node::InlineCode(_) | Node::Code(_) => {
+                style.background_color = Some(c::BG_HOVER());
+            }
+            _ => {}
+        }
+        if let Some(children) = node.children() {
+            for child in children {
+                visit(child, style, out);
+            }
+        } else if style != gpui::HighlightStyle::default() {
+            if let Some(position) = node.position() {
+                let range = position.start.offset..position.end.offset;
+                if !range.is_empty() {
+                    out.push(TextDecoration::new(range, style));
+                }
+            }
+        }
+    }
+    let mut decorations = Vec::new();
+    if let Ok(root) = markdown::to_mdast(text, &markdown::ParseOptions::gfm()) {
+        visit(&root, gpui::HighlightStyle::default(), &mut decorations);
+    }
+    decorations
+}
+
 /// Yolo belongs to the saved native launch recipe, never to a later access choice.
 fn session_launched_with_yolo(state: &codex::Snapshot) -> bool {
     if state.saved.native_config_version == 0 {
@@ -802,6 +850,8 @@ pub struct CodexView {
     preview_child: Option<String>,
     session: Entity<CodexSession>,
     pub(super) html: Entity<super::inline_html::HtmlSession>,
+    markdown_decorations: TextDecorationCollection,
+    markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     input: Entity<InputState>,
     reference: Option<codex::ReferenceDraft>,
@@ -981,6 +1031,9 @@ impl CodexView {
                 .placeholder(placeholder)
                 .default_value(draft)
         });
+        let markdown_decorations = input.update(cx, |input, cx| {
+            input.create_decorations_collection(Vec::new(), cx)
+        });
         let card_focus = cx.focus_handle();
         let mut subscriptions = vec![
             cx.observe(&session, |this, _, cx| {
@@ -1056,6 +1109,8 @@ impl CodexView {
             session,
             html,
             native_plans: HashMap::new(),
+            markdown_decorations,
+            markdown_source: None,
             input,
             reference,
             submitted_reference: None,
@@ -1222,30 +1277,38 @@ impl CodexView {
                     .text_color(c::FG_DIM())
                     .mb(rpx(SPACE_2XL))
                     .children(
-                        [identity, location, branch]
-                            .into_iter()
-                            .filter(|value| !value.is_empty())
-                            .enumerate()
-                            .map(|(index, value)| {
-                                let full_value = value.clone();
-                                div()
-                                    .id(("codex-launch-identity", index))
-                                    .min_w_0()
-                                    .max_w_full()
-                                    .flex_shrink_0()
-                                    .whitespace_normal()
-                                    .aria_label(value.clone())
-                                    .when(index > 0, |value| {
-                                        value
-                                            .border_l_1()
-                                            .border_color(c::BORDER_SOFT())
-                                            .pl(rpx(SPACE_2XL))
-                                    })
-                                    .tooltip(move |window, cx| {
-                                        tooltip(full_value.clone(), window).build(window, cx)
-                                    })
-                                    .child(value)
-                            }),
+                        [
+                            ("folder", identity),
+                            ("rail-tree", location),
+                            ("git-branch", branch),
+                        ]
+                        .into_iter()
+                        .filter(|(_, value)| !value.is_empty())
+                        .enumerate()
+                        .map(|(index, (glyph, value))| {
+                            let full_value = value.clone();
+                            div()
+                                .id(("codex-launch-identity", index))
+                                .min_w_0()
+                                .max_w_full()
+                                .flex_shrink_0()
+                                .whitespace_normal()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .aria_label(value.clone())
+                                .when(index > 0, |value| {
+                                    value
+                                        .border_l_1()
+                                        .border_color(c::BORDER_SOFT())
+                                        .pl(rpx(SPACE_2XL))
+                                })
+                                .tooltip(move |window, cx| {
+                                    tooltip(full_value.clone(), window).build(window, cx)
+                                })
+                                .child(crate::icons::icon(glyph, ICON_SM, c::FG_DIM()))
+                                .child(value)
+                        }),
                     ),
             )
             .child(
@@ -2938,6 +3001,21 @@ impl Render for CodexView {
                     .push(cx.observe(&root, |_, _, cx| cx.notify()));
                 self.selection_root_observed = true;
             }
+        }
+        let source = self.input.read(cx).value().to_string();
+        let generation = grove_core::theme::generation();
+        if self
+            .markdown_source
+            .as_ref()
+            .is_none_or(|(previous, theme, _)| previous != &source || *theme != generation)
+        {
+            let decorations = composer_markdown_decorations(&source);
+            self.markdown_source = Some((source, generation, decorations));
+        }
+        // An identical programmatic replacement may adjust decorations even
+        // though source bytes did not change. Restore cached spans as well.
+        if let Some((_, _, decorations)) = &self.markdown_source {
+            self.markdown_decorations.set(decorations.clone(), cx);
         }
         self.restore_image_tokens(window, cx);
         let state = if let Some(child) = &self.preview_child {
@@ -10690,6 +10768,127 @@ impl CodexView {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn composer_markdown_styles_nested_unicode_source_without_overlapping_ranges() {
+        let source =
+            "🦀 **bold *é*** and ~~gone~~ and `code`\n\n# Heading\n\n[site](https://example.com)";
+        let decorations = super::composer_markdown_decorations(source);
+        let at = |text: &str| {
+            let offset = source.find(text).unwrap();
+            decorations
+                .iter()
+                .find(|d| d.range.contains(&offset))
+                .unwrap()
+                .style
+        };
+        assert_eq!(at("bold").font_weight, Some(gpui::FontWeight::BOLD));
+        assert_eq!(at("é").font_weight, Some(gpui::FontWeight::BOLD));
+        assert_eq!(at("é").font_style, Some(gpui::FontStyle::Italic));
+        assert!(at("gone").strikethrough.is_some());
+        assert!(at("code").background_color.is_some());
+        assert_eq!(at("Heading").font_weight, Some(gpui::FontWeight::BOLD));
+        assert!(at("site").underline.is_some());
+        for pair in decorations.windows(2) {
+            assert!(pair[0].range.end <= pair[1].range.start);
+        }
+        for decoration in decorations {
+            assert!(source.get(decoration.range).is_some());
+        }
+        assert!(super::composer_markdown_decorations("**unfinished").is_empty());
+    }
+
+    #[gpui::test]
+    fn composer_markdown_keeps_literal_draft_caret_and_picked_tokens(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        let source = "🦀 **bold** @src/main.rs\n`code`";
+        let range = source.find('@').unwrap()..source.find('\n').unwrap();
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input.update(cx, |input, cx| {
+                    input.set_value(source, window, cx);
+                    input.set_selected_range(4..4, cx);
+                });
+                let decoration = view.input.update(cx, |input, cx| {
+                    input.create_decorations_collection(
+                        vec![TextDecoration::new(
+                            range.clone(),
+                            gpui::HighlightStyle {
+                                underline: Some(gpui::UnderlineStyle::default()),
+                                ..Default::default()
+                            },
+                        )],
+                        cx,
+                    )
+                });
+                view.picked_tokens.push(ComposerToken {
+                    value: "@src/main.rs".into(),
+                    decoration,
+                });
+            });
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.input.read(cx).value().as_ref(), source);
+            assert_eq!(view.input.read(cx).cursor(), 4);
+            assert!(!view.markdown_decorations.get_ranges(cx).is_empty());
+            assert_eq!(view.picked_tokens[0].decoration.get_ranges(cx), vec![range]);
+        });
+    }
+
+    #[gpui::test]
+    fn unchanged_composer_decorations_do_not_notify_input(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        let notifications = Rc::new(Cell::new(0));
+        let count = notifications.clone();
+        let span = TextDecoration::new(
+            2..6,
+            gpui::HighlightStyle {
+                font_weight: Some(gpui::FontWeight::BOLD),
+                ..Default::default()
+            },
+        );
+        let (input, decorations, _observer) = cx.update(|window, cx| {
+            view.update(cx, |_, cx| {
+                let input = cx.new(|cx| InputState::new(window, cx).default_value("**bold**"));
+                let decorations = input.update(cx, |input, cx| {
+                    input.create_decorations_collection(vec![span.clone()], cx)
+                });
+                let observer = cx.observe(&input, move |_, _, _| count.set(count.get() + 1));
+                (input, decorations, observer)
+            })
+        });
+        cx.run_until_parked();
+        let baseline = notifications.get();
+        cx.update(|_, cx| decorations.set(vec![span.clone()], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            notifications.get(),
+            baseline,
+            "identical spans must not schedule another render"
+        );
+        cx.update(|_, cx| decorations.set(vec![TextDecoration::new(2..5, span.style)], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            notifications.get(),
+            baseline + 1,
+            "changed spans must notify"
+        );
+        cx.update(|window, cx| {
+            input.update(cx, |input, cx| input.set_value("**bold**", window, cx));
+        });
+        cx.run_until_parked();
+        let after_edit = notifications.get();
+        cx.update(|_, cx| decorations.set(vec![span.clone()], cx));
+        cx.run_until_parked();
+        assert_eq!(
+            notifications.get(),
+            after_edit + 1,
+            "span restoration after replacement must notify"
+        );
+    }
+
     #[test]
     fn shell_execution_requires_a_closed_fence() {
         assert!(super::closed_shell_fence("```sh\necho hi\n```"));

@@ -74,6 +74,13 @@ fn script_control_tooltip(
 
 #[derive(Default)]
 pub(super) struct CheckoutPanel {
+    pub(super) script_peek: Option<super::script_preview::ScriptPeek>,
+    pub(super) script_peek_task: Option<gpui::Task<()>>,
+    pub(super) script_hover_target: Option<u64>,
+    pub(super) script_peek_focus: HashMap<u64, FocusHandle>,
+    pub(super) script_peek_bounds:
+        HashMap<u64, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
+    pub(super) script_terminals: HashMap<u64, Entity<super::super::terminal_view::TerminalView>>,
     pub(super) agents_visible: bool,
     pub(super) plan_peek: Option<super::plan_preview::PlanPeek>,
     pub(super) plan_peek_task: Option<gpui::Task<()>>,
@@ -653,7 +660,7 @@ impl Sidebar {
                             if prompt {
                                 "Send to the current chat."
                             } else {
-                                "Run in a new terminal in this checkout."
+                                "Run inline in this checkout."
                             }
                         ),
                         checkout_action(
@@ -730,6 +737,21 @@ impl Sidebar {
                         ))
                     }),
             );
+            let runs = self
+                .runtime
+                .read(cx)
+                .script_runs
+                .iter()
+                .filter(|run| {
+                    run.project_path == project.path
+                        && run.checkout_path == path
+                        && run.script_id == entry.id
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for run in runs {
+                section = section.child(self.script_run_row(run, cx));
+            }
         }
         if entries.is_empty() {
             let project_path = project.path.clone();

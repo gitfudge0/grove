@@ -385,6 +385,7 @@ impl Sidebar {
     pub(super) fn add_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_new_worktree = None;
         self.project_return_path = None;
+        self.project_return_navigation = None;
         self.project_return_focus = window.focused(cx);
         self.project_panel = None;
         self.project_decision = false;
@@ -437,6 +438,7 @@ impl Sidebar {
         });
         self.project_return_focus = None;
         self.project_return_path = None;
+        self.project_return_navigation = None;
         self.sync(window, cx);
         self.select_project_path(path, cx);
         let index = cx
@@ -474,6 +476,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         self.pending_new_worktree = None;
+        self.project_return_navigation = Some((self.mode, self.selection.clone()));
         self.project_return_path = match &page {
             super::projects::Page::Edit(path)
             | super::projects::Page::Remove(path)
@@ -495,6 +498,10 @@ impl Sidebar {
                     super::projects::ProjectPanelEvent::Closed => {
                         this.project_panel = None;
                         this.project_decision = false;
+                        if let Some((mode, selection)) = this.project_return_navigation.take() {
+                            this.mode = mode;
+                            this.selection = selection;
+                        }
                         let source_exists = this.project_return_path.take().is_none_or(|path| {
                             cx.global::<SettingsState>()
                                 .store

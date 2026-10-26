@@ -86,6 +86,7 @@ enum Page {
     Shortcuts,
     Changelog,
     Themes,
+    Archived,
 }
 
 /// The reference lists only actions the replacement shell handles. The numbered
@@ -123,6 +124,8 @@ pub struct SettingsPanel {
     standalone_shortcuts: bool,
     error: Option<String>,
     scroll: ScrollHandle,
+    archived_panel: Option<Entity<super::sidebar::projects::ProjectPanel>>,
+    archived_subscription: Option<Subscription>,
     theme_search: Option<Entity<InputState>>,
     theme_search_subscription: Option<Subscription>,
     theme_filter: Option<ThemeKind>,
@@ -158,6 +161,8 @@ impl SettingsPanel {
                 .map(|_| gpui::ScrollAnchor::for_handle(scroll.clone()))
                 .collect(),
             show_theme_notices: false,
+            archived_panel: None,
+            archived_subscription: None,
             theme_search: None,
             theme_search_subscription: None,
             theme_filter: None,
@@ -542,6 +547,30 @@ impl SettingsPanel {
     fn open_nested(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         self.standalone_shortcuts = false;
         self.nested_return_focus = window.focused(cx);
+        if page == Page::Archived {
+            let runtime = self.runtime.read(cx);
+            let (service, registry) = (runtime.projects.clone(), runtime.registry.clone());
+            let panel = cx.new(|cx| {
+                super::sidebar::projects::ProjectPanel::new(
+                    super::sidebar::projects::Page::Archived,
+                    service,
+                    registry,
+                    window,
+                    cx,
+                )
+                .in_settings()
+            });
+            self.archived_subscription =
+                Some(
+                    cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
+                        use super::sidebar::projects::ProjectPanelEvent;
+                        if matches!(event, ProjectPanelEvent::Closed) {
+                            this.back(window, cx);
+                        }
+                    }),
+                );
+            self.archived_panel = Some(panel);
+        }
         if page == Page::Themes {
             if self.theme_search.is_none() {
                 let input =
@@ -563,12 +592,18 @@ impl SettingsPanel {
             if let Some(input) = &self.theme_search {
                 input.read(cx).focus_handle(cx).focus(window, cx);
             }
+        } else if page == Page::Archived {
+            if let Some(panel) = &self.archived_panel {
+                panel.focus_handle(cx).focus(window, cx);
+            }
         } else {
             self.focus.focus(window, cx);
         }
     }
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.archived_panel = None;
+        self.archived_subscription = None;
         self.standalone_shortcuts = false;
         self.show(Page::Settings, cx);
         if let Some(focus) = self.nested_return_focus.take() {
@@ -827,6 +862,22 @@ impl SettingsPanel {
                 div()
                     .flex()
                     .flex_col()
+                    .child(Self::setting_row(
+                        "Archived projects",
+                        "Restore or remove archived project registrations",
+                        self.button(
+                            "settings-archived-projects",
+                            "Archived projects",
+                            false,
+                            true,
+                        )
+                        .debug_selector(|| "settings-archived-projects".into())
+                        .child(crate::icons::icon("archive", ICON_SM, c::FG_DIM()))
+                        .child("Manage")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_nested(Page::Archived, window, cx);
+                        })),
+                    ))
                     .child(Self::section("Appearance"))
                     .child(Self::setting_row(
                         "Theme",
@@ -1319,17 +1370,32 @@ impl Focusable for SettingsPanel {
 
 impl Render for SettingsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.page == Page::Archived {
+            return div()
+                .id("settings-archived-page")
+                .size_full()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .track_focus(&self.focus)
+                .when_some(self.archived_panel.clone(), gpui::ParentElement::child)
+                .into_any_element();
+        }
         let title = match self.page {
             Page::Settings => "Settings",
             Page::Shortcuts => "Shortcuts",
             Page::Changelog => "Changelog",
             Page::Themes => "Themes",
+            Page::Archived => "Archived projects",
         };
         let body = match self.page {
             Page::Settings => self.settings_body(cx),
             Page::Shortcuts => self.shortcuts_body(cx),
             Page::Changelog => self.changelog_body(cx),
             Page::Themes => self.themes_body(cx),
+            Page::Archived => {
+                div().when_some(self.archived_panel.clone(), gpui::ParentElement::child)
+            }
         };
         div()
             .id("settings-panel")
@@ -1421,7 +1487,6 @@ impl Render for SettingsPanel {
                                 .w_full()
                                 .flex_shrink_0()
                                 .flex()
-                                .gap(rpx(SPACE_20))
                                 .mt(rpx(SPACE_3XL))
                                 .overflow_x_scroll()
                                 .border_b_1()
@@ -1435,7 +1500,7 @@ impl Render for SettingsPanel {
                                         .aria_selected(selected)
                                         .tab_index(0)
                                         .flex_shrink_0()
-                                        .px(rpx(SPACE_XS))
+                                        .px(rpx(SPACE_2XL))
                                         .py(rpx(SPACE_LG))
                                         .border_b_2()
                                         .border_color(if selected { c::FG_DIM() } else { c::BG() })
@@ -1516,6 +1581,7 @@ impl Render for SettingsPanel {
                             ),
                     ),
             )
+            .into_any_element()
     }
 }
 
@@ -1925,7 +1991,7 @@ mod tests {
         assert_eq!(tabs.left(), body.left());
         assert_eq!(tabs.size.width, body.size.width);
         assert_eq!(general.top(), agents.top());
-        assert!(agents.left() > general.right());
+        assert_eq!(agents.left(), general.right());
         assert!(tabs.bottom() <= body.top());
     }
 

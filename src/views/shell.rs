@@ -21,6 +21,14 @@ use grove_core::storage::SidebarAppearance;
 
 const TRAFFIC_LIGHT_D: f32 = 12.0;
 const TRAFFIC_CONTROL_W: f32 = 18.0;
+// Fixed traffic lights, workspace glyphs/insets, and Settings/Collapse hit targets.
+const WORKSPACE_HEADER_RAIL_MIN_W: f32 = TRAFFIC_CONTROL_W * 3.0
+    + SPACE_2XL * 4.0
+    + CHROME_CONTROL_H * 2.0
+    + ICON_MD
+    + ICON_SM
+    + SPACE_MD * 2.0
+    + SPACE_SM;
 const SWITCHER_TOP: f32 = APPBAR_H + SPACE_3XL * 2.0;
 const SWITCHER_MIN_H: f32 = APPBAR_H * 3.0 + SPACE_2XL;
 const SWITCHER_MAX_H: f32 = MODAL_SCROLL_MAX_H + APPBAR_H * 3.0;
@@ -353,6 +361,14 @@ impl Shell {
         let grid = self.sidebar.read(cx).is_grid() && !self.settings.read(cx).is_open();
         let rail_visible = self.sidebar.read(cx).rail_visible(window, cx);
         let collapsed = rail_visible && self.sidebar.read(cx).is_collapsed(cx);
+        let update_control_width = if self.runtime.read(cx).upgrade.read(cx).can_update() {
+            CHROME_CONTROL_H
+        } else {
+            0.0
+        };
+        let workspace_in_rail = self.sidebar.read(cx).rail_width(window, cx)
+            >= WORKSPACE_HEADER_RAIL_MIN_W + update_control_width;
+        let workspace_in_appbar = !grid && !collapsed && rail_visible && !workspace_in_rail;
         let solid_sidebar = cx
             .global::<crate::settings::SettingsState>()
             .store
@@ -391,6 +407,11 @@ impl Shell {
                             .border_r_1()
                             .border_color(c::BORDER())
                             .when(solid_sidebar, |segment| segment.bg(c::BG_RAIL()))
+                    })
+                    .when(workspace_in_appbar, |segment| {
+                        segment
+                            .w(rpx(TRAFFIC_CONTROL_W * 3.0 + SPACE_2XL * 2.0))
+                            .border_r_0()
                     })
                     .when(!collapsed, |segment| {
                         segment.on_mouse_down(MouseButton::Left, |event, window, _| {
@@ -436,7 +457,16 @@ impl Shell {
                                     window.toggle_fullscreen();
                                 }),
                             )
-                    }),
+                    })
+                    .when(
+                        !grid && !collapsed && rail_visible && workspace_in_rail,
+                        |segment| {
+                            segment.child(
+                                self.sidebar
+                                    .update(cx, |sidebar, cx| sidebar.workspace_header(cx)),
+                            )
+                        },
+                    ),
             )
             .child(
                 div()
@@ -445,6 +475,12 @@ impl Shell {
                     .flex_1()
                     .h_full()
                     .bg(c::BG_STRIP())
+                    .when(workspace_in_appbar, |header| {
+                        header.child(
+                            self.sidebar
+                                .update(cx, |sidebar, cx| sidebar.workspace_header(cx)),
+                        )
+                    })
                     .when(grid, |header| {
                         header.child(div().ml(rpx(SPACE_2XL)).child(self.workspaces.clone()))
                     })
@@ -469,7 +505,7 @@ impl Shell {
                                 .update(cx, |sidebar, cx| sidebar.view_controls(cx)),
                         )
                     })
-                    .when(!grid, |header| {
+                    .when(!grid && !workspace_in_appbar, |header| {
                         header.child(
                             div()
                                 .id("header-main-drag-region")
@@ -483,21 +519,7 @@ impl Shell {
                                     }
                                 }),
                         )
-                    })
-                    .child(
-                        header_control("header-new-session", "New session")
-                            .debug_selector(|| "header-new-session".into())
-                            .when(!grid, |control| control.mr(rpx(SPACE_2XL)))
-                            .tab_index(0)
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .child(icon("plus", ICON_MD, c::FG()))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.sidebar
-                                    .update(cx, super::sidebar::Sidebar::dismiss_project_context);
-                                this.launcher
-                                    .update(cx, |launcher, cx| launcher.open(window, cx));
-                            })),
-                    ),
+                    }),
             );
         motion::base(header, format!("app-header-grid-{grid}"), cx)
     }
@@ -2284,9 +2306,17 @@ mod tests {
         draw(cx);
         cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(600.0)));
         draw(cx);
-        let point = cx.debug_bounds("projects-archive").unwrap().center();
+        assert!(cx.debug_bounds("projects-archive").is_none());
+        let point = cx.debug_bounds("sidebar-settings").unwrap().center();
         cx.simulate_click(point, gpui::Modifiers::default());
         draw(cx);
+        let point = cx
+            .debug_bounds("settings-archived-projects")
+            .unwrap()
+            .center();
+        cx.simulate_click(point, gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("project-panel").is_some());
         assert!(cx.debug_bounds("sidebar-rail").is_none());
         let header = cx.debug_bounds("header-rail-segment").unwrap();
         for selector in ["window-close", "window-minimize", "window-fullscreen"] {
@@ -2634,6 +2664,37 @@ mod tests {
     fn sidebar_workspace_control_traverses_and_activates(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
+        for zoom in [1.0, 1.5] {
+            cx.update(|window, _| window.set_rem_size(gpui::px(16.0 * zoom)));
+            for width in [1280.0, 500.0, 320.0] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.0)));
+                draw(cx);
+                let appbar = cx.debug_bounds("app-header").unwrap();
+                let mut previous = cx.debug_bounds("window-fullscreen").unwrap();
+                for selector in [
+                    "workspace-picker",
+                    "sidebar-settings",
+                    "sidebar-collapse-toggle",
+                ] {
+                    let control = cx.debug_bounds(selector).unwrap();
+                    assert!(
+                        control.left() >= previous.right(),
+                        "{selector} overlaps at {width}px"
+                    );
+                    assert!(
+                        control.left() >= appbar.left() && control.right() <= appbar.right(),
+                        "{selector} exceeds appbar at {width}px"
+                    );
+                    assert_eq!(
+                        control.center().y,
+                        previous.center().y,
+                        "{selector} leaves appbar row at {width}px"
+                    );
+                    previous = control;
+                }
+            }
+        }
+        cx.update(|window, _| window.set_rem_size(gpui::px(16.0)));
         cx.simulate_resize(gpui::size(gpui::px(500.0), gpui::px(600.0)));
         draw(cx);
         let rail = cx.debug_bounds("sidebar-rail").expect("sidebar rail");
@@ -2647,7 +2708,7 @@ mod tests {
             segment.bottom()
         );
         let workspace_header = cx.debug_bounds("sidebar-workspace-header").unwrap();
-        assert_eq!(segment.bottom(), workspace_header.top());
+        assert_eq!(segment.top(), workspace_header.top());
         assert_eq!(
             cx.debug_bounds("canvas-section-header").unwrap().top(),
             rail.top()
@@ -2898,9 +2959,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn cross_project_header_opens_existing_selector_by_click_and_keyboard(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn cross_project_section_is_hidden_in_sidebar(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
         cx.update(|_, cx| {
@@ -2936,65 +2995,12 @@ mod tests {
             });
         });
         draw(cx);
-        let plus = cx
-            .debug_bounds("multi-project-new")
-            .expect("cross-project header action")
-            .center();
-        cx.simulate_mouse_down(plus, MouseButton::Left, gpui::Modifiers::default());
-        cx.simulate_mouse_up(plus, MouseButton::Left, gpui::Modifiers::default());
-        draw(cx);
-        assert!(
-            cx.debug_bounds("worktree-launcher-selected-count")
-                .is_some(),
-            "existing multi selector opened directly"
-        );
-        assert!(cx.debug_bounds("launcher-row-0-selection").is_some());
-        cx.simulate_keystrokes("escape escape");
-        draw(cx);
-        cx.update(|_, cx| assert!(!shell.read(cx).launcher.read(cx).is_open()));
-        // The closing launcher occludes the window until its exit motion ends.
-        cx.executor()
-            .advance_clock(crate::views::motion::Presence::duration() * 2);
-        draw(cx);
-        cx.update(|window, cx| {
-            shell
-                .read(cx)
-                .sidebar
-                .clone()
-                .update(cx, |sidebar, cx| sidebar.toggle_sidebar(window, cx));
-        });
-        draw(cx);
-        let anchor = cx.debug_bounds("multi-project-anchor").unwrap().center();
-        cx.simulate_mouse_move(
-            gpui::point(gpui::px(600.0), gpui::px(500.0)),
-            None,
-            gpui::Modifiers::default(),
-        );
-        cx.simulate_mouse_move(anchor, None, gpui::Modifiers::default());
-        draw(cx);
-        assert!(
-            cx.debug_bounds("multi-project-flyout-new").is_some(),
-            "hover opens named group"
-        );
-        cx.simulate_mouse_down(anchor, MouseButton::Left, gpui::Modifiers::default());
-        cx.simulate_mouse_up(anchor, MouseButton::Left, gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("multi-project-flyout-new").is_some());
-        cx.simulate_keystrokes("tab enter");
-        draw(cx);
-        assert!(
-            cx.debug_bounds("worktree-launcher-selected-count")
-                .is_some(),
-            "flyout plus reachable by Tab and Enter"
-        );
-        assert!(cx.debug_bounds("multi-project-session-flyout").is_none());
-        cx.update(|_, cx| assert!(shell.read(cx).launcher.read(cx).is_open()));
+        assert!(cx.debug_bounds("multi-project-sessions").is_none());
+        assert!(cx.debug_bounds("multi-project-anchor").is_none());
     }
 
     #[gpui::test]
-    fn header_launcher_opens_palette_and_selected_canvas_stays_aligned(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn removed_header_launcher_preserves_selected_canvas_alignment(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let path = env!("CARGO_MANIFEST_DIR").to_string();
         cx.update(|cx| {
@@ -3011,25 +3017,8 @@ mod tests {
         for width in [1280.0, 320.0] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(640.0)));
             draw(cx);
-            let control = cx
-                .debug_bounds("header-new-session")
-                .expect("new session control");
-            let header = cx.debug_bounds("app-header").expect("header");
-            assert_eq!(control.right() + gpui::px(SPACE_2XL), header.right());
-            assert!(control.left() >= cx.debug_bounds("sidebar-rail").expect("rail").right());
+            assert!(cx.debug_bounds("header-new-session").is_none());
         }
-        let control = cx.debug_bounds("header-new-session").unwrap().center();
-        cx.simulate_mouse_down(control, MouseButton::Left, gpui::Modifiers::default());
-        cx.simulate_mouse_up(control, MouseButton::Left, gpui::Modifiers::default());
-        draw(cx);
-        cx.update(|_, cx| assert!(shell.read(cx).launcher.read(cx).is_open()));
-        assert!(cx.debug_bounds("launcher-row-0").is_some());
-        cx.simulate_keystrokes("tab");
-        draw(cx);
-        assert!(cx.debug_bounds("launcher-agent-selector-0").is_some());
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        cx.update(|_, cx| assert!(!shell.read(cx).launcher.read(cx).is_open()));
 
         // Exercise the selected canvas with a registered session whose invalid
         // script cannot start a PTY reader. A live reader wakes GPUI's test

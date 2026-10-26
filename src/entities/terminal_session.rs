@@ -656,6 +656,13 @@ impl TerminalSession {
         self.spawn_error.as_deref()
     }
 
+    pub(crate) fn stop_script(&mut self, cx: &mut Context<Self>) {
+        if self.script_session && !self.exited {
+            self.pty.take();
+            self.reader_closed(cx);
+        }
+    }
+
     /// Latched PTY exit, available to renderers without polling the child.
     pub fn has_exited(&self) -> bool {
         self.exited
