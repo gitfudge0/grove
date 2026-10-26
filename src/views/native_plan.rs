@@ -95,6 +95,7 @@ pub(super) struct NativePlan {
     revision_id: String,
     open: HashSet<String>,
     comments_open: HashSet<String>,
+    plan_comment_owner: Option<String>,
     inputs: HashMap<String, Entity<InputState>>,
     subscriptions: Vec<Subscription>,
     review_open: bool,
@@ -301,6 +302,7 @@ impl NativePlan {
             revision_id,
             open: HashSet::new(),
             comments_open: HashSet::new(),
+            plan_comment_owner: None,
             inputs: HashMap::new(),
             subscriptions: vec![subscription],
             review_open: false,
@@ -674,19 +676,37 @@ impl NativePlan {
         }
         let input = &self.inputs[&key];
         project_field_well(input.focus_handle(cx).is_focused(window), false)
+            .debug_selector({
+                let key = key.clone();
+                move || format!("native-plan-input-well-{key}")
+            })
+            .h_auto()
+            .min_h(rpx(FIELD_H))
+            .justify_start()
+            .py(rpx(SPACE_LG))
             .child(
-                Input::new(input)
-                    .disabled(self.send_pending || review_locked(&self.snapshot(cx)))
-                    .aria_label(if bucket == "own_answers" {
-                        "Your own answer"
-                    } else {
-                        "Review comment"
+                div()
+                    .min_w_0()
+                    .w_full()
+                    .flex_shrink_0()
+                    .debug_selector({
+                        let key = key.clone();
+                        move || format!("native-plan-input-{key}")
                     })
-                    .appearance(false)
-                    .bordered(false)
-                    .focus_bordered(false)
-                    .text_color(c::FG())
-                    .p_0(),
+                    .child(
+                        Input::new(input)
+                            .disabled(self.send_pending || review_locked(&self.snapshot(cx)))
+                            .aria_label(if bucket == "own_answers" {
+                                "Your own answer"
+                            } else {
+                                "Review comment"
+                            })
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .text_color(c::FG())
+                            .p_0(),
+                    ),
             )
             .into_any_element()
     }
@@ -703,6 +723,47 @@ impl NativePlan {
             .unwrap_or_default()
             .to_owned();
         self.input("comments", target.to_owned(), value, window, cx)
+    }
+
+    fn plan_comment_action(
+        &mut self,
+        owner: String,
+        snapshot: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.plan_comment_owner.as_ref() == Some(&owner);
+        let target = target_key("plan", "");
+        let mut section = div().flex().flex_col().min_w_0().gap(rpx(SPACE_LG));
+        section = section.child(
+            div().flex().child(
+                transcript_action(
+                    format!("plan-comment-{owner}"),
+                    "Add comment",
+                    false,
+                    window,
+                    cx,
+                )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/plus.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .debug_selector({
+                    let owner = owner.clone();
+                    move || format!("native-plan-add-comment-{owner}")
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.plan_comment_owner = Some(owner.clone());
+                    this.comments_open.insert(target_key("plan", ""));
+                    cx.notify();
+                })),
+            ),
+        );
+        if selected && self.comments_open.contains(&target) {
+            section = section.child(self.comment(&target, snapshot, window, cx));
+        }
+        section.into_any_element()
     }
 
     fn html_link(
@@ -1208,6 +1269,12 @@ impl NativePlan {
             ),
         );
 
+        body = body.child(self.plan_comment_action(
+            target_key("decision", &decision_id),
+            snapshot,
+            window,
+            cx,
+        ));
         let id = string(decision, "id");
         let anchor = self
             .decision_anchors
@@ -1458,7 +1525,10 @@ impl Render for NativePlan {
         let progress = if total == 0 {
             "No decisions requested".into()
         } else {
-            format!("{} of {total} answered", total - unanswered)
+            format!(
+                "{unanswered} {} pending",
+                if unanswered == 1 { "answer" } else { "answers" }
+            )
         };
         let mut body = div()
             .flex()
@@ -1610,8 +1680,13 @@ impl Render for NativePlan {
                 self.active_decision = Some(string(decision, "id"));
                 body = body.child(self.decision(decision, &snapshot, window, cx));
             }
-            if self.comments_open.contains(&target_key("plan", "")) {
-                body = body.child(self.comment(&target_key("plan", ""), &snapshot, window, cx));
+            if total == 0 {
+                body = body.child(self.plan_comment_action(
+                    target_key("body", ""),
+                    &snapshot,
+                    window,
+                    cx,
+                ));
             }
         } else {
             let why = target_key("why", "");
@@ -1651,8 +1726,13 @@ impl Render for NativePlan {
                         .child(scope.as_str().unwrap_or_default().to_owned()),
                 );
             }
-            if self.comments_open.contains(&target_key("plan", "")) {
-                body = body.child(self.comment(&target_key("plan", ""), &snapshot, window, cx));
+            if total == 0 {
+                body = body.child(self.plan_comment_action(
+                    target_key("body", ""),
+                    &snapshot,
+                    window,
+                    cx,
+                ));
             }
         }
         let feedback_status = snapshot["review"]["delivery"]["status"]
@@ -1706,9 +1786,14 @@ impl Render for NativePlan {
         } else {
             "Ready for your approval".into()
         };
-        let mut actions = div().flex().flex_wrap().items_center().gap(rpx(SPACE_LG));
+        let mut navigation = div()
+            .debug_selector(|| "native-plan-progress-row".into())
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(rpx(SPACE_LG));
         if unanswered > 0 {
-            actions = actions.child(
+            navigation = navigation.child(
                 transcript_action("plan-next-decision", "Next decision", false, window, cx)
                     .icon(
                         gpui_component::Icon::default()
@@ -1719,30 +1804,21 @@ impl Render for NativePlan {
                     .on_click(cx.listener(|this, _, window, cx| this.next_decision(window, cx))),
             );
         }
-        if !self.review_open {
-            actions = actions.child(
-                transcript_action("plan-comment", "Comment", false, window, cx)
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/plus.svg")
-                            .size(rpx(ICON_SM)),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.comments_open.insert(target_key("plan", ""));
-                        cx.notify();
-                    })),
-            );
-        }
-        actions = actions
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .whitespace_nowrap()
-                    .text_color(c::FG_DIM())
-                    .text_size(rpx(TEXT_SMALL))
-                    .debug_selector(|| "native-plan-progress".into())
-                    .child(progress),
-            )
+        navigation = navigation.child(
+            div()
+                .flex_shrink_0()
+                .whitespace_nowrap()
+                .text_color(c::FG_DIM())
+                .text_size(rpx(TEXT_SMALL))
+                .debug_selector(|| "native-plan-progress".into())
+                .child(progress),
+        );
+        let mut actions = div()
+            .debug_selector(|| "native-plan-action-row".into())
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(rpx(SPACE_LG))
             .child(
                 transcript_action(
                     "plan-review",
@@ -1832,6 +1908,7 @@ impl Render for NativePlan {
             .flex_col()
             .gap(rpx(SPACE_SM))
             .p(rpx(SPACE_3XL))
+            .child(navigation)
             .child(actions)
             .child(
                 div()
@@ -2016,6 +2093,8 @@ mod tests {
                     "peek-selected",
                     "peek-scrolled",
                     "peek-approved",
+                    "peek-input",
+                    "peek-answer",
                     "plan",
                     "response",
                 ] {
@@ -2090,6 +2169,17 @@ mod tests {
                                     session.state.saved.rich_plans.revisions[0].review.approval = grove_core::rich_plan::ResponseDelivery::Sent { id: 2 };
                                     cx.notify();
                                 });
+                            }
+                            if matches!(mode, "peek-answer" | "peek-input") {
+                                view.active_decision = Some("targeting".into());
+                                view.scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-280.)));
+                            }
+                            if mode == "peek-input" {
+                                view.set_feedback("own_answers", "targeting", "Keep this custom answer.\nPreserve the readable first line.\nLet the well grow with multiline input.\nKeep a clear bottom inset.".into(), cx);
+                                view.plan_comment_owner = Some(target_key("decision", "targeting"));
+                                view.comments_open.insert(target_key("plan", ""));
+                                view.set_feedback("comments", &target_key("plan", ""), "A plan-level comment beside the answer.\nKeep the comment field inset too.".into(), cx);
+                                view.scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-280.)));
                             }
                             if mode == "peek-scrolled" {
                                 view.scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-140.)));
@@ -2227,6 +2317,82 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+        cx.update(|_, cx| plan.update(cx, |view, cx| view.show_peek(None, cx)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let progress_row = cx.debug_bounds("native-plan-progress-row").unwrap();
+        let action_row = cx.debug_bounds("native-plan-action-row").unwrap();
+        assert!(
+            progress_row.bottom() <= action_row.top(),
+            "navigation and approval have separate rows even at wide widths"
+        );
+        let answer_well = cx
+            .debug_bounds("native-plan-input-well-own_answers:decision")
+            .unwrap();
+        let answer = cx
+            .debug_bounds("native-plan-input-own_answers:decision")
+            .unwrap();
+        assert!(
+            answer.top() > answer_well.top(),
+            "placeholder has a top inset"
+        );
+        assert!(
+            answer.bottom() < answer_well.bottom(),
+            "multiline well fits input plus inset"
+        );
+        cx.simulate_click(answer.center(), gpui::Modifiers::default());
+        cx.simulate_input("First answer line\nSecond answer line\nThird answer line\nFourth answer line\nFifth answer line");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let grown_well = cx
+            .debug_bounds("native-plan-input-well-own_answers:decision")
+            .unwrap();
+        let grown_input = cx
+            .debug_bounds("native-plan-input-own_answers:decision")
+            .unwrap();
+        assert!(
+            grown_well.size.height > answer_well.size.height,
+            "multiline answer grows the outer well"
+        );
+        assert!(
+            grown_input.top() > grown_well.top() && grown_input.bottom() < grown_well.bottom(),
+            "typed multiline text retains both insets"
+        );
+        let comment = cx
+            .debug_bounds(r#"native-plan-add-comment-["decision","decision"]"#)
+            .unwrap();
+        assert!(
+            comment.top() >= answer_well.bottom(),
+            "Add comment follows the answer input"
+        );
+        cx.simulate_click(comment.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let comment_well = cx
+            .debug_bounds(r#"native-plan-input-well-comments:["plan",""]"#)
+            .unwrap();
+        assert!(
+            comment_well.top() >= comment.bottom(),
+            "comment field opens next to its action"
+        );
+        let comment_input = cx
+            .debug_bounds(r#"native-plan-input-comments:["plan",""]"#)
+            .unwrap();
+        cx.simulate_click(comment_input.center(), gpui::Modifiers::default());
+        cx.simulate_input("Keep this plan comment");
+        cx.run_until_parked();
+        plan.read_with(cx, |view, cx| {
+            assert_eq!(
+                view.snapshot(cx)["review"]["comments"][target_key("plan", "")],
+                "Keep this plan comment"
+            );
         });
         cx.update(|window, cx| {
             plan.update(cx, |view, cx| {

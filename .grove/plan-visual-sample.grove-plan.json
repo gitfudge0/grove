@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan-visual-sample",
+  "revision_id": "sample-r1",
+  "title": "Plan review layout sample",
+  "summary": "A sample for inspecting native plan layout, wrapping, decision controls and the review footer. Approving this sample requests only a reply confirming sample approval; it requests no code work.",
+  "claims": [
+    {
+      "id": "sample-placement",
+      "text": "Inspect short choices and the reading layout",
+      "detail": "Compare the compact preview with the expanded plan. These choices are sample feedback only.",
+      "exhibit": {
+        "kind": "layout",
+        "nodes": [
+          {
+            "id": "sample-layout-column",
+            "kind": "column",
+            "text": "",
+            "children": [
+              {
+                "id": "sample-layout-heading",
+                "kind": "text",
+                "text": "Sample preview"
+              },
+              {
+                "id": "sample-layout-surface",
+                "kind": "surface",
+                "text": "",
+                "children": [
+                  {
+                    "id": "sample-layout-body",
+                    "kind": "text",
+                    "text": "Decision content wraps inside the reading column."
+                  },
+                  {
+                    "id": "sample-layout-controls",
+                    "kind": "row",
+                    "text": "",
+                    "children": [
+                      {
+                        "id": "sample-layout-review",
+                        "kind": "control",
+                        "text": "Review response"
+                      },
+                      {
+                        "id": "sample-layout-approve",
+                        "kind": "control",
+                        "text": "Approve & implement"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "decisions": [
+        {
+          "id": "sample-density",
+          "prompt": "Which sample density is easier to read?",
+          "options": [
+            {
+              "id": "compact",
+              "label": "Compact",
+              "description": "Keep the comparison brief."
+            },
+            {
+              "id": "comfortable",
+              "label": "Comfortable",
+              "description": "Leave more room between examples."
+            }
+          ]
+        },
+        {
+          "id": "sample-start",
+          "prompt": "Where would you begin this visual review?",
+          "options": [
+            {
+              "id": "preview",
+              "label": "Preview",
+              "description": "Inspect the plan beside the conversation."
+            },
+            {
+              "id": "expanded",
+              "label": "Expanded plan",
+              "description": "Inspect the full reading column."
+            },
+            {
+              "id": "response",
+              "label": "Response",
+              "description": "Inspect the feedback summary after answering."
+            }
+          ],
+          "default": "preview"
+        }
+      ]
+    },
+    {
+      "id": "sample-wrapping",
+      "text": "Inspect long decision labels and supporting descriptions",
+      "detail": "Narrow the window or increase the interface zoom to inspect alignment when text spans several lines.",
+      "decisions": [
+        {
+          "id": "sample-long-choice",
+          "prompt": "Which example best exposes alignment when an option title and its supporting description wrap across multiple lines?",
+          "options": [
+            {
+              "id": "long-title",
+              "label": "Keep a deliberately long option title visible beside its selection control as the available reading width becomes smaller",
+              "description": "This description adds enough context to wrap at narrow widths. Inspect whether the selection control stays aligned with the first title line and whether the description follows the same text column."
+            },
+            {
+              "id": "long-description",
+              "label": "Use a shorter title with a longer explanation",
+              "description": "Imagine a reader comparing several reasonable choices before responding. The explanation should remain readable, preserve its spacing, and avoid pushing content beneath the fixed plan header or footer as the decision is selected."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sample-confirmation",
+      "text": "Inspect review and approval acknowledgement",
+      "detail": "Review response lets you inspect feedback before sending. If you approve this sample, reply only with confirmation that the sample was approved. Do not implement or change product code.",
+      "decisions": [
+        {
+          "id": "sample-verdict",
+          "prompt": "What should the sample review record?",
+          "options": [
+            {
+              "id": "readable",
+              "label": "Looks readable",
+              "description": "The visible spacing and controls are easy to follow."
+            },
+            {
+              "id": "adjust",
+              "label": "Needs adjustment",
+              "description": "Add a comment describing the visual issue you noticed."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "scope": [
+    "Sample review only; no product changes.",
+    "Approval requests only a confirmation reply, with no code work."
+  ]
+}

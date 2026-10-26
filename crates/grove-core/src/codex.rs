@@ -1134,6 +1134,50 @@ impl Snapshot {
         if saved.title.is_none() {
             saved.title = first_prompt_title(&saved.items);
         }
+        // Older sessions saved activity items without adding their children to the roster.
+        for (index, item) in saved.items.iter().enumerate() {
+            if item["type"] != "subAgentActivity" || item["kind"] != "started" {
+                continue;
+            }
+            let Some(id) = item["agentThreadId"].as_str() else {
+                continue;
+            };
+            if saved.thread_id.as_deref() == Some(id) {
+                continue;
+            }
+            let period = saved
+                .work_periods
+                .iter()
+                .rposition(|period| {
+                    period.start_item <= index && period.end_item.is_none_or(|end| index < end)
+                })
+                .unwrap_or_else(|| {
+                    let start = saved.items[..index]
+                        .iter()
+                        .rposition(|item| item["type"] == "userMessage")
+                        .unwrap_or(0);
+                    let end = saved.items[index + 1..]
+                        .iter()
+                        .position(|item| item["type"] == "userMessage")
+                        .map_or(saved.items.len(), |offset| index + 1 + offset);
+                    saved.work_periods.push(WorkPeriod {
+                        start_item: start,
+                        end_item: Some(end),
+                        duration_ms: None,
+                        subagents: Vec::new(),
+                    });
+                    saved.work_periods.len() - 1
+                });
+            record_subagent(
+                &mut saved.work_periods[period],
+                id,
+                item["agentPath"]
+                    .as_str()
+                    .and_then(|path| path.rsplit('/').next()),
+                None,
+                SubagentStatus::Unknown,
+            );
+        }
         // Monotonic clocks cannot survive recovery. Preserve bounds without inventing time.
         for period in &mut saved.work_periods {
             if period.end_item.is_none() {
@@ -1514,6 +1558,22 @@ impl Snapshot {
             && p["item"]["type"] == "collabAgentToolCall"
         {
             self.record_collab(&p["item"], period);
+        }
+        if matches!(method, "item/started" | "item/completed")
+            && p["item"]["type"] == "subAgentActivity"
+            && p["item"]["kind"] == "started"
+        {
+            if let Some(child) = p["item"]["agentThreadId"].as_str() {
+                record_subagent(
+                    &mut self.saved.work_periods[period],
+                    child,
+                    p["item"]["agentPath"]
+                        .as_str()
+                        .and_then(|path| path.rsplit('/').next()),
+                    None,
+                    SubagentStatus::Working,
+                );
+            }
         }
         let activity = match method {
             "item/started" | "item/completed" => subagent_activity(&p["item"]),
@@ -1997,6 +2057,21 @@ impl Snapshot {
                     self.clear_retry_notice();
                 }
                 let mut item = p["item"].clone();
+                if item["type"] == "subAgentActivity" && item["kind"] == "started" {
+                    if let Some(id) = item["agentThreadId"]
+                        .as_str()
+                        .filter(|id| self.saved.thread_id.as_deref() != Some(*id))
+                    {
+                        self.upsert_subagent(
+                            id,
+                            item["agentPath"]
+                                .as_str()
+                                .and_then(|path| path.rsplit('/').next()),
+                            None,
+                            SubagentStatus::Working,
+                        );
+                    }
+                }
                 if item["type"] == "collabAgentToolCall" {
                     if let Some(period) = self
                         .saved
@@ -4234,23 +4309,6 @@ impl Actor {
                     self.state.refresh_interaction_status();
                     return Ok(());
                 }
-                if m["params"]["item"]["type"] == "subAgentActivity"
-                    && m["params"]["item"]["kind"] == "started"
-                {
-                    if let Some(id) = m["params"]["item"]["agentThreadId"]
-                        .as_str()
-                        .filter(|id| self.interaction_children.known(id))
-                    {
-                        self.state.upsert_subagent(
-                            id,
-                            m["params"]["item"]["agentPath"]
-                                .as_str()
-                                .and_then(|path| path.rsplit('/').next()),
-                            None,
-                            SubagentStatus::Working,
-                        );
-                    }
-                }
                 self.state.apply(&m);
                 self.state.refresh_interaction_status();
                 if completed && m["params"]["turn"]["status"] == "completed" {
@@ -5523,6 +5581,40 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].status, SubagentStatus::Unknown);
         assert!(recovered.saved.fresh_conversation().work_periods.is_empty());
+    }
+
+    #[test]
+    fn subagent_activity_registers_children_live_and_recovers_legacy_roster() {
+        let mut state = state();
+        state.begin_work();
+        let event = json!({"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"spawn","type":"subAgentActivity","kind":"started","agentThreadId":"child-1","agentPath":"root/reviewer"}}});
+        let mut foreign = event.clone();
+        foreign["params"]["threadId"] = json!("foreign");
+        assert!(!state.apply(&foreign));
+        assert!(state.saved.work_periods[0].subagents.is_empty());
+        assert!(state.apply(&event));
+        assert!(state.apply(&event));
+        let agents = &state.saved.work_periods[0].subagents;
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].id, "child-1");
+        assert_eq!(agents[0].name, "reviewer");
+        assert_eq!(agents[0].status, SubagentStatus::Working);
+        assert!(state.apply(&json!({"method":"item/started","params":{"threadId":"child-1","item":{"id":"nested","type":"subAgentActivity","kind":"started","agentThreadId":"child-2","agentPath":"root/reviewer/security"}}})));
+        assert_eq!(state.saved.work_periods[0].subagents.len(), 2);
+        for clear_periods in [false, true] {
+            let mut saved = state.saved.clone();
+            for period in &mut saved.work_periods {
+                period.subagents.clear();
+            }
+            if clear_periods {
+                saved.work_periods.clear();
+            }
+            let restored = Snapshot::new(saved);
+            let agent = &restored.saved.work_periods[0].subagents[0];
+            assert_eq!(agent.id, "child-1");
+            assert_eq!(agent.name, "reviewer");
+            assert_eq!(agent.status, SubagentStatus::Unknown);
+        }
     }
 
     #[test]

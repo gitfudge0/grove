@@ -1486,11 +1486,9 @@ impl CodexView {
                             }
                         },
                     ))
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.use_starter(prompt, window, cx);
-                        }),
-                    ),
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.use_starter(prompt, window, cx);
+                    })),
             );
         }
         div()
@@ -3591,6 +3589,23 @@ impl Render for CodexView {
                                 })),
                         ),
                 );
+                if expanded && !work_has_parent_activity(&state, index) {
+                    message_child += 1;
+                    messages = messages.child(
+                        div()
+                            .id(("codex-work-empty", index))
+                            .debug_selector(move || format!("codex-work-empty-{index}"))
+                            .w_full()
+                            .max_w(rpx(CHAT_MAX_W))
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(if active {
+                                "No parent activity has been reported yet."
+                            } else {
+                                "No parent activity was reported."
+                            }),
+                    );
+                }
                 if active && state.work_started.is_some() && !self.work_tick_pending.replace(true) {
                     let owner = cx.entity().downgrade();
                     let pending = self.work_tick_pending.clone();
@@ -3608,6 +3623,9 @@ impl Render for CodexView {
                 continue;
             }
             let kind = item["type"].as_str().unwrap_or("tool");
+            if kind == "subAgentActivity" {
+                continue;
+            }
             // Keep completed commentary with the work it describes; the answer stays inline.
             if work_commentary(&state, index)
                 && !self.expanded.contains(&work_key_at(&state, index))
@@ -3696,9 +3714,9 @@ impl Render for CodexView {
                     .enumerate()
                     .filter(|(offset, _)| {
                         let item_index = index + offset;
-                        tool_visible(&state, item_index)
-                            && (work_is_active_at(&state, item_index)
-                                || self.expanded.contains(&work_key_at(&state, item_index)))
+                        self.expanded.contains(&work_key_at(&state, item_index))
+                            || (tool_visible(&state, item_index)
+                                && work_is_active_at(&state, item_index))
                     })
                     .map(|(offset, item)| (index + offset, item))
                     .collect::<Vec<_>>();
@@ -5212,6 +5230,11 @@ impl Render for CodexView {
                     .w_full()
                     .when(focused_launch, |rail| rail.my_auto().pt(rpx(SPACE_3XL)))
                     .px(rpx(SPACE_20))
+                    // Match the transcript's reserved navigation gutter so both
+                    // centered columns retain the same edges at every pane width.
+                    .when(!minimap_entries.is_empty(), |rail| {
+                        rail.pl(rpx(SPACE_20 + CHROME_CONTROL_H))
+                    })
                     .pb(rpx(SPACE_3XL))
                     .flex()
                     .justify_center()
@@ -8223,6 +8246,26 @@ fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, Stri
     Some((work_key_at(state, index), label, active))
 }
 
+/// Only parent commentary and tools belong to the work disclosure.
+fn work_has_parent_activity(state: &codex::Snapshot, index: usize) -> bool {
+    let start = work_period_at(state, index).map_or_else(
+        || {
+            state.saved.items[..index.min(state.saved.items.len())]
+                .iter()
+                .rposition(|item| item["type"] == "userMessage")
+                .unwrap_or(0)
+        },
+        |period| period.start_item,
+    );
+    let end = work_period_at(state, index)
+        .and_then(|period| period.end_item)
+        .unwrap_or(state.saved.items.len());
+    (start.min(state.saved.items.len())..end.min(state.saved.items.len())).any(|index| {
+        let item = &state.saved.items[index];
+        (is_tool_item(item) && !tasks::is_checklist(item)) || work_commentary(state, index)
+    })
+}
+
 fn tool_expansion_key(item: &serde_json::Value, index: usize) -> String {
     format!(
         "tool-{}",
@@ -8257,7 +8300,14 @@ fn tool_is_running(state: &codex::Snapshot, index: usize) -> bool {
 fn is_tool_item(item: &serde_json::Value) -> bool {
     !matches!(
         item["type"].as_str(),
-        Some("userMessage" | "agentMessage" | "plan" | "providerNotice" | codex::COMPACTION_ITEM)
+        Some(
+            "userMessage"
+                | "agentMessage"
+                | "plan"
+                | "providerNotice"
+                | "subAgentActivity"
+                | codex::COMPACTION_ITEM
+        )
     )
 }
 
@@ -11271,6 +11321,57 @@ mod tests {
     }
 
     #[gpui::test]
+    fn transcript_and_composer_edges_match_with_navigation_at_each_width_and_zoom(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for has_navigation in [false, true] {
+                cx.update(|_, cx| {
+                    cx.set_reduce_motion(true);
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            session.state.saved.items = if has_navigation {
+                                vec![
+                                    json!({"id":"align-user", "type":"userMessage", "content":[{"text":"Check alignment"}]}),
+                                    json!({"id":"align-agent", "type":"agentMessage", "text":"Aligned response"}),
+                                ]
+                            } else {
+                                vec![json!({"id":"align-agent", "type":"agentMessage", "text":"Aligned response"})]
+                            };
+                            cx.notify();
+                        });
+                    });
+                });
+                for (width, rem) in [(1200.0, 16.0), (600.0, 16.0), (400.0, 16.0), (400.0, 20.0)] {
+                    cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
+                    cx.update(|_, cx| {
+                        gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                    });
+                    draw(cx);
+                    let anchor = cx
+                        .debug_bounds(if has_navigation {
+                            "codex-message-anchor-1"
+                        } else {
+                            "codex-message-anchor-0"
+                        })
+                        .unwrap();
+                    let composer = cx.debug_bounds("codex-composer").unwrap();
+                    assert!(
+                        (anchor.left() - composer.left()).abs() <= gpui::px(1.0),
+                        "left edge: {provider:?}, navigation={has_navigation}, width={width}, rem={rem}: {anchor:?} vs {composer:?}"
+                    );
+                    assert!(
+                        (anchor.right() - composer.right()).abs() <= gpui::px(1.0),
+                        "right edge: {provider:?}, navigation={has_navigation}, width={width}, rem={rem}: {anchor:?} vs {composer:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[gpui::test]
     fn minimap_stays_anchored_when_tasks_and_composer_expand(cx: &mut gpui::TestAppContext) {
         let (view, cx, _, _) = fixture(cx);
         cx.update(|_, cx| {
@@ -12390,7 +12491,7 @@ mod tests {
                     state.saved.provider = codex::Provider::Claude;
                 }
                 state.saved.items = vec![
-                    json!({"id":"question","type":"userMessage","text":"Inspect the working tree"}),
+                    json!({"id":"question","type":"userMessage","content":[{"type":"text","text":"Inspect the working tree"}]}),
                     json!({"id":"think","type":"reasoning","text":"Checking files","status":"completed"}),
                     json!({"id":"done","type":"commandExecution","command":"pwd","status":"completed","aggregatedOutput":"/workspace"}),
                     json!({"id":"failed","type":"commandExecution","command":"git fetch","status":"failed","exitCode":1}),
@@ -12434,6 +12535,27 @@ mod tests {
                     .save(&path)
                     .unwrap();
                 eprintln!("Native transcript activity fixture: {path}");
+                cx.update_window(window.into(), |_, window, cx| {
+                    capture_view.as_ref().unwrap().update(cx, |view, cx| {
+                        view.session.update(cx, |session, cx| {
+                            session.state.saved.items.truncate(1);
+                            session.state.saved.items.push(json!({
+                                "id":"child-started", "type":"subAgentActivity", "kind":"started",
+                                "agentThreadId":"child-fixture", "agentPath":"root/reviewer"
+                            }));
+                            cx.notify();
+                        });
+                    });
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+                let path = format!("/tmp/grove-transcript-empty-work-{kind}-{width:.0}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Native empty work fixture: {path}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window())
                     .unwrap();
             }
@@ -14434,7 +14556,8 @@ mod tests {
             });
         });
         draw(cx);
-        assert!(cx.debug_bounds("codex-toggle-tool-4").is_none());
+        // Explicit expansion reveals earlier calls while the current turn is still running.
+        assert!(cx.debug_bounds("codex-toggle-tool-4").is_some());
         assert!(cx.debug_bounds("codex-toggle-tool-5").is_some());
         cx.update(|_, cx| {
             view.update(cx, |view, _| {
@@ -17554,6 +17677,44 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(work_header_at(&state, 1).unwrap().1, "Working for 2m");
+    }
+
+    #[gpui::test]
+    fn expanded_work_reports_empty_parent_activity_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, updates) = fixture(cx);
+        view.update(cx, |view, _| {
+            view.expanded.insert("work-0".into());
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.status = Status::Working;
+            state.saved.items = vec![
+                json!({"id":"prompt","type":"userMessage","content":[{"text":"Work"}]}),
+                json!({"id":"child","type":"subAgentActivity","kind":"started","agentThreadId":"child-1"}),
+            ];
+            assert!(!work_has_parent_activity(&state, 1));
+            updates.send(state.clone()).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            assert!(cx.debug_bounds("codex-work-empty-1").is_some());
+            assert!(cx.debug_bounds("codex-tool-group-1").is_none());
+            state.saved.items.push(json!({"id":"first","type":"commandExecution","command":"pwd","status":"completed"}));
+            state.saved.items.push(
+                json!({"id":"last","type":"commandExecution","command":"ls","status":"inProgress"}),
+            );
+            assert!(work_has_parent_activity(&state, 1));
+            updates.send(state).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            assert!(cx.debug_bounds("codex-work-empty-1").is_none());
+            assert!(cx.debug_bounds("codex-tool-row-label-2").is_some());
+            assert!(cx.debug_bounds("codex-tool-row-label-3").is_some());
+        }
     }
 
     #[test]
