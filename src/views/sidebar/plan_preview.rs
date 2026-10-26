@@ -219,7 +219,15 @@ impl Sidebar {
                             .absolute()
                             .inset_0(),
                     )
-                    .child(icon("list", ICON_SM, c::FG_DIM()))
+                    .child(
+                        div()
+                            .debug_selector(|| "checkout-plan-icon".into())
+                            .flex_shrink_0()
+                            .h(rpx(SPACE_3XL))
+                            .flex()
+                            .items_center()
+                            .child(icon("list", ICON_SM, c::FG_DIM())),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -227,7 +235,14 @@ impl Sidebar {
                             .flex()
                             .flex_col()
                             .gap(rpx(SPACE_XS))
-                            .child(div().truncate().text_size(rpx(TEXT_SMALL)).child(title))
+                            .child(
+                                div()
+                                    .debug_selector(|| "checkout-plan-title".into())
+                                    .truncate()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .line_height(rpx(SPACE_3XL))
+                                    .child(title),
+                            )
                             .child(
                                 div()
                                     .text_size(rpx(TEXT_MICRO))
@@ -521,6 +536,13 @@ mod tests {
                 .debug_bounds("checkout-plan-row")
                 .expect("plan row appears without registered checkout or agents");
             assert!(cx.debug_bounds("checkout-agents").is_none());
+            let icon = cx.debug_bounds("checkout-plan-icon").unwrap();
+            let title = cx.debug_bounds("checkout-plan-title").unwrap();
+            assert_eq!(
+                icon.center().y,
+                title.center().y,
+                "plan glyph aligns with its title line"
+            );
             // Hover intent preserves composer focus, then permits a short pointer
             // crossing through the gap into the anchored preview.
             cx.update(|window, cx| {
@@ -641,6 +663,11 @@ mod tests {
                 .expect("row opens anchored peek");
             let body = cx.debug_bounds("native-plan-body").unwrap();
             let footer = cx.debug_bounds("native-plan-footer").unwrap();
+            let header = cx.debug_bounds("native-plan-header").unwrap();
+            assert!(
+                header.bottom() <= body.top(),
+                "scroll body starts below fixed title"
+            );
             assert!(
                 body.bottom() <= footer.top(),
                 "actions stay outside body scrolling"

@@ -101,6 +101,7 @@ pub(super) struct NativePlan {
     local_review: Option<grove_core::rich_plan::ReviewState>,
     restored: bool,
     send_pending: bool,
+    pending_approval: bool,
     images: HashMap<String, std::sync::Arc<gpui::Image>>,
     line_pages: HashMap<String, usize>,
     fit_images: HashSet<String>,
@@ -279,10 +280,11 @@ impl NativePlan {
                     .revision(&this.plan_id, &this.revision_id)
                     .is_some_and(|r| {
                         !matches!(
-                            r.review.delivery,
-                            grove_core::rich_plan::ResponseDelivery::Draft
-                        ) || !matches!(
-                            r.review.approval,
+                            if this.pending_approval {
+                                &r.review.approval
+                            } else {
+                                &r.review.delivery
+                            },
                             grove_core::rich_plan::ResponseDelivery::Draft
                         )
                     })
@@ -305,6 +307,7 @@ impl NativePlan {
             local_review: None,
             restored: false,
             send_pending: false,
+            pending_approval: false,
             images: HashMap::new(),
             line_pages: HashMap::new(),
             fit_images: HashSet::new(),
@@ -429,6 +432,8 @@ impl NativePlan {
         let (total, pending) =
             decision_counts(&snapshot["document"]["claims"], &snapshot["review"]);
         let status = match snapshot["review"]["approval"]["status"].as_str() {
+            _ if self.send_pending && self.pending_approval => "Sending approval…".into(),
+            _ if self.send_pending => "Sending feedback…".into(),
             Some("queued") => "Approval queued".into(),
             Some("sent") => "Approved · sent to agent".into(),
             Some("uncertain") => "Check approval delivery".into(),
@@ -501,6 +506,7 @@ impl NativePlan {
         }
         self.error = None;
         self.send_pending = true;
+        self.pending_approval = approve;
         self.session.update(cx, |session, cx| {
             session.send(
                 if approve {
@@ -1460,6 +1466,7 @@ impl Render for NativePlan {
             .gap(rpx(SPACE_2XL))
             .min_w_0()
             .w_full()
+            .flex_shrink_0()
             .when(expanded, |s| s.max_w(rpx(PLAN_READING_WIDTH)).mx_auto())
             .p(rpx(SPACE_3XL));
         let title = div()
@@ -1671,7 +1678,13 @@ impl Render for NativePlan {
             .rev()
             .find(|r| r.document.plan_id == self.plan_id)
             .is_none_or(|r| r.document.revision_id != self.revision_id);
-        let reason = if stale {
+        let reason = if self.send_pending {
+            if self.pending_approval {
+                "Sending approval to your agent…".into()
+            } else {
+                "Sending feedback to your agent…".into()
+            }
+        } else if stale {
             "A newer revision is available. Open the current plan.".into()
         } else if approval_status == "sent" {
             "Approval sent to your agent".into()
@@ -1723,7 +1736,6 @@ impl Render for NativePlan {
         actions = actions
             .child(
                 div()
-                    .flex_auto()
                     .flex_shrink_0()
                     .whitespace_nowrap()
                     .text_color(c::FG_DIM())
@@ -1788,27 +1800,38 @@ impl Render for NativePlan {
                 );
         }
         actions = actions.child(
-            transcript_action("plan-approve", "Approve & implement", true, window, cx)
-                .icon(
-                    gpui_component::Icon::default()
-                        .path("icons/check.svg")
-                        .size(rpx(ICON_SM)),
-                )
-                .debug_selector(|| "native-plan-approve".into())
-                .disabled(unanswered > 0 || stale || approval_locked)
-                .on_click(cx.listener(|this, _, _, cx| this.dispatch(true, cx))),
+            transcript_action(
+                "plan-approve",
+                if self.send_pending && self.pending_approval {
+                    "Sending approval…"
+                } else if approval_status == "sent" {
+                    "Approved & sent"
+                } else if approval_status == "queued" {
+                    "Approval queued"
+                } else {
+                    "Approve & implement"
+                },
+                true,
+                window,
+                cx,
+            )
+            .icon(
+                gpui_component::Icon::default()
+                    .path("icons/check.svg")
+                    .size(rpx(ICON_SM)),
+            )
+            .debug_selector(|| "native-plan-approve".into())
+            .disabled(unanswered > 0 || stale || approval_locked)
+            .on_click(cx.listener(|this, _, _, cx| this.dispatch(true, cx))),
         );
         let mut footer = div()
-            .id("native-plan-footer")
-            .debug_selector(|| "native-plan-footer".into())
-            .flex_shrink_0()
+            .w_full()
+            .min_w_0()
+            .when(expanded, |s| s.max_w(rpx(PLAN_READING_WIDTH)).mx_auto())
             .flex()
             .flex_col()
             .gap(rpx(SPACE_SM))
-            .p(rpx(SPACE_2XL))
-            .bg(c::SURFACE_RAISED())
-            .border_t_1()
-            .border_color(c::BORDER_SOFT())
+            .p(rpx(SPACE_3XL))
             .child(actions)
             .child(
                 div()
@@ -1861,19 +1884,35 @@ impl Render for NativePlan {
             .text_color(c::FG())
             .bg(c::BG())
             .when_some(fixed_header, |surface, header| {
-                surface.child(header.flex_shrink_0().p(rpx(SPACE_3XL)).pb_0())
+                surface.child(
+                    header
+                        .debug_selector(|| "native-plan-header".into())
+                        .flex_shrink_0()
+                        .p(rpx(SPACE_3XL))
+                        .pb_0(),
+                )
             })
             .child(
                 div()
                     .id("native-plan-body")
                     .debug_selector(|| "native-plan-body".into())
+                    .overflow_hidden()
                     .min_h_0()
                     .flex_1()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .child(body),
             )
-            .child(footer)
+            .child(
+                div()
+                    .id("native-plan-footer")
+                    .debug_selector(|| "native-plan-footer".into())
+                    .flex_shrink_0()
+                    .bg(c::SURFACE_RAISED())
+                    .border_t_1()
+                    .border_color(c::BORDER_SOFT())
+                    .child(footer),
+            )
             .on_key_down(
                 cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" && expanded {
@@ -1971,7 +2010,15 @@ mod tests {
                     gpui_component::Theme::global_mut(cx).font_size =
                         gpui::px(crate::zoom::REM_BASE * zoom);
                 });
-                for mode in ["entry", "peek", "plan", "response"] {
+                for mode in [
+                    "entry",
+                    "peek",
+                    "peek-selected",
+                    "peek-scrolled",
+                    "peek-approved",
+                    "plan",
+                    "response",
+                ] {
                     let nested_claim = json!({"id":"verification","text":"Verify the approved change before delivery.", "decisions":[{"id":"verification-choice","prompt":"Which checks should run?","options":[{"id":"focused","label":"Focused checks","description":"Exercise changed interactions before delivery."}]}]});
                     let saved: SavedSession = serde_json::from_value(json!({
                         "key":"plan-brief-qa","provider":"codex","project":"QA","cwd":"/tmp",
@@ -1996,7 +2043,11 @@ mod tests {
                         .open_window(
                             gpui::size(
                                 gpui::px(width),
-                                gpui::px(if mode == "peek" { 620. } else { 1200.0 }),
+                                gpui::px(if mode.starts_with("peek") {
+                                    620.
+                                } else {
+                                    1200.0
+                                }),
                             ),
                             |window, cx| {
                                 let session = cx.new(|cx| {
@@ -2029,8 +2080,20 @@ mod tests {
                         .unwrap();
                     cx.update_window(window.into(), |_, window, cx| {
                         captured.as_ref().unwrap().update(cx, |view, cx| {
-                            if mode == "peek" { view.show_peek(None, cx); }
+                            if mode.starts_with("peek") { view.show_peek(None, cx); }
                             else if mode != "entry" { view.reveal(window, cx); }
+                            if matches!(mode, "peek-selected" | "peek-scrolled" | "peek-approved") {
+                                view.choose("targeting", "eligible", cx);
+                            }
+                            if mode == "peek-approved" {
+                                view.session.update(cx, |session, cx| {
+                                    session.state.saved.rich_plans.revisions[0].review.approval = grove_core::rich_plan::ResponseDelivery::Sent { id: 2 };
+                                    cx.notify();
+                                });
+                            }
+                            if mode == "peek-scrolled" {
+                                view.scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-140.)));
+                            }
                             if mode == "response" {
                                 view.choose("targeting", "eligible", cx);
                                 view.set_feedback("comments", &target_key("claim", "audience"), "Keep tenant context server-derived.\nVerify repeat enrollment.".into(), cx);
@@ -2329,6 +2392,51 @@ mod tests {
             assert!(!view.send_pending);
         });
         assert!(cx.debug_bounds("native-plan-send-error").is_some());
+        // Approval is a separate delivery: an already sent feedback snapshot
+        // must not acknowledge it or re-enable a second approval click.
+        cx.update(|_, cx| {
+            plan.update(cx, |view, cx| {
+                view.session
+                    .update(cx, |session, _| session.state.error = None);
+                view.dispatch(true, cx);
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.rich_plans.revisions[0].review.delivery =
+                        grove_core::rich_plan::ResponseDelivery::Sent { id: 1 };
+                    cx.notify();
+                });
+            });
+        });
+        cx.run_until_parked();
+        plan.read_with(cx, |view, cx| {
+            assert!(
+                view.send_pending,
+                "feedback acknowledgement cannot unlock approval"
+            );
+            assert_eq!(view.title_and_status(cx).1, "Sending approval…");
+        });
+        cx.update(|_, cx| {
+            plan.update(cx, |view, cx| {
+                view.dispatch(true, cx);
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.rich_plans.revisions[0].review.approval =
+                        grove_core::rich_plan::ResponseDelivery::Sent { id: 2 };
+                    cx.notify();
+                });
+            });
+        });
+        cx.run_until_parked();
+        plan.read_with(cx, |view, cx| {
+            assert!(!view.send_pending);
+            assert_eq!(view.title_and_status(cx).1, "Approved · sent to agent");
+            assert_eq!(view.session.read(cx).state.saved.draft, "KEEP THIS DRAFT");
+        });
+        assert_eq!(
+            actions
+                .try_iter()
+                .filter(|a| matches!(a, Action::ApprovePlan { .. }))
+                .count(),
+            1
+        );
         cx.simulate_keystrokes("escape");
         cx.run_until_parked();
         plan.read_with(cx, |view, cx| assert!(!view.expanded(cx)));
