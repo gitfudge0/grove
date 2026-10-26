@@ -292,7 +292,105 @@ fn local_html_path(target: &str, cwd: &Path) -> Option<PathBuf> {
     local_html_url(target, cwd)?.to_file_path().ok()
 }
 
-fn read_document(path: &Path) -> Result<String, String> {
+pub(super) fn recovery_path(path: &Path, cwd: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    let mut roots = roots.to_vec();
+    roots.push(cwd.to_owned());
+    grove_core::rich_plan::safe_path(cwd, &path.to_string_lossy(), &roots).ok()
+}
+
+fn artifact_size(bytes: u64, rejected_limit: Option<u64>) -> String {
+    let value = bytes as f64 / (1024. * 1024.);
+    if rejected_limit.is_some_and(|limit| {
+        bytes > limit && format!("{value:.1}") == format!("{:.1}", limit as f64 / (1024. * 1024.))
+    }) {
+        return format!("{bytes} bytes");
+    }
+    if bytes.is_multiple_of(1024 * 1024) {
+        format!("{value:.0} MiB")
+    } else {
+        format!("{value:.1} MiB")
+    }
+}
+
+pub(super) fn oversized_card(
+    title: &str,
+    limit: &grove_core::rich_plan::FileSizeLimit,
+    description: &str,
+    actions: Vec<AnyElement>,
+    _cx: &App,
+) -> gpui::Div {
+    div()
+        .debug_selector(|| "oversized-artifact-card".into())
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_start()
+        .gap(rpx(SPACE_LG))
+        .p(rpx(SPACE_2XL))
+        .bg(c::BG_RAIL())
+        .border_1()
+        .border_color(c::BORDER())
+        .rounded(rpx(RADIUS_GROUP))
+        .child(crate::icons::icon("status-warning", ICON_MD, c::AMBER()).flex_shrink_0())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .child(
+                    div()
+                        .text_size(rpx(TEXT_BODY))
+                        .text_color(c::FG())
+                        .child(title.to_owned()),
+                )
+                .child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(format!(
+                            "{} · {} · limit {}",
+                            limit.path.file_name().unwrap_or_default().to_string_lossy(),
+                            artifact_size(limit.bytes, Some(limit.limit)),
+                            artifact_size(limit.limit, None)
+                        )),
+                )
+                .child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG())
+                        .child(description.to_owned()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(rpx(SPACE_SM))
+                        .children(actions),
+                ),
+        )
+}
+
+#[derive(Debug)]
+struct DocumentReadError {
+    message: String,
+    size_limit: Option<grove_core::rich_plan::FileSizeLimit>,
+}
+impl From<String> for DocumentReadError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            size_limit: None,
+        }
+    }
+}
+impl From<&str> for DocumentReadError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+fn read_document(path: &Path) -> Result<String, DocumentReadError> {
     if !fs_err::metadata(path)
         .map_err(|e| format!("Couldn’t read HTML: {e}"))?
         .is_file()
@@ -317,7 +415,14 @@ fn read_document(path: &Path) -> Result<String, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if bytes.len() > MAX_HTML_BYTES {
-        return Err("HTML document exceeds the 2 MiB preview limit".into());
+        return Err(DocumentReadError {
+            message: "HTML document exceeds the 2 MiB preview limit".into(),
+            size_limit: Some(grove_core::rich_plan::FileSizeLimit {
+                path: path.to_owned(),
+                bytes: fs_err::metadata(path).map_or(bytes.len() as u64, |metadata| metadata.len()),
+                limit: MAX_HTML_BYTES as u64,
+            }),
+        });
     }
     String::from_utf8(bytes).map_err(|_| "HTML preview requires UTF-8 text".into())
 }
@@ -397,6 +502,7 @@ pub(super) struct HtmlSession {
     extensions: HashMap<String, MarkdownExtensions>,
     opened: HashMap<String, Vec<String>>,
     cwd: PathBuf,
+    roots: Vec<PathBuf>,
     scroll: ScrollHandle,
     paused: Rc<Cell<bool>>,
     browser_errors: HashMap<String, String>,
@@ -464,6 +570,7 @@ impl HtmlSession {
             extensions: HashMap::new(),
             opened: HashMap::new(),
             cwd,
+            roots: Vec::new(),
             scroll,
             paused: Rc::default(),
             browser_errors: HashMap::new(),
@@ -503,6 +610,12 @@ impl HtmlSession {
         }
         self.identity = Some(identity);
         self.cwd = cwd;
+        self.roots = state
+            .saved
+            .roots
+            .iter()
+            .map(|root| PathBuf::from(&root.wt_path))
+            .collect();
         if self.paused.replace(paused) != paused {
             for artifact in self.artifacts.values() {
                 artifact.update(cx, |_, cx| cx.notify());
@@ -961,6 +1074,8 @@ struct HtmlArtifact {
     paused: Rc<Cell<bool>>,
     surface: Option<Rc<Surface>>,
     error: Option<String>,
+    size_limit: Option<grove_core::rich_plan::FileSizeLimit>,
+    recovery_error: Option<String>,
     loading_file: bool,
     source: bool,
     started: Option<std::time::Instant>,
@@ -1005,6 +1120,8 @@ impl HtmlArtifact {
             paused,
             surface: None,
             error: None,
+            size_limit: None,
+            recovery_error: None,
             loading_file: false,
             source: false,
             started: None,
@@ -1032,6 +1149,7 @@ impl HtmlArtifact {
         }
         self.loading_file = true;
         self.error = None;
+        self.size_limit = None;
         let read = cx
             .background_executor()
             .spawn(async move { read_document(&path) });
@@ -1049,7 +1167,10 @@ impl HtmlArtifact {
                         let markdown = format!("```html\n{source}\n```");
                         this.version.offer(source, markdown);
                     }
-                    Err(error) => this.error = Some(error),
+                    Err(error) => {
+                        this.size_limit = error.size_limit;
+                        this.error = Some(error.message);
+                    }
                 }
                 cx.notify();
             });
@@ -1058,6 +1179,7 @@ impl HtmlArtifact {
     }
     fn load(&mut self, cx: &mut Context<Self>) {
         self.surface = None;
+        self.size_limit = None;
         self.report = integrated_report(&self.version.active);
         self.report_height = INLINE_HEIGHT;
         self.report_theme.clear();
@@ -1161,6 +1283,20 @@ impl HtmlArtifact {
     }
 }
 
+fn recovery_action(
+    id: &'static str,
+    label: &'static str,
+    glyph: &'static str,
+    window: &Window,
+    cx: &App,
+) -> gpui_component::button::Button {
+    transcript_action(id, label, false, window, cx).icon(
+        gpui_component::Icon::default()
+            .path(format!("icons/{glyph}.svg"))
+            .size(rpx(ICON_SM)),
+    )
+}
+
 /// Icon treatment for document toolbar actions, retaining shared button behavior.
 fn document_action(
     id: &'static str,
@@ -1193,6 +1329,104 @@ impl Render for HtmlArtifact {
             }
         }
         let expanded = expanded(&cx.entity(), cx);
+        if self.reveal && !expanded {
+            self.reveal = false;
+            self.anchor.scroll_to(window, cx);
+        }
+        if let Some(limit) = self.size_limit.clone() {
+            let path = limit.path.clone();
+            let cwd = self
+                .session
+                .upgrade()
+                .map(|session| session.read(cx).cwd.clone());
+            let roots = self
+                .session
+                .upgrade()
+                .map_or_else(Vec::new, |session| session.read(cx).roots.clone());
+            let safe = cwd
+                .as_ref()
+                .and_then(|cwd| recovery_path(&path, cwd, &roots));
+            let mut actions = Vec::new();
+            if let (Some(path), Some(cwd)) = (safe, cwd) {
+                if let Ok(url) = gpui::http_client::Url::from_file_path(&path) {
+                    let browser_path = path.clone();
+                    let browser_cwd = cwd.clone();
+                    let browser_roots = roots.clone();
+                    actions.push(
+                        recovery_action(
+                            "oversize-html-browser",
+                            "Open in browser",
+                            "external-link",
+                            window,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if recovery_path(&browser_path, &browser_cwd, &browser_roots).is_none()
+                            {
+                                return;
+                            }
+                            let url = url.to_string();
+                            this.recovery_error = None;
+                            cx.spawn(async move |this, cx| {
+                                if let Err(error) =
+                                    crate::platform::inline_html::open_in_browser(url).await
+                                {
+                                    let _ = this.update(cx, |this, cx| {
+                                        this.recovery_error =
+                                            Some(format!("Couldn’t open in browser: {error}"));
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                            .detach();
+                        }))
+                        .into_any_element(),
+                    );
+                }
+                actions.push(
+                    recovery_action("oversize-html-reveal", "Reveal file", "folder", window, cx)
+                        .on_click(move |_, _, cx| {
+                            if let Some(path) = recovery_path(&path, &cwd, &roots) {
+                                cx.reveal_path(&path);
+                            }
+                        })
+                        .into_any_element(),
+                );
+            }
+            actions.push(
+                recovery_action(
+                    "oversize-html-check-updates",
+                    "Check for updates",
+                    "restart",
+                    window,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.read_file(cx)))
+                .into_any_element(),
+            );
+            if let Some(error) = &self.recovery_error {
+                actions.push(
+                    div()
+                        .w_full()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FORM_ERROR())
+                        .child(error.clone())
+                        .into_any_element(),
+                );
+            }
+            return div()
+                .id("html-oversized-artifact")
+                .w_full()
+                .anchor_scroll((!expanded).then(|| self.anchor.clone()))
+                .child(oversized_card(
+                    "Preview too large",
+                    &limit,
+                    "Open the full document in your browser.",
+                    actions,
+                    cx,
+                ))
+                .into_any_element();
+        }
         let report = self.report;
         if self.last_status == Some(LoadStatus::Ready) {
             let mut script = preference_script(cx.reduce_motion());
@@ -1205,10 +1439,6 @@ impl Render for HtmlArtifact {
                     self.report_theme = script;
                 }
             }
-        }
-        if self.reveal && !expanded {
-            self.reveal = false;
-            self.anchor.scroll_to(window, cx);
         }
         let title = self
             .path
@@ -1413,6 +1643,7 @@ impl Render for HtmlArtifact {
                     .when_some(version_notice, gpui::ParentElement::child)
             })
             .child(body)
+            .into_any_element()
     }
 }
 impl HtmlArtifact {
@@ -1864,10 +2095,17 @@ mod tests {
             .success());
         let link = dir.path().join("linked.html");
         symlink(&fifo, &link).unwrap();
-        assert!(read_document(&fifo).unwrap_err().contains("regular file"));
-        assert!(read_document(&link).unwrap_err().contains("regular file"));
+        assert!(read_document(&fifo)
+            .unwrap_err()
+            .message
+            .contains("regular file"));
+        assert!(read_document(&link)
+            .unwrap_err()
+            .message
+            .contains("regular file"));
         assert!(read_document(dir.path())
             .unwrap_err()
+            .message
             .contains("regular file"));
     }
 
@@ -2045,6 +2283,44 @@ mod tests {
         }
     }
     #[test]
+    fn near_limit_sizes_remain_visibly_greater_than_the_limit() {
+        assert_eq!(
+            artifact_size(2 * 1024 * 1024 + 1, Some(2 * 1024 * 1024)),
+            "2097153 bytes"
+        );
+        assert_eq!(
+            artifact_size(1024 * 1024 + 1, Some(1024 * 1024)),
+            "1048577 bytes"
+        );
+        assert_eq!(artifact_size(3_565_158, Some(2 * 1024 * 1024)), "3.4 MiB");
+        assert_eq!(artifact_size(2 * 1024 * 1024, None), "2 MiB");
+    }
+
+    #[test]
+    fn recovery_paths_use_only_the_owning_session_roots() {
+        let checkout = tempfile::tempdir().unwrap();
+        let additional = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let artifact = additional.path().join("artifact.html");
+        let blocked = outside.path().join("blocked.html");
+        fs_err::write(&artifact, "<html></html>").unwrap();
+        fs_err::write(&blocked, "<html></html>").unwrap();
+        assert!(recovery_path(&artifact, checkout.path(), &[]).is_none());
+        let roots = vec![additional.path().to_owned()];
+        assert_eq!(
+            recovery_path(&artifact, checkout.path(), &roots),
+            Some(artifact.canonicalize().unwrap())
+        );
+        assert!(recovery_path(&blocked, checkout.path(), &roots).is_none());
+        #[cfg(unix)]
+        {
+            let link = checkout.path().join("changed.html");
+            std::os::unix::fs::symlink(&blocked, &link).unwrap();
+            assert!(recovery_path(&link, checkout.path(), &roots).is_none());
+        }
+    }
+
+    #[test]
     fn file_reads_reject_invalid_utf8_and_oversize() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.html");
@@ -2053,7 +2329,127 @@ mod tests {
         fs_err::write(&path, [255]).unwrap();
         assert!(read_document(&path).is_err());
         fs_err::write(&path, vec![b'x'; MAX_HTML_BYTES + 1]).unwrap();
-        assert!(read_document(&path).is_err());
-        assert!(read_document(&dir.path().join("missing.html")).is_err());
+        let failure = read_document(&path).unwrap_err();
+        let size = failure.size_limit.unwrap();
+        assert_eq!(size.bytes, MAX_HTML_BYTES as u64 + 1);
+        assert_eq!(size.limit, MAX_HTML_BYTES as u64);
+        assert_eq!(size.path, path);
+        fs_err::write(&path, "<html>fixed</html>").unwrap();
+        assert_eq!(read_document(&path).unwrap(), "<html>fixed</html>");
+        assert!(read_document(&dir.path().join("missing.html"))
+            .unwrap_err()
+            .size_limit
+            .is_none());
+    }
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn oversized_recovery_native_snapshots() {
+        use gpui::AppContext as _;
+        struct Fixture;
+        impl Render for Fixture {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let html = grove_core::rich_plan::FileSizeLimit {
+                    path: "mock-comparison-with-a-long-artifact-name.html".into(),
+                    bytes: 3_565_158,
+                    limit: MAX_HTML_BYTES as u64,
+                };
+                let plan = grove_core::rich_plan::FileSizeLimit {
+                    path: "review.grove-plan.json".into(),
+                    bytes: 1_363_149,
+                    limit: 1024 * 1024,
+                };
+                let browser =
+                    recovery_action("qa-browser", "Open in browser", "external-link", window, cx)
+                        .into_any_element();
+                let reveal_html =
+                    recovery_action("qa-html-reveal", "Reveal file", "folder", window, cx)
+                        .into_any_element();
+                let updates =
+                    recovery_action("qa-updates", "Check for updates", "restart", window, cx)
+                        .into_any_element();
+                let reveal_plan =
+                    recovery_action("qa-plan-reveal", "Reveal file", "folder", window, cx)
+                        .into_any_element();
+                div()
+                    .w_full()
+                    .h_full()
+                    .p(rpx(SPACE_2XL))
+                    .bg(c::BG())
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_LG))
+                    .child(oversized_card(
+                        "Preview too large",
+                        &html,
+                        "Open the full document in your browser.",
+                        vec![browser, reveal_html, updates],
+                        cx,
+                    ))
+                    .child(oversized_card(
+                        "Plan too large",
+                        &plan,
+                        "Move embedded images into separate assets and reference their paths.",
+                        vec![reveal_plan],
+                        cx,
+                    ))
+            }
+        }
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+        });
+        let previous_theme = grove_core::theme::current().name.clone();
+        let previous_font = cx.update(|cx| gpui_component::Theme::global_mut(cx).font_size);
+        for appearance in ["dark", "light"] {
+            cx.update(|cx| {
+                assert!(grove_core::theme::set_by_name(&format!(
+                    "grove-{appearance}"
+                )));
+                c::sync_component_theme(cx);
+            });
+            for (width, zoom) in [(800., 1.), (400., 1.), (400., 1.25)] {
+                cx.update(|cx| {
+                    gpui_component::Theme::global_mut(cx).font_size =
+                        gpui::px(crate::zoom::REM_BASE * zoom);
+                });
+                let window = cx
+                    .open_window(gpui::size(gpui::px(width), gpui::px(650.)), |window, cx| {
+                        let fixture = cx.new(|_| Fixture);
+                        cx.new(|cx| {
+                            gpui_component::Root::new(fixture, window, cx)
+                                .bordered(false)
+                                .bg(c::BG())
+                        })
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                let path =
+                    format!("/tmp/grove-oversized-recovery-{appearance}-{width:.0}-{zoom:.2}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Oversized recovery fixture: {path}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+        cx.update(|cx| {
+            assert!(grove_core::theme::set_by_name(&previous_theme));
+            c::sync_component_theme(cx);
+            gpui_component::Theme::global_mut(cx).font_size = previous_font;
+        });
     }
 }

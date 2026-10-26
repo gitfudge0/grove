@@ -1,0 +1,2 @@
+PASS Claude: completed live provider response imported plan link as structured size error (1048726 bytes, limit 1048576); actual HTML link present. HTML renderer is not exercised by this actor harness.
+PASS Claude: external shrink followed by production RetryPlanImport clears size error and imports original reference.

@@ -199,10 +199,18 @@ pub struct AssetSnapshot {
     pub bytes: std::sync::Arc<Vec<u8>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileSizeLimit {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub limit: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImportError {
     pub message_id: String,
     pub source: String,
     pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_limit: Option<FileSizeLimit>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ReviewState {
@@ -402,7 +410,7 @@ impl PlanStore {
         cwd: &str,
         roots: &[PathBuf],
     ) -> Result<(), String> {
-        let result: Result<(), String> = (|| {
+        let result: Result<(), BoundedReadError> = (|| {
             if self.references.len() >= 1000
                 && !self
                     .references
@@ -476,11 +484,12 @@ impl PlanStore {
             self.errors.push(ImportError {
                 message_id: message_id.into(),
                 source: source.into(),
-                error: error.clone(),
+                error: error.message.clone(),
+                size_limit: error.size_limit.clone(),
             });
             self.errors.truncate(100);
         }
-        result
+        result.map_err(String::from)
     }
 }
 fn validate_strings(value: &serde_json::Value, depth: usize) -> Result<(), String> {
@@ -524,7 +533,7 @@ fn validate_claims(
     assets: &mut Vec<AssetSnapshot>,
     base: &Path,
     roots: &[PathBuf],
-) -> Result<(), String> {
+) -> Result<(), BoundedReadError> {
     if depth >= 3 && !claims.is_empty() {
         return Err("Claim depth exceeded".into());
     }
@@ -564,7 +573,7 @@ fn validate_exhibit(
     assets: &mut Vec<AssetSnapshot>,
     base: &Path,
     roots: &[PathBuf],
-) -> Result<(), String> {
+) -> Result<(), BoundedReadError> {
     if depth > 12 {
         return Err("Exhibit depth exceeded".into());
     }
@@ -619,7 +628,7 @@ fn validate_layout(
     }
     Ok(())
 }
-fn safe_path(base: &Path, source: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+pub fn safe_path(base: &Path, source: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
     if source.contains("://")
         || source.contains('\0')
         || Path::new(source)
@@ -644,7 +653,30 @@ fn safe_path(base: &Path, source: &str, roots: &[PathBuf]) -> Result<PathBuf, St
     }
     Ok(path)
 }
-fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+#[derive(Debug)]
+struct BoundedReadError {
+    message: String,
+    size_limit: Option<FileSizeLimit>,
+}
+impl From<&str> for BoundedReadError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl From<String> for BoundedReadError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            size_limit: None,
+        }
+    }
+}
+impl From<BoundedReadError> for String {
+    fn from(error: BoundedReadError) -> Self {
+        error.message
+    }
+}
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, BoundedReadError> {
     let f = fs_err::File::open(path).map_err(|e| e.to_string())?;
     if !f.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("Not a regular file".into());
@@ -654,7 +686,14 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if bytes.len() > limit {
-        return Err("Plan file exceeds size limit".into());
+        return Err(BoundedReadError {
+            message: "Plan file exceeds size limit".into(),
+            size_limit: Some(FileSizeLimit {
+                path: path.to_owned(),
+                bytes: fs_err::metadata(path).map_or(bytes.len() as u64, |metadata| metadata.len()),
+                limit: limit as u64,
+            }),
+        });
     }
     Ok(bytes)
 }
@@ -664,7 +703,7 @@ fn asset(
     assets: &mut Vec<AssetSnapshot>,
     base: &Path,
     roots: &[PathBuf],
-) -> Result<(), String> {
+) -> Result<(), BoundedReadError> {
     if let Some(old) = assets.iter().find(|a| a.path == source) {
         if html != (old.mime == "text/html") {
             return Err("Asset used as both image and HTML".into());
@@ -775,6 +814,19 @@ pub fn import_completed(saved: &mut SavedSession) {
         .map(|r| PathBuf::from(&r.wt_path))
         .collect();
     roots.push(PathBuf::from(&saved.cwd));
+    // Older saved errors carried only this exact diagnostic. Re-read through
+    // the guarded importer once to establish typed details instead of guessing
+    // whether the oversized target was JSON or a linked asset.
+    let legacy: Vec<_> = saved
+        .rich_plans
+        .errors
+        .iter()
+        .filter(|error| error.size_limit.is_none() && error.error == "Plan file exceeds size limit")
+        .map(|error| (error.message_id.clone(), error.source.clone()))
+        .collect();
+    links.extend(legacy);
+    links.sort();
+    links.dedup();
     for (id, source) in links {
         let _ = saved.rich_plans.import(&id, &source, &saved.cwd, &roots);
     }
@@ -1056,6 +1108,70 @@ pub fn retry_import(saved: &mut SavedSession, message: &str, source: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_files_retain_the_affected_path_and_limit_and_can_be_reimported() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = dir.path().join("plan.grove-plan.json");
+        let mut store = PlanStore::default();
+        fs_err::write(&plan, vec![b' '; 1024 * 1024 + 37]).unwrap();
+        assert!(import(&mut store, dir.path()).is_err());
+        let size = store.errors[0].size_limit.as_ref().unwrap();
+        assert_eq!(size.path, plan.canonicalize().unwrap());
+        assert_eq!(size.bytes, 1024 * 1024 + 37);
+        assert_eq!(size.limit, 1024 * 1024);
+        for (asset, limit, exhibit) in [
+            ("comparison.html", 1024 * 1024, "html_link"),
+            ("artwork.png", 8 * 1024 * 1024, "image"),
+        ] {
+            let path = dir.path().join(asset);
+            fs_err::write(&path, vec![b'x'; limit + 7]).unwrap();
+            fs_err::write(&plan, serde_json::to_vec(&serde_json::json!({
+                "schema_version":1, "plan_id":"size-qa", "revision_id":"r1", "title":"Size QA",
+                "claims":[{"id":"claim", "text":"Evidence", "exhibit":{"kind":exhibit, "path":asset, "alt":"Art", "label":"Comparison"}}]
+            })).unwrap()).unwrap();
+            assert!(import(&mut store, dir.path()).is_err());
+            let size = store.errors[0].size_limit.as_ref().unwrap();
+            assert_eq!(size.path, path.canonicalize().unwrap());
+            assert_eq!(size.bytes, limit as u64 + 7);
+            assert_eq!(size.limit, limit as u64);
+        }
+        fs_err::write(&plan, r#"{"schema_version":1,"plan_id":"size-qa","revision_id":"r2","title":"Fixed","claims":[{"id":"fixed","text":"Fixed"}]}"#).unwrap();
+        import(&mut store, dir.path()).unwrap();
+        assert!(store.errors.is_empty());
+        assert_eq!(store.revisions[0].document.revision_id, "r2");
+    }
+
+    #[test]
+    fn restore_refreshes_legacy_size_errors_through_the_guarded_importer_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = dir.path().join("plan.grove-plan.json");
+        fs_err::write(&plan, vec![b' '; 1024 * 1024 + 19]).unwrap();
+        let mut saved: SavedSession = serde_json::from_value(serde_json::json!({
+            "key":"size-restore", "cwd":dir.path(), "project":"test", "label":"test", "roots":[], "items":[],
+            "rich_plans":{"errors":[{"message_id":"m", "source":"plan.grove-plan.json", "error":"Plan file exceeds size limit"}]}
+        })).unwrap();
+        import_completed(&mut saved);
+        assert_eq!(
+            saved.rich_plans.errors[0]
+                .size_limit
+                .as_ref()
+                .unwrap()
+                .bytes,
+            1024 * 1024 + 19
+        );
+        // A subsequent provider update retains the captured failure, without
+        // re-reading a file that changed behind an immutable transcript entry.
+        fs_err::write(&plan, "changed").unwrap();
+        import_completed(&mut saved);
+        assert!(saved.rich_plans.errors[0].size_limit.is_some());
+    }
+
+    #[test]
+    fn persisted_generic_import_errors_do_not_become_size_failures() {
+        let error: ImportError = serde_json::from_str(r#"{"message_id":"m","source":"plan.grove-plan.json","error":"Plan file exceeds size limit"}"#).unwrap();
+        assert!(error.size_limit.is_none());
+    }
+
     #[test]
     fn injected_authoring_example_imports_with_complete_v1_shapes() {
         let example = GUIDANCE

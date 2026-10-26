@@ -4094,6 +4094,63 @@ impl Render for CodexView {
                         .into_iter()
                         .filter(|error| error.message_id == html_message)
                     {
+                        if let Some(limit) = &error.size_limit {
+                            let recovery_roots: Vec<std::path::PathBuf> = state
+                                .saved
+                                .roots
+                                .iter()
+                                .map(|root| root.wt_path.clone().into())
+                                .collect();
+                            let path = super::inline_html::recovery_path(
+                                &limit.path,
+                                std::path::Path::new(&state.saved.cwd),
+                                &recovery_roots,
+                            );
+                            let recovery_cwd = std::path::PathBuf::from(&state.saved.cwd);
+                            let actions = path
+                                .into_iter()
+                                .map(|path| {
+                                    let recovery_cwd = recovery_cwd.clone();
+                                    let recovery_roots = recovery_roots.clone();
+                                    transcript_action(
+                                        format!("reveal-oversized-plan-{}", error.message_id),
+                                        "Reveal file",
+                                        false,
+                                        window,
+                                        cx,
+                                    )
+                                    .icon(
+                                        gpui_component::Icon::default()
+                                            .path("icons/folder.svg")
+                                            .size(rpx(ICON_SM)),
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        if let Some(path) = super::inline_html::recovery_path(
+                                            &path,
+                                            &recovery_cwd,
+                                            &recovery_roots,
+                                        ) {
+                                            cx.reveal_path(&path);
+                                        }
+                                    })
+                                    .into_any_element()
+                                })
+                                .collect();
+                            let is_plan = super::inline_html::recovery_path(
+                                std::path::Path::new(&error.source),
+                                std::path::Path::new(&state.saved.cwd),
+                                &recovery_roots,
+                            )
+                            .as_ref()
+                                == Some(&limit.path);
+                            row = row.child(super::inline_html::oversized_card(
+                                if is_plan { "Plan too large" } else { "Plan asset too large" },
+                                limit,
+                                if is_plan { "Move embedded images into separate assets and reference their paths." } else { "Reduce this asset’s size, then link a new plan revision." },
+                                actions, cx,
+                            ));
+                            continue;
+                        }
                         let message_id = error.message_id.clone();
                         let source = error.source.clone();
                         row =
