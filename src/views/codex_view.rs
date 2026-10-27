@@ -6622,9 +6622,11 @@ impl CodexView {
                                         .debug_selector(|| "codex-effort-fill".into())
                                         .absolute()
                                         .left(-rpx(ICON_MD))
-                                        .right_0()
+                                        // Keep both caps full-sized beneath the thumb, even
+                                        // at the first stop where a short fill would flatten.
+                                        .right(-rpx(ICON_MD))
                                         .h_full()
-                                        .rounded_l(rpx(RADIUS_FULL))
+                                        .rounded(rpx(RADIUS_FULL))
                                         .bg(c::BLUE()),
                                 ),
                         )
@@ -12484,6 +12486,148 @@ mod tests {
     #[test]
     #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
     #[cfg(target_os = "macos")]
+    fn effort_card_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        let previous_theme = grove_core::theme::current().name.clone();
+        for appearance in ["dark", "light"] {
+            cx.update(|cx| {
+                assert!(grove_core::theme::set_by_name(&format!(
+                    "grove-{appearance}"
+                )));
+                c::sync_component_theme(cx);
+            });
+            for (width, rem) in [(1024.0, 16.0), (400.0, 16.0), (400.0, 24.0)] {
+                cx.update(|cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
+                for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                    for effort in ["low", "high"] {
+                        let mut state = snapshot();
+                        state.saved.provider = provider;
+                        state.saved.draft = "Compare the two refresh paths.".into();
+                        state.saved.items.clear();
+                        state.saved.composer.speed = Some(codex::Speed::Fast);
+                        state.model = Some("speed-fixture".into());
+                        state.effort = Some(effort.into());
+                        state.models = vec![
+                            json!({"model":"speed-fixture", "displayName":"Selected model", "supportsFastMode":true, "serviceTiers":vec![json!({"id":"fast"})], "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]}),
+                        ];
+                        if provider == codex::Provider::Claude {
+                            state.reported_speed = Some("cooldown".into());
+                        }
+                        let (handle, _actions) = Handle::channel();
+                        let (_updates, receive) = mpsc::channel();
+                        let connection = Connection {
+                            handle,
+                            updates: receive.into(),
+                        };
+                        let mut retained = None;
+                        let window = cx
+                            .open_window(
+                                gpui::size(gpui::px(width), gpui::px(720.0)),
+                                |window, cx| {
+                                    window.set_rem_size(gpui::px(rem));
+                                    let session = cx.new(|cx| {
+                                        CodexSession::from_connection(state, connection, cx)
+                                    });
+                                    let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                                    retained = Some(chat.clone());
+                                    cx.new(|cx| {
+                                        gpui_component::Root::new(chat, window, cx)
+                                            .bordered(false)
+                                            .bg(c::BG())
+                                    })
+                                },
+                            )
+                            .unwrap();
+                        cx.update_window(window.into(), |_, window, cx| {
+                            retained.as_ref().unwrap().update(cx, |view, cx| {
+                                view.open_menu(ComposerMenu::Settings, window, cx);
+                            });
+                        })
+                        .unwrap();
+                        for _ in 0..4 {
+                            cx.advance_clock(std::time::Duration::from_millis(16));
+                            cx.run_until_parked();
+                            cx.update_window(window.into(), |_, window, cx| {
+                                window.simulate_next_frame(cx);
+                                let _ = window.draw(cx);
+                            })
+                            .unwrap();
+                        }
+                        cx.update_window(window.into(), |_, window, cx| {
+                            assert_eq!(
+                                window.rem_size(),
+                                gpui::px(rem),
+                                "native fixture must render the requested zoom"
+                            );
+                            let view = retained.as_ref().unwrap().read(cx);
+                            assert_eq!(
+                                view.input.read(cx).value().as_ref(),
+                                "Compare the two refresh paths."
+                            );
+                        })
+                        .unwrap();
+                        let path = format!(
+                            "/tmp/grove-effort-{appearance}-{provider:?}-{width:.0}-{rem:.0}-{effort}.png"
+                        );
+                        let screenshot = cx.capture_screenshot(window.into()).unwrap();
+                        screenshot.save(&path).unwrap();
+                        if effort == "low" {
+                            // The larger thumb fully covers a correctly rounded track cap.
+                            // A short fill with radius clamped by its width leaks a crescent.
+                            let (bounds, viewport, blue) = cx
+                                .update_window(window.into(), |_, window, cx| {
+                                    let bounds =
+                                        retained.as_ref().unwrap().read(cx).effort_bounds.get();
+                                    (bounds, window.viewport_size(), gpui::Rgba::from(c::BLUE()))
+                                })
+                                .unwrap();
+                            let scale = screenshot.width() as f32 / f32::from(viewport.width);
+                            let inset = ICON_MD * rem / crate::zoom::REM_BASE;
+                            let blue_pixels = screenshot
+                                .enumerate_pixels()
+                                .filter(|(x, y, pixel)| {
+                                    let x = *x as f32 / scale;
+                                    let y = *y as f32 / scale;
+                                    x >= f32::from(bounds.left()) - inset
+                                        && x <= f32::from(bounds.right()) + inset
+                                        && y >= f32::from(bounds.top()) - inset
+                                        && y <= f32::from(bounds.bottom()) + inset
+                                        && (f32::from(pixel[0]) / 255.0 - blue.r).abs() < 0.02
+                                        && (f32::from(pixel[1]) / 255.0 - blue.g).abs() < 0.02
+                                        && (f32::from(pixel[2]) / 255.0 - blue.b).abs() < 0.02
+                                })
+                                .count();
+                            assert_eq!(
+                                blue_pixels, 0,
+                                "low effort must not leak a blue cap behind the thumb: {path}"
+                            );
+                        }
+                        eprintln!("Native effort card fixture: {path}");
+                        cx.update_window(window.into(), |_, window, _| window.remove_window())
+                            .unwrap();
+                    }
+                }
+            }
+        }
+        cx.update(|cx| {
+            assert!(grove_core::theme::set_by_name(&previous_theme));
+            c::sync_component_theme(cx);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
     fn composer_markdown_native_snapshots() {
         use gpui::AppContext as _;
         let mut cx = gpui::HeadlessAppContext::with_platform(
@@ -16477,9 +16621,18 @@ mod tests {
         let aligned = |cx: &mut gpui::VisualTestContext| {
             let thumb = cx.debug_bounds("codex-effort-thumb").unwrap();
             let fill = cx.debug_bounds("codex-effort-fill").unwrap();
+            let slider = cx.debug_bounds("codex-effort-slider").unwrap();
+            assert_eq!(
+                thumb.size.width, thumb.size.height,
+                "effort thumb must remain round"
+            );
             assert!(
-                (fill.right() - thumb.center().x).abs() < gpui::px(1.0),
-                "fill must end at the moving thumb center"
+                thumb.left() >= slider.left() && thumb.right() <= slider.right(),
+                "the complete effort thumb must stay inside its slider: {thumb:?}, {slider:?}"
+            );
+            assert!(
+                (fill.right() - thumb.right()).abs() < gpui::px(1.0),
+                "the rounded fill cap must stay covered by the moving thumb"
             );
             thumb.center().x
         };
@@ -16710,7 +16863,7 @@ mod tests {
                 (thumb.center().x - expected).abs() < gpui::px(1.0),
                 "thumb must match the effective effort after asynchronous updates"
             );
-            assert!((fill.right() - thumb.center().x).abs() < gpui::px(1.0));
+            assert!((fill.right() - thumb.right()).abs() < gpui::px(1.0));
         };
         assert_stop(cx, path.right());
         let _ = actions.try_iter().collect::<Vec<_>>();
