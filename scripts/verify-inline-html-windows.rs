@@ -64,6 +64,8 @@ impl raw_window_handle::HasWindowHandle for Window {
 mod backend;
 
 type Wheel = (u32, usize, isize, windows::Win32::Foundation::HWND);
+// High bit means DispatchMessageW is in progress; zero means PeekMessageW.
+static LAST_MESSAGE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 thread_local! {
     // Native wheel messages the backend posted to the host window.
     static WHEELS: std::cell::RefCell<Vec<Wheel>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -84,7 +86,13 @@ fn pump_until(mut predicate: impl FnMut() -> bool) {
     loop {
         let mut message = MSG::default();
         unsafe {
-            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            // Bound each batch so a continuous stream of native messages cannot
+            // starve the predicate or deadline checks below.
+            for _ in 0..256 {
+                LAST_MESSAGE.store(0, std::sync::atomic::Ordering::Relaxed);
+                if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                    break;
+                }
                 if message.message == WM_MOUSEWHEEL || message.message == WM_MOUSEHWHEEL {
                     WHEELS.with(|wheels| {
                         wheels.borrow_mut().push((
@@ -96,6 +104,10 @@ fn pump_until(mut predicate: impl FnMut() -> bool) {
                     });
                 }
                 let _ = TranslateMessage(&message);
+                LAST_MESSAGE.store(
+                    0x8000_0000 | message.message,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 DispatchMessageW(&message);
             }
         }
@@ -147,6 +159,17 @@ fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
 }
 
 fn main() {
+    // The message pump's deadline cannot fire while a native COM/Win32 call
+    // is blocked (for example in a modal loop). Bound the whole probe too.
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(120));
+        eprintln!(
+            "WebView2 probe exceeded its 120-second process deadline; last message state: {:#x}",
+            LAST_MESSAGE.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        std::process::exit(1);
+    });
+    eprintln!("WebView2 probe: initializing host and document");
     let _browser_launcher = backend::open_in_browser;
     use windows::{
         core::w,
@@ -181,11 +204,15 @@ fn main() {
     server.set_nonblocking(true).unwrap();
     let port = server.local_addr().unwrap().port();
     let document = backend::Document::new(&format!(r#"<!doctype html><html><body><input id="edit"><script>
-      globalThis.probe = {{guard: typeof RTCPeerConnection === 'undefined' && typeof Worker === 'undefined'}};
+      globalThis.probe = {{guard: typeof RTCPeerConnection === 'undefined' && typeof Worker === 'undefined', clicks: 0, frameClicks: 0}};
       const frame = document.createElement('iframe'); document.body.append(frame);
       probe.freshRealm = typeof frame.contentWindow.RTCPeerConnection === 'undefined';
+      const frameFile=frame.contentDocument.createElement('input');frameFile.type='file';frame.contentDocument.body.append(frameFile);
+      frameFile.addEventListener('click',()=>probe.frameClicks++);
+      globalThis.focusFrameFile=()=>{{frame.contentWindow.focus();frameFile.focus()}};
       const host=document.createElement('div');document.body.append(host);
       const closed=host.attachShadow({{mode:'closed'}});const file=document.createElement('input');file.type='file';closed.append(file);
+      file.addEventListener('click',()=>probe.clicks++);
       globalThis.focusFile=()=>file.focus();
       fetch('http://127.0.0.1:{port}/must-not-load').then(() => probe.network = false, () => probe.network = true);
       window.open('https://example.invalid/');
@@ -198,6 +225,7 @@ fn main() {
     );
     pump_until(|| document.status() != LoadStatus::Loading);
     assert_eq!(document.status(), LoadStatus::Ready);
+    eprintln!("WebView2 probe: checking security and clipping");
     assert!(document.failure_reason().is_none());
     let viewport = bounds(20., 30., 600., 400.);
     let clip = bounds(40., 60., 300., 180.);
@@ -262,7 +290,9 @@ fn main() {
         let _ = DeleteObject(region.into());
     }
     backend::probe_focus(&document);
+    eprintln!("WebView2 probe: checking keyboard focus and file chooser");
     evaluate(&document, "document.getElementById('edit').focus()");
+    eprintln!("WebView2 probe: sending editor character");
     unsafe {
         SendMessageW(
             GetFocus(),
@@ -272,6 +302,7 @@ fn main() {
         );
     }
     pump_until(|| evaluate(&document, "document.getElementById('edit').value") == "\"A\"");
+    eprintln!("WebView2 probe: returning host focus");
     backend::focus_host(&window);
     assert_eq!(
         unsafe { GetFocus() },
@@ -280,6 +311,43 @@ fn main() {
     );
     backend::probe_focus(&document);
     evaluate(&document, "focusFile()");
+    // If interception fails, a native chooser can enter a modal loop inside
+    // DispatchMessageW, preventing the assertion below from running. Watch
+    // this test's own host for an owned popup and close it so the test fails
+    // with an actionable assertion instead of hanging.
+    let escaped_popup = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_watcher = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher_popup = escaped_popup.clone();
+    let watcher_stop = stop_watcher.clone();
+    let parent_address = parent.0 as usize;
+    let watcher = std::thread::spawn(move || {
+        let host = windows::Win32::Foundation::HWND(parent_address as *mut _);
+        while !watcher_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let popup = unsafe { GetLastActivePopup(host) };
+            if popup != host && unsafe { IsWindowVisible(popup) }.as_bool() {
+                watcher_popup.store(true, std::sync::atomic::Ordering::Relaxed);
+                unsafe {
+                    let mut class = [0u16; 256];
+                    let mut title = [0u16; 256];
+                    let class_len = GetClassNameW(popup, &mut class).max(0) as usize;
+                    let title_len = GetWindowTextW(popup, &mut title).max(0) as usize;
+                    eprintln!(
+                        "WebView2 probe: closing escaped host popup class={:?} title={:?}",
+                        String::from_utf16_lossy(&class[..class_len]),
+                        String::from_utf16_lossy(&title[..title_len])
+                    );
+                    let _ = PostMessageW(
+                        Some(popup),
+                        WM_CLOSE,
+                        Default::default(),
+                        Default::default(),
+                    );
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+    eprintln!("WebView2 probe: activating file input");
     unsafe {
         let focus = GetFocus();
         SendMessageW(
@@ -296,12 +364,52 @@ fn main() {
         );
     }
     let activation = std::time::Instant::now();
+    eprintln!("WebView2 probe: pumping file activation");
     pump_until(|| activation.elapsed() > std::time::Duration::from_millis(100));
+    settle(1500);
+    assert_eq!(
+        evaluate(&document, "probe.clicks"),
+        "1",
+        "closed-shadow file input was not activated"
+    );
+    assert!(
+        !escaped_popup.load(std::sync::atomic::Ordering::Relaxed),
+        "closed-shadow file chooser escaped native interception"
+    );
+    backend::probe_focus(&document);
+    evaluate(&document, "focusFrameFile()");
+    eprintln!("WebView2 probe: activating same-origin iframe file input");
+    unsafe {
+        let focus = GetFocus();
+        SendMessageW(
+            focus,
+            WM_KEYDOWN,
+            Some(windows::Win32::Foundation::WPARAM(VK_SPACE.0 as usize)),
+            Some(windows::Win32::Foundation::LPARAM(1)),
+        );
+        SendMessageW(
+            focus,
+            WM_KEYUP,
+            Some(windows::Win32::Foundation::WPARAM(VK_SPACE.0 as usize)),
+            Some(windows::Win32::Foundation::LPARAM(1)),
+        );
+    }
+    settle(1500);
+    assert_eq!(
+        evaluate(&document, "probe.frameClicks"),
+        "1",
+        "iframe file input was not activated"
+    );
+    assert!(
+        !escaped_popup.load(std::sync::atomic::Ordering::Relaxed),
+        "iframe file chooser escaped native interception"
+    );
     assert_eq!(
         unsafe { GetLastActivePopup(parent) },
         parent,
         "file chooser escaped native interception"
     );
+    eprintln!("WebView2 probe: creating host editor");
     let host_editor = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
@@ -323,6 +431,7 @@ fn main() {
         let _ = SetFocus(Some(host_editor));
     }
     document.hide();
+    eprintln!("WebView2 probe: checking retained surface lifecycle");
     assert_eq!(
         unsafe { GetFocus() },
         host_editor,
@@ -330,31 +439,49 @@ fn main() {
     );
     document.show(viewport, clip, &window);
     document.retire_frame();
+    eprintln!("WebView2 probe: replacing retained surface");
     document.show(viewport, clip, &window);
+    eprintln!("WebView2 probe: pumping replacement paint");
     let start = std::time::Instant::now();
     pump_until(|| start.elapsed() > std::time::Duration::from_millis(30));
+    // WebView2 may open the chooser well after the triggering key event.
+    // Keep watching long enough to observe the delayed native dialog.
+    settle(1500);
+    stop_watcher.store(true, std::sync::atomic::Ordering::Relaxed);
+    watcher.join().unwrap();
+    assert!(
+        !escaped_popup.load(std::sync::atomic::Ordering::Relaxed),
+        "file chooser escaped native interception"
+    );
+    eprintln!("WebView2 probe: checking replacement visibility");
     assert!(
         unsafe { IsWindowVisible(child) }.as_bool(),
         "replacement paint lost its retained surface"
     );
     document.retire_frame();
+    eprintln!("WebView2 probe: retiring retained surface");
     pump_until(|| !unsafe { IsWindowVisible(child) }.as_bool());
     document.show(viewport, clip, &window);
     assert!(unsafe { IsWindowVisible(child) }.as_bool());
     backend::hide_all();
     assert!(!unsafe { IsWindowVisible(child) }.as_bool());
+    eprintln!("WebView2 probe: dropping first document");
     drop(document);
     // The source limit is 2 MiB before sandbox prefixes. Exercise the synthetic
     // protocol beyond NavigateToString's 2 MiB ceiling as a separate retained view.
+    eprintln!("WebView2 probe: constructing large document");
     let large = backend::Document::new(&format!(
         "<html><body>{}</body></html>",
         " ".repeat(2 * 1024 * 1024)
     ))
     .unwrap();
     large.prepare(&window).unwrap();
+    eprintln!("WebView2 probe: loading large document");
     pump_until(|| large.status() != LoadStatus::Loading);
     assert_eq!(large.status(), LoadStatus::Ready);
+    eprintln!("WebView2 probe: dropping large document");
     drop(large);
+    eprintln!("WebView2 probe: checking integrated reports");
     verify_integrated_report(&window, parent);
     unsafe {
         DestroyWindow(parent).unwrap();

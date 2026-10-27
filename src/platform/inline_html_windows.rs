@@ -348,23 +348,37 @@ impl Document {
                 &mut token,
             )?;
         }
-        // The browser process intercepts file chooser dialogs, including controls
-        // hidden in closed declarative shadow roots. Author bytes cannot remove
-        // this native policy. Await the acknowledgement before navigation: CDP
-        // commands can otherwise complete out of order.
+        // Page.enable registers the Chromium agent for chooser instrumentation;
+        // setting interception alone succeeds but does not install that agent.
+        // Await both acknowledgements before navigating: CDP calls can complete
+        // out of order and author bytes must not load before the native policy.
         let state = Rc::downgrade(owner);
-        let navigation = native.clone();
+        let page = native.clone();
         unsafe {
             native.CallDevToolsProtocolMethod(
-                w!("Page.setInterceptFileChooserDialog"),
-                w!("{\"enabled\":true,\"cancel\":true}"),
+                w!("Page.enable"),
+                w!("{}"),
                 &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, _| {
                     let Some(state) = state.upgrade() else {
                         return Ok(());
                     };
-                    let result = result.and_then(|()| {
-                        navigation.Navigate(&windows::core::HSTRING::from(DOCUMENT_URL))
-                    });
+                    let weak = Rc::downgrade(&state);
+                    let navigation = page.clone();
+                    let result = result.and_then(|()| page.CallDevToolsProtocolMethod(
+                        w!("Page.setInterceptFileChooserDialog"),
+                        w!("{\"enabled\":true,\"cancel\":true}"),
+                        &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, _| {
+                            let Some(state) = weak.upgrade() else {
+                                return Ok(());
+                            };
+                            let result = result.and_then(|()| navigation.Navigate(&windows::core::HSTRING::from(DOCUMENT_URL)));
+                            if let Err(error) = result {
+                                state.status.set(LoadStatus::Failed);
+                                *state.error.borrow_mut() = Some(format!("Couldn’t install the HTML file chooser policy: {error}"));
+                            }
+                            Ok(())
+                        })),
+                    ));
                     if let Err(error) = result {
                         state.status.set(LoadStatus::Failed);
                         *state.error.borrow_mut() = Some(format!(

@@ -1701,6 +1701,7 @@ mod tests {
             assert_eq!(registry.home_terminals()[0].id, reopened);
             assert_eq!(registry.home_terminals()[0].label, "terminal 2");
             assert_eq!(runtime.read(cx).state.read(cx).active_terminal(), Some(0));
+            runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
         });
     }
 
@@ -1724,6 +1725,7 @@ mod tests {
             assert_eq!(registry.home_terminals()[0].id, second);
             assert_ne!(registry.home_terminals()[0].id, first);
             assert_eq!(registry.home_terminals()[0].label, "terminal 2");
+            runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
         });
     }
     #[gpui::test]

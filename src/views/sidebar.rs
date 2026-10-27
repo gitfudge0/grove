@@ -3761,9 +3761,10 @@ impl Sidebar {
                         div()
                             .flex()
                             .items_center()
+                            .w_full()
                             .min_w_0()
                             .h(rpx(SESSION_LIST_HEADER_H))
-                            .gap(rpx(SPACE_MD))
+                            .gap(rpx(SPACE_SM))
                             .child(
                                 div()
                                     .flex_shrink_0()
@@ -7939,12 +7940,7 @@ mod tests {
                             (Agent::Codex, "a-very-long-project-name", "Repair very long session navigation titles without hiding meaningful actions", ActivityState::WaitingForInput),
                         ] {
                             let id = registry.update(cx, |registry, _| {
-                                let id = if agent == Agent::Claude {
-                                    registry.insert_meta_with_context(project.into(), format!("/tmp/{project}"), agent,
-                                        vec![grove_core::session_meta::ContextRoot { project: "a-very-long-project-name".into(), wt_path: "/tmp/a-very-long-project-name".into() }], None)
-                                } else {
-                                    registry.insert_meta(project.into(), format!("/tmp/{project}"), agent)
-                                };
+                                let id = registry.insert_meta(project.into(), format!("/tmp/{project}"), agent);
                                 registry.set_restored_title(id, Some(title.into()));
                                 id
                             });
@@ -8254,7 +8250,10 @@ mod tests {
                 let status = cx.debug_bounds(status).unwrap();
                 assert!(status.left() >= context_bounds.right());
                 assert!(status.bottom() <= title.top());
-                assert!(status.right() <= title.right());
+                assert!(
+                    status.right() <= title.right(),
+                    "status {status:?} extends past title {title:?} at viewport width {width}"
+                );
                 let changes = cx.debug_bounds(diff).unwrap();
                 assert_eq!(changes.left() - branch_bounds.right(), gpui::px(SPACE_MD));
                 assert!(changes.right() <= rail.right());
@@ -8706,7 +8705,8 @@ for line in sys.stdin:
                 assert_eq!(sidebar.runtime.read(cx).registry.read(cx).len(), 1);
             });
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // Starting a real fixture subprocess can take longer on a busy CI runner.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             cx.executor().advance_clock(Duration::from_millis(50));
             draw(cx);

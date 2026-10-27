@@ -15,7 +15,7 @@ use std::path::Path;
 
 const CARD_WIDTH: f32 = 280.;
 const WIDE_VIEWPORT: f32 = MODAL_W_XL + MODAL_W_SM;
-const NARROW_HEIGHT_FRACTION: f32 = 0.5;
+const NARROW_HEIGHT_FRACTION: f32 = 0.25;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Minimum count-column width; wider values expand the shared columns together.
 const STAT_COL_W: f32 = 48.;
@@ -4211,6 +4211,14 @@ mod tests {
                 );
                 assert!(activity.left() >= card.left());
                 assert!(activity.right() < card.right());
+                let pane = sidebar.read_with(cx, |sidebar, cx| {
+                    sidebar.codex_views[&id].read(cx).transcript_bounds.get()
+                });
+                assert!(
+                    pane.size.height >= gpui::px(80.),
+                    "{} transcript must remain usable with checkout expanded: {pane:?}",
+                    provider.label()
+                );
                 cx.update(|window, cx| {
                     sidebar.update(cx, |sidebar, cx| {
                         sidebar.open_agent_peek(id, "old-running".into(), true, window, cx);
@@ -4220,7 +4228,22 @@ mod tests {
                 cx.update(|window, cx| {
                     let _ = window.draw(cx);
                 });
-                let preview = cx.debug_bounds("agent-peek").unwrap();
+                let preview = cx.debug_bounds("agent-peek").unwrap_or_else(|| {
+                    let (open, visible, source, pane) = sidebar.read_with(cx, |sidebar, cx| {
+                        (
+                            sidebar.checkout_panel.peek.is_some(),
+                            sidebar.checkout_panel.agents_visible,
+                            sidebar.checkout_panel.agent_bounds.get("old-running").map(|b| b.get()),
+                            sidebar.codex_views.get(&id).map(|view| view.read(cx).transcript_bounds.get()),
+                        )
+                    });
+                    let composer = cx.debug_bounds("codex-composer");
+                    let input = cx.debug_bounds("codex-composer-input");
+                    panic!(
+                        "{} preview missing at width {width} and scale {scale}: open={open}, visible={visible}, source={source:?}, pane={pane:?}, composer={composer:?}, input={input:?}",
+                        provider.label()
+                    );
+                });
                 assert_eq!(
                     cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
                     Some(preview),

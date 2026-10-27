@@ -12,11 +12,11 @@ fn io_err(e: impl std::fmt::Display) -> std::io::Error {
     std::io::Error::other(e.to_string())
 }
 
-/// Dropping the handle kills and reaps the child, then drops the master, which closes the PTY and ends the reader thread.
+/// Dropping the handle kills the child and reaps it off-thread, then drops the master to close the PTY.
 pub struct PtyHandle {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    child: Option<Box<dyn Child + Send + Sync>>,
     rx: Receiver<Vec<u8>>,
     rx_taken: bool,
     exit_code: Option<u32>,
@@ -57,7 +57,7 @@ impl PtyHandle {
         Ok(Self {
             master: pair.master,
             writer,
-            child,
+            child: Some(child),
             rx,
             rx_taken: false,
             exit_code: None,
@@ -113,12 +113,14 @@ impl PtyHandle {
 
     /// Still reported after the child is reaped; check [`PtyHandle::try_wait`] for liveness.
     pub fn child_pid(&self) -> Option<u32> {
-        self.child.process_id()
+        self.child.as_ref().and_then(|child| child.process_id())
     }
 
     pub fn exit_code(&mut self) -> std::io::Result<Option<u32>> {
         if self.exit_code.is_none() {
-            self.exit_code = self.child.try_wait()?.map(|status| status.exit_code());
+            if let Some(child) = self.child.as_mut() {
+                self.exit_code = child.try_wait()?.map(|status| status.exit_code());
+            }
         }
         Ok(self.exit_code)
     }
@@ -128,16 +130,28 @@ impl PtyHandle {
     }
 
     pub fn kill(&mut self) -> std::io::Result<()> {
-        self.child.kill()
+        self.child.as_mut().map_or(Ok(()), |child| child.kill())
     }
 }
 
 /// `portable_pty`'s writer drop writes `b"\n\x04"` into the PTY — kill the child first or those bytes land as keystrokes (the "phantom row" bug).
 impl Drop for PtyHandle {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(child) = self.child.take() {
+            kill_and_reap(child);
+        }
     }
+}
+
+fn kill_and_reap(mut child: Box<dyn Child + Send + Sync>) {
+    let _ = child.kill();
+    // Reaping can block indefinitely even after kill returns. Do not hold the
+    // UI thread while the operating system reports exit.
+    let _ = std::thread::Builder::new()
+        .name("grove-pty-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        });
 }
 
 pub fn spawn(cmd: CommandBuilder, rows: u16, cols: u16) -> std::io::Result<PtyHandle> {
@@ -150,6 +164,65 @@ mod tests {
 
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn reaping_a_stalled_child_does_not_block_the_caller() {
+        use portable_pty::{ChildKiller, ExitStatus};
+        use std::sync::{mpsc, Arc, Mutex};
+
+        #[derive(Debug, Clone)]
+        struct StalledChild {
+            events: mpsc::Sender<&'static str>,
+            release: Arc<Mutex<mpsc::Receiver<()>>>,
+        }
+        impl ChildKiller for StalledChild {
+            fn kill(&mut self) -> std::io::Result<()> {
+                self.events.send("kill").unwrap();
+                Ok(())
+            }
+            fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+                Box::new(self.clone())
+            }
+        }
+        impl Child for StalledChild {
+            fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+                Ok(None)
+            }
+            fn wait(&mut self) -> std::io::Result<ExitStatus> {
+                self.events.send("wait").unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+                Ok(ExitStatus::with_exit_code(0))
+            }
+            fn process_id(&self) -> Option<u32> {
+                None
+            }
+            #[cfg(windows)]
+            fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+                None
+            }
+        }
+        let (events, observed) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let (done, returned) = mpsc::channel();
+        std::thread::spawn(move || {
+            kill_and_reap(Box::new(StalledChild {
+                events,
+                release: Arc::new(Mutex::new(gate)),
+            }));
+            done.send(()).unwrap();
+        });
+        assert_eq!(
+            observed.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "kill"
+        );
+        assert_eq!(
+            observed.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "wait"
+        );
+        let caller_returned = returned.recv_timeout(Duration::from_secs(2));
+        release.send(()).unwrap();
+        assert!(caller_returned.is_ok(), "reaping blocked the caller");
+    }
 
     #[test]
     #[cfg(unix)]

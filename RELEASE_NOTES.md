@@ -10,12 +10,15 @@
 - Improve native plan alignment, comment placement, pending-answer counts, and feedback and approval sending states.
 - Show size details and recovery actions when HTML previews or native plans exceed their limits.
 - Recover missing subagent activity from parent-session history.
+- Stop observed Codex subagents and their identified background terminals when interrupting a conversation, and report work that could not be stopped.
 
 ## Workspace and scripts
 
 - Simplify workspace header controls and improve spacing, sidebar alignment and background consistency. Find archived projects in Settings.
+- Keep session status and conversation content visible in narrow layouts, and avoid blocking when a terminal closes.
 - Keep native macOS window controls available at the top edge in fullscreen while removing redundant custom controls and their reserved space.
 - Preview shell script runs inline in the workspace.
+- Prevent embedded HTML from opening native file chooser dialogs on Windows.
 
 # Grove 1.1.6
 
