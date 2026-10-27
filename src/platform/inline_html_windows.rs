@@ -285,8 +285,8 @@ impl Document {
             )?;
             let state = Rc::downgrade(owner);
             native.add_NavigationCompleted(
-                &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
-                    if let (Some(state), Some(sender), Some(args)) = (state.upgrade(), sender, args) {
+                &NavigationCompletedEventHandler::create(Box::new(move |_, args| {
+                    if let (Some(state), Some(args)) = (state.upgrade(), args) {
                         let mut id = 0;
                         args.NavigationId(&mut id)?;
                         // Ignore blank startup and later blocked navigations. A
@@ -298,40 +298,11 @@ impl Document {
                         }
                         let mut success = BOOL::default();
                         args.IsSuccess(&mut success)?;
-                        if !success.as_bool() {
-                            state.status.set(LoadStatus::Failed);
-                            return Ok(());
-                        }
-                        // A cross-origin navigation can replace the CDP target.
-                        // Reinstall the native policy on the loaded target before
-                        // allowing the host to display or interact with it.
-                        let weak = Rc::downgrade(&state);
-                        let result = sender.CallDevToolsProtocolMethod(
-                            w!("Page.setInterceptFileChooserDialog"),
-                            w!("{\"enabled\":true,\"cancel\":true}"),
-                            &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
-                                move |result, _| {
-                                    if let Some(state) = weak.upgrade() {
-                                        match result {
-                                            Ok(()) => state.status.set(LoadStatus::Ready),
-                                            Err(error) => {
-                                                state.status.set(LoadStatus::Failed);
-                                                *state.error.borrow_mut() = Some(format!(
-                                                    "Couldn’t install the HTML file chooser policy: {error}"
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    Ok(())
-                                },
-                            )),
-                        );
-                        if let Err(error) = result {
-                            state.status.set(LoadStatus::Failed);
-                            *state.error.borrow_mut() = Some(format!(
-                                "Couldn’t install the HTML file chooser policy: {error}"
-                            ));
-                        }
+                        state.status.set(if success.as_bool() {
+                            LoadStatus::Ready
+                        } else {
+                            LoadStatus::Failed
+                        });
                     }
                     Ok(())
                 })),
@@ -377,23 +348,37 @@ impl Document {
                 &mut token,
             )?;
         }
-        // The browser process intercepts file chooser dialogs, including controls
-        // hidden in closed declarative shadow roots. Author bytes cannot remove
-        // this native policy. Await the acknowledgement before navigation: CDP
-        // commands can otherwise complete out of order.
+        // Page.enable registers the Chromium agent for chooser instrumentation;
+        // setting interception alone succeeds but does not install that agent.
+        // Await both acknowledgements before navigating: CDP calls can complete
+        // out of order and author bytes must not load before the native policy.
         let state = Rc::downgrade(owner);
-        let navigation = native.clone();
+        let page = native.clone();
         unsafe {
             native.CallDevToolsProtocolMethod(
-                w!("Page.setInterceptFileChooserDialog"),
-                w!("{\"enabled\":true,\"cancel\":true}"),
+                w!("Page.enable"),
+                w!("{}"),
                 &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, _| {
                     let Some(state) = state.upgrade() else {
                         return Ok(());
                     };
-                    let result = result.and_then(|()| {
-                        navigation.Navigate(&windows::core::HSTRING::from(DOCUMENT_URL))
-                    });
+                    let weak = Rc::downgrade(&state);
+                    let navigation = page.clone();
+                    let result = result.and_then(|()| page.CallDevToolsProtocolMethod(
+                        w!("Page.setInterceptFileChooserDialog"),
+                        w!("{\"enabled\":true,\"cancel\":true}"),
+                        &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |result, _| {
+                            let Some(state) = weak.upgrade() else {
+                                return Ok(());
+                            };
+                            let result = result.and_then(|()| navigation.Navigate(&windows::core::HSTRING::from(DOCUMENT_URL)));
+                            if let Err(error) = result {
+                                state.status.set(LoadStatus::Failed);
+                                *state.error.borrow_mut() = Some(format!("Couldn’t install the HTML file chooser policy: {error}"));
+                            }
+                            Ok(())
+                        })),
+                    ));
                     if let Err(error) = result {
                         state.status.set(LoadStatus::Failed);
                         *state.error.borrow_mut() = Some(format!(

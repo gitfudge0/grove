@@ -402,6 +402,9 @@ fn main() {
     eprintln!("WebView2 probe: pumping replacement paint");
     let start = std::time::Instant::now();
     pump_until(|| start.elapsed() > std::time::Duration::from_millis(30));
+    // WebView2 may open the chooser well after the triggering key event.
+    // Keep watching long enough to observe the delayed native dialog.
+    settle(1500);
     stop_watcher.store(true, std::sync::atomic::Ordering::Relaxed);
     watcher.join().unwrap();
     assert!(
