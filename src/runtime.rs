@@ -1682,6 +1682,7 @@ mod tests {
     fn closing_only_home_terminal_stays_empty_until_explicitly_opened(
         cx: &mut gpui::TestAppContext,
     ) {
+        std::env::set_var("GROVE_TEST_PTY_TRACE", "1");
         cx.update(|cx| {
             cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
@@ -1713,6 +1714,7 @@ mod tests {
 
     #[gpui::test]
     fn closing_nonfinal_home_terminal_does_not_spawn(cx: &mut gpui::TestAppContext) {
+        std::env::set_var("GROVE_TEST_PTY_TRACE", "1");
         cx.update(|cx| {
             cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
             cx.set_global(crate::zoom::CurrentPtyDims::default());

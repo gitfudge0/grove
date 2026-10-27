@@ -135,8 +135,17 @@ impl PtyHandle {
 /// `portable_pty`'s writer drop writes `b"\n\x04"` into the PTY — kill the child first or those bytes land as keystrokes (the "phantom row" bug).
 impl Drop for PtyHandle {
     fn drop(&mut self) {
+        if std::env::var_os("GROVE_TEST_PTY_TRACE").is_some() {
+            eprintln!("PTY drop: before kill {:?}", self.child.process_id());
+        }
         let _ = self.child.kill();
+        if std::env::var_os("GROVE_TEST_PTY_TRACE").is_some() {
+            eprintln!("PTY drop: before wait {:?}", self.child.process_id());
+        }
         let _ = self.child.wait();
+        if std::env::var_os("GROVE_TEST_PTY_TRACE").is_some() {
+            eprintln!("PTY drop: wait returned");
+        }
     }
 }
 

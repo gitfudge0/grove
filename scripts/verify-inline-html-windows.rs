@@ -278,6 +278,7 @@ fn main() {
     backend::probe_focus(&document);
     eprintln!("WebView2 probe: checking keyboard focus and file chooser");
     evaluate(&document, "document.getElementById('edit').focus()");
+    eprintln!("WebView2 probe: sending editor character");
     unsafe {
         SendMessageW(
             GetFocus(),
@@ -287,6 +288,7 @@ fn main() {
         );
     }
     pump_until(|| evaluate(&document, "document.getElementById('edit').value") == "\"A\"");
+    eprintln!("WebView2 probe: returning host focus");
     backend::focus_host(&window);
     assert_eq!(
         unsafe { GetFocus() },
@@ -295,6 +297,7 @@ fn main() {
     );
     backend::probe_focus(&document);
     evaluate(&document, "focusFile()");
+    eprintln!("WebView2 probe: activating file input");
     unsafe {
         let focus = GetFocus();
         SendMessageW(
@@ -311,12 +314,14 @@ fn main() {
         );
     }
     let activation = std::time::Instant::now();
+    eprintln!("WebView2 probe: pumping file activation");
     pump_until(|| activation.elapsed() > std::time::Duration::from_millis(100));
     assert_eq!(
         unsafe { GetLastActivePopup(parent) },
         parent,
         "file chooser escaped native interception"
     );
+    eprintln!("WebView2 probe: creating host editor");
     let host_editor = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),

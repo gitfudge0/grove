@@ -19,5 +19,5 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 [[profile.ci.overrides]]
 # This state-transition test normally takes well under a second. Shorten its
 # bound so shell deadlocks emit diagnostic output without delaying the suite.
-filter = 'test(closing_only_home_terminal_stays_empty_until_explicitly_opened)'
+filter = 'test(closing_only_home_terminal_stays_empty_until_explicitly_opened) | test(closing_nonfinal_home_terminal_does_not_spawn)'
 slow-timeout = { period = "15s", terminate-after = 2 }
