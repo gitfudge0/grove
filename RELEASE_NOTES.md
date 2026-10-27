@@ -15,8 +15,10 @@
 ## Workspace and scripts
 
 - Simplify workspace header controls and improve spacing, sidebar alignment and background consistency. Find archived projects in Settings.
+- Keep session status and conversation content visible in narrow layouts, and avoid blocking when a terminal closes.
 - Keep native macOS window controls available at the top edge in fullscreen while removing redundant custom controls and their reserved space.
 - Preview shell script runs inline in the workspace.
+- Prevent embedded HTML from opening native file chooser dialogs on Windows.
 
 # Grove 1.1.6
 
