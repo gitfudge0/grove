@@ -307,6 +307,33 @@ fn main() {
     );
     backend::probe_focus(&document);
     evaluate(&document, "focusFile()");
+    // If interception fails, a native chooser can enter a modal loop inside
+    // DispatchMessageW, preventing the assertion below from running. Watch
+    // this test's own host for an owned popup and close it so the test fails
+    // with an actionable assertion instead of hanging.
+    let escaped_popup = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_watcher = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher_popup = escaped_popup.clone();
+    let watcher_stop = stop_watcher.clone();
+    let parent_address = parent.0 as usize;
+    let watcher = std::thread::spawn(move || {
+        let host = windows::Win32::Foundation::HWND(parent_address as *mut _);
+        while !watcher_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let popup = unsafe { GetLastActivePopup(host) };
+            if popup != host && unsafe { IsWindowVisible(popup) }.as_bool() {
+                watcher_popup.store(true, std::sync::atomic::Ordering::Relaxed);
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(popup),
+                        WM_CLOSE,
+                        Default::default(),
+                        Default::default(),
+                    );
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
     eprintln!("WebView2 probe: activating file input");
     unsafe {
         let focus = GetFocus();
@@ -366,6 +393,12 @@ fn main() {
     eprintln!("WebView2 probe: pumping replacement paint");
     let start = std::time::Instant::now();
     pump_until(|| start.elapsed() > std::time::Duration::from_millis(30));
+    stop_watcher.store(true, std::sync::atomic::Ordering::Relaxed);
+    watcher.join().unwrap();
+    assert!(
+        !escaped_popup.load(std::sync::atomic::Ordering::Relaxed),
+        "file chooser escaped native interception"
+    );
     eprintln!("WebView2 probe: checking replacement visibility");
     assert!(
         unsafe { IsWindowVisible(child) }.as_bool(),
