@@ -7940,12 +7940,7 @@ mod tests {
                             (Agent::Codex, "a-very-long-project-name", "Repair very long session navigation titles without hiding meaningful actions", ActivityState::WaitingForInput),
                         ] {
                             let id = registry.update(cx, |registry, _| {
-                                let id = if agent == Agent::Claude {
-                                    registry.insert_meta_with_context(project.into(), format!("/tmp/{project}"), agent,
-                                        vec![grove_core::session_meta::ContextRoot { project: "a-very-long-project-name".into(), wt_path: "/tmp/a-very-long-project-name".into() }], None)
-                                } else {
-                                    registry.insert_meta(project.into(), format!("/tmp/{project}"), agent)
-                                };
+                                let id = registry.insert_meta(project.into(), format!("/tmp/{project}"), agent);
                                 registry.set_restored_title(id, Some(title.into()));
                                 id
                             });
