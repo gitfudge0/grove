@@ -1,3 +1,22 @@
+# Grove 1.1.7
+
+## Markdown composer
+
+- Read formatted Markdown in the composer while keeping the original source editable and preserving source text when copying or sending.
+- Continue bullets, numbered lists, task checkboxes, quotes and code indentation with Shift+Enter. Empty markers end the current structure, new task items start unchecked, and Enter keeps its send behavior.
+
+## Plans and conversation recovery
+
+- Improve native plan alignment, comment placement, pending-answer counts, and feedback and approval sending states.
+- Show size details and recovery actions when HTML previews or native plans exceed their limits.
+- Recover missing subagent activity from parent-session history.
+
+## Workspace and scripts
+
+- Simplify workspace header controls and improve spacing, sidebar alignment and background consistency. Find archived projects in Settings.
+- Keep native macOS window controls available at the top edge in fullscreen while removing redundant custom controls and their reserved space.
+- Preview shell script runs inline in the workspace.
+
 # Grove 1.1.6
 
 ## Native plans
