@@ -285,8 +285,8 @@ impl Document {
             )?;
             let state = Rc::downgrade(owner);
             native.add_NavigationCompleted(
-                &NavigationCompletedEventHandler::create(Box::new(move |_, args| {
-                    if let (Some(state), Some(args)) = (state.upgrade(), args) {
+                &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+                    if let (Some(state), Some(sender), Some(args)) = (state.upgrade(), sender, args) {
                         let mut id = 0;
                         args.NavigationId(&mut id)?;
                         // Ignore blank startup and later blocked navigations. A
@@ -298,11 +298,40 @@ impl Document {
                         }
                         let mut success = BOOL::default();
                         args.IsSuccess(&mut success)?;
-                        state.status.set(if success.as_bool() {
-                            LoadStatus::Ready
-                        } else {
-                            LoadStatus::Failed
-                        });
+                        if !success.as_bool() {
+                            state.status.set(LoadStatus::Failed);
+                            return Ok(());
+                        }
+                        // A cross-origin navigation can replace the CDP target.
+                        // Reinstall the native policy on the loaded target before
+                        // allowing the host to display or interact with it.
+                        let weak = Rc::downgrade(&state);
+                        let result = sender.CallDevToolsProtocolMethod(
+                            w!("Page.setInterceptFileChooserDialog"),
+                            w!("{\"enabled\":true,\"cancel\":true}"),
+                            &CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+                                move |result, _| {
+                                    if let Some(state) = weak.upgrade() {
+                                        match result {
+                                            Ok(()) => state.status.set(LoadStatus::Ready),
+                                            Err(error) => {
+                                                state.status.set(LoadStatus::Failed);
+                                                *state.error.borrow_mut() = Some(format!(
+                                                    "Couldn’t install the HTML file chooser policy: {error}"
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    Ok(())
+                                },
+                            )),
+                        );
+                        if let Err(error) = result {
+                            state.status.set(LoadStatus::Failed);
+                            *state.error.borrow_mut() = Some(format!(
+                                "Couldn’t install the HTML file chooser policy: {error}"
+                            ));
+                        }
                     }
                     Ok(())
                 })),
