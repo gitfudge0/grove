@@ -323,6 +323,15 @@ fn main() {
             if popup != host && unsafe { IsWindowVisible(popup) }.as_bool() {
                 watcher_popup.store(true, std::sync::atomic::Ordering::Relaxed);
                 unsafe {
+                    let mut class = [0u16; 256];
+                    let mut title = [0u16; 256];
+                    let class_len = GetClassNameW(popup, &mut class).max(0) as usize;
+                    let title_len = GetWindowTextW(popup, &mut title).max(0) as usize;
+                    eprintln!(
+                        "WebView2 probe: closing escaped host popup class={:?} title={:?}",
+                        String::from_utf16_lossy(&class[..class_len]),
+                        String::from_utf16_lossy(&title[..title_len])
+                    );
                     let _ = PostMessageW(
                         Some(popup),
                         WM_CLOSE,
