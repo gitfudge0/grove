@@ -2448,6 +2448,7 @@ pub(super) fn checkout_agent_presentation(
         SubagentStatus::Working => "Working",
         SubagentStatus::Completed => "Done",
         SubagentStatus::Failed => "Failed",
+        SubagentStatus::Interrupted => "Interrupted",
         SubagentStatus::Unknown => "Unknown",
     };
     let name = normalized_agent_text(&agent.name);
@@ -3653,6 +3654,7 @@ mod tests {
                 snapshot.saved.items = vec![serde_json::json!({"type":"userMessage", "text":"Investigate authentication retries"}), serde_json::json!({"type":"reasoning", "text":"Thinking"})];
                 snapshot.saved.work_periods = vec![grove_core::codex::WorkPeriod { start_item: 0, end_item: None, duration_ms: None, subagents: vec![grove_core::codex::Subagent { id: "explorer".into(), name: "Explorer".into(), role: Some("Investigation".into()), task: Some("Investigate authentication retry failures and report the owning layer".into()), activity: "Reading authentication tests".into(), status: grove_core::codex::SubagentStatus::Working }] }];
                 for (id, name, status) in [
+                    ("interrupted", "Interrupted agent", grove_core::codex::SubagentStatus::Interrupted),
                     ("done", "Completed agent", grove_core::codex::SubagentStatus::Completed),
                     ("failed", "Failed agent", grove_core::codex::SubagentStatus::Failed),
                     ("unknown", "Unknown agent with a long name that must truncate", grove_core::codex::SubagentStatus::Unknown),
@@ -4513,6 +4515,7 @@ mod tests {
         for (status, label) in [
             (SubagentStatus::Completed, "Done"),
             (SubagentStatus::Failed, "Failed"),
+            (SubagentStatus::Interrupted, "Interrupted"),
             (SubagentStatus::Unknown, "Unknown"),
         ] {
             agent.status = status;

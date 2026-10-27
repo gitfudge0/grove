@@ -68,6 +68,7 @@ pub enum SubagentStatus {
     Working,
     Completed,
     Failed,
+    Interrupted,
     Unknown,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -150,6 +151,7 @@ fn collab_status(status: Option<&str>) -> SubagentStatus {
     match status {
         Some("pendingInit" | "running" | "inProgress") => SubagentStatus::Working,
         Some("completed") => SubagentStatus::Completed,
+        Some("interrupted") => SubagentStatus::Interrupted,
         Some("errored" | "failed") => SubagentStatus::Failed,
         _ => SubagentStatus::Unknown,
     }
@@ -206,7 +208,7 @@ fn record_subagent(
         && !(status == SubagentStatus::Working
             && matches!(
                 agent.status,
-                SubagentStatus::Completed | SubagentStatus::Failed
+                SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Interrupted
             ))
     {
         agent.status = status;
@@ -1260,7 +1262,14 @@ impl Snapshot {
             .rev()
             .flat_map(|p| p.subagents.iter().rev())
             .find(|a| a.id == id)
-            .is_some_and(|a| matches!(a.status, SubagentStatus::Completed | SubagentStatus::Failed))
+            .is_some_and(|a| {
+                matches!(
+                    a.status,
+                    SubagentStatus::Completed
+                        | SubagentStatus::Failed
+                        | SubagentStatus::Interrupted
+                )
+            })
     }
     fn ensure_subagent_activity(&mut self, id: &str) {
         if !self.subagent_activity.contains_key(id) && self.subagent_activity.len() >= 100 {
@@ -2961,6 +2970,21 @@ enum Pending {
     },
     Compact,
     ChildInterrupt,
+    StopChild {
+        root: String,
+        thread: String,
+        turn: String,
+    },
+    StopList {
+        root: String,
+        thread: String,
+        version: usize,
+    },
+    StopProcess {
+        root: String,
+        thread: String,
+        process: String,
+    },
     EditMessage,
     RecoverEdit,
     Interrupt {
@@ -2971,6 +2995,26 @@ enum Pending {
 struct Request {
     kind: Pending,
     deadline: Instant,
+}
+#[derive(Default)]
+struct StopTracking {
+    root: String,
+    turns: HashMap<String, String>,
+    candidate_turns: HashMap<String, String>,
+    processes: HashMap<(String, String), String>,
+    process_versions: HashMap<String, usize>,
+    running_processes: HashSet<(String, String)>,
+    owned_turns: HashSet<(String, String)>,
+    root_pending: bool,
+    missing_process: HashSet<(String, String)>,
+    listed: HashMap<String, usize>,
+    error: Option<String>,
+    sent_turns: HashSet<(String, String)>,
+    sent_processes: HashSet<(String, String)>,
+    pending_turns: HashSet<(String, String)>,
+    stopping: bool,
+    settled_at: Option<Instant>,
+    deadline: Option<Instant>,
 }
 struct Actor {
     state: Snapshot,
@@ -2994,6 +3038,7 @@ struct Actor {
     last_child_poll: Instant,
     child_read_failures: HashMap<String, u8>,
     interaction_children: crate::interaction::Children,
+    stop_tracking: StopTracking,
     needs_save: bool,
     title_generator: crate::session_title::Generator,
 }
@@ -3027,6 +3072,7 @@ impl Actor {
             last_child_poll: Instant::now(),
             child_read_failures: HashMap::new(),
             interaction_children: crate::interaction::Children::default(),
+            stop_tracking: StopTracking::default(),
             needs_save: false,
             title_generator: crate::session_title::Generator::default(),
         }
@@ -3085,6 +3131,7 @@ impl Actor {
         self.state.skills.clear();
         self.interrupt_retry = None;
         self.interaction_children = crate::interaction::Children::default();
+        self.stop_tracking = StopTracking::default();
         self.state.interaction_owners.clear();
         self.state.retired_interactions.clear();
         self.state.interaction_epoch = next_interaction_epoch();
@@ -3651,6 +3698,33 @@ impl Actor {
         Ok(())
     }
     fn action(&mut self, action: Action) -> Result<bool, String> {
+        if self.stop_tracking.stopping
+            && matches!(
+                &action,
+                Action::Submit { .. }
+                    | Action::SubmitWithMode { .. }
+                    | Action::ProjectPrompt { .. }
+                    | Action::Prompt(_)
+                    | Action::PromptWithImages { .. }
+                    | Action::PromptInline { .. }
+                    | Action::ResumeQueue
+                    | Action::SteerQueued(_)
+                    | Action::Compact
+                    | Action::Reconnect
+                    | Action::ApprovePlan { .. }
+                    | Action::SendPlanResponse { .. }
+                    | Action::EditMessage { .. }
+                    | Action::EditMessageInline { .. }
+            )
+        {
+            if let Action::Submit { id, .. }
+            | Action::SubmitWithMode { id, .. }
+            | Action::ProjectPrompt { id, .. } = &action
+            {
+                self.state.rejected_submission = Some(*id);
+            }
+            return Err("Stop is still checking running Codex work. Wait for it to finish before continuing.".into());
+        }
         if self.state.saved.pending_edit.is_some()
             && !matches!(
                 action,
@@ -3987,7 +4061,37 @@ impl Actor {
                     .turn_id
                     .clone()
                     .ok_or("No active Codex turn to interrupt")?;
-                self.interrupt(turn, 0)?;
+                self.interrupt(turn.clone(), 0)?;
+                if self.stop_tracking.root != turn {
+                    self.stop_tracking = StopTracking {
+                        root: turn,
+                        ..Default::default()
+                    };
+                }
+                self.stop_tracking.stopping = true;
+                self.stop_tracking.settled_at = None;
+                self.stop_tracking.root_pending = true;
+                self.stop_tracking.deadline = Some(Instant::now() + Duration::from_secs(30));
+                self.stop_descendants()?;
+                if self
+                    .stop_tracking
+                    .candidate_turns
+                    .keys()
+                    .any(|id| !self.interaction_children.known(id))
+                {
+                    self.stop_error("Stop could not establish ownership of every Codex child turn. Check running work manually.".into());
+                }
+                if !self.stop_tracking.missing_process.is_empty() {
+                    self.stop_error("Stop could not identify a Codex background terminal. Check running work manually.".into());
+                }
+                if self
+                    .interaction_children
+                    .active_ids()
+                    .iter()
+                    .any(|id| !self.stop_tracking.turns.contains_key(id))
+                {
+                    self.stop_error("Stop could not identify every active Codex child turn. Check running work manually.".into());
+                }
                 self.state.questions.clear();
                 self.state.elicitations.clear();
                 self.state.approvals.clear();
@@ -4190,6 +4294,325 @@ impl Actor {
             Pending::Interrupt { attempt, turn },
         )
     }
+    // Only provider events observed on this connection establish ownership. A
+    // child turn's rootTurnId prevents a stop from touching a later generation.
+    fn observe_stop_work(&mut self, m: &Value) -> Result<(), String> {
+        let p = &m["params"];
+        let Some(root_thread) = self.state.saved.thread_id.clone() else {
+            return Ok(());
+        };
+        let method = m["method"].as_str().unwrap_or_default();
+        let thread = p["threadId"].as_str().unwrap_or_default();
+        if method == "turn/started" && thread == root_thread {
+            if let Some(turn) = p["turn"]["id"]
+                .as_str()
+                .filter(|turn| !self.state.settled_turns.iter().any(|old| old == turn))
+            {
+                if self.stop_tracking.root != turn && self.stop_tracking.stopping {
+                    self.stop_error("A new Codex turn started while Stop was still checking work. Check running work manually.".into());
+                } else if self.stop_tracking.root != turn
+                    && self
+                        .state
+                        .turn_id
+                        .as_deref()
+                        .is_none_or(|active| active == turn)
+                {
+                    self.stop_tracking = StopTracking {
+                        root: turn.into(),
+                        ..Default::default()
+                    };
+                }
+            }
+        }
+        if self.stop_tracking.root.is_empty() {
+            if let Some(turn) = self.state.turn_id.as_deref() {
+                self.stop_tracking.root = turn.into();
+            }
+        }
+        if method == "turn/started"
+            && thread != root_thread
+            && p["turn"]["rootTurnId"].as_str() == Some(self.stop_tracking.root.as_str())
+        {
+            if let Some(turn) = p["turn"]["id"].as_str() {
+                self.stop_tracking
+                    .candidate_turns
+                    .insert(thread.into(), turn.into());
+            }
+        }
+        // Notifications can arrive before the spawn event establishes ancestry.
+        // Keep the candidate, but never act until the provider's parent chain is known.
+        let candidates: Vec<_> = self
+            .stop_tracking
+            .candidate_turns
+            .iter()
+            .map(|(t, u)| (t.clone(), u.clone()))
+            .collect();
+        for (candidate, turn) in candidates {
+            if self.interaction_children.known(&candidate) {
+                self.interaction_children.start(&candidate, Some(&turn));
+                if self
+                    .interaction_children
+                    .owner(&candidate, Some(&turn))
+                    .is_some()
+                {
+                    self.stop_tracking
+                        .turns
+                        .insert(candidate.clone(), turn.clone());
+                    self.stop_tracking
+                        .owned_turns
+                        .insert((candidate.clone(), turn));
+                }
+                self.stop_tracking.candidate_turns.remove(&candidate);
+            } else if self.stop_tracking.stopping {
+                self.stop_error("Stop could not establish ownership of every Codex child turn. Check running work manually.".into());
+            }
+        }
+        if method == "turn/started"
+            && thread != root_thread
+            && self.interaction_children.known(thread)
+            && self.stop_tracking.stopping
+            && p["turn"]["rootTurnId"].as_str().is_none()
+        {
+            self.stop_error(
+                "Stop could not identify a Codex child turn's parent. Check running work manually."
+                    .into(),
+            );
+        }
+        if method == "turn/completed"
+            && thread == root_thread
+            && p["turn"]["id"].as_str() == Some(self.stop_tracking.root.as_str())
+        {
+            self.stop_tracking.root_pending = false;
+        }
+        if method == "turn/completed" && thread != root_thread {
+            self.stop_tracking.candidate_turns.remove(thread);
+            if let Some(turn) = p["turn"]["id"].as_str() {
+                self.stop_tracking
+                    .pending_turns
+                    .remove(&(thread.into(), turn.into()));
+                if self
+                    .stop_tracking
+                    .turns
+                    .get(thread)
+                    .is_some_and(|t| t == turn)
+                {
+                    self.stop_tracking.turns.remove(thread);
+                }
+            }
+        }
+        if matches!(method, "item/started" | "item/completed")
+            && p["item"]["type"] == "commandExecution"
+        {
+            let turn = p["turnId"].as_str().unwrap_or_default();
+            let owned = (thread == root_thread && turn == self.stop_tracking.root)
+                || self
+                    .stop_tracking
+                    .owned_turns
+                    .contains(&(thread.into(), turn.into()));
+            if owned && p["item"]["source"] == "unifiedExecStartup" {
+                if let Some(process) = p["item"]["processId"].as_str().filter(|v| !v.is_empty()) {
+                    if let Some(item) = p["item"]["id"].as_str() {
+                        let key = (thread.into(), item.into());
+                        self.stop_tracking.missing_process.remove(&key);
+                        if p["item"]["status"] == "inProgress" {
+                            self.stop_tracking.running_processes.insert(key.clone());
+                        }
+                        if method == "item/completed" && p["item"]["exitCode"].as_i64().is_some() {
+                            self.stop_tracking.running_processes.remove(&key);
+                        }
+                        if self
+                            .stop_tracking
+                            .processes
+                            .get(&key)
+                            .is_none_or(|old| old != process)
+                        {
+                            self.stop_tracking.processes.insert(key, process.into());
+                            *self
+                                .stop_tracking
+                                .process_versions
+                                .entry(thread.into())
+                                .or_default() += 1;
+                        }
+                    }
+                } else if let Some(item) = p["item"]["id"].as_str() {
+                    let key = (thread.into(), item.into());
+                    if method == "item/completed" && p["item"]["exitCode"].as_i64().is_some() {
+                        self.stop_tracking.missing_process.remove(&key);
+                        self.stop_tracking.running_processes.remove(&key);
+                    } else if !self.stop_tracking.processes.contains_key(&key) {
+                        self.stop_tracking.missing_process.insert(key);
+                        if self.stop_tracking.stopping {
+                            self.stop_error("Stop could not identify a Codex background terminal. Check running work manually.".into());
+                        }
+                    }
+                } else if self.stop_tracking.stopping {
+                    self.stop_error("Stop could not identify a Codex background terminal. Check running work manually.".into());
+                }
+            }
+        }
+        if self.stop_tracking.stopping {
+            if matches!(
+                method,
+                "thread/started"
+                    | "turn/started"
+                    | "turn/completed"
+                    | "item/started"
+                    | "item/completed"
+            ) {
+                self.stop_tracking.settled_at = None;
+            }
+            self.stop_descendants()?;
+        }
+        Ok(())
+    }
+    fn stop_descendants(&mut self) -> Result<(), String> {
+        let root = self.stop_tracking.root.clone();
+        let turns: Vec<_> = self
+            .stop_tracking
+            .turns
+            .iter()
+            .map(|(a, b)| (a.clone(), b.clone()))
+            .collect();
+        for (thread, turn) in turns {
+            if self
+                .stop_tracking
+                .sent_turns
+                .insert((thread.clone(), turn.clone()))
+            {
+                self.stop_tracking
+                    .pending_turns
+                    .insert((thread.clone(), turn.clone()));
+                self.request(
+                    "turn/interrupt",
+                    json!({"threadId":thread,"turnId":turn}),
+                    Pending::StopChild {
+                        root: root.clone(),
+                        thread,
+                        turn,
+                    },
+                )?;
+            }
+        }
+        let running: Vec<_> = self
+            .stop_tracking
+            .running_processes
+            .iter()
+            .filter_map(|(thread, item)| {
+                self.stop_tracking
+                    .processes
+                    .get(&(thread.clone(), item.clone()))
+                    .map(|process| (thread.clone(), process.clone()))
+            })
+            .collect();
+        for (thread, process) in running {
+            if self
+                .stop_tracking
+                .sent_processes
+                .insert((thread.clone(), process.clone()))
+            {
+                self.request(
+                    "thread/backgroundTerminals/terminate",
+                    json!({"threadId":thread,"processId":process}),
+                    Pending::StopProcess {
+                        root: root.clone(),
+                        thread,
+                        process,
+                    },
+                )?;
+            }
+        }
+        let threads: HashSet<_> = self
+            .stop_tracking
+            .processes
+            .keys()
+            .map(|(thread, _)| thread.clone())
+            .collect();
+        for thread in threads {
+            let version = self
+                .stop_tracking
+                .process_versions
+                .get(&thread)
+                .copied()
+                .unwrap_or(0);
+            if self.stop_tracking.listed.get(&thread).copied() == Some(version)
+                || self.pending.values().any(|p| matches!(&p.kind, Pending::StopList { root: r, thread: t, .. } if r == &root && t == &thread)) { continue; }
+            self.request(
+                "thread/backgroundTerminals/list",
+                json!({"threadId":thread}),
+                Pending::StopList {
+                    root: root.clone(),
+                    thread,
+                    version,
+                },
+            )?;
+        }
+        Ok(())
+    }
+    // Stop requests are optional provider controls. Their timeout must not
+    // disconnect an otherwise usable conversation or consume unrelated work.
+    fn expire_stop_requests(&mut self, now: Instant) {
+        let expired: Vec<_> = self
+            .pending
+            .iter()
+            .filter_map(|(id, request)| {
+                if now <= request.deadline {
+                    return None;
+                }
+                match &request.kind {
+                    Pending::StopChild { root, .. }
+                    | Pending::StopProcess { root, .. }
+                    | Pending::StopList { root, .. } => Some((*id, root.clone())),
+                    _ => None,
+                }
+            })
+            .collect();
+        let current = expired
+            .iter()
+            .any(|(_, root)| root == &self.stop_tracking.root);
+        for (id, _) in expired {
+            self.pending.remove(&id);
+        }
+        if current {
+            self.stop_error(
+                "Stop could not confirm all Codex work ended. Check running work manually.".into(),
+            );
+            self.dirty = true;
+        }
+    }
+    fn advance_stop(&mut self, now: Instant) {
+        if !self.stop_tracking.stopping {
+            return;
+        }
+        let root = &self.stop_tracking.root;
+        let pending = self.stop_tracking.root_pending || !self.stop_tracking.pending_turns.is_empty()
+            || self.pending.values().any(|r| matches!(&r.kind, Pending::StopChild { root: r, .. } | Pending::StopProcess { root: r, .. } | Pending::StopList { root: r, .. } if r == root));
+        if self
+            .stop_tracking
+            .deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            if pending {
+                self.stop_error(
+                    "Stop could not confirm all Codex work ended. Check running work manually."
+                        .into(),
+                );
+            }
+            self.stop_tracking.stopping = false;
+            self.dirty = true;
+        } else if pending {
+            self.stop_tracking.settled_at = None;
+        } else {
+            let since = *self.stop_tracking.settled_at.get_or_insert(now);
+            if now.duration_since(since) >= Duration::from_millis(500) {
+                self.stop_tracking.stopping = false;
+                self.dirty = true;
+            }
+        }
+    }
+    fn stop_error(&mut self, message: String) {
+        self.stop_tracking.error = Some(message.clone());
+        self.state.error = Some(message);
+    }
     fn interaction_owner(
         &self,
         p: &Value,
@@ -4285,12 +4708,17 @@ impl Actor {
                 if let Some(root) = self.state.saved.thread_id.as_deref() {
                     if let Some(expired) = self.interaction_children.codex_event(
                         root,
-                        self.state.turn_id.as_deref(),
+                        self.state.turn_id.as_deref().or_else(|| {
+                            self.stop_tracking
+                                .stopping
+                                .then_some(self.stop_tracking.root.as_str())
+                        }),
                         &m,
                     ) {
                         self.state.expire_interactions(&expired);
                     }
                 }
+                self.observe_stop_work(&m)?;
                 if m["method"] == "serverRequest/resolved" {
                     let id = &m["params"]["requestId"];
                     if self
@@ -4310,6 +4738,11 @@ impl Actor {
                     return Ok(());
                 }
                 self.state.apply(&m);
+                if self.stop_tracking.stopping {
+                    if let Some(error) = &self.stop_tracking.error {
+                        self.state.error = Some(error.clone());
+                    }
+                }
                 self.state.refresh_interaction_status();
                 if completed && m["params"]["turn"]["status"] == "completed" {
                     crate::rich_plan::import_completed(&mut self.state.saved);
@@ -4335,6 +4768,24 @@ impl Actor {
             return Ok(());
         };
         if let Some(error) = m.get("error") {
+            if let Pending::StopList { root, thread, .. } = &request.kind {
+                if self.stop_tracking.root == *root && self.stop_tracking.stopping {
+                    self.stop_error(format!("Stop could not inspect Codex background work for {thread}: {}. Check running work manually.", error["message"].as_str().unwrap_or("unsupported by provider")));
+                }
+                return Ok(());
+            }
+            if let Pending::StopChild { root, thread, turn }
+            | Pending::StopProcess {
+                root,
+                thread,
+                process: turn,
+            } = &request.kind
+            {
+                if self.stop_tracking.root == *root && self.stop_tracking.stopping {
+                    self.stop_error(format!("Stop could not cancel Codex work ({thread}, {turn}): {}. Check running work manually.", error["message"].as_str().unwrap_or("provider does not support cancellation")));
+                }
+                return Ok(());
+            }
             if matches!(request.kind, Pending::ChildInterrupt) {
                 self.state.error = Some(
                     error["message"]
@@ -4459,6 +4910,9 @@ impl Actor {
                 .unwrap_or("Codex request failed")
                 .to_owned();
             if let Pending::Interrupt { attempt, turn } = request.kind {
+                if self.state.turn_id.as_deref() != Some(&turn) {
+                    return Ok(());
+                }
                 if attempt < 4
                     && message.contains("no active turn to interrupt")
                     && self.state.turn_id.as_deref() == Some(&turn)
@@ -4904,6 +5358,69 @@ impl Actor {
                 self.state
                     .apply_subagent_read(&thread, period_start, &result["thread"]);
             }
+            Pending::StopList {
+                root,
+                thread,
+                version,
+            } => {
+                if self.stop_tracking.root != root || !self.stop_tracking.stopping {
+                    return Ok(());
+                }
+                let Some(data) = result["data"].as_array() else {
+                    self.stop_error("Stop could not inspect Codex background terminals. Check running work manually.".into());
+                    return Ok(());
+                };
+                for entry in data {
+                    let (Some(item), Some(process)) =
+                        (entry["itemId"].as_str(), entry["processId"].as_str())
+                    else {
+                        continue;
+                    };
+                    if self
+                        .stop_tracking
+                        .processes
+                        .get(&(thread.clone(), item.into()))
+                        .is_some_and(|id| id == process)
+                        && self
+                            .stop_tracking
+                            .sent_processes
+                            .insert((thread.clone(), process.into()))
+                    {
+                        self.request(
+                            "thread/backgroundTerminals/terminate",
+                            json!({"threadId":thread,"processId":process}),
+                            Pending::StopProcess {
+                                root: root.clone(),
+                                thread: thread.clone(),
+                                process: process.into(),
+                            },
+                        )?;
+                    }
+                }
+                if let Some(cursor) = result["nextCursor"].as_str() {
+                    self.request(
+                        "thread/backgroundTerminals/list",
+                        json!({"threadId":thread,"cursor":cursor}),
+                        Pending::StopList {
+                            root,
+                            thread,
+                            version,
+                        },
+                    )?;
+                } else {
+                    self.stop_tracking.listed.insert(thread, version);
+                    self.stop_descendants()?;
+                }
+            }
+            Pending::StopChild { .. } => {} // ACK is not a completed turn.
+            Pending::StopProcess { root, .. } => {
+                if self.stop_tracking.root == root
+                    && self.stop_tracking.stopping
+                    && result["terminated"] != true
+                {
+                    self.stop_error("Stop could not confirm a Codex background terminal was terminated. Check running work manually.".into());
+                }
+            }
             Pending::Interrupt { .. } | Pending::Compact | Pending::ChildInterrupt => {}
         }
         self.dispatch_queue()?;
@@ -5060,6 +5577,7 @@ impl Actor {
             ) {
                 self.dirty = true;
             }
+            self.advance_stop(Instant::now());
             self.expire_subagent_reads();
             self.poll_subagents();
             if let Some((when, attempt, turn)) = self.interrupt_retry.clone() {
@@ -5098,6 +5616,7 @@ impl Actor {
                     self.dirty = true;
                 }
             }
+            self.expire_stop_requests(Instant::now());
             self.pending.retain(|_, request| {
                 !(Instant::now() > request.deadline
                     && matches!(request.kind, Pending::Models | Pending::Skills))
@@ -5730,6 +6249,42 @@ mod tests {
             serde_json::from_value(json!({"start_item":0,"end_item":1,"duration_ms":2})).unwrap();
         assert!(old.subagents.is_empty());
     }
+    #[test]
+    fn interrupted_child_is_terminal_for_notifications_reads_and_persistence() {
+        for via_read in [false, true] {
+            let mut state = state();
+            state.begin_work();
+            state.upsert_subagent("child", None, None, SubagentStatus::Working);
+            assert_eq!(active_subagents(&state.saved.work_periods).len(), 1);
+            if via_read {
+                state.apply_subagent_read("child", 0, &json!({"id":"child","turns":[{"id":"child-turn","status":"interrupted","items":[]}]}));
+            } else {
+                assert!(state.apply(&json!({"method":"turn/completed","params":{"threadId":"child","turn":{"id":"child-turn","status":"interrupted"}}})));
+            }
+            assert_eq!(
+                state.saved.work_periods[0].subagents[0].status,
+                SubagentStatus::Interrupted
+            );
+            assert!(active_subagents(&state.saved.work_periods).is_empty());
+            assert!(state.subagent_terminal("child"));
+            let encoded = serde_json::to_value(&state.saved).unwrap();
+            assert_eq!(
+                encoded["work_periods"][0]["subagents"][0]["status"],
+                "interrupted"
+            );
+            let restored: SavedSession = serde_json::from_value(encoded).unwrap();
+            assert_eq!(
+                restored.work_periods[0].subagents[0].status,
+                SubagentStatus::Interrupted
+            );
+            assert!(active_subagents(&restored.work_periods).is_empty());
+        }
+        for value in ["working", "completed", "failed", "unknown"] {
+            let parsed: SubagentStatus = serde_json::from_value(json!(value)).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), json!(value));
+        }
+    }
+
     #[test]
     fn reused_subagent_belongs_to_new_work_and_old_read_cannot_rewrite_history() {
         let mut state = state();
@@ -6558,6 +7113,361 @@ mod tests {
         assert_eq!(actor.state.status, Status::Working);
         assert!(actor.state.error.is_none());
     }
+    #[test]
+    #[cfg(unix)]
+    fn stop_targets_observed_generation_and_reports_rejected_process() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.message(json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","rootTurnId":"turn-1"}}})).unwrap();
+        a.message(json!({"method":"thread/started","params":{"thread":{"id":"child","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"thread-1"}}}}}})).unwrap();
+        a.message(json!({"method":"turn/started","params":{"threadId":"child","turn":{"id":"child-turn","rootTurnId":"turn-1"}}})).unwrap();
+        a.message(json!({"method":"thread/started","params":{"thread":{"id":"nested","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"child"}}}}}})).unwrap();
+        a.message(json!({"method":"turn/started","params":{"threadId":"nested","turn":{"id":"nested-turn","rootTurnId":"turn-1"}}})).unwrap();
+        a.message(json!({"method":"item/started","params":{"threadId":"nested","turnId":"nested-turn","item":{"type":"commandExecution","id":"command","source":"unifiedExecStartup","processId":"p1"}}})).unwrap();
+        // An unrelated turn cannot establish process ownership.
+        a.message(json!({"method":"item/started","params":{"threadId":"nested","turnId":"old","item":{"type":"commandExecution","id":"old-command","source":"unifiedExecStartup","processId":"old-p"}}})).unwrap();
+        a.action(Action::Interrupt).unwrap();
+        assert!(a.queue_paused);
+        assert!(a
+            .pending
+            .values()
+            .any(|p| matches!(&p.kind, Pending::Interrupt { turn, .. } if turn == "turn-1")));
+        let children: HashSet<_> = a
+            .pending
+            .values()
+            .filter_map(|p| match &p.kind {
+                Pending::StopChild { thread, turn, .. } => Some((thread.as_str(), turn.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            children,
+            HashSet::from([("child", "child-turn"), ("nested", "nested-turn")])
+        );
+        let list = a
+            .pending
+            .iter()
+            .find_map(|(id, p)| {
+                matches!(&p.kind, Pending::StopList { thread, .. } if thread == "nested")
+                    .then_some(*id)
+            })
+            .unwrap();
+        a.message(json!({"id":list,"result":{"data":[{"itemId":"command","processId":"p1"},{"itemId":"old-command","processId":"old-p"}]}})).unwrap();
+        let process = a
+            .pending
+            .iter()
+            .find_map(|(id, p)| match &p.kind {
+                Pending::StopProcess {
+                    thread, process, ..
+                } if thread == "nested" && process == "p1" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        assert!(!a.pending.values().any(
+            |p| matches!(&p.kind, Pending::StopProcess { process, .. } if process == "old-p")
+        ));
+        // A provider's false result is not a successful cancellation.
+        a.message(json!({"id":process,"result":{"terminated":false}}))
+            .unwrap();
+        assert!(a
+            .state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("could not confirm"));
+        // Duplicate notifications cannot issue another request.
+        let before = a.seq;
+        a.message(json!({"method":"item/started","params":{"threadId":"nested","turnId":"nested-turn","item":{"type":"commandExecution","id":"command","source":"unifiedExecStartup","processId":"p1"}}})).unwrap();
+        assert_eq!(a.seq, before);
+        // A late new process belonging to the same active turn is cancelled.
+        a.message(json!({"method":"item/started","params":{"threadId":"nested","turnId":"nested-turn","item":{"type":"commandExecution","id":"late","source":"unifiedExecStartup","processId":"p2"}}})).unwrap();
+        let list = a
+            .pending
+            .iter()
+            .find_map(|(id, p)| {
+                matches!(&p.kind, Pending::StopList { thread, .. } if thread == "nested")
+                    .then_some(*id)
+            })
+            .unwrap();
+        a.message(json!({"id":list,"result":{"data":[{"itemId":"late","processId":"p2"}]}}))
+            .unwrap();
+        assert!(a
+            .pending
+            .values()
+            .any(|p| matches!(&p.kind, Pending::StopProcess { process, .. } if process == "p2")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_directly_terminates_running_child_even_after_root_completes() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.message(json!({"method":"thread/started","params":{"thread":{"id":"child","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"thread-1"}}}}}})).unwrap();
+        a.message(json!({"method":"turn/started","params":{"threadId":"child","turn":{"id":"child-turn","rootTurnId":"turn-1"}}})).unwrap();
+        a.message(json!({"method":"item/started","params":{"threadId":"child","turnId":"child-turn","item":{"type":"commandExecution","id":"cmd","source":"unifiedExecStartup","status":"inProgress","processId":"p"}}})).unwrap();
+        a.action(Action::Interrupt).unwrap();
+        let id = a.pending.iter().find_map(|(id,p)| matches!(&p.kind, Pending::StopProcess { thread, process, .. } if thread == "child" && process == "p").then_some(*id)).unwrap();
+        a.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"interrupted"}}})).unwrap();
+        a.message(json!({"method":"turn/completed","params":{"threadId":"child","turn":{"id":"child-turn","status":"interrupted"}}})).unwrap();
+        a.message(json!({"id":id,"result":{"terminated":false}}))
+            .unwrap();
+        assert!(a
+            .state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("could not confirm"));
+        assert!(a
+            .stop_tracking
+            .processes
+            .contains_key(&("child".into(), "cmd".into())));
+        // A new submission cannot replace a still-running stop generation.
+        assert!(a
+            .action(Action::Submit {
+                id: 77,
+                text: "continue".into(),
+                images: vec![]
+            })
+            .is_err());
+        assert_eq!(a.state.rejected_submission, Some(77));
+        assert_eq!(a.stop_tracking.root, "turn-1");
+        // An acknowledgement from the old stop cannot affect a subsequent turn.
+        a.stop_tracking.stopping = false;
+        a.message(json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-2"}}})).unwrap();
+        a.pending.insert(
+            999,
+            Request {
+                kind: Pending::StopProcess {
+                    root: "turn-1".into(),
+                    thread: "child".into(),
+                    process: "p".into(),
+                },
+                deadline: Instant::now(),
+            },
+        );
+        a.message(json!({"id":999,"result":{"terminated":false}}))
+            .unwrap();
+        assert!(a.state.error.is_none());
+        assert_eq!(a.stop_tracking.root, "turn-2");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_ignores_completed_terminal_absent_from_provider_list() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.message(json!({"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"done","source":"unifiedExecStartup","processId":"p"}}})).unwrap();
+        a.message(json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"done","source":"unifiedExecStartup","processId":"p","status":"completed","exitCode":0}}})).unwrap();
+        a.action(Action::Interrupt).unwrap();
+        let list = a
+            .pending
+            .iter()
+            .find_map(|(id, p)| matches!(p.kind, Pending::StopList { .. }).then_some(*id))
+            .unwrap();
+        a.message(json!({"id":list,"result":{"data":[]}})).unwrap();
+        assert!(!a
+            .pending
+            .values()
+            .any(|p| matches!(p.kind, Pending::StopProcess { .. })));
+        assert!(a.state.error.is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_reports_previously_observed_missing_process_id() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.message(json!({"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"unknown","source":"unifiedExecStartup","processId":null}}})).unwrap();
+        a.action(Action::Interrupt).unwrap();
+        assert!(a
+            .state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("background terminal"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_finishes_after_matching_completion_and_grace_or_reports_timeout() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.action(Action::Interrupt).unwrap();
+        let now = Instant::now();
+        a.advance_stop(now);
+        assert!(a.stop_tracking.stopping);
+        a.message(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"interrupted"}}})).unwrap();
+        a.advance_stop(now);
+        a.advance_stop(now + Duration::from_millis(499));
+        assert!(a.stop_tracking.stopping);
+        a.advance_stop(now + Duration::from_millis(501));
+        assert!(!a.stop_tracking.stopping);
+        let mut b = actor();
+        b.process = Some(fixture_process());
+        b.action(Action::Interrupt).unwrap();
+        b.advance_stop(Instant::now() + Duration::from_secs(31));
+        assert!(!b.stop_tracking.stopping);
+        assert!(b
+            .state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("could not confirm"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_reads_all_background_pages_and_matches_owned_items() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.message(json!({"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"mine","source":"unifiedExecStartup","processId":"p"}}})).unwrap();
+        a.action(Action::Interrupt).unwrap();
+        let list = a
+            .pending
+            .iter()
+            .find_map(|(id, p)| matches!(p.kind, Pending::StopList { .. }).then_some(*id))
+            .unwrap();
+        a.message(json!({"id":list,"result":{"data":[{"itemId":"unrelated","processId":"x"}],"nextCursor":"page2"}})).unwrap();
+        assert!(!a
+            .pending
+            .values()
+            .any(|p| matches!(p.kind, Pending::StopProcess { .. })));
+        let next = a
+            .pending
+            .iter()
+            .find_map(|(id, p)| matches!(p.kind, Pending::StopList { .. }).then_some(*id))
+            .unwrap();
+        a.message(json!({"id":next,"result":{"data":[{"itemId":"mine","processId":"p"}]}}))
+            .unwrap();
+        assert!(a
+            .pending
+            .values()
+            .any(|p| matches!(&p.kind, Pending::StopProcess { process, .. } if process == "p")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_cancels_late_child_after_parentage_is_established() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.action(Action::Interrupt).unwrap();
+        a.message(json!({"method":"turn/started","params":{"threadId":"child","turn":{"id":"c","rootTurnId":"turn-1"}}})).unwrap();
+        assert!(!a
+            .pending
+            .values()
+            .any(|p| matches!(p.kind, Pending::StopChild { .. })));
+        a.message(json!({"method":"thread/started","params":{"thread":{"id":"child","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"thread-1"}}}}}})).unwrap();
+        assert!(a.pending.values().any(|p| matches!(&p.kind, Pending::StopChild { thread, turn, .. } if thread == "child" && turn == "c")));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_request_expiry_is_scoped_and_late_responses_are_ignored() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.stop_tracking.root = "turn-1".into();
+        a.stop_tracking.stopping = true;
+        let now = Instant::now();
+        let expired = now.checked_sub(Duration::from_secs(1)).unwrap();
+        let future = now + Duration::from_secs(30);
+        a.pending.insert(
+            10,
+            Request {
+                kind: Pending::StopList {
+                    root: "turn-1".into(),
+                    thread: "child".into(),
+                    version: 1,
+                },
+                deadline: expired,
+            },
+        );
+        a.pending.insert(
+            11,
+            Request {
+                kind: Pending::StopChild {
+                    root: "turn-1".into(),
+                    thread: "child".into(),
+                    turn: "child-turn".into(),
+                },
+                deadline: expired,
+            },
+        );
+        a.pending.insert(
+            12,
+            Request {
+                kind: Pending::StopProcess {
+                    root: "turn-1".into(),
+                    thread: "child".into(),
+                    process: "p".into(),
+                },
+                deadline: expired,
+            },
+        );
+        a.pending.insert(
+            13,
+            Request {
+                kind: Pending::StopProcess {
+                    root: "turn-1".into(),
+                    thread: "child".into(),
+                    process: "next".into(),
+                },
+                deadline: future,
+            },
+        );
+        a.pending.insert(
+            14,
+            Request {
+                kind: Pending::Models,
+                deadline: expired,
+            },
+        );
+        a.expire_stop_requests(now);
+        assert!(
+            !a.pending.contains_key(&10)
+                && !a.pending.contains_key(&11)
+                && !a.pending.contains_key(&12)
+        );
+        assert!(a.pending.contains_key(&13) && a.pending.contains_key(&14));
+        assert!(a.process.is_some());
+        assert!(a
+            .state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("could not confirm"));
+        let error = a.state.error.clone();
+        a.message(json!({"id":10,"result":{"data":[{"itemId":"x","processId":"p"}]}}))
+            .unwrap();
+        a.message(json!({"id":11,"error":{"message":"late"}}))
+            .unwrap();
+        a.message(json!({"id":12,"result":{"terminated":false}}))
+            .unwrap();
+        assert_eq!(a.state.error, error);
+        assert!(a.pending.contains_key(&13) && a.pending.contains_key(&14));
+        assert!(a.process.is_some());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stop_reports_child_without_proven_generation() {
+        let mut a = actor();
+        a.process = Some(fixture_process());
+        a.interaction_children
+            .register("thread-1", "thread-1", "child", None, None);
+        a.interaction_children.start("child", Some("child-turn"));
+        a.action(Action::Interrupt).unwrap();
+        assert!(a
+            .state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("identify every active"));
+        assert!(!a
+            .pending
+            .values()
+            .any(|p| matches!(p.kind, Pending::StopChild { .. })));
+    }
+
     #[cfg(unix)]
     fn fixture_process() -> Process {
         use std::os::unix::process::CommandExt;

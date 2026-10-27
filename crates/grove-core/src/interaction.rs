@@ -22,6 +22,13 @@ pub(crate) struct Children {
     aliases: HashMap<String, String>,
 }
 impl Children {
+    pub fn active_ids(&self) -> Vec<String> {
+        self.children
+            .iter()
+            .filter(|(_, child)| child.active)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
     pub fn known(&self, id: &str) -> bool {
         self.children.contains_key(self.canonical(id))
     }
