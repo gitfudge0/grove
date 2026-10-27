@@ -10,6 +10,7 @@
 - Improve native plan alignment, comment placement, pending-answer counts, and feedback and approval sending states.
 - Show size details and recovery actions when HTML previews or native plans exceed their limits.
 - Recover missing subagent activity from parent-session history.
+- Stop observed Codex subagents and their identified background terminals when interrupting a conversation, and report work that could not be stopped.
 
 ## Workspace and scripts
 

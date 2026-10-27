@@ -178,9 +178,9 @@ arboard.workspace = true
 base64.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
-# Embed only the fonts and release highlights selected in Assets, and compress
-# their bytes in release builds. Icon PNGs and bundle art stay outside the binary.
-rust-embed = { workspace = true, features = ["include-exclude", "compression"] }
+# Embed only the fonts and release highlights selected in Assets.
+# Icon PNGs and bundle art stay outside the binary.
+rust-embed = { workspace = true, features = ["include-exclude"] }
 futures.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

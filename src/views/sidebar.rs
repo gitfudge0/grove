@@ -3761,9 +3761,10 @@ impl Sidebar {
                         div()
                             .flex()
                             .items_center()
+                            .w_full()
                             .min_w_0()
                             .h(rpx(SESSION_LIST_HEADER_H))
-                            .gap(rpx(SPACE_MD))
+                            .gap(rpx(SPACE_SM))
                             .child(
                                 div()
                                     .flex_shrink_0()
