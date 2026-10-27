@@ -122,6 +122,47 @@ impl Drop for Process {
 fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, String> {
     // Combine rather than repeat this flag: the CLI keeps only its last value.
     let mut args = args.to_vec();
+    // A session overlay must preserve all caller-provided settings. Never write
+    // the global fastMode preference. New/explicit sessions launch Standard;
+    // a saved Fast preference is applied through the live catalog-gated control
+    // before the next user turn.
+    if saved.composer.speed.is_some() {
+        let mut settings = serde_json::Map::new();
+        let mut remaining = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            let source = if args[i] == "--settings" {
+                i += 1;
+                Some(
+                    args.get(i)
+                        .ok_or("Claude Code --settings needs a value")?
+                        .clone(),
+                )
+            } else {
+                args[i].strip_prefix("--settings=").map(str::to_owned)
+            };
+            if let Some(source) = source {
+                let text = if source.trim_start().starts_with('{') {
+                    source
+                } else {
+                    fs_err::read_to_string(std::path::Path::new(&saved.cwd).join(&source))
+                        .map_err(|e| format!("Cannot read Claude settings: {e}"))?
+                };
+                let value: Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("Invalid Claude settings: {e}"))?;
+                let object = value
+                    .as_object()
+                    .ok_or("Claude settings must be an object")?;
+                settings.clone_from(object);
+            } else {
+                remaining.push(args[i].clone());
+            }
+            i += 1;
+        }
+        settings.insert("fastMode".into(), json!(false));
+        remaining.extend(["--settings".into(), Value::Object(settings).to_string()]);
+        args = remaining;
+    }
     let mut guidance = String::new();
     let mut index = 0;
     while index < args.len() {
@@ -1117,6 +1158,8 @@ impl Actor {
         self.permission_error = None;
         self.blocks.clear();
         self.state.status = Status::Starting;
+        self.state.reported_speed = None;
+        self.state.speed_disabled_reason = None;
         self.state.clear_error();
         self.interaction_children = crate::interaction::Children::default();
         self.state.interaction_owners.clear();
@@ -1146,9 +1189,14 @@ impl Actor {
                 json!({"subtype":"set_permission_mode","mode":permission_mode(&access)?}),
             )?;
         }
-        self.control(
-            json!({"subtype":"apply_flag_settings","settings":{"effortLevel":self.state.effort}}),
-        )?;
+        let mut settings = json!({"effortLevel":self.state.effort});
+        if let Some(speed) = self.state.saved.composer.speed {
+            // False is explicit Standard; null would remove the session overlay
+            // and could expose an inherited fastMode=true user setting.
+            settings["fastMode"] =
+                json!(speed == codex::Speed::Fast && self.state.speed_unavailable(speed).is_none());
+        }
+        self.control(json!({"subtype":"apply_flag_settings","settings":settings}))?;
         Ok(())
     }
     fn configure_pending_access(&mut self) -> Result<(), String> {
@@ -1830,6 +1878,13 @@ impl Actor {
                 self.configure_pending_access()?;
             }
 
+            Action::SetSpeed(speed) => {
+                if let Some(reason) = self.state.speed_unavailable(speed) {
+                    return Err(reason.into());
+                }
+                self.state.saved.composer.speed = Some(speed);
+                self.reconfigure = true;
+            }
             Action::ResetModelEffort => {
                 // Restarting is required to remove a live model override. Preserve
                 // inherited permissions explicitly so that restart cannot reset them.
@@ -2410,6 +2465,13 @@ impl Actor {
                 return Ok(());
             }
         }
+        // These fields describe actual provider state, unlike a settings ACK.
+        if let Some(speed) = value["fast_mode_state"].as_str() {
+            self.state.reported_speed = Some(speed.into());
+            self.state.speed_disabled_reason = value["fast_mode_disabled_reason"]
+                .as_str()
+                .map(str::to_owned);
+        }
         self.subagent_system_message(&value);
         match value["type"].as_str().unwrap_or_default() {
             "control_response" => {
@@ -2482,7 +2544,9 @@ impl Actor {
                 if self.configuring && self.pending.is_empty() {
                     self.configuring = false;
                     self.state.status = Status::Idle;
-                    self.state.resolved_model = self.state.model.clone();
+                    if self.state.model.is_some() {
+                        self.state.resolved_model = self.state.model.clone();
+                    }
 
                     self.state.resolved_effort = self.state.effort.clone();
                 }
@@ -2508,7 +2572,16 @@ impl Actor {
                         .map(str::to_owned);
 
                     if let Some(models) = data["models"].as_array() {
-                        self.state.models=models.iter().map(|m| json!({"model":m["value"],"resolvedModel":m["resolvedModel"],"displayName":m["displayName"],"description":m["description"],"supportedReasoningEfforts":m["supportedEffortLevels"].as_array().map(|values| values.iter().map(|v| json!({"reasoningEffort":v})).collect::<Vec<_>>()).unwrap_or_default()})).collect();
+                        self.state.models=models.iter().map(|m| json!({"model":m["value"],"resolvedModel":m["resolvedModel"],"displayName":m["displayName"],"description":m["description"],"supportsFastMode":m["supportsFastMode"],"supportedReasoningEfforts":m["supportedEffortLevels"].as_array().map(|values| values.iter().map(|v| json!({"reasoningEffort":v})).collect::<Vec<_>>()).unwrap_or_default()})).collect();
+                    }
+                    if self.state.saved.composer.speed == Some(codex::Speed::Fast) {
+                        self.reconfigure = true;
+                    }
+                    if let Some(speed) = data["fast_mode_state"].as_str() {
+                        self.state.reported_speed = Some(speed.into());
+                        self.state.speed_disabled_reason = data["fast_mode_disabled_reason"]
+                            .as_str()
+                            .map(str::to_owned);
                     }
                     if let Some(commands) = data["commands"].as_array() {
                         self.state.skills = commands
@@ -3281,6 +3354,75 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         )
     }
+    #[test]
+    #[cfg(unix)]
+    fn speed_live_control_is_session_scoped_and_reported_separately() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.state.resolved_model = Some("claude-opus-test".into());
+        actor.state.models = vec![
+            json!({"model":"opus", "resolvedModel":"claude-opus-test", "supportsFastMode":true}),
+        ];
+        actor.state.saved.draft = "preserve".into();
+        actor.state.resolved_access = Some("plan".into());
+        actor.action(Action::SetSpeed(codex::Speed::Fast)).unwrap();
+        actor.configure_live().unwrap();
+        let request = read(&mut reader);
+        assert_eq!(request["request"]["settings"]["fastMode"], true);
+        assert!(
+            !actor.reset_configuration,
+            "Speed applies without restarting or changing model/access"
+        );
+        actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"]}})).unwrap();
+        assert_eq!(
+            actor.state.resolved_model.as_deref(),
+            Some("claude-opus-test")
+        );
+        assert_eq!(actor.state.resolved_access.as_deref(), Some("plan"));
+        assert!(
+            actor.state.reported_speed.is_none(),
+            "ACK is not effective tier evidence"
+        );
+        actor.message(json!({"type":"system","subtype":"init","model":"claude-opus-test","fast_mode_state":"off","fast_mode_disabled_reason":"extra_usage_disabled"})).unwrap();
+        assert_eq!(actor.state.reported_speed.as_deref(), Some("off"));
+        assert_eq!(actor.state.saved.composer.speed, Some(codex::Speed::Fast));
+        actor.action(Action::ResetModelEffort).unwrap();
+        assert_eq!(actor.state.saved.composer.speed, Some(codex::Speed::Fast));
+        assert_eq!(actor.state.saved.draft, "preserve");
+        actor
+            .action(Action::SetSpeed(codex::Speed::Standard))
+            .unwrap();
+        actor.configure_live().unwrap();
+        let request = read(&mut reader);
+        assert_eq!(request["request"]["settings"]["fastMode"], false);
+        assert!(actor
+            .action(Action::SetSpeed(codex::Speed::Ultrafast))
+            .is_err());
+    }
+    #[test]
+    fn speed_launch_overlay_preserves_settings_and_never_enables_fast_before_catalog() {
+        let mut actor = actor();
+        actor.state.saved.composer.speed = Some(codex::Speed::Fast);
+        let cmd = launch_command(
+            &[
+                "--settings".into(),
+                r#"{"env":{"CUSTOM":"kept"},"fastMode":true}"#.into(),
+            ],
+            &actor.state.saved,
+        )
+        .unwrap();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        let settings: Value = serde_json::from_str(
+            args.windows(2).find(|a| a[0] == "--settings").unwrap()[1].as_str(),
+        )
+        .unwrap();
+        assert_eq!(settings["env"]["CUSTOM"], "kept");
+        assert_eq!(settings["fastMode"], false);
+    }
+
     #[test]
     fn provider_rate_limit_events_preserve_continue_and_child_boundaries() {
         let mut actor = actor();

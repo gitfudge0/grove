@@ -136,9 +136,11 @@ Placeholders show meaningful example values and never repeat the label or title:
 
 - Narrow layouts put an Agents disclosure (Checkout when there are no agents) after the shared content header; expanded tools reserve space without covering the composer. Session agents remain available without a registered checkout. Zen offers the same Agents disclosure without checkout Git tools. Grid, standalone terminals, home, settings, and setup or decision forms omit the card. Native menus preserve keyboard navigation, Escape, outside dismissal, and trigger focus restoration.
 
-### Composer model and effort
+### Composer model, effort and speed
 
-The combined model · effort toolbar control opens a compact rounded card directly above its trigger with a SPACE_LG gap. Access remains a separate control.
+The existing card adds a separated Speed row with neutral grouped Standard/Fast choices and Codex Ultrafast, a Next turn hint, and visible cost and unavailable explanations. Speed is a saved conversation preference independent of reasoning effort and access. New sessions explicitly start Standard; older conversations retain inherited speed until explicitly selected. Model switches never silently change the saved speed or select a different model to enable Fast. If a model cannot use the requested speed, explain that Grove requests Standard while retaining the preference. Only advertised provider/model capabilities enable paid choices; provider account/organization restrictions and literal errors remain authoritative. Claude offers no Ultrafast. The toolbar shows the chosen preference, not an assertion of provider acceptance. Actual provider reports are distinguished from requested speed; an absent effective tier must never invent a fallback. Changing speed applies at the next turn without altering the active turn, queued prompts, drafts, images, references or session ownership. Speed choices support keyboard focus and Enter/Space; disabled choices explain their reason.
+
+The combined model · effort · speed toolbar control opens a compact rounded card directly above its trigger with a SPACE_LG gap. Access remains a separate control.
 
 The card centers the current effort above a truncating model row with a trailing chevron, flanked by a decorative lightning glyph and a reset action. The lower discrete slider uses catalog-supported effort stops, a blue completed track and neutral remainder, small dots, and a contrasting round thumb. Blue effort text and track fill are permitted in this control; neutral hover and keyboard-focus fills retain stable borders. Light appearance uses the app palette and a dark contrasting thumb. Geometry maps to existing tokens; the card width is a local module constant rather than a new scale tier.
 
@@ -146,7 +148,7 @@ The model row opens the existing catalog and returns to the card after selection
 
 The slider keeps semantic stops tied to the selected model’s supported catalog. Its thumb and filled track share one inset coordinate: clicks ease toward the selected stop with base motion, while pointer drags use fast responsive motion to follow continuous positions between dots and preview the nearest supported label. Release settles onto that supported stop and commits once; arrow/Home/End input also commits supported efforts for the next turn without submitting. Retargeting begins at the currently displayed position rather than jumping to the old stop. Reduce motion uses immediate endpoints without scheduling animation frames.
 
-Zero supported efforts show an unavailable label with no stops; one supported effort is fixed. Reset restores configured model and effort while preserving Access. Escape cancels a drag and dismisses the card with trigger focus restored; Escape from model choices returns to the model row. Outside clicks dismiss without stealing focus. Catalog/session changes cancel stale drag writes.
+Zero supported efforts show an unavailable label with no stops; one supported effort is fixed. Reset restores configured model and effort while preserving Access and Speed. Escape cancels a drag and dismisses the card with trigger focus restored; Escape from model choices returns to the model row. Outside clicks dismiss without stealing focus. Catalog/session changes cancel stale drag writes.
 
 ## Conversation, tasks, and composer
 

@@ -3,9 +3,10 @@ use super::status::{self, StatusKind};
 use super::{
     components::{
         attached_validation, form_action, header_control, header_control_frame,
-        header_control_with_hover, header_control_with_tooltip, project_field_well,
-        question_choice, question_disclosure, shimmer_label, task_mark, task_meter, tooltip,
-        tooltip_content, transcript_action, truncation_safe_label_width, TaskPhase,
+        header_control_with_hover, header_control_with_tooltip, preference_choices,
+        project_field_well, question_choice, question_disclosure, settings_control, shimmer_label,
+        task_mark, task_meter, tooltip, tooltip_content, transcript_action,
+        truncation_safe_label_width, TaskPhase,
     },
     rpx,
     tokens::*,
@@ -593,6 +594,22 @@ fn composer_model_name(state: &codex::Snapshot) -> String {
         .to_owned()
 }
 
+fn speed_disabled_explanation(reason: &str) -> &str {
+    match reason {
+        "extra_usage_disabled" => "paid usage credits are not enabled",
+        "free" => "this account is not eligible",
+        "preference" => "account or organization settings disable Fast",
+        "not_first_party" => "Fast requires the Anthropic service",
+        "disabled_by_env" => "the CLI environment disables Fast",
+        "model_not_allowed" => "this model cannot use Fast",
+        "sdk_opt_in_required" => "this session has not enabled Fast",
+        "pending" => "Claude is checking availability",
+        "network_error" => "the availability check could not connect",
+        "unknown" => "Claude did not provide a reason",
+        other => other,
+    }
+}
+
 fn effort_label(value: &str) -> String {
     match value {
         "xhigh" => "Extra high".into(),
@@ -979,6 +996,7 @@ pub struct CodexView {
     card_model_focus: FocusHandle,
     card_focus: FocusHandle,
     card_reset_focus: FocusHandle,
+    speed_focus: [FocusHandle; 3],
     option_bounds: [Rc<Cell<gpui::Bounds<gpui::Pixels>>>; 3],
     option_focus: [FocusHandle; 3],
     file_suggestions: Vec<String>,
@@ -1237,6 +1255,7 @@ impl CodexView {
             card_model_focus: cx.focus_handle(),
             card_focus,
             card_reset_focus: cx.focus_handle(),
+            speed_focus: std::array::from_fn(|_| cx.focus_handle()),
             option_bounds: std::array::from_fn(|_| Rc::default()),
             option_focus: std::array::from_fn(|_| cx.focus_handle()),
             file_suggestions: Vec::new(),
@@ -6326,6 +6345,159 @@ impl CodexView {
         cx.notify();
     }
 
+    fn send_speed(&mut self, speed: codex::Speed, cx: &mut Context<Self>) {
+        if !self.composer_menu_valid(cx) {
+            self.close_menu(cx);
+            return;
+        }
+        if self
+            .session
+            .read(cx)
+            .state
+            .speed_unavailable(speed)
+            .is_some()
+        {
+            return;
+        }
+        self.session
+            .update(cx, |session, cx| session.send(Action::SetSpeed(speed), cx));
+        cx.notify();
+    }
+
+    fn speed_controls(&self, state: &codex::Snapshot, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let selected = state.saved.composer.speed;
+        let mut choices = preference_choices().w_full().bg(c::BG());
+        for (index, speed) in [
+            codex::Speed::Standard,
+            codex::Speed::Fast,
+            codex::Speed::Ultrafast,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if state.saved.provider == codex::Provider::Claude && speed == codex::Speed::Ultrafast {
+                continue;
+            }
+            let unavailable = state.speed_unavailable(speed);
+            let id = format!("codex-speed-{index}");
+            choices =
+                choices.child(
+                    settings_control(
+                        id,
+                        format!(
+                            "{} speed{}",
+                            speed.label(),
+                            if unavailable.is_some() {
+                                ": unavailable"
+                            } else {
+                                ""
+                            }
+                        ),
+                        selected == Some(speed),
+                        unavailable.is_none(),
+                    )
+                    .debug_selector(move || format!("codex-speed-{index}"))
+                    .track_focus(&self.speed_focus[index])
+                    .aria_description(unavailable.unwrap_or(
+                        "Requested speed for the next turn; provider availability applies",
+                    ))
+                    .border_0()
+                    .flex_1()
+                    .justify_center()
+                    .bg(if selected == Some(speed) {
+                        c::BG_HOVER()
+                    } else {
+                        c::BG()
+                    })
+                    .child(speed.label())
+                    .when(unavailable.is_none(), |control| {
+                        control
+                            .on_click(cx.listener(move |this, _, _, cx| this.send_speed(speed, cx)))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if action_key(event) {
+                                        this.send_speed(speed, cx);
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                    }),
+                );
+        }
+        let mut notes = Vec::new();
+        if selected.is_none() {
+            notes.push("Using this conversation’s inherited provider speed. Choose a speed to override it.".to_owned());
+        }
+        if let Some(speed) = selected.filter(|speed| *speed != codex::Speed::Standard) {
+            if let Some(reason) = state.speed_unavailable(speed) {
+                notes.push(format!(
+                    "Using Standard for the next turn. {} preference retained. {reason}",
+                    speed.label()
+                ));
+            }
+        }
+        if state.saved.provider == codex::Provider::Codex {
+            notes.push(
+                match selected {
+                    Some(codex::Speed::Ultrafast) => {
+                        "ChatGPT plans: Ultrafast uses 8× included usage or 6× purchased credits. API pricing varies."
+                    }
+                    _ => "ChatGPT plans: Fast uses 2.5× included usage or 2× purchased credits. API pricing varies.",
+                }
+                .into(),
+            );
+            if state.speed_unavailable(codex::Speed::Ultrafast).is_some() {
+                notes.push("Ultrafast unavailable for this model or account.".into());
+            }
+        } else {
+            notes.push("Fast uses paid usage credits on subscriptions; included allowance does not cover it. Account and organization eligibility apply.".into());
+            if state.speed_unavailable(codex::Speed::Fast).is_some() {
+                notes.push(
+                    "Fast requires a supported Opus model. Choose a model to enable it.".into(),
+                );
+            }
+            if selected == Some(codex::Speed::Fast) {
+                if let Some(reported) = state
+                    .reported_speed
+                    .as_deref()
+                    .filter(|s| *s == "off" || *s == "cooldown")
+                {
+                    notes.push(format!(
+                        "Claude last reported Fast {reported}{}. Fast preference retained.",
+                        state
+                            .speed_disabled_reason
+                            .as_ref()
+                            .map(|r| format!(": {}", speed_disabled_explanation(r)))
+                            .unwrap_or_default()
+                    ));
+                }
+            }
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG))
+            .pt(rpx(SPACE_2XL))
+            .border_t_1()
+            .border_color(c::BORDER_SOFT())
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child(div().text_color(c::FG()).child("Speed"))
+                    .child(div().text_color(c::FG_MUTE()).child("Next turn")),
+            )
+            .child(choices)
+            .children(notes.into_iter().map(|note| {
+                div()
+                    .text_size(rpx(TEXT_MICRO))
+                    .text_color(c::FG_DIM())
+                    .child(note)
+            }))
+            .into_any_element()
+    }
+
     fn model_effort_card(
         &mut self,
         state: &codex::Snapshot,
@@ -6348,6 +6520,13 @@ impl CodexView {
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let width =
             MODEL_EFFORT_CARD_W.min(f32::from(window.viewport_size().width) / scale - SPACE_3XL);
+        let margin = rpx(SPACE_LG).to_pixels(window.rem_size());
+        let trigger_top = self.option_bounds[0].get().top();
+        let available_height = if trigger_top > margin * 2.0 {
+            trigger_top - margin * 2.0
+        } else {
+            window.viewport_size().height - margin * 2.0
+        };
         let model_name = composer_model_name(state);
         let mut model_run = window.text_style().to_run(model_name.len());
         model_run.font.family = crate::fonts::UI_FAMILY.into();
@@ -6537,8 +6716,10 @@ impl CodexView {
             .debug_selector(|| "codex-model-effort-card".into())
             .role(gpui::Role::Group)
             .track_focus(&self.card_focus)
-            .aria_label("Model and reasoning effort")
+            .aria_label("Model, reasoning effort and speed")
             .w(rpx(width))
+            .max_h(available_height)
+            .overflow_y_scroll()
             .p(rpx(SPACE_2XL))
             .rounded(rpx(RADIUS_PANEL))
             .border_1()
@@ -6643,6 +6824,7 @@ impl CodexView {
                     ),
             )
             .child(slider)
+            .child(self.speed_controls(state, cx))
             .into_any_element()
     }
 
@@ -6688,9 +6870,16 @@ impl CodexView {
                 0,
                 ComposerMenu::Settings,
                 "codex-model",
-                "Choose model and reasoning effort",
+                "Choose model, reasoning effort and speed",
                 state.saved.provider.agent().icon_name(),
-                format!("{model} · {effort}"),
+                format!(
+                    "{model} · {effort} · {}",
+                    state
+                        .saved
+                        .composer
+                        .speed
+                        .map_or("Inherited speed", codex::Speed::label)
+                ),
             ),
             (
                 2,
@@ -6763,7 +6952,9 @@ impl CodexView {
             } else if menu == ComposerMenu::Access {
                 access.clone()
             } else {
-                name.to_owned()
+                format!(
+                    "{name}. Speed is your next-turn preference; provider availability applies."
+                )
             };
             let control = header_control_with_tooltip(id, name, move |window, cx| {
                 tooltip(detail.clone(), window).build(window, cx)
@@ -12108,6 +12299,188 @@ mod tests {
         });
         (view.unwrap(), cx, actions, updates)
     }
+    #[gpui::test]
+    fn speed_keyboard_selection_preserves_composer_and_rejects_unavailable(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, _| {
+                session.state.models = vec![json!({"model":"speed-model", "serviceTiers":[{"id":"fast"}], "supportedReasoningEfforts":[]})];
+                session.state.model = Some("speed-model".into());
+                session.state.saved.draft_images = vec!["untouched attachment".into()];
+            });
+            view.input.update(cx, |input, cx| input.set_value("Keep my speed draft", window, cx));
+            view.open_menu(ComposerMenu::Settings, window, cx);
+            view.speed_focus[1].focus(window, cx);
+        }));
+        draw(cx);
+        let _ = actions.try_iter().collect::<Vec<_>>();
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::SetSpeed(codex::Speed::Fast))));
+        cx.update(|_, cx| view.update(cx, |view, cx| view.send_speed(codex::Speed::Ultrafast, cx)));
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::SetSpeed(_))));
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(view.menu.is_none());
+            assert_eq!(view.input.read(cx).value().as_ref(), "Keep my speed draft");
+            assert_eq!(
+                view.session.read(cx).state.saved.draft_images,
+                ["untouched attachment"]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn speed_card_stays_above_composer_at_narrow_width_and_zoom(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        for (width, rem) in [(1024.0, 16.0), (400.0, 16.0), (400.0, 24.0)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(720.0)));
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    view.close_menu(cx);
+                    view.session.update(cx, |session, _| {
+                        session.state.saved.composer.speed = Some(codex::Speed::Fast);
+                        session.state.models.clear();
+                    });
+                });
+            });
+            draw(cx);
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.open_menu(ComposerMenu::Settings, window, cx);
+                });
+            });
+            draw(cx);
+            let card = cx.debug_bounds("codex-options-popup").unwrap();
+            let trigger = view.read_with(cx, |view, _| view.option_bounds[0].get());
+            assert!(card.top() >= gpui::px(0.0), "card top {card:?}, rem={rem}");
+            assert!(
+                card.bottom() <= trigger.top(),
+                "card overlaps composer {card:?}, trigger={trigger:?}, rem={rem}"
+            );
+            assert!(
+                card.left() >= gpui::px(0.0) && card.right() <= gpui::px(width),
+                "card exceeds width {card:?}"
+            );
+            assert!(cx.debug_bounds("codex-speed-0").is_some());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn speed_card_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        let previous_theme = grove_core::theme::current().name.clone();
+        for appearance in ["dark", "light"] {
+            cx.update(|cx| {
+                assert!(grove_core::theme::set_by_name(&format!(
+                    "grove-{appearance}"
+                )));
+                c::sync_component_theme(cx);
+            });
+            for (width, rem) in [(1024.0, 16.0), (400.0, 16.0), (400.0, 24.0)] {
+                for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                    for available in [true, false] {
+                        let mut state = snapshot();
+                        state.saved.provider = provider;
+                        state.saved.draft = "Compare the two refresh paths.".into();
+                        state.saved.items.clear();
+                        state.saved.composer.speed = Some(codex::Speed::Fast);
+                        state.model = Some("speed-fixture".into());
+                        state.effort = Some("high".into());
+                        state.models = vec![
+                            json!({"model":"speed-fixture", "displayName":if available {"Selected model"} else {"A very long configured model name with unavailable fast mode"}, "supportsFastMode":available, "serviceTiers":if available {vec![json!({"id":"fast"})]} else {vec![]}, "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]}),
+                        ];
+                        if provider == codex::Provider::Claude && available {
+                            state.reported_speed = Some("cooldown".into());
+                        }
+                        let (handle, _actions) = Handle::channel();
+                        let (_updates, receive) = mpsc::channel();
+                        let connection = Connection {
+                            handle,
+                            updates: receive.into(),
+                        };
+                        let mut retained = None;
+                        let window = cx
+                            .open_window(
+                                gpui::size(gpui::px(width), gpui::px(720.0)),
+                                |window, cx| {
+                                    window.set_rem_size(gpui::px(rem));
+                                    let session = cx.new(|cx| {
+                                        CodexSession::from_connection(state, connection, cx)
+                                    });
+                                    let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                                    retained = Some(chat.clone());
+                                    cx.new(|cx| {
+                                        gpui_component::Root::new(chat, window, cx)
+                                            .bordered(false)
+                                            .bg(c::BG())
+                                    })
+                                },
+                            )
+                            .unwrap();
+                        cx.update_window(window.into(), |_, window, cx| {
+                            retained.as_ref().unwrap().update(cx, |view, cx| {
+                                view.open_menu(ComposerMenu::Settings, window, cx);
+                            });
+                        })
+                        .unwrap();
+                        for _ in 0..4 {
+                            cx.advance_clock(std::time::Duration::from_millis(16));
+                            cx.run_until_parked();
+                            cx.update_window(window.into(), |_, window, cx| {
+                                window.simulate_next_frame(cx);
+                                let _ = window.draw(cx);
+                            })
+                            .unwrap();
+                        }
+                        cx.update_window(window.into(), |_, _window, cx| {
+                            let view = retained.as_ref().unwrap().read(cx);
+                            assert_eq!(
+                                view.input.read(cx).value().as_ref(),
+                                "Compare the two refresh paths."
+                            );
+                        })
+                        .unwrap();
+                        let path = format!(
+                            "/tmp/grove-speed-{appearance}-{provider:?}-{width:.0}-{rem:.0}-{available}.png"
+                        );
+                        cx.capture_screenshot(window.into())
+                            .unwrap()
+                            .save(&path)
+                            .unwrap();
+                        eprintln!("Native speed card fixture: {path}");
+                        cx.update_window(window.into(), |_, window, _| window.remove_window())
+                            .unwrap();
+                    }
+                }
+            }
+        }
+        cx.update(|cx| {
+            assert!(grove_core::theme::set_by_name(&previous_theme));
+            c::sync_component_theme(cx);
+        });
+    }
+
     #[test]
     #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
     #[cfg(target_os = "macos")]

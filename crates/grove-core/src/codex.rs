@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ComposerSettings {
     #[serde(default)]
     pub reset_to_configured: bool,
@@ -24,6 +24,43 @@ pub struct ComposerSettings {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub access: Option<String>,
+    /// None preserves a legacy conversation's inherited provider configuration.
+    #[serde(default)]
+    pub speed: Option<Speed>,
+}
+fn legacy_composer_settings() -> ComposerSettings {
+    ComposerSettings {
+        speed: None,
+        ..Default::default()
+    }
+}
+impl Default for ComposerSettings {
+    fn default() -> Self {
+        Self {
+            reset_to_configured: false,
+            reset_model_effort_only: false,
+            model: None,
+            effort: None,
+            access: None,
+            speed: Some(Speed::Standard),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Speed {
+    Standard,
+    Fast,
+    Ultrafast,
+}
+impl Speed {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard",
+            Self::Fast => "Fast",
+            Self::Ultrafast => "Ultrafast",
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -289,7 +326,7 @@ pub struct SavedSession {
     /// Missing/zero predates CLI/native isolation and requires reconnect migration.
     #[serde(default)]
     pub native_config_version: u8,
-    #[serde(default)]
+    #[serde(default = "legacy_composer_settings")]
     pub composer: ComposerSettings,
     /// Last known context-window occupancy, so a reopened session shows its meter.
     #[serde(default)]
@@ -800,6 +837,9 @@ pub struct Snapshot {
     pub resolved_model: Option<String>,
     pub resolved_effort: Option<String>,
     pub resolved_access: Option<String>,
+    /// Provider-reported state only; selecting a preference is not an acknowledgement.
+    pub reported_speed: Option<String>,
+    pub speed_disabled_reason: Option<String>,
     /// Monotonic local acknowledgement; only a successful turn/start response advances it.
     pub accepted_prompts: u64,
     pub cleared_conversations: u64,
@@ -1003,6 +1043,66 @@ impl Snapshot {
             _ => "configured approvals",
         };
         format!("{sandbox} · {approvals}")
+    }
+
+    /// Exact catalog entry for the currently selected or provider-resolved model.
+    pub fn speed_model(&self) -> Option<&Value> {
+        let selected = self.model.as_deref().or(self.resolved_model.as_deref());
+        self.models.iter().find(|m| {
+            selected.is_some_and(|value| {
+                m["model"].as_str() == Some(value)
+                    || m["id"].as_str() == Some(value)
+                    || m["resolvedModel"].as_str() == Some(value)
+            })
+        })
+    }
+    pub fn codex_speed_tier(&self, speed: Speed) -> Option<String> {
+        if speed == Speed::Standard {
+            return Some("default".into());
+        }
+        let model = self.speed_model()?;
+        let matches = |id: &str| match speed {
+            Speed::Fast => matches!(id, "fast" | "priority"),
+            Speed::Ultrafast => id == "ultrafast",
+            Speed::Standard => false,
+        };
+        model["serviceTiers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tier| tier["id"].as_str())
+            .find(|id| matches(id))
+            .or_else(|| {
+                model["additionalSpeedTiers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .find(|id| matches(id))
+            })
+            .map(str::to_owned)
+    }
+    pub fn speed_unavailable(&self, speed: Speed) -> Option<&'static str> {
+        if speed == Speed::Standard {
+            return None;
+        }
+        match self.saved.provider {
+            Provider::Codex if self.codex_speed_tier(speed).is_some() => None,
+            Provider::Codex => Some("Not advertised for this model or account by Codex."),
+            Provider::Claude if speed == Speed::Ultrafast => {
+                Some("Claude Code does not offer Ultrafast.")
+            }
+            Provider::Claude
+                if self
+                    .speed_model()
+                    .is_some_and(|m| m["supportsFastMode"] == true) =>
+            {
+                None
+            }
+            Provider::Claude => {
+                Some("Fast requires a supported Opus model and an eligible account.")
+            }
+        }
     }
 
     pub(crate) fn question_answer_ack(&self, id: Value) -> QuestionAnswerAck {
@@ -1221,6 +1321,8 @@ impl Snapshot {
             resolved_model: None,
             resolved_effort: None,
             resolved_access: None,
+            reported_speed: None,
+            speed_disabled_reason: None,
             accepted_prompts: 0,
             cleared_conversations: 0,
             edited_messages: 0,
@@ -2541,6 +2643,7 @@ pub enum Action {
     ResetConfiguration,
     /// Restore configured model and effort without resetting effective access.
     ResetModelEffort,
+    SetSpeed(Speed),
     Configure {
         model: Option<String>,
         effort: Option<String>,
@@ -3227,6 +3330,14 @@ impl Actor {
         };
         params["threadId"] = json!(self.state.saved.thread_id);
         params["input"] = json!(input);
+        if let Some(speed) = self.state.saved.composer.speed {
+            // Per-turn overrides do not mutate inherited thread configuration, and
+            // explicitly clearing priority requires "default", not null.
+            params["serviceTierForTurn"] = json!(self
+                .state
+                .codex_speed_tier(speed)
+                .unwrap_or_else(|| "default".into()));
+        }
         if let Some(model) = &self.state.model {
             params["model"] = json!(model);
         }
@@ -3809,6 +3920,12 @@ impl Actor {
                     self.process = None;
                 }
             }
+            Action::SetSpeed(speed) => {
+                if let Some(reason) = self.state.speed_unavailable(speed) {
+                    return Err(reason.into());
+                }
+                self.state.saved.composer.speed = Some(speed);
+            }
             Action::ResetModelEffort => {
                 self.state.model = None;
                 self.state.effort = None;
@@ -3816,6 +3933,7 @@ impl Actor {
                     reset_to_configured: true,
                     reset_model_effort_only: true,
                     access: self.state.access.clone(),
+                    speed: self.state.saved.composer.speed,
                     ..Default::default()
                 };
                 self.state.resolved_model =
@@ -3893,6 +4011,7 @@ impl Actor {
                     model: self.state.model.clone(),
                     effort: self.state.effort.clone(),
                     access: self.state.access.clone(),
+                    speed: self.state.saved.composer.speed,
                 };
             }
             Action::DismissUncertainQueued(id) => {
@@ -6654,6 +6773,66 @@ mod tests {
         assert!(!state.apply(&json!({"method":"error","params":{"threadId":"foreign","error":{"message":"Not ours"}}})));
         assert!(state.error.is_none());
     }
+    #[test]
+    fn speed_persistence_migration_and_catalog_request_fields() {
+        let mut actor = actor();
+        assert_eq!(ComposerSettings::default().speed, Some(Speed::Standard));
+        let mut legacy = serde_json::to_value(saved()).unwrap();
+        legacy.as_object_mut().unwrap().remove("composer");
+        assert!(serde_json::from_value::<SavedSession>(legacy.clone())
+            .unwrap()
+            .composer
+            .speed
+            .is_none());
+        legacy["composer"] = json!({"model":null,"effort":null,"access":null});
+        assert!(serde_json::from_value::<SavedSession>(legacy)
+            .unwrap()
+            .composer
+            .speed
+            .is_none());
+        actor.state.model = Some("catalog-model".into());
+        actor.state.models = vec![
+            json!({"model":"catalog-model","serviceTiers":[{"id":"priority"},{"id":"ultrafast"}]}),
+        ];
+        actor.state.saved.draft = "untouched".into();
+        actor.state.saved.draft_images = vec!["attachment".into()];
+        actor.action(Action::SetSpeed(Speed::Fast)).unwrap();
+        assert_eq!(actor.turn_params(vec![])["serviceTierForTurn"], "priority");
+        assert!(actor.state.reported_speed.is_none());
+        actor.action(Action::ResetModelEffort).unwrap();
+        assert_eq!(actor.state.saved.composer.speed, Some(Speed::Fast));
+        let restored: SavedSession =
+            serde_json::from_value(serde_json::to_value(&actor.state.saved).unwrap()).unwrap();
+        assert_eq!(restored.composer.speed, Some(Speed::Fast));
+        assert_eq!(restored.draft, "untouched");
+        assert_eq!(restored.draft_images, ["attachment"]);
+        actor.action(Action::SetSpeed(Speed::Standard)).unwrap();
+        assert_eq!(actor.turn_params(vec![])["serviceTierForTurn"], "default");
+        actor.state.models.clear();
+        assert!(actor.action(Action::SetSpeed(Speed::Ultrafast)).is_err());
+        assert_eq!(actor.state.saved.composer.speed, Some(Speed::Standard));
+    }
+    #[test]
+    fn speed_model_switch_retains_preference_without_unadvertised_tier() {
+        let mut actor = actor();
+        actor.state.model = Some("fast-capable".into());
+        actor.state.models = vec![
+            json!({"model":"fast-capable","additionalSpeedTiers":["fast"]}),
+            json!({"model":"other"}),
+        ];
+        actor.action(Action::SetSpeed(Speed::Fast)).unwrap();
+        actor
+            .action(Action::Configure {
+                model: Some("other".into()),
+                effort: None,
+                access: None,
+            })
+            .unwrap();
+        assert_eq!(actor.state.saved.composer.speed, Some(Speed::Fast));
+        assert!(actor.state.speed_unavailable(Speed::Fast).is_some());
+        assert_eq!(actor.turn_params(vec![])["serviceTierForTurn"], "default");
+    }
+
     fn actor() -> Actor {
         let (_, actions) = mpsc::channel();
         let (updates, _) = crate::latest::channel();
