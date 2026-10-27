@@ -894,7 +894,7 @@ impl Render for WorkspaceManager {
                             self.state.name(self.state.active)
                         ))
                         .h(rpx(SELECTOR_H))
-                        .pr(rpx(SPACE_2XL))
+                        .px(rpx(SPACE_2XL))
                         .relative()
                         .min_w_0()
                         .max_w(rpx(MENU_W))
