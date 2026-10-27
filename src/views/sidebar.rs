@@ -60,6 +60,10 @@ const HIERARCHY_GAP: f32 = 7.0;
 const HIERARCHY_ICON_SLOT: f32 = 18.0;
 const HIERARCHY_ICON: f32 = 15.0;
 const HIERARCHY_LABEL_INSET: f32 = HIERARCHY_INSET + HIERARCHY_ICON_SLOT + HIERARCHY_GAP;
+// Three distinct leading edges: project, worktree and session.
+const WORKTREE_LEADING_INSET: f32 = HIERARCHY_INSET + SPACE_2XL;
+const SESSION_LEADING_INSET: f32 = WORKTREE_LEADING_INSET + SPACE_3XL;
+const WORKTREE_GROUP_GAP: f32 = 18.0;
 const HIERARCHY_META_TEXT: f32 = TEXT_MICRO;
 const HIERARCHY_TRAILING_W: f32 = 24.0;
 const PROJECT_GROUP_GAP: f32 = 14.0;
@@ -79,7 +83,7 @@ const SESSION_LIST_CARD_H: f32 = 78.0;
 const SESSION_LIST_HEADER_H: f32 = 20.0;
 const SESSION_LIST_TITLE_H: f32 = 20.0;
 const SESSION_LIST_FOOTER_H: f32 = 16.0;
-const SESSION_FIRST_GAP: f32 = 3.0;
+const SESSION_FIRST_GAP: f32 = SPACE_XS;
 #[cfg(test)]
 const SESSION_SPINNER_PERIOD: Duration = Duration::from_millis(1200);
 const SESSION_AGE_REFRESH: Duration = Duration::from_secs(1);
@@ -3970,7 +3974,7 @@ impl Sidebar {
             .relative()
             .group("session-row")
             .h(rpx(row_height))
-            .pl(rpx(HIERARCHY_INSET + SPACE_LG))
+            .pl(rpx(SESSION_LEADING_INSET))
             .pr(rpx(HIERARCHY_INSET))
             .gap(rpx(SPACE_SM))
             .items_center()
@@ -4698,19 +4702,15 @@ impl Sidebar {
                     )
                     .h(rpx(WORKTREE_ROW_H))
                     .mt(rpx(if worktree_position == 0 {
-                        SPACE_XS
+                        SPACE_SM
                     } else {
-                        SPACE_2XL
+                        WORKTREE_GROUP_GAP
                     }))
-                    .pl(rpx(HIERARCHY_INSET + SPACE_LG))
+                    .pl(rpx(WORKTREE_LEADING_INSET))
                     .pr(rpx(HIERARCHY_INSET))
                     .gap(rpx(HIERARCHY_GAP))
-                    .text_size(rpx(TEXT_SMALL))
-                    .font_weight(if selected {
-                        gpui::FontWeight::SEMIBOLD
-                    } else {
-                        gpui::FontWeight::MEDIUM
-                    })
+                    .text_size(rpx(TEXT_BODY))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(c::FG())
                     .child(
                         div()
@@ -4790,7 +4790,9 @@ impl Sidebar {
                     group = group.child(
                         div()
                             .id(SharedString::from(format!("worktree-empty-{path}")))
-                            .pl(rpx(HIERARCHY_LABEL_INSET + SPACE_LG))
+                            .pl(rpx(SESSION_LEADING_INSET
+                                + SESSION_LAUNCHER_SIZE
+                                + SPACE_SM))
                             .py(rpx(SPACE_SM))
                             .text_size(rpx(TEXT_MICRO))
                             .text_color(c::FG_DIM())
@@ -4813,11 +4815,7 @@ impl Sidebar {
                             .map(|index| index + 1);
                         group = group.child(
                             div()
-                                .mt(rpx(if session_position == 0 {
-                                    SESSION_FIRST_GAP
-                                } else {
-                                    SPACE_XS
-                                }))
+                                .when(session_position == 0, |row| row.mt(rpx(SESSION_FIRST_GAP)))
                                 .child(
                                     self.session_row(
                                         &meta,
@@ -8312,7 +8310,7 @@ mod tests {
         let worktree = cx.debug_bounds(worktree_selector).unwrap();
         let first = cx.debug_bounds("session-agent-1").unwrap();
         let second = cx.debug_bounds("session-agent-2").unwrap();
-        assert_eq!(worktree.left() - project.left(), gpui::px(SPACE_LG));
+        assert_eq!(worktree.left() - project.left(), gpui::px(SPACE_2XL));
         let status = cx.debug_bounds("session-tree-status-1").unwrap();
         assert!(cx.debug_bounds("session-tree-title-1").unwrap().right() <= status.left());
         assert!(first.right() <= cx.debug_bounds("session-tree-title-1").unwrap().left());
@@ -8439,7 +8437,7 @@ mod tests {
         let agent = cx.debug_bounds("session-agent-1").unwrap();
         assert_eq!(
             agent.left() - session.left(),
-            gpui::px(HIERARCHY_INSET + SPACE_LG)
+            gpui::px(SESSION_LEADING_INSET)
         );
         // Hovering a session replaces its trailing status with Close.
         let close = cx.debug_bounds("session-tree-close-1").unwrap();
@@ -8449,7 +8447,7 @@ mod tests {
             Box::leak(format!("worktree-title-{path}").into_boxed_str());
         assert_eq!(
             cx.debug_bounds(worktree_title).unwrap().left() - row.left(),
-            gpui::px(HIERARCHY_INSET + SPACE_LG + HIERARCHY_ICON_SLOT + HIERARCHY_GAP)
+            gpui::px(WORKTREE_LEADING_INSET + HIERARCHY_ICON_SLOT + HIERARCHY_GAP)
         );
         // Pointer hover replaces metadata with launch controls in the same trailing slot.
         cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
@@ -9579,9 +9577,15 @@ for line in sys.stdin:
         let first = cx.debug_bounds("session-1").unwrap();
         let second = cx.debug_bounds("session-2").unwrap();
         let next_worktree = cx.debug_bounds("worktree-/grove-spacing-feature").unwrap();
-        assert!(
-            f32::from(next_worktree.top() - second.bottom())
-                > f32::from(second.top() - first.bottom())
+        assert_eq!(second.top(), first.bottom());
+        assert_eq!(
+            f32::from(next_worktree.top() - second.bottom()),
+            WORKTREE_GROUP_GAP
+        );
+        let first_worktree = cx.debug_bounds("worktree-/grove-spacing-main").unwrap();
+        assert_eq!(
+            f32::from(first.top() - first_worktree.bottom()),
+            SESSION_FIRST_GAP
         );
         for width in [220.0, 260.0, 320.0] {
             cx.simulate_mouse_move(
@@ -9618,7 +9622,7 @@ for line in sys.stdin:
                 .unwrap();
             assert_eq!(
                 worktree_title.left() - project_title.left(),
-                gpui::px(SPACE_LG)
+                gpui::px(SPACE_2XL)
             );
             let row = cx.debug_bounds("session-1").unwrap();
             assert_eq!(f32::from(row.size.height), SESSION_TREE_ROW_H);
@@ -9632,7 +9636,7 @@ for line in sys.stdin:
             assert_eq!(close.right(), trailing.right());
             assert_eq!(
                 f32::from(launcher.left() - row.left()),
-                HIERARCHY_INSET + SPACE_LG
+                SESSION_LEADING_INSET
             );
             // Row hover swaps status for Close without moving title or task progress.
             cx.simulate_mouse_move(title.center(), None, gpui::Modifiers::default());
@@ -11463,9 +11467,9 @@ for line in sys.stdin:
         let empty = cx.debug_bounds(selector("worktree-empty-")).unwrap();
         assert_eq!(
             worktree_title.left() - project_title.left(),
-            gpui::px(SPACE_LG)
+            gpui::px(SPACE_2XL)
         );
-        assert_eq!(empty.left(), worktree_title.left());
+        assert!(empty.left() > worktree_title.left());
         assert!(cx.debug_bounds("projects-count").is_some());
         assert!(cx.debug_bounds(selector("worktree-count-")).is_none());
         assert!(cx.debug_bounds("tree-expand-cycle").is_none());
@@ -11490,6 +11494,10 @@ for line in sys.stdin:
         assert!(cx.debug_bounds("session-1").is_some());
         let agent = cx.debug_bounds("session-agent-1").unwrap();
         let status = cx.debug_bounds("session-tree-status-1").unwrap();
+        assert_eq!(
+            empty.left(),
+            cx.debug_bounds("session-tree-title-1").unwrap().left()
+        );
         assert!(cx.debug_bounds("session-tree-title-1").unwrap().right() <= status.left());
         assert!(agent.right() <= cx.debug_bounds("session-tree-title-1").unwrap().left());
         cx.update(|window, cx| {
