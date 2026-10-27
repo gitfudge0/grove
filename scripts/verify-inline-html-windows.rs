@@ -84,7 +84,12 @@ fn pump_until(mut predicate: impl FnMut() -> bool) {
     loop {
         let mut message = MSG::default();
         unsafe {
-            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+            // Bound each batch so a continuous stream of native messages cannot
+            // starve the predicate or deadline checks below.
+            for _ in 0..256 {
+                if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                    break;
+                }
                 if message.message == WM_MOUSEWHEEL || message.message == WM_MOUSEHWHEEL {
                     WHEELS.with(|wheels| {
                         wheels.borrow_mut().push((
@@ -343,8 +348,10 @@ fn main() {
     document.retire_frame();
     eprintln!("WebView2 probe: replacing retained surface");
     document.show(viewport, clip, &window);
+    eprintln!("WebView2 probe: pumping replacement paint");
     let start = std::time::Instant::now();
     pump_until(|| start.elapsed() > std::time::Duration::from_millis(30));
+    eprintln!("WebView2 probe: checking replacement visibility");
     assert!(
         unsafe { IsWindowVisible(child) }.as_bool(),
         "replacement paint lost its retained surface"

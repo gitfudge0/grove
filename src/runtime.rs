@@ -1705,7 +1705,10 @@ mod tests {
             assert_eq!(registry.home_terminals()[0].label, "terminal 2");
             assert_eq!(runtime.read(cx).state.read(cx).active_terminal(), Some(0));
             eprintln!("home terminal test: assertions complete");
+            runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
+            eprintln!("home terminal test: cleanup close returned");
         });
+        eprintln!("home terminal test: update returned");
     }
 
     #[gpui::test]
@@ -1732,7 +1735,10 @@ mod tests {
             assert_ne!(registry.home_terminals()[0].id, first);
             assert_eq!(registry.home_terminals()[0].label, "terminal 2");
             eprintln!("home terminal test: assertions complete");
+            runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
+            eprintln!("home terminal test: cleanup close returned");
         });
+        eprintln!("home terminal test: update returned");
     }
     #[gpui::test]
     fn native_title_updates_existing_metadata_only_when_title_changes(
