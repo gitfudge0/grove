@@ -64,6 +64,8 @@ impl raw_window_handle::HasWindowHandle for Window {
 mod backend;
 
 type Wheel = (u32, usize, isize, windows::Win32::Foundation::HWND);
+// High bit means DispatchMessageW is in progress; zero means PeekMessageW.
+static LAST_MESSAGE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 thread_local! {
     // Native wheel messages the backend posted to the host window.
     static WHEELS: std::cell::RefCell<Vec<Wheel>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -87,6 +89,7 @@ fn pump_until(mut predicate: impl FnMut() -> bool) {
             // Bound each batch so a continuous stream of native messages cannot
             // starve the predicate or deadline checks below.
             for _ in 0..256 {
+                LAST_MESSAGE.store(0, std::sync::atomic::Ordering::Relaxed);
                 if !PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
                     break;
                 }
@@ -101,6 +104,10 @@ fn pump_until(mut predicate: impl FnMut() -> bool) {
                     });
                 }
                 let _ = TranslateMessage(&message);
+                LAST_MESSAGE.store(
+                    0x8000_0000 | message.message,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 DispatchMessageW(&message);
             }
         }
@@ -156,7 +163,10 @@ fn main() {
     // is blocked (for example in a modal loop). Bound the whole probe too.
     std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_secs(120));
-        eprintln!("WebView2 probe exceeded its 120-second process deadline");
+        eprintln!(
+            "WebView2 probe exceeded its 120-second process deadline; last message state: {:#x}",
+            LAST_MESSAGE.load(std::sync::atomic::Ordering::Relaxed)
+        );
         std::process::exit(1);
     });
     eprintln!("WebView2 probe: initializing host and document");
