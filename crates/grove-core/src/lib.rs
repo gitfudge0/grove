@@ -25,6 +25,7 @@ pub mod interaction;
 pub mod issues;
 pub mod latest;
 pub mod multi_root;
+pub mod provider_updates;
 pub mod release_highlights;
 pub mod render_rows;
 mod reports;

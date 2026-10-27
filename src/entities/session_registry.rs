@@ -248,6 +248,21 @@ impl SessionRegistry {
     ) {
         self.codex.insert(id, (session, handle));
     }
+    #[cfg(test)]
+    pub(crate) fn track_stopping_for_test(&mut self, completion: std::sync::mpsc::Receiver<()>) {
+        self.stopped_codex.push(completion);
+    }
+
+    /// Removal requests stop asynchronously; maintenance waits for process exit.
+    pub fn has_stopping_provider_sessions(&self) -> bool {
+        self.stopped_codex.iter().any(|completion| {
+            matches!(
+                completion.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            )
+        })
+    }
+
     pub fn codex(&self, id: SessionId) -> Option<&Entity<super::codex_session::CodexSession>> {
         self.codex.get(&id).map(|(session, _)| session)
     }

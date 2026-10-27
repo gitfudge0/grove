@@ -106,6 +106,7 @@ pub struct Runtime {
     pub tree: Entity<ProjectTree>,
     pub activity: Entity<ActivityStore>,
     pub upgrade: Entity<Upgrade>,
+    pub provider_updates: Entity<crate::entities::provider_updates::ProviderUpdates>,
     pub shell_environment: Entity<ShellEnvironment>,
     pub toast: Entity<ToastState>,
     pub projects: Entity<crate::project_service::ProjectService>,
@@ -129,6 +130,9 @@ impl Runtime {
             |cx| ActivityStore::start(state, registry, cx)
         });
         let upgrade = cx.new(Upgrade::new);
+        let provider_updates = cx.new(|cx| {
+            crate::entities::provider_updates::ProviderUpdates::new(registry.clone(), cx)
+        });
         let shell_environment = cx.new(ShellEnvironment::new);
         let toast = cx.new(|_| ToastState::new());
         let projects = cx
@@ -177,6 +181,7 @@ impl Runtime {
             tree,
             activity,
             upgrade,
+            provider_updates,
             shell_environment,
             toast,
             projects,
@@ -190,6 +195,9 @@ impl Runtime {
             _observers: observers,
         };
         if runtime.restoring_codex {
+            runtime
+                .provider_updates
+                .update(cx, |updates, cx| updates.set_restoring(true, cx));
             runtime.restore_native_codex(cx);
         }
         runtime
@@ -310,6 +318,18 @@ impl Runtime {
         temp_bundle_path: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.provider_updates.read(cx).is_updating(agent) {
+            if let Some(path) = temp_bundle_path.as_deref() {
+                grove_core::multi_root::cleanup_path(std::path::Path::new(path));
+            }
+            self.toast.update(cx, |toast, cx| {
+                toast.set_error(
+                    "This provider is updating. Try again after verification completes.",
+                    cx,
+                );
+            });
+            return false;
+        }
         if self.pending_managed_launch.is_some() {
             if let Some(path) = temp_bundle_path.as_deref() {
                 grove_core::multi_root::cleanup_path(std::path::Path::new(path));
@@ -518,6 +538,15 @@ impl Runtime {
             agent,
             ..
         } = launch;
+        if self.provider_updates.read(cx).is_updating(agent) {
+            self.toast.update(cx, |toast, cx| {
+                toast.set_error(
+                    "This provider is updating. Try again after verification completes.",
+                    cx,
+                );
+            });
+            return false;
+        }
         let provider = if agent == Agent::Claude {
             grove_core::codex::Provider::Claude
         } else {
@@ -577,6 +606,9 @@ impl Runtime {
             let loaded = load.await;
             let _ = this.update(cx, |runtime, cx| {
                 runtime.restoring_codex = false;
+                runtime
+                    .provider_updates
+                    .update(cx, |updates, cx| updates.set_restoring(false, cx));
                 if !native_codex_enabled(&cx.global::<SettingsState>().store, None) {
                     return;
                 }
@@ -852,6 +884,13 @@ impl Runtime {
         };
         let dims = self.last_pty_dims;
         for entry in plan {
+            if self
+                .provider_updates
+                .read(cx)
+                .is_updating(entry.session.agent)
+            {
+                continue;
+            }
             let name = entry.session.name.clone();
             // `dims` only seeds the emulator; the tmux client attaches later at the painting tile's actual dims.
             let session = cx.new(|cx| TerminalSession::attach_existing(&name, dims.0, dims.1, cx));

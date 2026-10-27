@@ -153,6 +153,9 @@ impl Shell {
             sidebar.set_shell_focus(focus.clone());
         });
         cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
+        let provider_updates = runtime.read(cx).provider_updates.clone();
+        cx.observe(&provider_updates, |_, _, cx| cx.notify())
+            .detach();
         let statusbar =
             cx.new(|cx| super::statusbar::Statusbar::new(runtime.clone(), sidebar.clone(), cx));
         let launcher = cx.new(|cx| {
@@ -325,6 +328,57 @@ impl Shell {
                 eprintln!("Could not remember release highlights: {error}");
             }
         }
+    }
+
+    fn provider_update_notice(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let updates = self.runtime.read(cx).provider_updates.clone();
+        let text = updates.read(cx).notice().unwrap_or_default();
+        div()
+            .id("provider-update-notice")
+            .role(gpui::Role::Status)
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap(rpx(SPACE_MD))
+            .px(rpx(SPACE_LG))
+            .py(rpx(SPACE_SM))
+            .bg(c::BG_STRIP())
+            .border_t_1()
+            .border_color(c::BORDER())
+            .text_size(rpx(TEXT_SMALL))
+            .text_color(c::FG())
+            .child(div().flex_1().min_w_0().child(super::status::label(
+                "provider-update-notice-status",
+                super::status::StatusKind::Info,
+                text,
+                ICON_SM,
+                cx,
+            )))
+            .child(
+                form_action(
+                    "provider-update-review",
+                    "Review updates",
+                    false,
+                    window,
+                    cx,
+                )
+                .icon(gpui_component::Icon::default().path("icons/arrow-up.svg"))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.settings.update(cx, |settings, cx| {
+                        settings.open_provider_updates(window, cx);
+                    });
+                })),
+            )
+            .child(
+                form_action("provider-update-dismiss", "Dismiss", false, window, cx)
+                    .icon(gpui_component::Icon::default().path("icons/close.svg"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.runtime.read(cx).provider_updates.clone().update(
+                            cx,
+                            crate::entities::provider_updates::ProviderUpdates::dismiss,
+                        );
+                    })),
+            )
     }
 
     fn header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1756,6 +1810,15 @@ impl Render for Shell {
                 },
             )
             .child(div().flex_1().min_h_0().child(self.sidebar.clone()))
+            .when(
+                self.runtime
+                    .read(cx)
+                    .provider_updates
+                    .read(cx)
+                    .notice()
+                    .is_some(),
+                |root| root.child(self.provider_update_notice(window, cx)),
+            )
             .when(
                 !self.sidebar.read(cx).is_zen() || self.settings.read(cx).is_open(),
                 |root| root.child(self.statusbar.clone()),

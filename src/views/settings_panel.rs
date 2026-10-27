@@ -84,6 +84,7 @@ enum Page {
     Changelog,
     Themes,
     Archived,
+    Providers,
 }
 
 /// The reference lists only actions the replacement shell handles. The numbered
@@ -133,6 +134,8 @@ pub struct SettingsPanel {
     _settings_observer: Subscription,
     _upgrade_observer: Subscription,
     _environment_observer: Subscription,
+    _provider_observer: Subscription,
+    provider_details: HashSet<&'static str>,
 }
 
 impl EventEmitter<SettingsPanelEvent> for SettingsPanel {}
@@ -141,6 +144,7 @@ impl SettingsPanel {
     pub fn new(runtime: Entity<Runtime>, cx: &mut Context<Self>) -> Self {
         let upgrade = runtime.read(cx).upgrade.clone();
         let shell_environment = runtime.read(cx).shell_environment.clone();
+        let provider_updates = runtime.read(cx).provider_updates.clone();
         let scroll = ScrollHandle::new();
         Self {
             runtime,
@@ -171,6 +175,8 @@ impl SettingsPanel {
             _settings_observer: cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
             _upgrade_observer: cx.observe(&upgrade, |_, _, cx| cx.notify()),
             _environment_observer: cx.observe(&shell_environment, |_, _, cx| cx.notify()),
+            _provider_observer: cx.observe(&provider_updates, |_, _, cx| cx.notify()),
+            provider_details: HashSet::new(),
         }
     }
 
@@ -196,6 +202,12 @@ impl SettingsPanel {
     pub(crate) fn open_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open(window, cx);
         self.select_category(Category::About, cx);
+    }
+
+    pub(crate) fn open_provider_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open(window, cx);
+        self.select_category(Category::Agents, cx);
+        self.open_nested(Page::Providers, window, cx);
     }
 
     pub fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -667,6 +679,388 @@ impl SettingsPanel {
         cx.stop_propagation();
     }
 
+    fn toggle_provider_details(&mut self, agent: Agent, cx: &mut Context<Self>) {
+        if !self.provider_details.insert(agent.label()) {
+            self.provider_details.remove(agent.label());
+        }
+        cx.notify();
+    }
+
+    fn providers_body(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let updates = self.runtime.read(cx).provider_updates.clone();
+        let state = updates.read(cx);
+        let checking = state.checking();
+        let updating = state.rows().iter().any(|row| row.updating);
+        let mut body = div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(
+                div().flex().justify_end().pb(rpx(SPACE_LG)).child(
+                    self.button(
+                        "settings-provider-check",
+                        "Check for provider updates",
+                        false,
+                        !checking && !updating,
+                    )
+                    .child(if checking {
+                        status::mark(
+                            "settings-provider-check-loading",
+                            StatusKind::Working,
+                            ICON_SM,
+                            cx,
+                        )
+                    } else {
+                        crate::icons::icon("reset", ICON_SM, c::FG_DIM()).into_any_element()
+                    })
+                    .child(if checking {
+                        "Checking…"
+                    } else {
+                        "Check for updates"
+                    })
+                    .when(!checking && !updating, |el| {
+                        el.on_click(cx.listener(|this, _, _, cx| {
+                            this.runtime.read(cx).provider_updates.clone().update(
+                                cx,
+                                crate::entities::provider_updates::ProviderUpdates::check,
+                            );
+                        }))
+                    }),
+                ),
+            )
+            .when(state.rows().is_empty(), |body| {
+                body.child(
+                    div()
+                        .py(rpx(SPACE_LG))
+                        .text_color(c::FG_DIM())
+                        .child(if checking {
+                            "Checking provider versions…"
+                        } else {
+                            "Check for updates to see provider versions."
+                        }),
+                )
+            });
+        for row in state.rows() {
+            let provider = &row.status;
+            let agent = provider.agent;
+            let id = format!("settings-provider-{}", agent.label());
+            let expanded = self.provider_details.contains(agent.label());
+            let sessions = state.active_sessions(agent, cx);
+            let external = matches!(
+                provider.installer,
+                grove_core::provider_updates::Installer::External { .. }
+            );
+            let enabled = provider.can_update()
+                && sessions.is_empty()
+                && !checking
+                && !updating
+                && row.error.is_none();
+            let installed =
+                provider
+                    .installed
+                    .as_deref()
+                    .unwrap_or(if provider.executable.is_none() {
+                        "Not installed"
+                    } else {
+                        "Version unavailable"
+                    });
+            let versions = match provider.latest.as_deref() {
+                Some(latest) if provider.update_available() => format!("{installed} → {latest}"),
+                Some(latest) if provider.installed.as_deref() != Some(latest) => {
+                    format!("{installed} · public {latest}")
+                }
+                _ => installed.to_string(),
+            };
+            let current = !row.checking
+                && !row.updating
+                && row.error.is_none()
+                && provider.installed.is_some()
+                && provider.latest.is_some()
+                && !provider.update_available();
+            let external_action = external && !current;
+            let mut supporting = div()
+                .min_w_0()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .pl(rpx(ICON_MD + SPACE_SM))
+                .child(
+                    super::components::readonly_value(format!("{id}-versions"), versions)
+                        .text_size(rpx(TEXT_SMALL))
+                        .line_height(rpx(CARD_LINE_SM_H))
+                        .text_color(c::FG_DIM()),
+                );
+            if provider.latest.is_some() && (external || row.error.is_some()) {
+                supporting =
+                    supporting.child(div().text_color(c::FG_DIM()).child(if row.error.is_some() {
+                        if external {
+                            "Latest public · cached"
+                        } else {
+                            "Cached"
+                        }
+                    } else {
+                        "Latest public"
+                    }));
+            }
+            if row.checking || row.updated {
+                supporting = supporting.child(status::label(
+                    format!("{id}-status"),
+                    if row.checking {
+                        StatusKind::Working
+                    } else {
+                        StatusKind::Success
+                    },
+                    if row.checking {
+                        "Checking…"
+                    } else {
+                        "Verified"
+                    },
+                    ICON_SM,
+                    cx,
+                ));
+            }
+            let mut actions = div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(rpx(SPACE_SM));
+            let disclosure_label = if external_action {
+                "How to update"
+            } else {
+                "Details"
+            };
+            let disclosure = self
+                .button(
+                    format!("{id}-details"),
+                    format!("{} {disclosure_label}", agent_display_label(agent)),
+                    false,
+                    true,
+                )
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("{id}-details")
+                })
+                .border_0()
+                .bg(c::BG())
+                .text_color(c::FG_DIM())
+                .tab_stop(true)
+                .aria_expanded(expanded)
+                .aria_description(if expanded {
+                    "Expanded. Activate to collapse"
+                } else {
+                    "Collapsed. Activate to expand"
+                })
+                .child(crate::icons::icon(
+                    if expanded { "chev-down" } else { "chev-right" },
+                    ICON_SM,
+                    c::FG_DIM(),
+                ))
+                .child(disclosure_label)
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.toggle_provider_details(agent, cx)),
+                )
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.keystroke.modifiers.control
+                            && !event.keystroke.modifiers.alt
+                            && !event.keystroke.modifiers.platform
+                        {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.toggle_provider_details(agent, cx);
+                        }
+                    }),
+                );
+            if external_action {
+                actions = actions.child(disclosure);
+            } else {
+                supporting = supporting.child(disclosure);
+            }
+            if current {
+                actions = actions.child(status::label(
+                    format!("{id}-current"),
+                    StatusKind::Success,
+                    "Up to date",
+                    ICON_SM,
+                    cx,
+                ));
+            }
+            let identity = div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_XS))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .child(crate::icons::icon(agent.icon_name(), ICON_MD, c::FG()))
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_BODY))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(agent_display_label(agent)),
+                        ),
+                )
+                .child(supporting);
+            if provider.can_update() || row.updating {
+                actions = actions.child(
+                    self.button(
+                        format!("{id}-update"),
+                        format!("Update {}", agent_display_label(agent)),
+                        false,
+                        enabled,
+                    )
+                    .child(if row.updating {
+                        status::mark(format!("{id}-updating"), StatusKind::Working, ICON_SM, cx)
+                    } else {
+                        crate::icons::icon("arrow-up", ICON_SM, c::FG_DIM()).into_any_element()
+                    })
+                    .child(if row.updating {
+                        "Updating…"
+                    } else {
+                        "Update"
+                    })
+                    .when(enabled, |el| {
+                        el.on_click(cx.listener(move |this, _, _, cx| {
+                            this.runtime
+                                .read(cx)
+                                .provider_updates
+                                .clone()
+                                .update(cx, |updates, cx| updates.start_update(agent, cx));
+                        }))
+                    }),
+                );
+            }
+            let mut card = div()
+                .id(id.clone())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .py(rpx(SPACE_LG))
+                .border_t_1()
+                .border_color(c::BORDER_SOFT())
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .child(identity)
+                        .child(actions),
+                );
+            if let Some(error) = &row.error {
+                let first_line = error.lines().next().unwrap_or(error);
+                let mut summary = first_line.chars().take(120).collect::<String>();
+                if first_line.chars().count() > 120 {
+                    summary.push('…');
+                }
+                card = card.child(status::label(
+                    format!("{id}-error-summary"),
+                    StatusKind::Failed,
+                    summary,
+                    ICON_SM,
+                    cx,
+                ));
+            } else if !sessions.is_empty() {
+                card = card.child(div().text_color(c::FG_DIM()).child(format!(
+                    "Close {} Grove session{} before updating. See details.",
+                    sessions.len(),
+                    if sessions.len() == 1 { "" } else { "s" }
+                )));
+            }
+            if expanded {
+                let mut details = div()
+                    .id(format!("{id}-detail-body"))
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("{id}-detail-body")
+                    })
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_SM))
+                    .pt(rpx(SPACE_SM))
+                    .child(
+                        super::components::readonly_value(
+                            format!("{id}-instructions"),
+                            provider.installer.guidance().to_string(),
+                        )
+                        .text_size(rpx(TEXT_SMALL))
+                        .line_height(rpx(CARD_LINE_SM_H))
+                        .text_color(c::FG_DIM()),
+                    )
+                    .child(
+                        div()
+                            .text_color(c::FG_DIM())
+                            .child(format!("Source: {}", provider.installer.label())),
+                    );
+                if let Some(path) = &provider.executable {
+                    details = details.child(
+                        super::components::readonly_value(
+                            format!("{id}-path"),
+                            path.display().to_string(),
+                        )
+                        .text_size(rpx(TEXT_SMALL))
+                        .line_height(rpx(CARD_LINE_SM_H))
+                        .text_color(c::FG_DIM()),
+                    );
+                }
+                if let Some(timestamp) = row.last_success {
+                    let age = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |now| {
+                            now.as_secs().saturating_sub(timestamp.max(0) as u64)
+                        });
+                    let freshness = if age < 60 {
+                        "Checked just now".to_string()
+                    } else {
+                        let (amount, unit) = if age < 3600 {
+                            (age / 60, "minute")
+                        } else if age < 86400 {
+                            (age / 3600, "hour")
+                        } else {
+                            (age / 86400, "day")
+                        };
+                        format!(
+                            "Checked {amount} {unit}{} ago",
+                            if amount == 1 { "" } else { "s" }
+                        )
+                    };
+                    details = details.child(div().text_color(c::FG_DIM()).child(freshness));
+                }
+                if external {
+                    details = details.child(div().text_color(c::FG_DIM()).child("Latest public uses npm’s public release. Your installer may follow a different channel or managed version policy."));
+                }
+                details = details.child(div().text_color(c::FG_DIM()).child(
+                    "Grove checks its own sessions; processes outside Grove are not tracked.",
+                ));
+                if !sessions.is_empty() {
+                    details = details.child(
+                        div()
+                            .text_color(c::FG_DIM())
+                            .child(format!("In use: {}", sessions.join(", "))),
+                    );
+                }
+                if let Some(error) = &row.error {
+                    details = details.child(super::components::readonly_value(format!("{id}-error"), error.clone()).text_size(rpx(TEXT_SMALL)).line_height(rpx(CARD_LINE_SM_H)))
+                        .child(div().text_color(c::FG_DIM()).child("Check for updates again before retrying. Cached public versions retain the last successful check."));
+                }
+                card = card.child(details);
+            }
+            body = body.child(card);
+        }
+        body.text_size(rpx(TEXT_SMALL))
+    }
+
     fn button(
         &self,
         id: impl Into<gpui::ElementId>,
@@ -997,6 +1391,13 @@ impl SettingsPanel {
                 .child(Self::setting_row("Default agent", "Start new sessions with this agent.", agents))
                 .child(Self::setting_row("Run agents in terminal", "Use the Codex and Claude Code command-line interfaces instead of Grove’s conversation view. Applies to new sessions.", terminal_agents_control))
                 .when(cfg!(windows), |body| body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Windows supports terminal agents only.")))
+                .child(Self::section("Provider tools"))
+                .child(Self::setting_row("Provider versions", "See installed and latest versions, then update each provider separately.",
+                    self.button("settings-provider-versions", "Provider versions", false, true)
+                        .debug_selector(|| "settings-provider-versions".into())
+                        .child(crate::icons::icon("arrow-right", ICON_SM, c::FG_DIM()))
+                        .child("Provider versions")
+                        .on_click(cx.listener(|this, _, window, cx| this.open_nested(Page::Providers, window, cx)))))
                 .child(Self::section("Agent access"))
                 .child(Self::setting_row("Yolo mode", "Launch new CLI and native sessions with bypass permissions. When off, agents use their defaults. OpenCode uses its own permissions.", permissions))
                 .child(Self::section("Browser access"))
@@ -1337,6 +1738,7 @@ impl Render for SettingsPanel {
             Page::Shortcuts => "Shortcuts",
             Page::Changelog => "Changelog",
             Page::Themes => "Themes",
+            Page::Providers => "Provider versions",
             Page::Archived => "Archived projects",
         };
         let body = match self.page {
@@ -1344,6 +1746,7 @@ impl Render for SettingsPanel {
             Page::Shortcuts => self.shortcuts_body(cx),
             Page::Changelog => self.changelog_body(cx),
             Page::Themes => self.themes_body(cx),
+            Page::Providers => self.providers_body(cx),
             Page::Archived => {
                 div().when_some(self.archived_panel.clone(), gpui::ParentElement::child)
             }
@@ -1358,7 +1761,7 @@ impl Render for SettingsPanel {
             .flex_col()
             .items_center()
             .px(rpx(SPACE_20))
-            .pt(rpx(SPACE_20 * 2.0))
+            .pt(rpx(APPBAR_TOTAL_H + SPACE_20))
             .pb(rpx(SPACE_20))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::key))
@@ -1399,6 +1802,7 @@ impl Render for SettingsPanel {
                                                 false,
                                                 true,
                                             )
+                                            .debug_selector(|| "settings-back".into())
                                             .child(crate::icons::icon(
                                                 "arrow-left",
                                                 ICON_SM,
@@ -1519,16 +1923,18 @@ impl Render for SettingsPanel {
                                         body.pt(rpx(SPACE_20))
                                     })
                                     .child(body)
-                                    .child(
-                                        div()
-                                            .id("settings-save-note")
-                                            .debug_selector(|| "settings-save-note".into())
-                                            .pt(rpx(SPACE_3XL))
-                                            .pb(rpx(SPACE_LG))
-                                            .text_size(rpx(TEXT_MICRO))
-                                            .text_color(c::FG_DIM())
-                                            .child("Changes save automatically"),
-                                    ),
+                                    .when(self.page != Page::Providers, |body| {
+                                        body.child(
+                                            div()
+                                                .id("settings-save-note")
+                                                .debug_selector(|| "settings-save-note".into())
+                                                .pt(rpx(SPACE_3XL))
+                                                .pb(rpx(SPACE_LG))
+                                                .text_size(rpx(TEXT_MICRO))
+                                                .text_color(c::FG_DIM())
+                                                .child("Changes save automatically"),
+                                        )
+                                    }),
                             ),
                     ),
             )
@@ -1864,6 +2270,73 @@ mod tests {
     }
 
     #[gpui::test]
+    fn settings_headers_reserve_shell_chrome_at_zoom_and_short_heights(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        for (zoom, width, height) in [
+            (1.0, 1280.0, 800.0),
+            (1.1, 500.0, 200.0),
+            (1.5, 600.0, 600.0),
+        ] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            cx.update(|window, _| window.set_rem_size(gpui::px(crate::zoom::REM_BASE * zoom)));
+            for page in [Page::Settings, Page::Providers, Page::Themes] {
+                cx.update(|window, cx| {
+                    panel.update(cx, |panel, cx| {
+                        panel.open(window, cx);
+                        if page == Page::Settings {
+                            panel.show(page, cx);
+                        } else {
+                            panel.open_nested(page, window, cx);
+                        }
+                    });
+                });
+                draw(cx);
+                let chrome_bottom = gpui::px(APPBAR_TOTAL_H * zoom);
+                let heading = cx
+                    .debug_bounds("settings-heading")
+                    .expect("settings heading");
+                assert!(heading.top() >= chrome_bottom, "{page:?} at {zoom}x: heading {heading:?} overlaps shell chrome ending at {chrome_bottom:?}");
+                for selector in ["settings-close", "settings-back"] {
+                    if selector == "settings-back" && page == Page::Settings {
+                        continue;
+                    }
+                    let control = cx.debug_bounds(selector).expect("settings header control");
+                    assert!(
+                        control.top() >= chrome_bottom,
+                        "{selector} overlaps appbar at {zoom}x"
+                    );
+                    assert!(
+                        control.bottom() <= gpui::px(height),
+                        "{selector} clips outside short window at {zoom}x"
+                    );
+                }
+                let scroll = cx
+                    .debug_bounds("settings-scroll")
+                    .expect("settings body viewport");
+                assert!(scroll.top() >= heading.bottom());
+                cx.update(|_, cx| {
+                    panel
+                        .read(cx)
+                        .scroll
+                        .set_offset(gpui::point(gpui::px(0.0), gpui::px(-120.0)));
+                });
+                draw(cx);
+                assert_eq!(
+                    cx.debug_bounds("settings-heading"),
+                    Some(heading),
+                    "body scrolling moved page header"
+                );
+            }
+        }
+    }
+
+    #[gpui::test]
     fn settings_body_scrolls_while_heading_and_tabs_stay_reachable(cx: &mut gpui::TestAppContext) {
         cx.update(setup);
         let (panel, cx) = cx.add_window_view(|_, cx| {
@@ -1944,6 +2417,74 @@ mod tests {
         assert_eq!(general.top(), agents.top());
         assert_eq!(agents.left(), general.right());
         assert!(tabs.bottom() <= body.top());
+    }
+
+    #[gpui::test]
+    fn provider_notice_opens_agents_nested_page_and_escape_returns(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.open_provider_updates(window, cx));
+            assert_eq!(panel.read(cx).page, Page::Providers);
+            assert_eq!(panel.read(cx).category, Category::Agents);
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("settings-save-note").is_none(),
+            "Provider versions has no save-preference footer"
+        );
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.toggle_provider_details(Agent::Codex, cx);
+            });
+            let updates = panel.read(cx).runtime.read(cx).provider_updates.clone();
+            updates.update(cx, |_, cx| cx.notify());
+        });
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(
+                panel
+                    .read(cx)
+                    .provider_details
+                    .contains(Agent::Codex.label()),
+                "Refresh preserves disclosure by provider identity"
+            );
+        });
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(panel.read(cx).is_open());
+            assert_eq!(panel.read(cx).page, Page::Settings);
+            assert_eq!(panel.read(cx).category, Category::Agents);
+        });
+    }
+
+    #[gpui::test]
+    fn provider_page_back_restores_source_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.open(window, cx);
+                panel.select_category(Category::Agents, cx);
+                let source = cx.focus_handle().tab_stop(true);
+                source.focus(window, cx);
+                panel.open_nested(Page::Providers, window, cx);
+                assert!(panel
+                    .nested_return_focus
+                    .as_ref()
+                    .is_some_and(|focus| focus == &source));
+                panel.back(window, cx);
+                assert!(source.is_focused(window));
+                assert_eq!(panel.category, Category::Agents);
+            });
+        });
     }
 
     #[gpui::test]

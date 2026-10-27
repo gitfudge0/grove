@@ -3199,6 +3199,7 @@ dependencies = [
  "rustc-hash 2.1.2",
  "rustybuzz",
  "semver",
+ "serde",
  "serde_json",
  "svgtypes 0.16.1",
  "tempfile",
