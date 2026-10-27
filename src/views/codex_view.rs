@@ -1119,6 +1119,7 @@ impl CodexView {
             InputState::new(window, cx)
                 .auto_grow(3, 10)
                 .accept_image_paste(true)
+                .markdown_auto_continue(true)
                 .submit_on_enter(true)
                 .placeholder(placeholder)
                 .default_value(draft)
@@ -12143,6 +12144,22 @@ mod tests {
                     )
                     .unwrap();
                 {
+                    cx.update_window(window.into(), |_, window, cx| {
+                        retained.as_ref().unwrap().update(cx, |view, cx| {
+                            view.input.update(cx, |input, cx| {
+                                let source = "## Heading 2\n- This is a **bold** list item\n> 9. [x] Completed é🦀";
+                                input.set_value(source, window, cx);
+                                input.set_selected_range(source.len()..source.len(), cx);
+                                input.focus(window, cx);
+                            });
+                        });
+                        window.dispatch_action(Box::new(gpui_component::input::Enter { secondary: false, shift: true }), cx);
+                    }).unwrap();
+                    cx.run_until_parked();
+                    cx.update(|cx| {
+                        let view = retained.as_ref().unwrap().read(cx);
+                        assert!(view.input.read(cx).value().ends_with("\n> 10. [ ] "));
+                    });
                     for _ in 0..4 {
                         cx.advance_clock(std::time::Duration::from_millis(16));
                         cx.run_until_parked();
@@ -18378,6 +18395,126 @@ mod tests {
             view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
             cx.update(|window, cx| view.read(cx).input.focus_handle(cx).is_focused(window))
         );
+    }
+
+    #[gpui::test]
+    fn composer_markdown_newline_keeps_source_undo_and_send_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, actions, _updates) = fixture(cx);
+            let source = "> 9. [x] é🦀";
+            let continued = "> 9. [x] é🦀\n> 10. [ ] ";
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session
+                        .update(cx, |session, _| session.state.saved.provider = provider);
+                    view.input.update(cx, |input, cx| {
+                        input.set_value(source, window, cx);
+                        input.set_selected_range(source.len()..source.len(), cx);
+                        input.focus(window, cx);
+                    });
+                });
+            });
+            draw(cx);
+            cx.simulate_keystrokes("shift-enter");
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.input.read(cx).value().as_ref(), continued);
+            });
+            // The fixture exposes the provider command channel without running
+            // its reducer; verify the actual draft command at that boundary.
+            let emitted: Vec<_> = actions.try_iter().collect();
+            assert!(emitted
+                .iter()
+                .any(|action| matches!(action, Action::Draft(text) if text == continued)));
+            assert!(!emitted
+                .iter()
+                .any(|action| matches!(action, Action::Submit { .. })));
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-z"
+            } else {
+                "ctrl-z"
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.input.read(cx).value().as_ref(), source);
+            });
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-shift-z"
+            } else {
+                "ctrl-shift-z"
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.input.read(cx).value().as_ref(), continued);
+            });
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            let sent: Vec<_> = actions.try_iter().collect();
+            assert!(
+                sent.iter().any(
+                    |action| matches!(action, Action::Submit { text, .. } if text == continued)
+                ),
+                "provider={provider:?}; actions={:?}; state={:?}; error={:?}",
+                sent.iter()
+                    .map(|action| match action {
+                        Action::Submit { text, .. } => format!("Submit({text:?})"),
+                        Action::Draft(text) => format!("Draft({text:?})"),
+                        _ => format!("{:?}", std::mem::discriminant(action)),
+                    })
+                    .collect::<Vec<_>>(),
+                view.read_with(cx, |view, cx| view.session.read(cx).state.status),
+                view.read_with(cx, |view, cx| view.session.read(cx).state.error.clone())
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn composer_markdown_newline_preserves_literal_paste_and_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for (source, range, expected) in [
+            ("## Heading", 10..10, "## Heading\n"),
+            ("```\n  - literal", 15..15, "```\n  - literal\n  "),
+            ("- é🦀 tail", 8..8, "- é🦀\n-  tail"),
+            ("- é🦀 tail", 2..8, "- \n tail"),
+            ("> - [ ] ", 8..8, "> "),
+        ] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.input.update(cx, |input, cx| {
+                        input.set_value(source, window, cx);
+                        input.set_selected_range(range.clone(), cx);
+                        input.focus(window, cx);
+                    });
+                });
+            });
+            draw(cx);
+            cx.simulate_keystrokes("shift-enter");
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.input.read(cx).value().as_ref(), expected, "{source:?}");
+            });
+        }
+        let pasted = "- first\n- second\n";
+        cx.update(|window, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(pasted.into()));
+            view.update(cx, |view, cx| {
+                view.input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+            });
+        });
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-v"
+        } else {
+            "ctrl-v"
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.input.read(cx).value().as_ref(), pasted);
+        });
     }
 
     #[gpui::test]

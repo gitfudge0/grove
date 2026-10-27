@@ -13,6 +13,7 @@ mod indent;
 mod input;
 mod lsp;
 mod mask_pattern;
+mod markdown;
 mod mode;
 mod movement;
 #[cfg(target_os = "macos")]

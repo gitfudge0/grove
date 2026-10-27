@@ -348,6 +348,7 @@ pub struct InputState {
     pub(super) masked: bool,
     pub(super) clean_on_escape: bool,
     pub(super) submit_on_enter: bool,
+    markdown_auto_continue: bool,
     accept_image_paste: bool,
     pub(super) soft_wrap: bool,
     pub(super) scroll_beyond_last_line: Option<usize>,
@@ -451,6 +452,7 @@ impl InputState {
             masked: false,
             clean_on_escape: false,
             submit_on_enter: false,
+            markdown_auto_continue: false,
             accept_image_paste: false,
             soft_wrap: true,
             scroll_beyond_last_line: None,
@@ -823,6 +825,12 @@ impl InputState {
 
     pub fn clean_on_escape(mut self) -> Self {
         self.clean_on_escape = true;
+        self
+    }
+
+    /// Continue Markdown block prefixes on Shift+Enter, leaving sends untouched.
+    pub fn markdown_auto_continue(mut self, enabled: bool) -> Self {
+        self.markdown_auto_continue = enabled;
         self
     }
 
@@ -1426,12 +1434,26 @@ impl InputState {
                 "".to_string()
             };
 
-            let new_line_text = format!("\n{}", indent);
-            self.replace_text_in_range_silent(None, &new_line_text, window, cx);
+            if self.markdown_auto_continue && action.shift && self.ime_marked_range.is_none() {
+                let (range, text) = super::markdown::newline_edit(
+                    &self.text.to_string(),
+                    self.selected_range.into(),
+                );
+                let range = self.range_to_utf16(&range);
+                self.replace_text_in_range_silent(Some(range), &text, window, cx);
+            } else {
+                let new_line_text = format!("\n{}", indent);
+                self.replace_text_in_range_silent(None, &new_line_text, window, cx);
+            }
             self.pause_blink_cursor(cx);
         } else {
-            // Single-line or submit-on-enter: just emit the event (e.g. dialog confirm, chat send).
-            cx.propagate();
+            // The Markdown composer owns submit via PressEnter. Consuming the
+            // action prevents GPUI's raw text fallback from adding a newline
+            // before its subscriber reads the draft. Other inputs keep their
+            // existing parent-action routing (e.g. dialog confirmation).
+            if !self.markdown_auto_continue {
+                cx.propagate();
+            }
         }
 
         cx.emit(InputEvent::PressEnter {
