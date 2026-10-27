@@ -204,11 +204,15 @@ fn main() {
     server.set_nonblocking(true).unwrap();
     let port = server.local_addr().unwrap().port();
     let document = backend::Document::new(&format!(r#"<!doctype html><html><body><input id="edit"><script>
-      globalThis.probe = {{guard: typeof RTCPeerConnection === 'undefined' && typeof Worker === 'undefined'}};
+      globalThis.probe = {{guard: typeof RTCPeerConnection === 'undefined' && typeof Worker === 'undefined', clicks: 0, frameClicks: 0}};
       const frame = document.createElement('iframe'); document.body.append(frame);
       probe.freshRealm = typeof frame.contentWindow.RTCPeerConnection === 'undefined';
+      const frameFile=frame.contentDocument.createElement('input');frameFile.type='file';frame.contentDocument.body.append(frameFile);
+      frameFile.addEventListener('click',()=>probe.frameClicks++);
+      globalThis.focusFrameFile=()=>{{frame.contentWindow.focus();frameFile.focus()}};
       const host=document.createElement('div');document.body.append(host);
       const closed=host.attachShadow({{mode:'closed'}});const file=document.createElement('input');file.type='file';closed.append(file);
+      file.addEventListener('click',()=>probe.clicks++);
       globalThis.focusFile=()=>file.focus();
       fetch('http://127.0.0.1:{port}/must-not-load').then(() => probe.network = false, () => probe.network = true);
       window.open('https://example.invalid/');
@@ -362,6 +366,44 @@ fn main() {
     let activation = std::time::Instant::now();
     eprintln!("WebView2 probe: pumping file activation");
     pump_until(|| activation.elapsed() > std::time::Duration::from_millis(100));
+    settle(1500);
+    assert_eq!(
+        evaluate(&document, "probe.clicks"),
+        "1",
+        "closed-shadow file input was not activated"
+    );
+    assert!(
+        !escaped_popup.load(std::sync::atomic::Ordering::Relaxed),
+        "closed-shadow file chooser escaped native interception"
+    );
+    backend::probe_focus(&document);
+    evaluate(&document, "focusFrameFile()");
+    eprintln!("WebView2 probe: activating same-origin iframe file input");
+    unsafe {
+        let focus = GetFocus();
+        SendMessageW(
+            focus,
+            WM_KEYDOWN,
+            Some(windows::Win32::Foundation::WPARAM(VK_SPACE.0 as usize)),
+            Some(windows::Win32::Foundation::LPARAM(1)),
+        );
+        SendMessageW(
+            focus,
+            WM_KEYUP,
+            Some(windows::Win32::Foundation::WPARAM(VK_SPACE.0 as usize)),
+            Some(windows::Win32::Foundation::LPARAM(1)),
+        );
+    }
+    settle(1500);
+    assert_eq!(
+        evaluate(&document, "probe.frameClicks"),
+        "1",
+        "iframe file input was not activated"
+    );
+    assert!(
+        !escaped_popup.load(std::sync::atomic::Ordering::Relaxed),
+        "iframe file chooser escaped native interception"
+    );
     assert_eq!(
         unsafe { GetLastActivePopup(parent) },
         parent,
