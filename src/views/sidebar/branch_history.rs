@@ -7,9 +7,10 @@ use crate::{
     views::{rpx, tokens::*},
 };
 use gpui::{div, prelude::*, AnyElement, Context};
+use gpui_component::Selectable as _;
 use std::time::Duration;
-pub(super) const HISTORY_HOVER_INTENT: Duration = Duration::from_millis(600);
-pub(super) const HISTORY_HOVER_GRACE: Duration = Duration::from_millis(260);
+pub(super) const HISTORY_HOVER_INTENT: Duration = Duration::from_millis(350);
+pub(super) const HISTORY_HOVER_GRACE: Duration = Duration::from_millis(80);
 
 #[derive(Default)]
 pub(super) struct HistoryHover {
@@ -37,7 +38,10 @@ const PREVIEW_BOTTOM_SPACE: f32 = 320.0;
 const DETAIL_HEADER_MAX_H: f32 = 320.0;
 const DETAIL_FILES_W: f32 = 200.0;
 const DETAIL_FILES_MAX_FRAC: f32 = 0.32;
-const FILE_ROW_H: f32 = 56.0;
+const DETAIL_FILES_MIN_W: f32 = 120.0;
+const DETAIL_FILES_RESIZE_MAX_FRAC: f32 = 0.5;
+const DETAIL_FILES_KEY_STEP: f32 = 16.0;
+const FILE_ROW_H: f32 = 40.0;
 const DIFF_NUMBER_W: f32 = 36.0;
 const METADATA_LINE_H: f32 = 18.0;
 const ROW_SUBJECT_LINE_H: f32 = 16.0;
@@ -51,6 +55,14 @@ const IDENTITY_METADATA_LINE_H: f32 = 14.0;
 const METADATA_LABEL_W: f32 = 72.0;
 const PREVIEW_ANCHOR_MAX: f32 = 64.0;
 const PREVIEW_MIN_W: f32 = 120.0;
+
+fn file_register_width(canvas_width: f32, preferred: Option<f32>) -> f32 {
+    let max = (canvas_width * DETAIL_FILES_RESIZE_MAX_FRAC).max(1.0);
+    let min = DETAIL_FILES_MIN_W.min(max);
+    preferred
+        .unwrap_or_else(|| DETAIL_FILES_W.min(canvas_width * DETAIL_FILES_MAX_FRAC))
+        .clamp(min, max)
+}
 
 fn lane_color(lane: usize) -> gpui::Hsla {
     // Approved topology palette: never status or selected-state semantics.
@@ -583,6 +595,7 @@ impl Sidebar {
                     "Retry",
                     "reset",
                     Action::RefreshHistory,
+                    window,
                     cx,
                 ),
             ));
@@ -780,7 +793,7 @@ impl Sidebar {
             }
             if snapshot.has_more {
                 list = list.child(div().p(rpx(SPACE_2XL)).child(if state.limit < MAX_HISTORY {
-                    self.history_action("history-load-more", "Load older commits", "chev-down", Action::MoreHistory, cx).into_any_element()
+                    self.history_action("history-load-more", "Load older commits", "chev-down", Action::MoreHistory, window, cx).into_any_element()
                 } else { div().text_color(c::FG_DIM()).child("Showing the newest 500 reachable commits. Parent lanes continue beyond this limit.").into_any_element() }));
             }
             // Space allows the last commit's floating preview to remain reachable inside the scroll pane.
@@ -816,15 +829,28 @@ impl Sidebar {
                             "Back",
                             "chev-left",
                             Action::CloseHistory,
+                            window,
                             cx,
                         ))
                         .child(
                             div()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_LG))
                                 .flex_1()
                                 .min_w_0()
-                                .child(div().text_size(rpx(TEXT_TITLE)).child("Commit history"))
                                 .child(
                                     div()
+                                        .debug_selector(|| "history-header-title".into())
+                                        .flex_shrink_0()
+                                        .text_size(rpx(TEXT_TITLE))
+                                        .child("Commit history"),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(|| "history-header-branch".into())
+                                        .flex_1()
+                                        .min_w_0()
                                         .truncate()
                                         .text_size(rpx(TEXT_SMALL))
                                         .text_color(c::FG_DIM())
@@ -836,6 +862,7 @@ impl Sidebar {
                             "Refresh",
                             "reset",
                             Action::RefreshHistory,
+                            window,
                             cx,
                         )),
                 )
@@ -847,20 +874,39 @@ impl Sidebar {
         }
         canvas.into_any_element()
     }
-    fn history_action(
+    pub(super) fn history_action(
         &self,
         id: &'static str,
         label: &'static str,
         glyph: &'static str,
         action: Action,
+        window: &gpui::Window,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        self.control(id, label, action, cx)
-            .w_auto()
-            .px(rpx(SPACE_LG))
-            .text_size(rpx(TEXT_SMALL))
-            .child(icon(glyph, ICON_SM, c::FG_DIM()))
-            .child(label)
+    ) -> gpui_component::button::Button {
+        let key_action = action.clone();
+        crate::views::components::dense_action_with_colors(
+            id,
+            label,
+            gpui::transparent_black(),
+            c::FG(),
+            c::BG_HOVER(),
+            window,
+            cx,
+        )
+        .icon(gpui_component::Icon::default().path(format!("icons/{glyph}.svg")))
+        .focus_visible(|style| style.bg(c::BG_HOVER()))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.act(action.clone(), window, cx);
+        }))
+        .on_key_down(
+            cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    this.act(key_action.clone(), window, cx);
+                }
+            }),
+        )
     }
     fn render_history_details(&self, window: &gpui::Window, cx: &mut Context<Self>) -> AnyElement {
         use crate::entities::branch_history::HistoryDiffMode;
@@ -891,7 +937,7 @@ impl Sidebar {
                 || Self::logical_window_width(window),
                 |bounds| f32::from(bounds.get().size.width) / scale,
             );
-        let file_width = DETAIL_FILES_W.min(canvas_width * DETAIL_FILES_MAX_FRAC);
+        let file_width = file_register_width(canvas_width, state.file_width);
         let half_width = ((canvas_width - file_width) / 2.0 - DIFF_NUMBER_W).max(SPACE_2XL);
         let mut header = div()
             .id("history-detail-header")
@@ -911,11 +957,12 @@ impl Sidebar {
                 "Back to history",
                 "chev-left",
                 Action::HistoryGraph,
+                window,
                 cx,
             ))
             .child(
                 div()
-                    .text_size(rpx(TEXT_DISPLAY))
+                    .text_size(rpx(TEXT_TITLE))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(commit.subject.clone()),
             )
@@ -949,6 +996,7 @@ impl Sidebar {
                             "Copy SHA",
                             "copy",
                             Action::CopyHistoryCommit,
+                            window,
                             cx,
                         )
                         .child(
@@ -980,6 +1028,7 @@ impl Sidebar {
                     "chev-right"
                 },
                 Action::ToggleHistoryMetadata,
+                window,
                 cx,
             )
             .aria_expanded(state.metadata_expanded),
@@ -1096,8 +1145,6 @@ impl Sidebar {
             .flex_shrink_0()
             .min_h_0()
             .overflow_y_scroll()
-            .border_r_1()
-            .border_color(c::BORDER())
             .bg(c::BG_RAIL())
             .p(rpx(SPACE_LG))
             .child(
@@ -1137,12 +1184,13 @@ impl Sidebar {
                     Action::SelectHistoryFile(file.path.clone()),
                     cx,
                 )
+                .debug_selector(|| "history-file-row".into())
                 .w_full()
                 .h_auto()
                 .min_h(rpx(FILE_ROW_H))
                 .justify_start()
                 .px(rpx(SPACE_SM))
-                .py(rpx(SPACE_LG))
+                .py(rpx(SPACE_SM))
                 .when(state.selected_file.as_ref() == Some(&file.path), |row| {
                     row.bg(c::BG_HL())
                 })
@@ -1152,36 +1200,51 @@ impl Sidebar {
                         .flex_col()
                         .min_w_0()
                         .flex_1()
-                        .gap(rpx(SPACE_SM))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(rpx(TEXT_SMALL))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(name.to_owned()),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(rpx(TEXT_MICRO))
-                                .text_color(c::FG_DIM())
-                                .child(format!("{status} · {directory}")),
-                        )
                         .child(
                             div()
                                 .flex()
-                                .gap(rpx(SPACE_LG))
-                                .text_size(rpx(TEXT_MICRO))
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
                                 .child(
                                     div()
-                                        .text_color(c::GREEN())
-                                        .child(format!("+{}", file.added)),
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .line_height(rpx(ROW_SUBJECT_LINE_H))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .child(name.to_owned()),
                                 )
                                 .child(
                                     div()
-                                        .text_color(c::RED())
-                                        .child(format!("−{}", file.removed)),
+                                        .flex()
+                                        .flex_shrink_0()
+                                        .gap(rpx(SPACE_SM))
+                                        .text_size(rpx(TEXT_MICRO))
+                                        .line_height(rpx(IDENTITY_METADATA_LINE_H))
+                                        .child(
+                                            div()
+                                                .text_color(c::GREEN())
+                                                .child(format!("+{}", file.added)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_color(c::RED())
+                                                .child(format!("−{}", file.removed)),
+                                        ),
                                 ),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(rpx(TEXT_MICRO))
+                                .line_height(rpx(IDENTITY_METADATA_LINE_H))
+                                .text_color(c::FG_DIM())
+                                .child(if identity != file.path {
+                                    format!("{status} · {identity}")
+                                } else {
+                                    format!("{status} · {directory}")
+                                }),
                         ),
                 ),
             );
@@ -1238,12 +1301,10 @@ impl Sidebar {
                         "Unified",
                         "unified",
                         Action::HistoryDiffMode(HistoryDiffMode::Unified),
+                        window,
                         cx,
                     )
-                    .aria_selected(state.diff_mode == HistoryDiffMode::Unified)
-                    .when(state.diff_mode == HistoryDiffMode::Unified, |control| {
-                        control.bg(c::BG_HL())
-                    }),
+                    .selected(state.diff_mode == HistoryDiffMode::Unified),
                 )
                 .child(
                     self.history_action(
@@ -1251,12 +1312,10 @@ impl Sidebar {
                         "Split",
                         "split",
                         Action::HistoryDiffMode(HistoryDiffMode::Split),
+                        window,
                         cx,
                     )
-                    .aria_selected(state.diff_mode == HistoryDiffMode::Split)
-                    .when(state.diff_mode == HistoryDiffMode::Split, |control| {
-                        control.bg(c::BG_HL())
-                    }),
+                    .selected(state.diff_mode == HistoryDiffMode::Split),
                 ),
         );
         diff = diff.child(toolbar);
@@ -1421,12 +1480,35 @@ impl Sidebar {
                                         .px(rpx(SPACE_LG))
                                         .bg(bg)
                                         .text_color(color)
-                                        .child(format!(
-                                            "{:>4} {:>4} {prefix} {}",
-                                            line.old_no.map_or(String::new(), |n| n.to_string()),
-                                            line.new_no.map_or(String::new(), |n| n.to_string()),
-                                            line.text
-                                        )),
+                                        .flex()
+                                        .child(
+                                            div()
+                                                .w(rpx(DIFF_NUMBER_W))
+                                                .flex_shrink_0()
+                                                .text_right()
+                                                .pr(rpx(SPACE_LG))
+                                                .text_color(c::FG_DIM())
+                                                .child(
+                                                    line.old_no
+                                                        .map_or(String::new(), |n| n.to_string()),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(rpx(DIFF_NUMBER_W))
+                                                .flex_shrink_0()
+                                                .text_right()
+                                                .pr(rpx(SPACE_LG))
+                                                .text_color(c::FG_DIM())
+                                                .child(
+                                                    line.new_no
+                                                        .map_or(String::new(), |n| n.to_string()),
+                                                ),
+                                        )
+                                        .child(
+                                            div().w(rpx(SPACE_2XL)).flex_shrink_0().child(prefix),
+                                        )
+                                        .child(line.text.clone()),
                                 );
                             }
                         }
@@ -1437,13 +1519,102 @@ impl Sidebar {
             patch = patch.child(div().p(rpx(SPACE_2XL)).child("Loading selected file…"));
         }
         diff = diff.child(patch);
+        let divider = div()
+            .id("history-file-divider")
+            .debug_selector(|| "history-file-divider".into())
+            .role(gpui::Role::Splitter)
+            .aria_label("Resize changed files list. Use Left and Right arrows.")
+            .tab_index(0)
+            .track_focus(&self.history_file_resize_focus)
+            .w(rpx(DIVIDER_DRAG_HIT_W))
+            .mx(rpx(-DIVIDER_DRAG_HIT_W / 2.0))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .justify_center()
+            .cursor_col_resize()
+            .child(div().w(gpui::px(1.0)).h_full().bg(c::BORDER()))
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                    this.history_file_resize_focus.focus(window, cx);
+                    if let Some(history) = &this.history {
+                        history.update(cx, |history, _| {
+                            history.file_resize_drag =
+                                Some((f32::from(event.position.x), file_width));
+                        });
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.modifiers.platform
+                    || event.keystroke.modifiers.control
+                    || event.keystroke.modifiers.alt
+                {
+                    return;
+                }
+                let delta = match event.keystroke.key.as_str() {
+                    "left" => -DETAIL_FILES_KEY_STEP,
+                    "right" => DETAIL_FILES_KEY_STEP,
+                    _ => return,
+                };
+                if let Some(history) = &this.history {
+                    history.update(cx, |history, cx| {
+                        history.file_width =
+                            Some(file_register_width(canvas_width, Some(file_width + delta)));
+                        cx.notify();
+                    });
+                }
+                cx.stop_propagation();
+            }));
         body = body.child(
             div()
                 .flex()
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
+                .on_mouse_move(cx.listener(
+                    move |this, event: &gpui::MouseMoveEvent, window, cx| {
+                        let Some(history) = &this.history else { return };
+                        let Some((origin, initial)) = history.read(cx).file_resize_drag else {
+                            return;
+                        };
+                        if !event.dragging() {
+                            history.update(cx, |history, _| history.file_resize_drag = None);
+                            return;
+                        }
+                        let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+                        let width = file_register_width(
+                            canvas_width,
+                            Some(initial + (f32::from(event.position.x) - origin) / scale),
+                        );
+                        history.update(cx, |history, cx| {
+                            history.file_width = Some(width);
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
+                    },
+                ))
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        if let Some(history) = &this.history {
+                            history.update(cx, |history, _| history.file_resize_drag = None);
+                        }
+                    }),
+                )
+                .on_mouse_up_out(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        if let Some(history) = &this.history {
+                            history.update(cx, |history, _| history.file_resize_drag = None);
+                        }
+                    }),
+                )
                 .child(files)
+                .child(divider)
                 .child(diff),
         );
         body.into_any_element()

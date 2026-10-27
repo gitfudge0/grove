@@ -30,6 +30,10 @@ pub struct BranchHistoryState {
     pub expanded: bool,
     pub diff_mode: HistoryDiffMode,
     pub pan_x: f32,
+    /// User-selected file register width in logical pixels for this history viewer.
+    pub file_width: Option<f32>,
+    /// Pointer origin in physical pixels and the logical width at drag start.
+    pub file_resize_drag: Option<(f32, f32)>,
     pub metadata_expanded: bool,
     pub limit: usize,
     generation: u64,
@@ -62,6 +66,8 @@ impl BranchHistoryState {
             expanded: false,
             diff_mode: HistoryDiffMode::default(),
             pan_x: 0.0,
+            file_width: None,
+            file_resize_drag: None,
             metadata_expanded: false,
             limit,
             generation: 0,
@@ -176,6 +182,7 @@ impl BranchHistoryState {
     /// Keep commit and file selection so returning to the inspector preserves context.
     pub fn collapse(&mut self, cx: &mut Context<Self>) {
         self.expanded = false;
+        self.file_resize_drag = None;
         cx.notify();
     }
     pub fn set_diff_mode(&mut self, mode: HistoryDiffMode, cx: &mut Context<Self>) {

@@ -480,6 +480,7 @@ pub struct Sidebar {
     history: Option<Entity<BranchHistoryState>>,
     history_observer: Option<gpui::Subscription>,
     history_focus: FocusHandle,
+    history_file_resize_focus: FocusHandle,
     history_return_focus: Option<FocusHandle>,
     history_selection: Option<Selection>,
     diff_viewer: Option<Entity<DiffViewerState>>,
@@ -694,6 +695,7 @@ impl Sidebar {
             history: None,
             history_observer: None,
             history_focus: cx.focus_handle(),
+            history_file_resize_focus: cx.focus_handle(),
             history_return_focus: None,
             history_selection: None,
             diff_viewer: None,
@@ -3435,6 +3437,7 @@ impl Sidebar {
             Action::HistoryGraph => {
                 if let Some(history) = &self.history {
                     history.update(cx, BranchHistoryState::collapse);
+                    self.history_focus.focus(window, cx);
                 }
             }
             Action::RefreshHistory => {
@@ -10723,11 +10726,11 @@ for line in sys.stdin:
                 sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_none()),
                 "hover intent defers opening"
             );
-            cx.executor().advance_clock(Duration::from_millis(599));
+            cx.executor().advance_clock(Duration::from_millis(349));
             draw(cx);
             assert!(
                 sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_none()),
-                "recent history waits the full600ms"
+                "recent history waits the full 350ms"
             );
             cx.executor().advance_clock(Duration::from_millis(1));
             draw(cx);
@@ -10746,7 +10749,7 @@ for line in sys.stdin:
             );
             cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
             cx.run_until_parked();
-            cx.executor().advance_clock(Duration::from_millis(100));
+            cx.executor().advance_clock(Duration::from_millis(40));
             cx.run_until_parked();
             assert!(
                 sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_some()),
@@ -10762,7 +10765,7 @@ for line in sys.stdin:
             );
             cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
             cx.run_until_parked();
-            cx.executor().advance_clock(Duration::from_millis(261));
+            cx.executor().advance_clock(Duration::from_millis(81));
             draw(cx);
             assert!(
                 sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_none()),
@@ -10797,6 +10800,10 @@ for line in sys.stdin:
                 let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
                 assert_eq!(cx.debug_bounds("branch-history-viewer"), Some(canvas));
                 assert!(cx.debug_bounds("history-commit-row").is_some());
+                let title = cx.debug_bounds("history-header-title").unwrap();
+                let branch = cx.debug_bounds("history-header-branch").unwrap();
+                assert!(title.right() <= branch.left());
+                assert!((f32::from(title.center().y - branch.center().y)).abs() < 2.0);
                 let row = cx.debug_bounds("history-commit-row").unwrap();
                 let graph = cx.debug_bounds("history-row-graph").unwrap();
                 let sha = cx.debug_bounds("history-identity-sha").unwrap();
@@ -10836,14 +10843,14 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(599));
+                cx.executor().advance_clock(Duration::from_millis(349));
                 cx.run_until_parked();
                 assert!(
                     sidebar.read_with(cx, |sidebar, cx| {
                         let data = sidebar.history.as_ref().unwrap().read(cx);
                         data.selected.is_none() && !data.detail_loading
                     }),
-                    "passing a row must not select or load details before600ms"
+                    "passing a row must not select or load details before 350ms"
                 );
                 cx.update(|_, cx| {
                     sidebar.update(cx, |sidebar, cx| {
@@ -10852,7 +10859,7 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(599));
+                cx.executor().advance_clock(Duration::from_millis(349));
                 cx.run_until_parked();
                 assert!(
                     sidebar.read_with(cx, |sidebar, cx| sidebar
@@ -10876,7 +10883,7 @@ for line in sys.stdin:
                         .clone()),
                     Some(b.clone())
                 );
-                // Old hover cards dismiss at260ms independently of the next row's600ms dwell.
+                // Old hover cards dismiss at 80ms independently of the next row's 350ms dwell.
                 cx.update(|_, cx| {
                     sidebar.update(cx, |sidebar, cx| {
                         sidebar.commit_row_hover(b.clone(), false, cx);
@@ -10884,7 +10891,7 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(260));
+                cx.executor().advance_clock(Duration::from_millis(80));
                 cx.run_until_parked();
                 assert!(
                     sidebar.read_with(cx, |sidebar, cx| sidebar
@@ -10896,7 +10903,7 @@ for line in sys.stdin:
                         .is_none()),
                     "old card dismisses while another row still dwells"
                 );
-                cx.executor().advance_clock(Duration::from_millis(340));
+                cx.executor().advance_clock(Duration::from_millis(270));
                 cx.run_until_parked();
                 assert_eq!(
                     sidebar.read_with(cx, |sidebar, cx| sidebar
@@ -10915,7 +10922,7 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.executor().advance_clock(Duration::from_millis(350));
                 cx.run_until_parked();
                 cx.update(|_, cx| {
                     sidebar.update(cx, |sidebar, cx| {
@@ -10941,7 +10948,7 @@ for line in sys.stdin:
                     sidebar.update(cx, |sidebar, cx| sidebar.commit_card_hover(false, cx));
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(259));
+                cx.executor().advance_clock(Duration::from_millis(79));
                 cx.run_until_parked();
                 assert!(sidebar.read_with(cx, |sidebar, cx| sidebar
                     .history
@@ -10960,7 +10967,7 @@ for line in sys.stdin:
                         .read(cx)
                         .selected
                         .is_none()),
-                    "leaving row and card dismisses after260ms"
+                    "leaving row and card dismisses after 80ms"
                 );
                 cx.update(|_, cx| {
                     sidebar.update(cx, |sidebar, cx| {
@@ -10976,7 +10983,7 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.executor().advance_clock(Duration::from_millis(350));
                 cx.run_until_parked();
                 assert!(
                     sidebar.read_with(cx, |sidebar, cx| sidebar
@@ -10995,7 +11002,7 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.executor().advance_clock(Duration::from_millis(350));
                 cx.run_until_parked();
                 assert!(
                     sidebar.read_with(cx, |sidebar, cx| sidebar
@@ -11025,7 +11032,7 @@ for line in sys.stdin:
                     "explicit selection is immediate"
                 );
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.executor().advance_clock(Duration::from_millis(350));
                 cx.run_until_parked();
                 assert_eq!(
                     sidebar.read_with(cx, |sidebar, cx| sidebar
@@ -11056,7 +11063,7 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.executor().advance_clock(Duration::from_millis(350));
                 cx.run_until_parked();
                 assert!(
                     sidebar.read_with(cx, |sidebar, cx| sidebar
@@ -11080,7 +11087,7 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.executor().advance_clock(Duration::from_millis(350));
                 cx.run_until_parked();
                 assert!(
                     sidebar.read_with(cx, |sidebar, _| sidebar.history.is_none()),
@@ -11099,7 +11106,7 @@ for line in sys.stdin:
                     });
                 });
                 cx.run_until_parked();
-                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.executor().advance_clock(Duration::from_millis(350));
                 cx.run_until_parked();
                 assert!(
                     sidebar.read_with(cx, |sidebar, cx| sidebar
@@ -11166,6 +11173,11 @@ for line in sys.stdin:
                 let details = cx.debug_bounds("history-details").unwrap();
                 let files = cx.debug_bounds("history-files").unwrap();
                 let diff = cx.debug_bounds("history-diff-area").unwrap();
+                let file_row = cx.debug_bounds("history-file-row").unwrap();
+                assert!(
+                    f32::from(file_row.size.height) <= 44.0,
+                    "file row should stay compact: {file_row:?}"
+                );
                 let left_label = cx.debug_bounds("history-split-left-label").unwrap();
                 let right_label = cx.debug_bounds("history-split-right-label").unwrap();
                 assert!(
@@ -11188,6 +11200,36 @@ for line in sys.stdin:
                         && (f32::from(left_label.size.width - right_label.size.width)).abs() <= 1.0,
                     "split labels reserve balanced before/after panes at {width}: left={left_label:?}, right={right_label:?}"
                 );
+                if width == 1280.0 {
+                    let divider = cx.debug_bounds("history-file-divider").unwrap().center();
+                    cx.simulate_mouse_down(divider, MouseButton::Left, gpui::Modifiers::default());
+                    cx.simulate_mouse_up(divider, MouseButton::Left, gpui::Modifiers::default());
+                    cx.simulate_keystrokes("right");
+                    draw(cx);
+                    let keyboard_width = cx.debug_bounds("history-files").unwrap().size.width;
+                    assert!(
+                        keyboard_width > files.size.width,
+                        "keyboard increases file register width"
+                    );
+                    let divider = cx.debug_bounds("history-file-divider").unwrap().center();
+                    cx.simulate_mouse_down(divider, MouseButton::Left, gpui::Modifiers::default());
+                    let destination = gpui::point(divider.x + gpui::px(30.0), divider.y);
+                    cx.simulate_mouse_move(
+                        destination,
+                        MouseButton::Left,
+                        gpui::Modifiers::default(),
+                    );
+                    cx.simulate_mouse_up(
+                        destination,
+                        MouseButton::Left,
+                        gpui::Modifiers::default(),
+                    );
+                    draw(cx);
+                    assert!(
+                        cx.debug_bounds("history-files").unwrap().size.width > keyboard_width,
+                        "drag increases file register width"
+                    );
+                }
                 assert!(
                     cx.debug_bounds("history-patch").is_some(),
                     "selected text file renders its patch at {width}"

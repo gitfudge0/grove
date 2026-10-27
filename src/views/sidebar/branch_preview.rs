@@ -221,18 +221,14 @@ impl Sidebar {
                     ICON_SM,
                     cx,
                 ))
-                .child(
-                    self.control(
-                        "branch-peek-retry",
-                        "Retry recent commits",
-                        Action::RefreshBranchPreview,
-                        cx,
-                    )
-                    .w_auto()
-                    .px(rpx(SPACE_LG))
-                    .child(icon("reset", ICON_SM, c::FG_DIM()))
-                    .child("Retry"),
-                );
+                .child(self.history_action(
+                    "branch-peek-retry",
+                    "Retry",
+                    "reset",
+                    Action::RefreshBranchPreview,
+                    window,
+                    cx,
+                ));
         } else if let Some(snapshot) = &data.snapshot {
             if snapshot.commits.is_empty() {
                 rows = rows.child(status::label(
@@ -343,17 +339,15 @@ impl Sidebar {
             .child(div().flex_shrink_0().text_color(c::FG_DIM()).child(heading))
             .child(rows)
             .child(
-                self.control(
+                self.history_action(
                     "branch-peek-view-history",
                     "View history",
+                    "history",
                     Action::OpenBranchHistory(path, owner, identity),
+                    window,
                     cx,
                 )
-                .debug_selector(|| "branch-peek-view-history".into())
-                .w_auto()
-                .px(rpx(SPACE_LG))
-                .child(icon("history", ICON_SM, c::FG_DIM()))
-                .child("View history"),
+                .debug_selector(|| "branch-peek-view-history".into()),
             );
         let panel = div()
             .relative()

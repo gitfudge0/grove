@@ -2009,32 +2009,10 @@ impl Sidebar {
                         changes_row.child(change_stat_counts(added, removed, stat_widths));
                 }
                 let target = path.clone();
-                let history_path = path.clone();
                 card = card.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .min_w_0()
-                        .child(changes_row.flex_1().min_w_0().on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
-                            },
-                        )))
-                        .child(
-                            self.control(
-                                "checkout-history",
-                                "Branch history",
-                                Action::OpenHistory(history_path),
-                                cx,
-                            )
-                            .debug_selector(|| "checkout-history".into())
-                            .mr(rpx(SPACE_LG))
-                            .child(crate::icons::icon(
-                                "history",
-                                ICON_SM,
-                                c::FG_DIM(),
-                            )),
-                        ),
+                    changes_row.on_click(cx.listener(move |this, _, window, cx| {
+                        this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
+                    })),
                 );
                 if let Some(summary) = summary {
                     for &(group, added, removed) in &summary.groups {
@@ -4852,6 +4830,10 @@ mod tests {
                 icon_x = Some(glyph.left());
             }
         }
+        assert!(cx.debug_bounds("checkout-history").is_none());
+        let changes = cx.debug_bounds("checkout-changes").unwrap();
+        assert!(changes.left() <= card.left() + gpui::px(SPACE_XS));
+        assert!(changes.right() >= card.right() - gpui::px(SPACE_XS));
         let initial_selection = sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
         for provider in [Agent::Codex, Agent::Claude] {
             cx.update(|_, cx| {
