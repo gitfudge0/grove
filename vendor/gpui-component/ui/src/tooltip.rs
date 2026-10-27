@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::{
-    ActiveTheme, StyledExt,
+    ActiveTheme, ElementExt, StyledExt,
     animation::{Transition, ease_in_out_cubic, ease_out_cubic},
     h_flex,
     kbd::Kbd,
@@ -343,6 +343,7 @@ pub(crate) struct TooltipContent {
 
 /// A single instance lives in [`Root`] per window; components register hover via [`ManagedTooltipExt::managed_tooltip`].
 pub struct TooltipOverlay {
+    bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     content: Option<TooltipContent>,
     prev_trigger_bounds: Option<Bounds<Pixels>>,
     epoch: usize,
@@ -355,12 +356,17 @@ pub struct TooltipOverlay {
 }
 
 impl TooltipOverlay {
+    pub(crate) fn bounds(&self) -> Option<Bounds<Pixels>> {
+        self.content.as_ref().and_then(|_| self.bounds.get())
+    }
+
     pub(crate) fn is_visible(&self) -> bool {
         self.content.is_some()
     }
 
     pub fn new() -> Self {
         Self {
+            bounds: Rc::new(Cell::new(None)),
             content: None,
             prev_trigger_bounds: None,
             epoch: 0,
@@ -472,6 +478,7 @@ impl TooltipOverlay {
 
 impl Render for TooltipOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.bounds.set(None);
         let Some(content) = self.content.as_ref() else {
             return div().into_any_element();
         };
@@ -483,44 +490,58 @@ impl Render for TooltipOverlay {
         let prev_trigger_bounds = self.prev_trigger_bounds;
 
         deferred(
-            tooltip_overlay_positioner(trigger_bounds).child(div().child(content_view).map(|el| {
-                if is_switching {
-                    let Some(prev_bounds) = prev_trigger_bounds else {
-                        return el.into_any_element();
-                    };
+            tooltip_overlay_positioner(trigger_bounds).child(
+                div()
+                    .child(content_view)
+                    .on_prepaint({
+                        let bounds = self.bounds.clone();
+                        move |rect, _, _| bounds.set(Some(rect))
+                    })
+                    .map(|el| {
+                        if is_switching {
+                            let Some(prev_bounds) = prev_trigger_bounds else {
+                                return el.into_any_element();
+                            };
 
-                    let is_same_y =
-                        (trigger_bounds.origin.y - prev_bounds.origin.y).abs() < px(10.);
-                    if !is_same_y {
-                        // If the new trigger is at a different Y level, don't slide horizontally
-                        // to avoid weird diagonal movement. (We could consider sliding vertically
-                        // in this case, but it might be less visually clear.)
-                        return el.into_any_element();
-                    }
+                            let is_same_y =
+                                (trigger_bounds.origin.y - prev_bounds.origin.y).abs() < px(10.);
+                            if !is_same_y {
+                                // If the new trigger is at a different Y level, don't slide horizontally
+                                // to avoid weird diagonal movement. (We could consider sliding vertically
+                                // in this case, but it might be less visually clear.)
+                                return el.into_any_element();
+                            }
 
-                    let dx = trigger_bounds.center().x - prev_bounds.center().x;
+                            let dx = trigger_bounds.center().x - prev_bounds.center().x;
 
-                    Transition::new(SLIDE_DURATION)
-                        .ease(ease_in_out_cubic)
-                        .slide_x(-dx, px(0.))
-                        .apply(
-                            el,
-                            ElementId::NamedInteger("tooltip-slide".into(), animation_epoch as u64),
-                        )
-                        .into_any_element()
-                } else {
-                    // New tooltip: slideDown + fadeIn
-                    Transition::new(ENTER_DURATION)
-                        .ease(ease_out_cubic)
-                        .slide_y(px(4.), px(0.))
-                        .fade(0.0, 1.0)
-                        .apply(
-                            el,
-                            ElementId::NamedInteger("tooltip-enter".into(), animation_epoch as u64),
-                        )
-                        .into_any_element()
-                }
-            })),
+                            Transition::new(SLIDE_DURATION)
+                                .ease(ease_in_out_cubic)
+                                .slide_x(-dx, px(0.))
+                                .apply(
+                                    el,
+                                    ElementId::NamedInteger(
+                                        "tooltip-slide".into(),
+                                        animation_epoch as u64,
+                                    ),
+                                )
+                                .into_any_element()
+                        } else {
+                            // New tooltip: slideDown + fadeIn
+                            Transition::new(ENTER_DURATION)
+                                .ease(ease_out_cubic)
+                                .slide_y(px(4.), px(0.))
+                                .fade(0.0, 1.0)
+                                .apply(
+                                    el,
+                                    ElementId::NamedInteger(
+                                        "tooltip-enter".into(),
+                                        animation_epoch as u64,
+                                    ),
+                                )
+                                .into_any_element()
+                        }
+                    }),
+            ),
         )
         .with_priority(2)
         .into_any_element()

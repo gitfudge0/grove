@@ -438,6 +438,17 @@ impl Root {
     }
 
     /// Native child surfaces must yield to Metal-rendered overlays.
+    pub fn native_surface_blocked(&self, cx: &App) -> bool {
+        self.active_sheet.is_some()
+            || !self.active_dialogs.is_empty()
+            || self.native_menu_overlay.read(cx).is_visible()
+    }
+
+    /// Current painted tooltip bounds, available after all prepaint callbacks.
+    pub fn native_surface_exclusion(&self, cx: &App) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.tooltip_overlay.read(cx).bounds()
+    }
+
     pub fn has_visible_overlay(&self, cx: &App) -> bool {
         self.active_sheet.is_some()
             || !self.active_dialogs.is_empty()

@@ -167,7 +167,9 @@ Applied to `ui/src` (source, not manifests):
     control. `Button::icon_only` retains the label as the accessible name while
     rendering only the app's shared icon, preserving button focus and activation.
     `Root::has_visible_overlay` includes sheets, dialogs, managed
-    tooltips and fallback menus so AppKit surfaces yield to GPUI overlays.
+    tooltips and fallback menus. `Root::native_surface_blocked` separates sheets,
+    dialogs and fallback menus from managed tooltips; `native_surface_exclusion`
+    exposes measured tooltip bounds so native HTML can yield only covered pixels.
     These additions grant no JavaScript/native bridge and add no webview crate.
 
 13. **Expanded accessibility state for compact disclosures.**

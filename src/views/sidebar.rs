@@ -35,7 +35,7 @@ use gpui::{
     div, prelude::*, AnyElement, App, Context, CursorStyle, Div, Entity, EventEmitter, FocusHandle,
     Focusable, MouseButton, MouseMoveEvent, ScrollHandle, SharedString, Stateful, Window,
 };
-use gpui_component::input::InputState;
+use gpui_component::{input::InputState, ElementExt};
 use grove_core::agent::Agent;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -2424,7 +2424,13 @@ impl Sidebar {
     }
 
     pub(super) fn html_overlay_open(&self) -> bool {
-        !self.navigation_available() || self.project_flyout.is_some()
+        self.confirmation_open()
+            || self.header_tasks.open.is_some()
+            || self.diff_viewer.is_some()
+            || self.project_panel.is_some()
+            || self.project_setup.is_some()
+            || self.pending_new_worktree.is_some()
+            || self.project_flyout.is_some()
     }
 
     pub(crate) fn highlights_blocked(&self) -> bool {
@@ -3010,6 +3016,9 @@ impl Sidebar {
                 }
             }
             Action::Menu(i) => {
+                // Masking keeps the document alive, including its native responder.
+                // GPUI focus alone cannot take keys back from that responder.
+                crate::platform::inline_html::NativeDocument::focus_host(window);
                 if self.menu == Some(i) {
                     if self.menu_opened_by_hover {
                         self.menu_opened_by_hover = false;
@@ -4392,17 +4401,13 @@ impl Sidebar {
             .border_color(c::BORDER())
             .bg(c::SURFACE_RAISED())
             .occlude()
-            .child(
-                gpui::canvas(
-                    {
-                        let bounds = self.menu_popup_bounds.clone();
-                        move |rect, _, _| bounds.set(rect)
-                    },
-                    |_, (), _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
+            .on_prepaint({
+                let bounds = self.menu_popup_bounds.clone();
+                move |rect, _, cx| {
+                    bounds.set(rect);
+                    super::inline_html::exclude_native_html(Some(rect), cx);
+                }
+            })
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(
                 cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
@@ -11996,6 +12001,25 @@ for line in sys.stdin:
         cx.simulate_mouse_move(trigger.center(), None, gpui::Modifiers::default());
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.menu == Some(0)));
+        assert!(
+            sidebar.read_with(cx, |sidebar, _| !sidebar.html_overlay_open()),
+            "a project menu must not hide the entire native document"
+        );
+        assert!(
+            cx.update(|_, cx| crate::views::inline_html::native_exclusion(cx))
+                .is_some(),
+            "the menu reserves its pixels and pointer region above native HTML"
+        );
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, _| {
+                sidebar.project_decision = true;
+                assert!(
+                    sidebar.html_overlay_open(),
+                    "blocking confirmations still hide native HTML"
+                );
+                sidebar.project_decision = false;
+            })
+        });
         let popup = cx.debug_bounds("project-actions-popup").unwrap();
         cx.simulate_mouse_move(popup.center(), None, gpui::Modifiers::default());
         draw(cx);

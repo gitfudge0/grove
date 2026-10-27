@@ -456,6 +456,29 @@ pub(super) fn set_context(selected: Option<EntityId>, blocked: bool, cx: &mut Ap
     ui.blocked = blocked;
 }
 
+// The native host has a single exclusion rectangle. Intersect first so an
+// unrelated sidebar tooltip cannot enlarge a panel's hole in this document.
+fn merge_exclusions(
+    first: Option<Bounds<Pixels>>,
+    second: Option<Bounds<Pixels>>,
+    clip: Bounds<Pixels>,
+) -> Option<Bounds<Pixels>> {
+    [first, second]
+        .into_iter()
+        .flatten()
+        .filter_map(|bounds| {
+            let bounds = bounds.intersect(&clip);
+            (bounds.size.width > Pixels::ZERO && bounds.size.height > Pixels::ZERO)
+                .then_some(bounds)
+        })
+        .reduce(|a, b| {
+            Bounds::from_corners(
+                a.origin.min(&b.origin),
+                a.bottom_right().max(&b.bottom_right()),
+            )
+        })
+}
+
 // Populated while rendering the preview, before any native surface is painted.
 pub(super) fn exclude_native_html(bounds: Option<Bounds<Pixels>>, cx: &mut App) {
     if !cx.has_global::<HtmlUi>() {
@@ -1726,7 +1749,7 @@ impl gpui::Element for NativeElement {
             || self.paused.get()
             || cx.try_global::<HtmlUi>().is_some_and(|ui| ui.blocked)
             || gpui_component::Root::try_read(window, cx)
-                .is_some_and(|root| root.has_visible_overlay(cx));
+                .is_some_and(|root| root.native_surface_blocked(cx));
         if blocked
             || self.surface.native.status() != LoadStatus::Ready
             || clip.size.width <= Pixels::ZERO
@@ -1738,11 +1761,13 @@ impl gpui::Element for NativeElement {
         let generation = self.surface.generation.get().wrapping_add(1);
         self.surface.generation.set(generation);
         self.surface.native.show(bounds, *clip, window);
+        let panel = cx.try_global::<HtmlUi>().and_then(|ui| ui.exclusion);
+        let tooltip = gpui_component::Root::try_read(window, cx)
+            .and_then(|root| root.native_surface_exclusion(cx));
         self.surface.native.exclude(
             bounds,
             *clip,
-            cx.try_global::<HtmlUi>()
-                .and_then(|ui| selected.is_none().then_some(ui.exclusion).flatten()),
+            merge_exclusions(panel, tooltip, *clip),
             window,
         );
         let Some(id) = id else {
@@ -1774,6 +1799,30 @@ mod tests {
         assert!(!integrated_report("<html>ordinary document</html>"));
         assert!(!integrated_report("<html>grove:integrated-report</html>"));
         assert!(integrated_report(&format!("<html>{REPORT_MARKER}</html>")));
+    }
+
+    #[test]
+    fn menu_and_tooltip_exclusions_stay_within_the_document() {
+        let rect = |x, y, w, h| {
+            Bounds::new(
+                gpui::point(gpui::px(x), gpui::px(y)),
+                gpui::size(gpui::px(w), gpui::px(h)),
+            )
+        };
+        let clip = rect(300., 40., 500., 300.);
+        let menu = rect(250., 60., 150., 200.);
+        let sidebar_tooltip = rect(100., 80., 180., 30.);
+        assert_eq!(
+            merge_exclusions(Some(menu), Some(sidebar_tooltip), clip),
+            Some(rect(300., 60., 100., 200.))
+        );
+        assert_eq!(merge_exclusions(None, Some(sidebar_tooltip), clip), None);
+        assert_eq!(merge_exclusions(None, None, clip), None);
+        let tooltip = rect(320., 80., 180., 30.);
+        assert_eq!(
+            merge_exclusions(Some(menu), Some(tooltip), clip),
+            Some(rect(300., 60., 200., 200.))
+        );
     }
 
     #[gpui::test]
