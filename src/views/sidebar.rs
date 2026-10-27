@@ -8705,7 +8705,8 @@ for line in sys.stdin:
                 assert_eq!(sidebar.runtime.read(cx).registry.read(cx).len(), 1);
             });
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // Starting a real fixture subprocess can take longer on a busy CI runner.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             cx.executor().advance_clock(Duration::from_millis(50));
             draw(cx);

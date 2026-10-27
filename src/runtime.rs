@@ -1686,12 +1686,15 @@ mod tests {
             cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
             let runtime = cx.new(Runtime::new);
+            eprintln!("home terminal test: spawning first terminal");
             let first = runtime
                 .update(cx, Runtime::spawn_home_terminal)
                 .expect("shell should start");
+            eprintln!("home terminal test: closing first terminal");
             runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
             assert_eq!(runtime.read(cx).registry.read(cx).home_terminal_count(), 0);
             assert_eq!(runtime.read(cx).state.read(cx).active_terminal(), None);
+            eprintln!("home terminal test: reopening terminal");
             let reopened = runtime
                 .update(cx, Runtime::spawn_home_terminal)
                 .expect("explicitly opening a shell should still work");
@@ -1701,6 +1704,7 @@ mod tests {
             assert_eq!(registry.home_terminals()[0].id, reopened);
             assert_eq!(registry.home_terminals()[0].label, "terminal 2");
             assert_eq!(runtime.read(cx).state.read(cx).active_terminal(), Some(0));
+            eprintln!("home terminal test: assertions complete");
         });
     }
 
@@ -1710,20 +1714,24 @@ mod tests {
             cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
             let runtime = cx.new(Runtime::new);
+            eprintln!("home terminal test: spawning first of two terminals");
             let first = runtime
                 .update(cx, Runtime::spawn_home_terminal)
                 .expect("first shell should start");
+            eprintln!("home terminal test: spawning second terminal");
             let second = runtime
                 .update(cx, Runtime::spawn_home_terminal)
                 .expect("second shell should start");
             runtime.update(cx, |runtime, cx| runtime.close_home_terminal(2, cx));
             assert_eq!(runtime.read(cx).registry.read(cx).home_terminal_count(), 2);
+            eprintln!("home terminal test: closing first of two terminals");
             runtime.update(cx, |runtime, cx| runtime.close_home_terminal(0, cx));
             let registry = runtime.read(cx).registry.read(cx);
             assert_eq!(registry.home_terminal_count(), 1);
             assert_eq!(registry.home_terminals()[0].id, second);
             assert_ne!(registry.home_terminals()[0].id, first);
             assert_eq!(registry.home_terminals()[0].label, "terminal 2");
+            eprintln!("home terminal test: assertions complete");
         });
     }
     #[gpui::test]
