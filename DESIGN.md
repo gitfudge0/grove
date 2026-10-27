@@ -207,6 +207,8 @@ General settings exposes Theme with the current name and palette swatches, openi
 
 Theme application refreshes existing and new windows without restarting sessions, replacing drafts, or reloading report documents. Palette neutrals establish surfaces and text; explicit Grove semantic roles retain status hue meaning independently of terminal ANSI accents. The curated built-in catalog does not expose the legacy custom theme editor or JSON import/export.
 
+Mermaid diagrams in native Codex and Claude transcripts start fitted within a bounded inline viewport. Persistent Zoom in, Zoom out and Fit controls and focused keyboard zoom/pan make large diagrams readable; dragging pans only the diagram. Zoom preserves transcript layout and ordinary wheel scrolling. Each diagram owns its camera; source remains available when rendering fails. Detail rendering is bounded and refreshed for the current theme.
+
 ## Project workflow actions
 
 - PR status shows failed CI repair beside its checks. It submits to the current native Codex or Claude chat through its native queue, preserves composer text, images and references, and rejects changed checkout/chat/PR identities before delivery. It does not launch a background or fresh conversation. Failed log reads remain visible in the submitted context. Existing Merge and Resolve behavior remains intact.
