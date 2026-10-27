@@ -341,6 +341,7 @@ fn main() {
     );
     document.show(viewport, clip, &window);
     document.retire_frame();
+    eprintln!("WebView2 probe: replacing retained surface");
     document.show(viewport, clip, &window);
     let start = std::time::Instant::now();
     pump_until(|| start.elapsed() > std::time::Duration::from_millis(30));
@@ -349,22 +350,27 @@ fn main() {
         "replacement paint lost its retained surface"
     );
     document.retire_frame();
+    eprintln!("WebView2 probe: retiring retained surface");
     pump_until(|| !unsafe { IsWindowVisible(child) }.as_bool());
     document.show(viewport, clip, &window);
     assert!(unsafe { IsWindowVisible(child) }.as_bool());
     backend::hide_all();
     assert!(!unsafe { IsWindowVisible(child) }.as_bool());
+    eprintln!("WebView2 probe: dropping first document");
     drop(document);
     // The source limit is 2 MiB before sandbox prefixes. Exercise the synthetic
     // protocol beyond NavigateToString's 2 MiB ceiling as a separate retained view.
+    eprintln!("WebView2 probe: constructing large document");
     let large = backend::Document::new(&format!(
         "<html><body>{}</body></html>",
         " ".repeat(2 * 1024 * 1024)
     ))
     .unwrap();
     large.prepare(&window).unwrap();
+    eprintln!("WebView2 probe: loading large document");
     pump_until(|| large.status() != LoadStatus::Loading);
     assert_eq!(large.status(), LoadStatus::Ready);
+    eprintln!("WebView2 probe: dropping large document");
     drop(large);
     eprintln!("WebView2 probe: checking integrated reports");
     verify_integrated_report(&window, parent);
