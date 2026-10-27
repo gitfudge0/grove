@@ -292,7 +292,6 @@ impl Sidebar {
             return None;
         };
         let activity = state.subagent_activity.get(&child).cloned();
-        let evicted = state.subagent_activity_evicted.contains(&child);
         let provider = if state.saved.provider == grove_core::codex::Provider::Claude {
             "Claude"
         } else {
@@ -429,18 +428,7 @@ impl Sidebar {
                             ),
                     ),
             );
-        let freshness = activity
-            .as_ref()
-            .and_then(|activity| {
-                activity.observed_at.map(|observed| {
-                    format!(
-                        "Observed {}s ago · {} messages and tool calls",
-                        observed.elapsed().as_secs(),
-                        activity.items.len()
-                    )
-                })
-            })
-            .unwrap_or_else(|| "Observation time unavailable".into());
+        let (freshness, empty_message) = child_transcript_labels(state, &child);
         if let Some(activity) = &activity {
             if activity.refresh_error {
                 content = content.child(div().text_color(c::FG_DIM()).child(
@@ -472,15 +460,13 @@ impl Sidebar {
                     .child(task.clone()),
             );
         }
-        if activity
-            .as_ref()
-            .is_none_or(|activity| activity.items.is_empty())
-        {
-            content = content.child(div().text_color(c::FG_DIM()).child(if evicted {
-                "Child transcript is no longer retained"
-            } else {
-                "No child messages received yet"
-            }));
+        if let Some(empty_message) = empty_message {
+            content = content.child(
+                div()
+                    .debug_selector(|| "agent-peek-empty".into())
+                    .text_color(c::FG_DIM())
+                    .child(empty_message),
+            );
         }
         content = content
             .child(
@@ -495,6 +481,7 @@ impl Sidebar {
                     .flex_shrink_0()
                     .text_size(rpx(TEXT_MICRO))
                     .text_color(c::FG_DIM())
+                    .debug_selector(|| "agent-peek-freshness".into())
                     .child(freshness),
             )
             .child(
@@ -554,5 +541,110 @@ impl Sidebar {
             )
             .into_any_element(),
         )
+    }
+}
+
+/// Historical retention and live receipt are distinct states; a restored record
+/// has no meaningful monotonic observation timestamp from the previous process.
+pub(super) fn child_transcript_labels(
+    state: &grove_core::codex::Snapshot,
+    child: &str,
+) -> (String, Option<&'static str>) {
+    use grove_core::codex::SubagentTranscriptAvailability;
+    let activity = state.subagent_activity.get(child);
+    let availability = state.subagent_transcript_availability(child);
+    let freshness = activity
+        .and_then(|activity| {
+            activity.observed_at.map(|observed| {
+                format!(
+                    "Observed {}s ago · {} messages and tool calls",
+                    observed.elapsed().as_secs(),
+                    activity.items.len()
+                )
+            })
+        })
+        .unwrap_or_else(|| match availability {
+            SubagentTranscriptAvailability::Restored => {
+                "Saved child transcript · observation time unavailable".into()
+            }
+            _ => "Observation time unavailable".into(),
+        });
+    let empty = activity
+        .is_none_or(|activity| activity.items.is_empty())
+        .then(|| {
+            if state.subagent_activity_evicted.contains(child) {
+                "Child transcript is no longer retained"
+            } else if availability == SubagentTranscriptAvailability::Unavailable {
+                "Historical child messages are unavailable"
+            } else {
+                "No child messages received yet"
+            }
+        });
+    (freshness, empty)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::child_transcript_labels;
+    use grove_core::codex::{
+        Provider, SavedSession, Snapshot, Subagent, SubagentActivity, SubagentStatus, WorkPeriod,
+    };
+
+    #[test]
+    fn codex_and_claude_preview_distinguish_live_waiting_from_restored_history() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let saved: SavedSession = serde_json::from_value(serde_json::json!({
+                "key":"peek", "project":"test", "cwd":"/tmp", "label":"test",
+                "roots":[], "thread_id":"parent", "items":[]
+            }))
+            .unwrap();
+            let mut live = Snapshot::new(saved);
+            live.saved.provider = provider;
+            live.saved.work_periods.push(WorkPeriod {
+                start_item: 0,
+                end_item: None,
+                duration_ms: None,
+                subagents: vec![Subagent {
+                    id: "child".into(),
+                    name: "Reviewer".into(),
+                    role: None,
+                    task: Some("Inspect source".into()),
+                    activity: String::new(),
+                    status: SubagentStatus::Working,
+                }],
+            });
+            assert_eq!(
+                child_transcript_labels(&live, "child").1,
+                Some("No child messages received yet")
+            );
+            // Saving the roster alone does not retain its child transcript.
+            let restored = Snapshot::new(live.saved.clone());
+            assert_eq!(
+                child_transcript_labels(&restored, "child").1,
+                Some("Historical child messages are unavailable")
+            );
+            let mut activity = SubagentActivity::default();
+            activity.items = vec![
+                serde_json::json!({"id":"reply", "type":"agentMessage", "text":"Found the issue"}),
+            ];
+            live.subagent_activity.insert("child".into(), activity);
+            let (freshness, empty) = child_transcript_labels(&live, "child");
+            assert_eq!(empty, None);
+            assert_eq!(
+                freshness,
+                "Saved child transcript · observation time unavailable"
+            );
+            live.subagent_activity.get_mut("child").unwrap().observed_at =
+                Some(std::time::Instant::now());
+            assert!(child_transcript_labels(&live, "child")
+                .0
+                .starts_with("Observed 0s ago · 1 messages and tool calls"));
+            live.subagent_activity.clear();
+            live.subagent_activity_evicted.insert("child".into());
+            assert_eq!(
+                child_transcript_labels(&live, "child").1,
+                Some("Child transcript is no longer retained")
+            );
+        }
     }
 }

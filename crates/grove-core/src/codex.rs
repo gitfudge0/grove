@@ -143,6 +143,24 @@ pub struct SubagentActivity {
     pub truncated: bool,
     poll_cursor: Option<(u64, u64)>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubagentTranscriptAvailability {
+    Awaiting,
+    Live,
+    Restored,
+    Unavailable,
+}
+/// Canonical provider-visible Claude child data; monotonic observation clocks
+/// and private reasoning are deliberately not persisted.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SavedClaudeSubagent {
+    #[serde(default)]
+    pub items: Vec<Value>,
+    #[serde(default)]
+    pub task_ids: Vec<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+}
 fn activity_hash(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -291,6 +309,8 @@ impl ReferenceDraft {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub claude_subagents: HashMap<String, SavedClaudeSubagent>,
     #[serde(default)]
     pub rich_plans: crate::rich_plan::PlanStore,
     #[serde(default)]
@@ -362,6 +382,23 @@ pub struct PendingEdit {
     pub claude_fork_id: Option<String>,
 }
 impl SavedSession {
+    pub(crate) fn retain_claude_subagents(&mut self) {
+        let children: HashSet<&str> = self
+            .work_periods
+            .iter()
+            .flat_map(|period| &period.subagents)
+            .map(|agent| agent.id.as_str())
+            .collect();
+        self.claude_subagents.retain(|id, child| {
+            child.items.retain(|item| {
+                !matches!(
+                    item["type"].as_str(),
+                    Some("reasoning" | "reasoningMessage")
+                )
+            });
+            children.contains(id.as_str())
+        });
+    }
     /// Run only when reconnecting/restoring, never against a live provider.
     pub(crate) fn migrate_native_config(&mut self) {
         if self.native_config_version != 0 {
@@ -415,6 +452,7 @@ impl SavedSession {
         saved.title = None;
         saved.title_generation = None;
         saved.items.clear();
+        saved.claude_subagents.clear();
         saved.rich_plans = crate::rich_plan::PlanStore::default();
         saved.work_periods.clear();
         saved.draft.clear();
@@ -809,6 +847,7 @@ pub struct SessionNotice {
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    restored_subagents: HashSet<String>,
     pub saved: SavedSession,
     pub subagent_activity: HashMap<String, SubagentActivity>,
     pub subagent_activity_evicted: HashSet<String>,
@@ -896,6 +935,26 @@ pub(crate) fn next_interaction_epoch() -> u64 {
     EPOCH.fetch_add(1, Ordering::Relaxed)
 }
 impl Snapshot {
+    pub fn subagent_transcript_availability(&self, id: &str) -> SubagentTranscriptAvailability {
+        if let Some(activity) = self
+            .subagent_activity
+            .get(id)
+            .filter(|activity| !activity.items.is_empty())
+        {
+            return if activity.observed_at.is_some() {
+                SubagentTranscriptAvailability::Live
+            } else {
+                SubagentTranscriptAvailability::Restored
+            };
+        }
+        if self.restored_subagents.contains(id)
+            || (self.saved.provider == Provider::Claude && self.subagent_terminal(id))
+        {
+            SubagentTranscriptAvailability::Unavailable
+        } else {
+            SubagentTranscriptAvailability::Awaiting
+        }
+    }
     /// Reset the raw error together with its provider recovery metadata.
     pub fn clear_error(&mut self) {
         self.error = None;
@@ -1270,6 +1329,15 @@ impl Snapshot {
                     });
                     saved.work_periods.len() - 1
                 });
+            // Legacy activity supplies a fallback roster only. Its task path
+            // must not replace the provider's subsequently observed nickname.
+            if saved.work_periods[period]
+                .subagents
+                .iter()
+                .any(|agent| agent.id == id)
+            {
+                continue;
+            }
             record_subagent(
                 &mut saved.work_periods[period],
                 id,
@@ -1315,6 +1383,37 @@ impl Snapshot {
             }
         }
         saved.rich_plans.recover_delivery();
+        saved.retain_claude_subagents();
+        let restored_subagents = saved
+            .work_periods
+            .iter()
+            .flat_map(|period| &period.subagents)
+            .map(|agent| agent.id.clone())
+            .collect();
+        let subagent_activity = saved
+            .claude_subagents
+            .iter()
+            .filter(|(_, child)| !child.items.is_empty())
+            .map(|(id, child)| {
+                (
+                    id.clone(),
+                    SubagentActivity {
+                        items: child
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                !matches!(
+                                    item["type"].as_str(),
+                                    Some("reasoning" | "reasoningMessage")
+                                )
+                            })
+                            .cloned()
+                            .collect(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
         let composer = saved.composer.clone();
         let context_tokens = saved.context.map(|usage| usage.used);
         Self {
@@ -1363,7 +1462,8 @@ impl Snapshot {
             settled_turns: Vec::new(),
             subagent_restart_calls: Vec::new(),
             subagent_observation_generation: 0,
-            subagent_activity: HashMap::new(),
+            restored_subagents,
+            subagent_activity,
             subagent_activity_evicted: HashSet::new(),
         }
     }
@@ -1419,8 +1519,28 @@ impl Snapshot {
         self.enforce_subagent_activity_budget();
     }
     pub(crate) fn upsert_subagent_item(&mut self, id: &str, item: Value) {
-        if item["type"] == "reasoning" || self.subagent_period(id).is_none() {
+        if matches!(
+            item["type"].as_str(),
+            Some("reasoning" | "reasoningMessage")
+        ) || self.subagent_period(id).is_none()
+        {
             return;
+        }
+        if self.saved.provider == Provider::Claude {
+            let items = &mut self
+                .saved
+                .claude_subagents
+                .entry(id.into())
+                .or_default()
+                .items;
+            if let Some(existing) = items
+                .iter_mut()
+                .find(|old| !item["id"].is_null() && old["id"] == item["id"])
+            {
+                *existing = item.clone();
+            } else {
+                items.push(item.clone());
+            }
         }
         self.ensure_subagent_activity(id);
         let Some(activity) = self.subagent_activity.get_mut(id) else {
@@ -1452,12 +1572,15 @@ impl Snapshot {
             .unwrap_or_default();
         saved.thread_id = Some(id.into());
         saved.work_periods.clear();
+        saved.claude_subagents.clear();
         saved.rich_plans = crate::rich_plan::PlanStore::default();
         saved.draft.clear();
         saved.draft_images.clear();
         saved.draft_reference = None;
         let mut state = Self::new(saved);
-        state.status = if self.subagent_terminal(id) {
+        state.status = if self.subagent_terminal(id)
+            || self.subagent_transcript_availability(id) == SubagentTranscriptAvailability::Restored
+        {
             Status::Idle
         } else {
             Status::Working
@@ -5801,6 +5924,7 @@ mod tests {
     use super::*;
     fn saved() -> SavedSession {
         SavedSession {
+            claude_subagents: HashMap::default(),
             rich_plans: crate::rich_plan::PlanStore::default(),
             claude_resume: None,
             edit_checkpoints: Vec::new(),
@@ -5862,6 +5986,60 @@ mod tests {
                 }
             );
         }
+    }
+    #[test]
+    fn claude_child_cache_follows_retained_work_periods() {
+        let mut saved = saved();
+        saved.provider = Provider::Claude;
+        for (index, id) in ["earlier", "edited-away"].into_iter().enumerate() {
+            let mut period = WorkPeriod {
+                start_item: index,
+                end_item: Some(index + 1),
+                duration_ms: None,
+                subagents: Vec::new(),
+            };
+            record_subagent(&mut period, id, Some(id), None, SubagentStatus::Completed);
+            saved.work_periods.push(period);
+            saved.claude_subagents.insert(
+                id.into(),
+                SavedClaudeSubagent {
+                    items: vec![json!({"id":"message","type":"agentMessage","text":id})],
+                    ..Default::default()
+                },
+            );
+        }
+        saved.work_periods.retain(|period| period.start_item < 1);
+        saved.retain_claude_subagents();
+        assert_eq!(saved.claude_subagents.len(), 1);
+        assert_eq!(
+            saved.claude_subagents["earlier"].items[0]["text"],
+            "earlier"
+        );
+        assert!(saved.fresh_conversation().claude_subagents.is_empty());
+    }
+    #[test]
+    fn legacy_child_activity_preserves_existing_provider_metadata() {
+        let mut saved = saved();
+        saved.items.push(json!({"id":"legacy","type":"subAgentActivity","kind":"started","agentThreadId":"child","agentPath":"/root/verify_empty_directory"}));
+        let agent = Subagent {
+            id: "child".into(),
+            name: "Noether".into(),
+            role: Some("explorer".into()),
+            task: Some("Inspect files".into()),
+            activity: "Final report".into(),
+            status: SubagentStatus::Completed,
+        };
+        saved.work_periods.push(WorkPeriod {
+            start_item: 0,
+            end_item: Some(1),
+            duration_ms: Some(100),
+            subagents: vec![agent.clone()],
+        });
+        let restored = Snapshot::new(saved);
+        assert_eq!(
+            serde_json::to_value(&restored.saved.work_periods[0].subagents[0]).unwrap(),
+            serde_json::to_value(agent).unwrap()
+        );
     }
     fn reference(id: &str) -> ReferenceDraft {
         ReferenceDraft {

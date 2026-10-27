@@ -1,7 +1,8 @@
 //! Live, read-only child activity smoke through Grove's production provider adapters.
 //! Supply distinct fresh empty cwd/config directories; uses installed provider auth.
 use grove_core::codex::{
-    self, Action, Connection, SavedSession, Status, SubagentActivityKind, SubagentStatus,
+    self, Action, Connection, SavedSession, Snapshot, Status, SubagentActivityKind, SubagentStatus,
+    SubagentTranscriptAvailability,
 };
 use serde_json::json;
 use std::{
@@ -9,7 +10,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn run(connection: &Connection, deadline: Instant, claude: bool) -> Result<(), String> {
+const REPORT: &str = "GROVE_CHILD_FINAL_REPORT";
+
+fn run(
+    connection: &Connection,
+    deadline: Instant,
+    claude: bool,
+    scenario: &str,
+) -> Result<(), String> {
     let next = || {
         connection
             .updates
@@ -25,19 +33,28 @@ fn run(connection: &Connection, deadline: Instant, claude: bool) -> Result<(), S
             break state;
         }
     };
-    connection.handle.send(Action::Prompt(format!(
-        "Verify read-only subagent activity. Delegate exactly one foreground child using {}. \
-         The child must use one normal read-only tool to list the files in this current empty \
-         working directory, then report a concise finding. Do not access any other directory. \
-         Do not use git, network, mutations, permission escalation, or bypass modes. \
-         Do not create further children. Parent: do not list files yourself; wait for that child \
-         to finish and give a concise final report. Use normal tool defaults.",
-        if claude {
-            "the Agent tool (general-purpose agent, not background)"
-        } else {
-            "spawn_agent"
+    let delegation = match scenario {
+        "background" => {
+            "Delegate exactly one general-purpose child using Agent with run_in_background true. Wait for its completion notification, even if your first turn ends before it finishes."
         }
+        "nested" => {
+            "Delegate exactly one foreground general-purpose child using Agent. That child's sole task is to delegate exactly one foreground general-purpose grandchild using Agent and wait for it. The grandchild must list this directory. Both descendants must give their own final report. Total descendants must be exactly two, maximum depth two."
+        }
+        _ if claude => {
+            "Delegate exactly one foreground general-purpose child using Agent, not background."
+        }
+        _ => "Delegate exactly one foreground child using spawn_agent.",
+    };
+    connection.handle.send(Action::Prompt(format!(
+        "Verify read-only subagent activity. {delegation} \
+         The leaf child must use one normal read-only tool to list files in this current empty \
+         working directory. Every child must finish with a final report containing the exact marker \
+         {REPORT} plus a concise finding. Include that instruction in every delegated prompt. \
+         Do not access any other directory. Do not use git, network, mutations, permission escalation, \
+         or bypass modes. Do not create further children beyond those explicitly requested. \
+         Parent: do not list files yourself; wait for every child to finish and give a concise report."
     )))?;
+    let expected = if scenario == "nested" { 2 } else { 1 };
     let mut roster = HashMap::new();
     let mut event_ids = HashSet::new();
     let mut canonical_tools = 0;
@@ -46,12 +63,13 @@ fn run(connection: &Connection, deadline: Instant, claude: bool) -> Result<(), S
     let mut commentary = 0;
     let mut truncated = false;
     let mut last_status = ready.status;
+    let mut reported = HashSet::new();
     loop {
         let state = next().map_err(|error| {
             let completed = roster.values().filter(|s| **s == SubagentStatus::Completed).count();
             let working = roster.values().filter(|s| **s == SubagentStatus::Working).count();
             let unknown = roster.values().filter(|s| **s == SubagentStatus::Unknown).count();
-            format!("{error}; parent_status={} children={} completed={completed} working={working} unknown={unknown} tool_events={tools} commentary_events={commentary}", last_status.label(), roster.len())
+            format!("{error}; parent_status={} children={} completed={completed} working={working} unknown={unknown} tool_events={tools} commentary_events={commentary} final_reports={}", last_status.label(), roster.len(), reported.len())
         })?;
         last_status = state.status;
         if matches!(state.status, Status::Failed | Status::Disconnected) || state.error.is_some() {
@@ -100,6 +118,15 @@ fn run(connection: &Connection, deadline: Instant, claude: bool) -> Result<(), S
                     .filter(|item| item["type"] == "agentMessage")
                     .count(),
             );
+            if activity.items.iter().any(|item| {
+                item["type"] == "agentMessage"
+                    && item["phase"] == "final_answer"
+                    && item["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(REPORT))
+            }) {
+                reported.insert(id.clone());
+            }
             truncated |= activity.truncated;
             for event in &activity.events {
                 if event.id.is_empty()
@@ -123,18 +150,97 @@ fn run(connection: &Connection, deadline: Instant, claude: bool) -> Result<(), S
         if roster.values().any(|s| *s == SubagentStatus::Failed) {
             return Err("Provider observed child failure".into());
         }
-        if roster.len() > 1 {
-            return Err("Provider created more than the requested one child".into());
+        if roster.len() > expected {
+            return Err("Provider created more than the requested bounded descendants".into());
         }
         if state.status == Status::Done
             && state.accepted_prompts > ready.accepted_prompts
-            && roster.len() == 1
-            && completed == 1
+            && roster.len() == expected
+            && completed == expected
+            && reported.len() == expected
             && tools > 0
             && canonical_tools > 0
             && canonical_messages > 0
         {
-            println!("PASS provider={} children=1 completed=1 tool_events={tools} commentary_events={commentary} truncated={truncated} canonical_tools={canonical_tools} canonical_messages={canonical_messages} parent_thread_unchanged=true", if claude {"claude"} else {"codex"});
+            let agents: HashMap<_, _> = state
+                .saved
+                .work_periods
+                .iter()
+                .flat_map(|p| &p.subagents)
+                .map(|a| (a.id.clone(), a.clone()))
+                .collect();
+            for agent in agents.values() {
+                if agent.name.trim().is_empty()
+                    || (claude
+                        && (agent.role.as_deref().is_none_or(str::is_empty)
+                            || agent.task.as_deref().is_none_or(str::is_empty)))
+                {
+                    return Err(format!("Missing child metadata: {agent:?}"));
+                }
+            }
+            let saved: SavedSession = serde_json::from_slice(
+                &serde_json::to_vec(&state.saved).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let restored = Snapshot::new(saved);
+            for (id, agent) in &agents {
+                let restored_agent = restored
+                    .saved
+                    .work_periods
+                    .iter()
+                    .flat_map(|p| &p.subagents)
+                    .rev()
+                    .find(|a| &a.id == id)
+                    .ok_or("Restored child missing from roster")?;
+                if serde_json::to_value(agent).map_err(|e| e.to_string())?
+                    != serde_json::to_value(restored_agent).map_err(|e| e.to_string())?
+                {
+                    return Err(format!("Restored child metadata/status changed: {id}"));
+                }
+                if claude {
+                    let live = state
+                        .subagent_activity
+                        .get(id)
+                        .ok_or("Live child activity missing")?;
+                    let historical = restored
+                        .subagent_activity
+                        .get(id)
+                        .ok_or("Restored Claude transcript missing")?;
+                    if restored.subagent_transcript_availability(id)
+                        != SubagentTranscriptAvailability::Restored
+                    {
+                        return Err(format!("Restored child availability is not Restored: {id}"));
+                    }
+                    if historical.items.iter().any(|item| {
+                        matches!(
+                            item["type"].as_str(),
+                            Some("reasoning" | "reasoningMessage")
+                        )
+                    }) {
+                        return Err(format!("Private reasoning persisted for child: {id}"));
+                    }
+                    if historical.items != live.items {
+                        return Err(format!("Restored Claude transcript changed: {id}"));
+                    }
+                    if historical.observed_at.is_some()
+                        || !historical.events.is_empty()
+                        || historical.refreshing
+                    {
+                        return Err(format!("Restore fabricated fresh observations: {id}"));
+                    }
+                }
+            }
+            println!(
+                "PASS provider={} scenario={scenario} children={expected} completed={completed} final_reports={} tool_events={tools} commentary_events={commentary} truncated={truncated} max_child_canonical_tools={canonical_tools} max_child_canonical_messages={canonical_messages} metadata_roundtrip=true claude_metadata={} claude_transcript_restore={} parent_thread_unchanged=true",
+                if claude { "claude" } else { "codex" },
+                reported.len(),
+                if claude {
+                    "verified"
+                } else {
+                    "optional_provider_metadata"
+                },
+                if claude { "verified" } else { "not_applicable" }
+            );
             return Ok(());
         }
     }
@@ -142,18 +248,31 @@ fn run(connection: &Connection, deadline: Instant, claude: bool) -> Result<(), S
 
 fn main() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 6
+    if !matches!(args.len(), 6 | 8)
         || args[0] != "--provider"
         || args[2] != "--cwd"
         || args[4] != "--timeout-seconds"
     {
-        return Err("Usage: GROVE_CONFIG_DIR=<fresh empty dir> native_subagent_activity_smoke --provider codex|claude --cwd <fresh empty dir> --timeout-seconds 180".into());
+        return Err("Usage: GROVE_CONFIG_DIR=<fresh empty dir> native_subagent_activity_smoke --provider codex|claude --cwd <fresh empty dir> --timeout-seconds 180 [--scenario foreground|background|nested]".into());
     }
     let claude = match args[1].as_str() {
         "claude" => true,
         "codex" => false,
         _ => return Err("Unknown provider".into()),
     };
+    let scenario = if args.len() == 8 {
+        if args[6] != "--scenario"
+            || !matches!(args[7].as_str(), "foreground" | "background" | "nested")
+        {
+            return Err("Invalid scenario; use foreground, background, or nested".into());
+        }
+        args[7].as_str()
+    } else {
+        "foreground"
+    };
+    if !claude && scenario != "foreground" {
+        return Err("Background/nested scenarios currently target Claude only".into());
+    }
     let seconds: u64 = args[5].parse().map_err(|_| "Invalid timeout")?;
     if !(120..=180).contains(&seconds) {
         return Err("Timeout must be 120..180 seconds".into());
@@ -190,6 +309,7 @@ fn main() -> Result<(), String> {
         &connection,
         Instant::now() + Duration::from_secs(seconds),
         claude,
+        scenario,
     );
     let shutdown = connection
         .handle

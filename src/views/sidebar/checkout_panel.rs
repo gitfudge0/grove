@@ -2829,6 +2829,7 @@ mod tests {
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
+                claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
                 provider,
@@ -2918,6 +2919,7 @@ mod tests {
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
+                claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
                 provider,
@@ -3627,6 +3629,7 @@ mod tests {
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
+                claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
                 provider,
@@ -3718,6 +3721,49 @@ mod tests {
                 .save(&path)
                 .unwrap();
             eprintln!("Native fixture (provider channels, not live): {path}");
+            // Capture retention states independently of provider channels. The live
+            // fixture above remains the original complete/streaming transcript.
+            for retention in ["awaiting", "unavailable", "restored"] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        let session = sidebar.runtime.read(cx).registry.read(cx).codex(id).cloned().unwrap();
+                        session.update(cx, |session, cx| {
+                            if retention == "awaiting" {
+                                session.state.subagent_activity.clear();
+                            } else if retention == "unavailable" {
+                                session.state = grove_core::codex::Snapshot::new(session.state.saved.clone()).into();
+                            } else {
+                                let mut activity = grove_core::codex::SubagentActivity::default();
+                                activity.items = vec![serde_json::json!({"id":"saved-reply", "type":"agentMessage", "text":"## Saved investigation\n\nThe authentication owner preserves the original request identifier."})];
+                                session.state.subagent_activity.insert("explorer".into(), activity);
+                            }
+                            let (freshness, empty) = super::agent_preview::child_transcript_labels(&session.state, "explorer");
+                            match retention {
+                                "awaiting" => assert_eq!(empty, Some("No child messages received yet")),
+                                "unavailable" => assert_eq!(empty, Some("Historical child messages are unavailable")),
+                                _ => {
+                                    assert!(empty.is_none());
+                                    assert_eq!(freshness, "Saved child transcript · observation time unavailable");
+                                }
+                            }
+                            cx.notify();
+                        });
+                        sidebar.open_agent_peek(id, "explorer".into(), true, window, cx);
+                    });
+                    let _ = window.draw(cx);
+                }).unwrap();
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                let path = format!("/tmp/grove-agent-preview-{label}-{retention}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Native retention fixture (not live): {path}");
+            }
             cx.update_window(window.into(), |_, window, _| window.remove_window())
                 .unwrap();
         }
@@ -3749,6 +3795,7 @@ mod tests {
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
+                claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
                 provider,
@@ -4066,6 +4113,7 @@ mod tests {
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
+                claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
                 provider,

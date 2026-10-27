@@ -823,6 +823,30 @@ impl Actor {
             .find_map(|item| item["claudeAssistantUuid"].as_str().map(str::to_owned));
         let mut state = Snapshot::new(saved);
         state.edit_supported = true;
+        let subagent_tasks = state
+            .saved
+            .claude_subagents
+            .iter()
+            .flat_map(|(id, child)| {
+                child
+                    .task_ids
+                    .iter()
+                    .map(move |task| (task.clone(), id.clone()))
+            })
+            .collect();
+        let child_transcripts = state
+            .saved
+            .claude_subagents
+            .iter()
+            .map(|(id, child)| {
+                let mut transcript = ChildTranscript {
+                    items: child.items.clone(),
+                    ..Default::default()
+                };
+                transcript.transcript.restore(&mut transcript.items);
+                (id.clone(), transcript)
+            })
+            .collect();
         Self {
             state,
             args,
@@ -861,8 +885,8 @@ impl Actor {
             control_id: 0,
             pending: HashMap::new(),
             blocks: HashMap::new(),
-            subagent_tasks: HashMap::new(),
-            child_transcripts: HashMap::new(),
+            subagent_tasks,
+            child_transcripts,
             message_id: String::new(),
             title_generator: crate::session_title::Generator::default(),
             last_persist: Instant::now(),
@@ -1388,6 +1412,7 @@ impl Actor {
         saved
             .work_periods
             .retain(|period| period.start_item < edit.target);
+        saved.retain_claude_subagents();
         let (text, images) = edit.composer_draft.unwrap_or((edit.text, edit.images));
         saved.draft = text;
         saved.draft_images = images;
@@ -1395,6 +1420,10 @@ impl Actor {
         saved.context = None;
         codex::persist(&saved)?;
         self.state.saved = saved;
+        self.subagent_tasks
+            .retain(|_, id| self.state.saved.claude_subagents.contains_key(id));
+        self.child_transcripts
+            .retain(|id, _| self.state.saved.claude_subagents.contains_key(id));
         self.transcript.restore(&mut self.state.saved.items);
         self.last_assistant_uuid = self
             .state
@@ -1555,6 +1584,8 @@ impl Actor {
         self.permission_changes.clear();
         self.blocks.clear();
         self.message_id.clear();
+        self.subagent_tasks.clear();
+        self.child_transcripts.clear();
         self.input_uuid = None;
         self.inline_uuid = None;
         self.context_model = None;
@@ -2136,6 +2167,12 @@ impl Actor {
         );
     }
     fn subagent_message(&mut self, parent: &str, value: &Value) {
+        let canonical = self
+            .subagent_tasks
+            .get(parent)
+            .cloned()
+            .unwrap_or_else(|| parent.into());
+        let parent = canonical.as_str();
         // Child frames must never reach the primary transcript, usage, or turn lifecycle.
         self.state
             .upsert_subagent(parent, None, None, SubagentStatus::Unknown);
@@ -2181,7 +2218,7 @@ impl Actor {
                     }
                 }
             }
-            Some("result") => self.state.upsert_subagent(
+            Some("result") if !self.child_interrupted(parent) => self.state.upsert_subagent(
                 parent,
                 None,
                 None,
@@ -2296,6 +2333,9 @@ impl Actor {
             self.state.expire_interactions(&expired);
             self.state.refresh_interaction_status();
         }
+        if self.child_interrupted(id) {
+            return;
+        }
         self.state.upsert_subagent(
             id,
             None,
@@ -2307,11 +2347,57 @@ impl Actor {
             },
         );
     }
+    fn child_interrupted(&self, id: &str) -> bool {
+        self.state
+            .saved
+            .work_periods
+            .iter()
+            .flat_map(|period| &period.subagents)
+            .any(|agent| agent.id == id && agent.status == SubagentStatus::Interrupted)
+    }
     fn subagent_system_message(&mut self, value: &Value) {
         if value["type"] != "system" {
             return;
         }
         let task = value["task_id"].as_str();
+        let observed_id = value["tool_use_id"]
+            .as_str()
+            .or_else(|| task.and_then(|task| self.subagent_tasks.get(task).map(String::as_str)))
+            .or(task)
+            .map(str::to_owned);
+        if let Some(id) = &observed_id {
+            let known = self
+                .state
+                .saved
+                .work_periods
+                .iter()
+                .any(|period| period.subagents.iter().any(|agent| agent.id == *id));
+            if known || value["task_type"] == "local_agent" || value["subagent_type"].is_string() {
+                let child = self
+                    .state
+                    .saved
+                    .claude_subagents
+                    .entry(id.clone())
+                    .or_default();
+                if let Some(run) = value["run_id"].as_str() {
+                    // A Claude Agent tool invocation has one run. A delayed
+                    // lifecycle frame must not settle a different observed run.
+                    if child
+                        .run_id
+                        .as_deref()
+                        .is_some_and(|current| current != run)
+                    {
+                        return;
+                    }
+                    child.run_id = Some(run.into());
+                }
+                if let Some(task) = task {
+                    if !child.task_ids.iter().any(|old| old == task) {
+                        child.task_ids.push(task.into());
+                    }
+                }
+            }
+        }
         if let Some(task) = task {
             let root = self
                 .state
@@ -2377,16 +2463,25 @@ impl Actor {
         {
             return;
         }
-        let status = match value["subtype"].as_str() {
+        let mut status = match value["subtype"].as_str() {
             Some("task_started") => SubagentStatus::Working,
             Some("task_progress") => SubagentStatus::Unknown,
-            Some("task_notification") => match value["status"].as_str() {
+            Some("task_notification" | "task_updated") => match value["status"]
+                .as_str()
+                .or(value["patch"]["status"].as_str())
+            {
                 Some("completed") => SubagentStatus::Completed,
                 Some("failed") => SubagentStatus::Failed,
+                Some("stopped" | "killed" | "cancelled" | "canceled" | "interrupted") => {
+                    SubagentStatus::Interrupted
+                }
                 _ => SubagentStatus::Unknown,
             },
             _ => return,
         };
+        if self.child_interrupted(&id) {
+            status = SubagentStatus::Interrupted;
+        }
         let activity = value["summary"]
             .as_str()
             .filter(|s| !s.is_empty())
@@ -2396,21 +2491,16 @@ impl Actor {
         self.state.set_subagent_metadata(
             &id,
             value["subagent_type"].as_str(),
-            value["description"].as_str(),
+            (value["subtype"] == "task_started")
+                .then(|| value["description"].as_str())
+                .flatten(),
         );
-        if value["subtype"] == "task_notification" && status == SubagentStatus::Unknown {
-            // A stopped child is no longer working; activity-only updates use
-            // Unknown as a sentinel, so explicit lifecycle updates set it here.
-            if let Some(agent) = self
-                .state
-                .saved
-                .work_periods
-                .iter_mut()
-                .rev()
-                .flat_map(|period| period.subagents.iter_mut())
-                .find(|agent| agent.id == id)
+        if value["subtype"] == "task_notification" {
+            if let Some(report) = value["handback_report"]["text"]
+                .as_str()
+                .or(value["handbackReport"]["text"].as_str())
             {
-                agent.status = SubagentStatus::Unknown;
+                self.subagent_report(&id, report);
             }
         }
     }
@@ -3343,6 +3433,9 @@ mod tests {
     }
     fn actor() -> Actor {
         let saved:SavedSession=serde_json::from_value(json!({"key":"claude-test","provider":"claude","project":"test","cwd":"/tmp","label":"Claude","roots":[],"thread_id":null,"items":[]})).unwrap();
+        actor_with_saved(saved)
+    }
+    fn actor_with_saved(saved: SavedSession) -> Actor {
         let (_, input) = mpsc::channel();
         let (updates, _) = crate::latest::channel();
         Actor::new(
@@ -4055,6 +4148,162 @@ mod tests {
     }
 
     #[test]
+    fn background_child_reports_and_terminal_patches_reach_the_roster() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        let spawn = json!({"id":"child","name":"Agent","input":{"subagent_type":"general-purpose","description":"Inspect directory"}});
+        actor.register_subagent(&spawn);
+        actor.message(json!({"type":"system","subtype":"task_started","task_id":"task","tool_use_id":"child","run_id":"run","task_type":"local_agent"})).unwrap();
+        let done = json!({"type":"system","subtype":"task_notification","task_id":"task","tool_use_id":"child","run_id":"run","status":"completed","handback_report":{"text":"FINAL_REPORT"}});
+        actor.message(done.clone()).unwrap();
+        actor.message(done).unwrap();
+        assert_eq!(
+            actor.state.subagent_activity["child"]
+                .items
+                .iter()
+                .filter(|item| item["type"] == "agentMessage" && item["text"] == "FINAL_REPORT")
+                .count(),
+            1
+        );
+        actor.register_subagent(&json!({"id":"stopped","name":"Task","input":{}}));
+        actor.message(json!({"type":"system","subtype":"task_started","task_id":"stopped-task","tool_use_id":"stopped","run_id":"stopped-run","task_type":"local_agent"})).unwrap();
+        actor.message(json!({"type":"system","subtype":"task_updated","task_id":"stopped-task","run_id":"stopped-run","patch":{"status":"killed"}})).unwrap();
+        actor.register_subagent(&json!({"id":"stopped","name":"Task","input":{}}));
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[1].status,
+            SubagentStatus::Interrupted
+        );
+        actor.subagent_tool_result(&json!({"tool_use_id":"stopped","is_error":false}), None);
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[1].status,
+            SubagentStatus::Interrupted
+        );
+        actor.message(json!({"type":"system","subtype":"task_notification","task_id":"task","run_id":"old-run","status":"failed","handback_report":{"text":"STALE"}})).unwrap();
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Completed
+        );
+        assert!(!actor.state.subagent_activity["child"]
+            .items
+            .iter()
+            .any(|item| item["text"] == "STALE"));
+        actor
+            .message(json!({"type":"result","parent_tool_use_id":"stopped","is_error":false}))
+            .unwrap();
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[1].status,
+            SubagentStatus::Interrupted
+        );
+        for (index, (status, expected)) in [
+            ("completed", SubagentStatus::Completed),
+            ("failed", SubagentStatus::Failed),
+            ("killed", SubagentStatus::Interrupted),
+            ("stopped", SubagentStatus::Interrupted),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("patch-{index}");
+            actor.register_subagent(&json!({"id":id,"name":"Agent","input":{}}));
+            actor.message(json!({"type":"system","subtype":"task_started","task_id":id,"tool_use_id":id,"run_id":id,"task_type":"local_agent"})).unwrap();
+            let subtype = if status == "stopped" {
+                "task_notification"
+            } else {
+                "task_updated"
+            };
+            actor.message(json!({"type":"system","subtype":subtype,"task_id":id,"run_id":id,"status":status,"patch":{"status":status}})).unwrap();
+            assert_eq!(
+                actor.state.saved.work_periods[0].subagents[index + 2].status,
+                expected
+            );
+        }
+        actor.message(json!({"type":"system","subtype":"task_started","task_id":"nested","tool_use_id":"nested-tool","parent_task_id":"task","run_id":"nested-run","task_type":"local_agent","subagent_type":"Explore","description":"Nested scan"})).unwrap();
+        let nested_report = json!({"type":"system","subtype":"task_notification","task_id":"nested","run_id":"nested-run","status":"completed","handback_report":{"text":"NESTED_FINAL"}});
+        actor.message(nested_report.clone()).unwrap();
+        actor.message(nested_report).unwrap();
+        assert_eq!(
+            actor.state.subagent_activity["nested-tool"]
+                .items
+                .iter()
+                .filter(|item| item["type"] == "agentMessage" && item["text"] == "NESTED_FINAL")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn child_history_roundtrip_restores_full_messages_tools_and_alias_updates() {
+        use crate::codex::SubagentTranscriptAvailability as Availability;
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.register_subagent(&json!({"id":"child","name":"Agent","input":{"name":"Ada","subagent_type":"Explore","description":"Inspect directory"}}));
+        assert_eq!(
+            actor.state.subagent_transcript_availability("child"),
+            Availability::Awaiting
+        );
+        actor.message(json!({"type":"system","subtype":"task_started","task_id":"task","tool_use_id":"child","run_id":"run","task_type":"local_agent"})).unwrap();
+        let text = "Full provider-visible report. ".repeat(200);
+        actor.message(json!({"type":"assistant","parent_tool_use_id":"child","message":{"id":"message","content":[{"type":"text","text":text},{"type":"thinking","thinking":"PRIVATE"},{"type":"tool_use","id":"read","name":"Read","input":{"file_path":"file"}}]}})).unwrap();
+        let pending = actor_with_saved(
+            serde_json::from_slice(&serde_json::to_vec(&actor.state.saved).unwrap()).unwrap(),
+        );
+        assert_eq!(
+            pending.state.subagent_activity["child"].items[1]["status"],
+            "inProgress"
+        );
+        assert_eq!(
+            pending.state.subagent_snapshot("child").status,
+            Status::Idle
+        );
+        actor.message(json!({"type":"user","parent_tool_use_id":"child","message":{"content":[{"type":"tool_result","tool_use_id":"read","content":"full tool output"}]}})).unwrap();
+        assert_eq!(
+            actor.state.subagent_transcript_availability("child"),
+            Availability::Live
+        );
+        let bytes = serde_json::to_vec(&actor.state.saved).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE"));
+        let mut restored = actor_with_saved(codex::recover_saved_for_test(&actor.state.saved));
+        assert_eq!(
+            restored.state.subagent_transcript_availability("child"),
+            Availability::Restored
+        );
+        assert_eq!(
+            restored.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Unknown
+        );
+        assert_eq!(
+            restored.state.saved.work_periods[0].subagents[0].name,
+            "Ada"
+        );
+        assert_eq!(
+            restored.state.subagent_activity["child"].items,
+            actor.state.subagent_activity["child"].items
+        );
+        assert!(restored.state.subagent_activity["child"]
+            .observed_at
+            .is_none());
+        assert!(restored.state.subagent_activity["child"].events.is_empty());
+        restored.message(json!({"type":"system","subtype":"task_notification","task_id":"task","run_id":"run","status":"completed","handback_report":{"text":text}})).unwrap();
+        assert_eq!(restored.state.subagent_activity["child"].items.len(), 2);
+        assert_eq!(
+            restored.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Completed
+        );
+        let complete = actor_with_saved(codex::recover_saved_for_test(&restored.state.saved));
+        assert_eq!(
+            complete.state.saved.work_periods[0].subagents[0].status,
+            SubagentStatus::Completed
+        );
+        assert_eq!(complete.state.subagent_activity["child"].items.len(), 2);
+        assert!(complete
+            .state
+            .saved
+            .fresh_conversation()
+            .claude_subagents
+            .is_empty());
+    }
+
+    #[test]
     fn subagents_track_live_nested_work_without_primary_state_pollution() {
         let mut actor = actor();
         actor.state.begin_work();
@@ -4131,6 +4380,13 @@ mod tests {
         actor.block("agent", &json!({"type":"tool_use","id":"agent","name":"Task","input":{"description":"Review changes"}}));
         actor.message(json!({"type":"system","subtype":"task_started","task_id":"sdk-task","tool_use_id":"agent","task_type":"local_agent","subagent_type":"Reviewer","description":"Review changes"})).unwrap();
         actor.message(json!({"type":"system","subtype":"task_progress","task_id":"sdk-task","tool_use_id":"agent","summary":"Checking error handling"})).unwrap();
+        actor.message(json!({"type":"system","subtype":"task_progress","task_id":"sdk-task","tool_use_id":"agent","description":"Running List files tool"})).unwrap();
+        assert_eq!(
+            actor.state.saved.work_periods[0].subagents[0]
+                .task
+                .as_deref(),
+            Some("Review changes")
+        );
         actor.block("shell-tool", &json!({"type":"tool_use","id":"shell-tool","name":"Bash","input":{"command":"sleep 2","description":"Run a two-second timing probe"}}));
         actor.message(json!({"type":"system","subtype":"task_started","task_id":"shell","run_id":"shell-run","tool_use_id":"shell-tool","task_type":"local_bash","is_backgrounded":true,"description":"Run a two-second timing probe"})).unwrap();
         actor.message(json!({"type":"system","subtype":"task_progress","task_id":"shell","tool_use_id":"shell-tool","summary":"Running shell"})).unwrap();
@@ -4138,7 +4394,7 @@ mod tests {
         assert_eq!(actor.state.saved.work_periods[0].subagents.len(), 1);
         assert_eq!(
             actor.state.saved.work_periods[0].subagents[0].activity,
-            "Checking error handling"
+            "Running List files tool"
         );
         actor.message(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent","content":"Launched agent","is_error":false}]},"tool_use_result":{"isAsync":true,"status":"async_launched"}})).unwrap();
         assert_eq!(
@@ -4158,7 +4414,7 @@ mod tests {
         actor.message(json!({"type":"system","subtype":"task_notification","task_id":"sdk-task","status":"stopped"})).unwrap();
         assert_eq!(
             actor.state.saved.work_periods[0].subagents[0].status,
-            SubagentStatus::Unknown
+            SubagentStatus::Interrupted
         );
     }
 
@@ -4916,6 +5172,17 @@ mod tests {
             "sonnet".into(),
             "old launch prompt".into(),
         ];
+        actor
+            .state
+            .saved
+            .claude_subagents
+            .insert("old-child".into(), codex::SavedClaudeSubagent::default());
+        actor
+            .subagent_tasks
+            .insert("old-task".into(), "old-child".into());
+        actor
+            .child_transcripts
+            .insert("old-child".into(), ChildTranscript::default());
         let before = actor.state.saved.clone();
         let mut restored = None;
         actor
@@ -4924,6 +5191,9 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        assert!(actor.subagent_tasks.is_empty());
+        assert!(actor.child_transcripts.is_empty());
+        assert!(actor.state.saved.claude_subagents.is_empty());
         let restored = restored.unwrap();
         assert_eq!(restored.key, before.key);
         assert_eq!(restored.cwd, before.cwd);

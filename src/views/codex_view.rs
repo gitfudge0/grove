@@ -11767,6 +11767,7 @@ mod tests {
                         session.state.saved.provider = provider;
                         session.state.status = Status::Working;
                         let mut activity = codex::SubagentActivity::default();
+                        activity.observed_at = Some(std::time::Instant::now());
                         activity.items = (0..32).map(|index| json!({
                             "id": format!("child-{index}"), "type": "agentMessage",
                             "text": format!("Step {index}\n\nDetailed child response.\n\nMore details.")
@@ -11859,6 +11860,7 @@ mod tests {
             view.session.update(cx, |session, cx| {
                 session.state.status = Status::Working;
                 let mut activity = codex::SubagentActivity::default();
+                activity.observed_at = Some(std::time::Instant::now());
                 activity.items = (0..24).map(|index| json!({"id":format!("child-{index}"),"type":"agentMessage","text":format!("## Step {index}\n\nDetailed investigation with **markdown** and `code`.\n\nAnother paragraph to exercise transcript scrolling.")})).collect();
                 activity.items.push(json!({"id":"child-command","type":"commandExecution","command":"cargo test retry","status":"inProgress","aggregatedOutput":"running tests"}));
                 session.state.subagent_activity.insert("child".into(), activity);
@@ -11905,6 +11907,60 @@ mod tests {
             let state = view.session.read(cx).state.subagent_snapshot("child");
             assert!(!tool_is_running(&state, 24));
         });
+    }
+
+    #[gpui::test]
+    fn restored_child_preview_exposes_saved_work_without_live_shimmer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.preview_child = Some("saved-child".into());
+                    view.expanded.clear();
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        let mut activity = codex::SubagentActivity::default();
+                        activity.items = vec![
+                            json!({"id":"saved-commentary", "type":"agentMessage", "phase":"commentary", "text":"Inspecting the saved retry path."}),
+                            json!({"id":"saved-tool", "type":"commandExecution", "command":"cargo test retry", "status":"inProgress", "aggregatedOutput":"running tests before disconnect"}),
+                            json!({"id":"saved-answer", "type":"agentMessage", "phase":"final_answer", "text":"The saved result remains available."}),
+                        ];
+                        session.state.subagent_activity.insert("saved-child".into(), activity);
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            draw(cx);
+            let work = cx
+                .debug_bounds("codex-work-header-0")
+                .expect("restored child work remains reachable through the shared disclosure");
+            cx.simulate_click(work.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(
+                cx.debug_bounds("codex-message-anchor-0").is_some(),
+                "{provider:?}: saved commentary expands"
+            );
+            let tool = cx
+                .debug_bounds("codex-toggle-tool-1")
+                .expect("saved child tool appears after expanding its work");
+            cx.simulate_click(tool.center(), gpui::Modifiers::default());
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                let state = view.session.read(cx).state.subagent_snapshot("saved-child");
+                assert_eq!(state.status, Status::Idle);
+                assert!(
+                    !tool_is_running(&state, 1),
+                    "{provider:?}: saved in-progress status does not imply live work"
+                );
+                assert!(view
+                    .expanded
+                    .contains(&tool_expansion_key(&state.saved.items[1], 1)));
+            });
+        }
     }
 
     #[gpui::test]
@@ -12226,6 +12282,7 @@ mod tests {
         let mut state = Snapshot::new(SavedSession {
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             claude_resume: None,
+            claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),
             pending_edit: None,
             provider: grove_core::codex::Provider::Codex,

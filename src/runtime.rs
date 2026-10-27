@@ -539,6 +539,7 @@ impl Runtime {
         let saved = grove_core::codex::SavedSession {
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             claude_resume: None,
+            claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),
             pending_edit: None,
             provider,
@@ -1747,6 +1748,7 @@ mod tests {
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 claude_resume: None,
+                claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
                 provider: grove_core::codex::Provider::Codex,
