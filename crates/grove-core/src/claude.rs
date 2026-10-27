@@ -4131,7 +4131,10 @@ mod tests {
         actor.block("agent", &json!({"type":"tool_use","id":"agent","name":"Task","input":{"description":"Review changes"}}));
         actor.message(json!({"type":"system","subtype":"task_started","task_id":"sdk-task","tool_use_id":"agent","task_type":"local_agent","subagent_type":"Reviewer","description":"Review changes"})).unwrap();
         actor.message(json!({"type":"system","subtype":"task_progress","task_id":"sdk-task","tool_use_id":"agent","summary":"Checking error handling"})).unwrap();
-        actor.message(json!({"type":"system","subtype":"task_started","task_id":"shell","task_type":"local_bash","description":"Run server"})).unwrap();
+        actor.block("shell-tool", &json!({"type":"tool_use","id":"shell-tool","name":"Bash","input":{"command":"sleep 2","description":"Run a two-second timing probe"}}));
+        actor.message(json!({"type":"system","subtype":"task_started","task_id":"shell","run_id":"shell-run","tool_use_id":"shell-tool","task_type":"local_bash","is_backgrounded":true,"description":"Run a two-second timing probe"})).unwrap();
+        actor.message(json!({"type":"system","subtype":"task_progress","task_id":"shell","tool_use_id":"shell-tool","summary":"Running shell"})).unwrap();
+        actor.message(json!({"type":"system","subtype":"task_notification","task_id":"shell","status":"completed","summary":"Shell completed"})).unwrap();
         assert_eq!(actor.state.saved.work_periods[0].subagents.len(), 1);
         assert_eq!(
             actor.state.saved.work_periods[0].subagents[0].activity,

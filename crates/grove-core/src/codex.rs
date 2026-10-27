@@ -1280,6 +1280,28 @@ impl Snapshot {
                 SubagentStatus::Unknown,
             );
         }
+        if saved.provider == Provider::Claude {
+            // Older snapshots can contain shell tasks in the child roster. Only
+            // discard entries whose primary transcript proves they are tools;
+            // missing transcript data is not evidence that a child is invalid.
+            let tools: HashSet<&str> = saved
+                .items
+                .iter()
+                .filter_map(|item| {
+                    let non_agent = item["type"] == "commandExecution"
+                        || (item["type"] == "mcpToolCall"
+                            && item["tool"]
+                                .as_str()
+                                .is_some_and(|tool| !matches!(tool, "Agent" | "Task")));
+                    non_agent.then(|| item["id"].as_str()).flatten()
+                })
+                .collect();
+            for period in &mut saved.work_periods {
+                period
+                    .subagents
+                    .retain(|agent| !tools.contains(agent.id.as_str()));
+            }
+        }
         // Monotonic clocks cannot survive recovery. Preserve bounds without inventing time.
         for period in &mut saved.work_periods {
             if period.end_item.is_none() {
@@ -5801,6 +5823,44 @@ mod tests {
             native_config_version: 1,
             composer: ComposerSettings::default(),
             context: None,
+        }
+    }
+    #[test]
+    fn claude_recovery_removes_shell_tools_misidentified_as_children() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let mut saved = saved();
+            saved.provider = provider;
+            saved.items = vec![
+                json!({"id":"shell","type":"commandExecution","command":"sleep 2"}),
+                json!({"id":"read","type":"mcpToolCall","tool":"Read"}),
+                json!({"id":"agent","type":"mcpToolCall","tool":"Agent"}),
+                json!({"id":"task","type":"mcpToolCall","tool":"Task"}),
+                json!({"id":"legacy","type":"subAgentActivity","kind":"started","agentThreadId":"shell"}),
+            ];
+            let mut period = WorkPeriod {
+                start_item: 0,
+                end_item: Some(5),
+                duration_ms: None,
+                subagents: Vec::new(),
+            };
+            for id in ["shell", "read", "agent", "task", "unmatched"] {
+                record_subagent(&mut period, id, None, None, SubagentStatus::Unknown);
+            }
+            saved.work_periods.push(period);
+            let recovered = Snapshot::new(saved);
+            let ids = recovered.saved.work_periods[0]
+                .subagents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                if provider == Provider::Claude {
+                    vec!["agent", "task", "unmatched"]
+                } else {
+                    vec!["shell", "read", "agent", "task", "unmatched"]
+                }
+            );
         }
     }
     fn reference(id: &str) -> ReferenceDraft {
