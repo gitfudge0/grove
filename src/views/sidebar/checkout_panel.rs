@@ -4220,7 +4220,20 @@ mod tests {
                 cx.update(|window, cx| {
                     let _ = window.draw(cx);
                 });
-                let preview = cx.debug_bounds("agent-peek").unwrap();
+                let preview = cx.debug_bounds("agent-peek").unwrap_or_else(|| {
+                    let (open, visible, source, pane) = sidebar.read_with(cx, |sidebar, cx| {
+                        (
+                            sidebar.checkout_panel.peek.is_some(),
+                            sidebar.checkout_panel.agents_visible,
+                            sidebar.checkout_panel.agent_bounds.get("old-running").map(|b| b.get()),
+                            sidebar.codex_views.get(&id).map(|view| view.read(cx).transcript_bounds.get()),
+                        )
+                    });
+                    panic!(
+                        "{} preview missing at width {width} and scale {scale}: open={open}, visible={visible}, source={source:?}, pane={pane:?}",
+                        provider.label()
+                    );
+                });
                 assert_eq!(
                     cx.update(|_, cx| super::super::super::inline_html::native_exclusion(cx)),
                     Some(preview),

@@ -8254,7 +8254,10 @@ mod tests {
                 let status = cx.debug_bounds(status).unwrap();
                 assert!(status.left() >= context_bounds.right());
                 assert!(status.bottom() <= title.top());
-                assert!(status.right() <= title.right());
+                assert!(
+                    status.right() <= title.right(),
+                    "status {status:?} extends past title {title:?} at viewport width {width}"
+                );
                 let changes = cx.debug_bounds(diff).unwrap();
                 assert_eq!(changes.left() - branch_bounds.right(), gpui::px(SPACE_MD));
                 assert!(changes.right() <= rail.right());

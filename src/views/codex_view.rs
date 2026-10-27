@@ -11040,7 +11040,11 @@ mod tests {
             cx.simulate_keystrokes("right");
             draw(cx);
             view.read_with(cx, |view, cx| assert_eq!(view.input.read(cx).cursor(), 3));
-            cx.simulate_keystrokes("cmd-a cmd-c");
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-a cmd-c"
+            } else {
+                "ctrl-a ctrl-c"
+            });
             cx.update(|_, cx| {
                 assert_eq!(
                     cx.read_from_clipboard().unwrap().text().as_deref(),
@@ -11077,7 +11081,11 @@ mod tests {
                     format!("{source}日本語")
                 );
             });
-            cx.simulate_keystrokes("cmd-z");
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-z"
+            } else {
+                "ctrl-z"
+            });
             draw(cx);
             view.read_with(cx, |view, cx| {
                 assert_eq!(
@@ -11086,7 +11094,11 @@ mod tests {
                     "presentation does not add undo edits"
                 );
             });
-            cx.simulate_keystrokes("cmd-shift-z");
+            cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-shift-z"
+            } else {
+                "ctrl-y"
+            });
             draw(cx);
             view.read_with(cx, |view, cx| {
                 assert_eq!(
@@ -18443,7 +18455,7 @@ mod tests {
             cx.simulate_keystrokes(if cfg!(target_os = "macos") {
                 "cmd-shift-z"
             } else {
-                "ctrl-shift-z"
+                "ctrl-y"
             });
             draw(cx);
             view.read_with(cx, |view, cx| {
