@@ -2426,6 +2426,7 @@ impl Sidebar {
     pub(super) fn html_overlay_open(&self) -> bool {
         self.confirmation_open()
             || self.header_tasks.open.is_some()
+            || self.history.is_some()
             || self.diff_viewer.is_some()
             || self.project_panel.is_some()
             || self.project_setup.is_some()
@@ -12018,7 +12019,7 @@ for line in sys.stdin:
                     "blocking confirmations still hide native HTML"
                 );
                 sidebar.project_decision = false;
-            })
+            });
         });
         let popup = cx.debug_bounds("project-actions-popup").unwrap();
         cx.simulate_mouse_move(popup.center(), None, gpui::Modifiers::default());
