@@ -11,3 +11,7 @@ retries = { backoff = "fixed", count = 2 }
 # ...but a test that only passes on retry is still a bug: `flaky-result`
 # makes those fail the run instead of quietly passing.
 flaky-result = "fail"
+
+# A stalled shell or native UI test must fail the run rather than occupy a
+# runner until GitHub's six-hour job limit. Keep the normal slow-test warning.
+slow-timeout = { period = "60s", terminate-after = 2 }

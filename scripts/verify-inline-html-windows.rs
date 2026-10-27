@@ -147,6 +147,14 @@ fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
 }
 
 fn main() {
+    // The message pump's deadline cannot fire while a native COM/Win32 call
+    // is blocked (for example in a modal loop). Bound the whole probe too.
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(120));
+        eprintln!("WebView2 probe exceeded its 120-second process deadline");
+        std::process::exit(1);
+    });
+    eprintln!("WebView2 probe: initializing host and document");
     let _browser_launcher = backend::open_in_browser;
     use windows::{
         core::w,
@@ -198,6 +206,7 @@ fn main() {
     );
     pump_until(|| document.status() != LoadStatus::Loading);
     assert_eq!(document.status(), LoadStatus::Ready);
+    eprintln!("WebView2 probe: checking security and clipping");
     assert!(document.failure_reason().is_none());
     let viewport = bounds(20., 30., 600., 400.);
     let clip = bounds(40., 60., 300., 180.);
@@ -262,6 +271,7 @@ fn main() {
         let _ = DeleteObject(region.into());
     }
     backend::probe_focus(&document);
+    eprintln!("WebView2 probe: checking keyboard focus and file chooser");
     evaluate(&document, "document.getElementById('edit').focus()");
     unsafe {
         SendMessageW(
@@ -323,6 +333,7 @@ fn main() {
         let _ = SetFocus(Some(host_editor));
     }
     document.hide();
+    eprintln!("WebView2 probe: checking retained surface lifecycle");
     assert_eq!(
         unsafe { GetFocus() },
         host_editor,
@@ -355,6 +366,7 @@ fn main() {
     pump_until(|| large.status() != LoadStatus::Loading);
     assert_eq!(large.status(), LoadStatus::Ready);
     drop(large);
+    eprintln!("WebView2 probe: checking integrated reports");
     verify_integrated_report(&window, parent);
     unsafe {
         DestroyWindow(parent).unwrap();
