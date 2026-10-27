@@ -1,3 +1,23 @@
+# Grove 1.1.8
+
+## Checkout and history
+
+- Browse the current branch’s commit history, inspect commit details and changed files, and switch between split and unified diffs without leaving the conversation.
+- Keep embedded HTML visible beneath project menus and block it while branch history is open.
+
+## Agents and conversations
+
+- Choose speed per conversation for Codex and Claude Code; the saved setting applies on the next turn.
+- Check installed and available Codex, Claude Code, and OpenCode versions in Settings, update supported installations, or see instructions for externally managed installations.
+- Preserve Claude subagent activity and lifecycle details in previews, and avoid showing restored tool entries as agents.
+- Zoom and pan Mermaid diagrams in Codex and Claude conversations, with Fit and keyboard controls.
+
+## Workspace polish
+
+- Clarify sidebar hierarchy and keep worktree removal prompts from shifting the layout.
+- Refine workspace switcher highlights, effort slider rendering, and commit history layout and interactions.
+- Restore workspace icon alignment in fullscreen while preserving the switcher highlight.
+
 # Grove 1.1.7
 
 ## Markdown composer

@@ -449,6 +449,9 @@ impl Shell {
                     .h_full()
                     .pt(rpx(APPBAR_TOP_INSET))
                     .px(rpx(SIDEBAR_CONTENT_INSET))
+                    .when(fullscreen && workspace_in_rail, |segment| {
+                        segment.pl(rpx(SIDEBAR_CONTENT_INSET - SPACE_2XL))
+                    })
                     .flex_shrink_0()
                     .when(
                         collapsed || fullscreen && (!rail_visible || grid || workspace_in_appbar),
