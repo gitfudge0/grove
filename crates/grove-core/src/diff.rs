@@ -746,7 +746,7 @@ fn parse_hunk_header(rest: &str) -> Option<(u32, u32, String)> {
 }
 
 /// Preamble lines are skipped by virtue of appearing before any `@@` line opens a hunk.
-fn parse_patch(diff_text: &str) -> Patch {
+pub(crate) fn parse_patch(diff_text: &str) -> Patch {
     if diff_text.contains("Binary files") {
         return Patch::Binary;
     }

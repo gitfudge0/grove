@@ -68,6 +68,7 @@ impl Sidebar {
         {
             return;
         }
+        self.dismiss_branch_peek(window, cx);
         self.dismiss_agent_peek(window, cx);
         self.dismiss_plan_peek(window, cx);
         self.checkout_panel.script_peek_task = None;

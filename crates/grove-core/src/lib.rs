@@ -19,6 +19,7 @@ pub mod env_path;
 pub mod error;
 pub mod git;
 pub mod highlight;
+pub mod history;
 pub mod identity;
 pub mod interaction;
 pub mod issues;

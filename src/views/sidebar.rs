@@ -1,5 +1,7 @@
 //! Workspace-scoped navigation. UI state is kept per workspace while processes keep running.
 mod agent_preview;
+mod branch_history;
+mod branch_preview;
 mod checkout_panel;
 mod collapsed;
 mod content;
@@ -18,6 +20,7 @@ use super::{motion, rpx, terminal_view::TerminalView, tokens::*};
 use crate::{
     activity::ActivityState,
     entities::{
+        branch_history::BranchHistoryState,
         diff_viewer::DiffViewerState,
         session_registry::{SessionId, SessionMeta},
         workspace_state::{clamp_sidebar_width, TreeSnapshot},
@@ -317,6 +320,19 @@ enum Action {
     Retry(SessionId),
     OpenDiff(SessionId),
     OpenWorktreeDiff(String),
+    OpenHistory(String),
+    OpenBranchHistory(String, Option<Selection>, Option<[u8; 32]>),
+    RefreshBranchPreview,
+    CloseHistory,
+    RefreshHistory,
+    MoreHistory,
+    SelectCommit(String),
+    ExpandCommit,
+    HistoryGraph,
+    HistoryDiffMode(crate::entities::branch_history::HistoryDiffMode),
+    ToggleHistoryMetadata,
+    CopyHistoryCommit,
+    SelectHistoryFile(String),
     CloseDiff,
     SelectDiffFile(String),
     RefreshDiff,
@@ -454,6 +470,18 @@ pub struct Sidebar {
     content_error: Option<String>,
     git_init_pending: Option<String>,
     worktree_readiness: HashMap<String, (Instant, Option<WorktreeReadiness>)>,
+    branch_peek: Option<branch_preview::BranchPeek>,
+    branch_peek_cache: Option<branch_preview::BranchPeekCache>,
+    branch_peek_task: Option<gpui::Task<()>>,
+    branch_entry: Option<(String, Option<[u8; 32]>)>,
+    branch_entry_focus: FocusHandle,
+    branch_entry_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    history_hover: branch_history::HistoryHover,
+    history: Option<Entity<BranchHistoryState>>,
+    history_observer: Option<gpui::Subscription>,
+    history_focus: FocusHandle,
+    history_return_focus: Option<FocusHandle>,
+    history_selection: Option<Selection>,
     diff_viewer: Option<Entity<DiffViewerState>>,
     diff_focus: FocusHandle,
     diff_return_focus: Option<FocusHandle>,
@@ -656,6 +684,18 @@ impl Sidebar {
             content_error: None,
             git_init_pending: None,
             worktree_readiness: HashMap::new(),
+            branch_peek: None,
+            branch_peek_cache: None,
+            branch_peek_task: None,
+            branch_entry: None,
+            branch_entry_focus: cx.focus_handle().tab_stop(true),
+            branch_entry_bounds: std::rc::Rc::default(),
+            history_hover: branch_history::HistoryHover::default(),
+            history: None,
+            history_observer: None,
+            history_focus: cx.focus_handle(),
+            history_return_focus: None,
+            history_selection: None,
             diff_viewer: None,
             diff_focus: cx.focus_handle(),
             diff_return_focus: None,
@@ -788,6 +828,14 @@ impl Sidebar {
             self.focus.focus(window, cx);
         }
         if active != self.active_workspace {
+            self.branch_peek = None;
+            self.branch_peek_task = None;
+            self.branch_entry = None;
+            self.history_hover = branch_history::HistoryHover::default();
+            self.history = None;
+            self.history_observer = None;
+            self.history_selection = None;
+            self.history_return_focus = None;
             self.zen_return = None;
             self.saved.insert(
                 self.active_workspace,
@@ -1961,8 +2009,10 @@ impl Sidebar {
                 }
             })
             .when(
-                !(matches!(&action, Action::ProjectFlyout(_))
-                    || icon_rail && matches!(&action, Action::Select(Selection::Session(_)))),
+                !(matches!(
+                    &action,
+                    Action::ProjectFlyout(_) | Action::SelectCommit(_) | Action::ExpandCommit
+                ) || icon_rail && matches!(&action, Action::Select(Selection::Session(_)))),
                 |control| {
                     control.tooltip(move |window, cx| {
                         crate::views::components::tooltip(tooltip_label.clone(), window)
@@ -2039,6 +2089,17 @@ impl Sidebar {
             })
     }
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        if self
+            .history_selection
+            .as_ref()
+            .is_some_and(|owner| owner != &selection)
+        {
+            self.history_hover = branch_history::HistoryHover::default();
+            self.history = None;
+            self.history_observer = None;
+            self.history_selection = None;
+            self.history_return_focus = None;
+        }
         self.dismiss_project_context(cx);
         self.initial_selection_pending = false;
         self.pending_canvas_focus = None;
@@ -2373,6 +2434,7 @@ impl Sidebar {
     pub(crate) fn navigation_available(&self) -> bool {
         !self.confirmation_open()
             && self.header_tasks.open.is_none()
+            && self.history.is_none()
             && self.diff_viewer.is_none()
             && self.project_panel.is_none()
             && self.project_setup.is_none()
@@ -3325,6 +3387,101 @@ impl Sidebar {
                     return;
                 };
                 self.act(Action::OpenWorktreeDiff(path), window, cx);
+            }
+            Action::OpenBranchHistory(path, selection, identity) => {
+                if self.selection == selection
+                    && self.branch_entry.as_ref() == Some(&(path.clone(), identity))
+                {
+                    self.branch_entry_focus.focus(window, cx);
+                    self.act(Action::OpenHistory(path), window, cx);
+                }
+            }
+            Action::RefreshBranchPreview => {
+                if let Some(cache) = &self.branch_peek_cache {
+                    cache.data.update(cx, BranchHistoryState::reload);
+                }
+            }
+            Action::OpenHistory(path) => {
+                self.history_hover = branch_history::HistoryHover::default();
+                self.dismiss_branch_peek(window, cx);
+                self.dismiss_agent_peek(window, cx);
+                let path = crate::paths::normalize_wt_path(&path).to_string();
+                let history = cx.new(|cx| BranchHistoryState::new(path, cx));
+                self.history_observer = Some(cx.observe(&history, |_, _, cx| cx.notify()));
+                self.history = Some(history);
+                self.history_selection = self.selection.clone();
+                self.history_return_focus = window.focused(cx);
+                self.history_focus.focus(window, cx);
+            }
+            Action::CloseHistory => {
+                self.history_hover = branch_history::HistoryHover::default();
+                self.history = None;
+                self.history_observer = None;
+                self.history_selection = None;
+                if let Some(focus) = self.history_return_focus.take() {
+                    focus.focus(window, cx);
+                }
+            }
+            Action::HistoryGraph => {
+                if let Some(history) = &self.history {
+                    history.update(cx, BranchHistoryState::collapse);
+                }
+            }
+            Action::RefreshHistory => {
+                self.history_hover = branch_history::HistoryHover::default();
+                if let Some(history) = &self.history {
+                    history.update(cx, BranchHistoryState::reload);
+                }
+            }
+            Action::MoreHistory => {
+                self.history_hover = branch_history::HistoryHover::default();
+                if let Some(history) = &self.history {
+                    history.update(cx, BranchHistoryState::more);
+                }
+            }
+            Action::SelectCommit(id) => {
+                self.pin_history_card();
+                if let Some(history) = &self.history {
+                    history.update(cx, |history, cx| history.select(id, cx));
+                }
+            }
+            Action::ExpandCommit => {
+                self.pin_history_card();
+                if let Some(history) = &self.history {
+                    history.update(cx, BranchHistoryState::expand);
+                }
+            }
+            Action::HistoryDiffMode(mode) => {
+                if let Some(history) = &self.history {
+                    history.update(cx, |history, cx| history.set_diff_mode(mode, cx));
+                }
+            }
+            Action::ToggleHistoryMetadata => {
+                if let Some(history) = &self.history {
+                    history.update(cx, BranchHistoryState::toggle_metadata);
+                }
+            }
+            Action::CopyHistoryCommit => {
+                if let Some(id) = self
+                    .history
+                    .as_ref()
+                    .and_then(|history| history.read(cx).selected.clone())
+                {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(id));
+                }
+            }
+            Action::SelectHistoryFile(path) => {
+                if let Some(history) = &self.history {
+                    let file = history
+                        .read(cx)
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.files.iter().find(|f| f.path == path))
+                        .cloned();
+                    if let Some(file) = file {
+                        history.update(cx, |history, cx| history.file(file, cx));
+                    }
+                }
             }
             Action::OpenWorktreeDiff(path) => {
                 let path = crate::paths::normalize_wt_path(&path).to_string();
@@ -5075,6 +5232,13 @@ impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         super::inline_html::exclude_native_html(None, cx);
         self.sync(window, cx);
+        if self.history.is_some() && self.history_selection != self.selection {
+            self.history_hover = branch_history::HistoryHover::default();
+            self.history = None;
+            self.history_observer = None;
+            self.history_selection = None;
+            self.history_return_focus = None;
+        }
         self.sync_age_timer(cx);
         if self.project_flyout.is_some() {
             let mut keys = HashSet::new();
@@ -5251,6 +5415,12 @@ impl Render for Sidebar {
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.branch_peek.is_some() {
+                    this.dismiss_branch_peek(window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape"
                     && this.checkout_panel.plan_peek.is_some()
                     && !this.confirmation_open()
@@ -5311,6 +5481,29 @@ impl Render for Sidebar {
                         this.track_project_flyout_pointer(window.mouse_position(), window, cx);
                     } else {
                         this.close_project_flyout(window, cx);
+                        cx.stop_propagation();
+                    }
+                    return;
+                }
+                if this.history.is_some() {
+                    if event.keystroke.key == "tab" {
+                        for _ in 0..64 {
+                            if event.keystroke.modifiers.shift {
+                                window.focus_prev(cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
+                            if this.history_focus.contains_focused(window, cx) {
+                                break;
+                            }
+                        }
+                        if !this.history_focus.contains_focused(window, cx) {
+                            this.history_focus.focus(window, cx);
+                        }
+                        cx.stop_propagation();
+                    }
+                    if event.keystroke.key == "escape" {
+                        this.act(Action::CloseHistory, window, cx);
                         cx.stop_propagation();
                     }
                     return;
@@ -5450,6 +5643,9 @@ impl Render for Sidebar {
                     .h_full()
                     .bg(c::BG())
                     .child(content)
+                    .when(self.history.is_some(), |canvas| {
+                        canvas.child(gpui::deferred(self.render_history(window, cx)))
+                    })
                     .when_some(super::native_plan::render_expanded(cx), |canvas, plan| {
                         canvas.child(gpui::deferred(plan))
                     })
@@ -5465,6 +5661,9 @@ impl Render for Sidebar {
                         )
                     }),
             )
+            .when_some(self.render_branch_peek(window, cx), |root, peek| {
+                root.child(peek)
+            })
             .when_some(self.render_script_peek(window, cx), |root, peek| {
                 root.child(peek)
             })
@@ -10327,6 +10526,746 @@ for line in sys.stdin:
             .insert(path.into(), cx.focus_handle());
         sidebar.sync(window, cx);
         cx.notify();
+    }
+
+    #[gpui::test]
+    fn branch_history_preserves_codex_and_claude_drafts_and_canvas(cx: &mut gpui::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fs_err::canonicalize(fixture.path())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec![
+                "-c",
+                "user.name=Author",
+                "-c",
+                "user.email=a@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Preserve draft while browsing commits",
+            ],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        for number in 1..7 {
+            fs_err::write(
+                fixture.path().join("model.txt"),
+                format!(
+                    "Revenue forecast\nOperating model revision {number}\n{}",
+                    "Validated period\n".repeat(number)
+                ),
+            )
+            .unwrap();
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(["add", "model.txt"])
+                .output()
+                .unwrap()
+                .status
+                .success());
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args([
+                    "-c",
+                    "user.name=A deliberately long author name for narrow history rows",
+                    "-c",
+                    "user.email=author@example.test",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-m"
+                ])
+                .arg(format!("Review operating model revision {number}"))
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        let snapshot = grove_core::history::load(&path, 100).unwrap();
+        let latest_details = grove_core::history::details(&path, &snapshot.commits[0].id).unwrap();
+        let first_file = latest_details
+            .files
+            .first()
+            .expect("latest commit changes model.txt");
+        assert_eq!(first_file.path, "model.txt");
+        let latest_patch =
+            grove_core::history::file_patch(&path, &snapshot.commits[0].id, first_file).unwrap();
+        let recent = grove_core::history::load(&path, 5).unwrap();
+        assert_eq!(recent.commits.len(), 5);
+        assert!(recent.has_more);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Layout fixture".into(),
+                    path: path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![grove_core::git::Worktree {
+                        path: path.clone(),
+                        branch: "main".into(),
+                        mtime: None,
+                        is_main: true,
+                    }],
+                );
+            });
+            Sidebar::new(runtime, window, cx)
+        });
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    attach_removal_layout_session(sidebar, &path, provider, window, cx);
+                });
+            });
+            cx.simulate_resize(gpui::size(gpui::px(1600.), gpui::px(900.)));
+            draw(cx);
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.open_branch_peek(true, window, cx);
+                    let cache = sidebar.branch_peek_cache.as_ref().unwrap();
+                    assert_eq!(
+                        cache.data.read(cx).limit,
+                        5,
+                        "recent preview loads only five commits"
+                    );
+                    cache.data.update(cx, |data, cx| {
+                        data.snapshot = Some(recent.clone());
+                        data.loading = false;
+                        cx.notify();
+                    });
+                    assert!(sidebar.render_branch_peek(window, cx).is_some());
+                    let (target, identity) = sidebar.branch_entry.clone().unwrap();
+                    let owner = sidebar.selection.clone();
+                    sidebar.act(
+                        Action::OpenBranchHistory(target.clone(), None, identity),
+                        window,
+                        cx,
+                    );
+                    assert!(
+                        sidebar.history.is_none(),
+                        "stale session action cannot open history"
+                    );
+                    sidebar.act(
+                        Action::OpenBranchHistory(target, owner, identity),
+                        window,
+                        cx,
+                    );
+                    assert!(sidebar.history.is_some());
+                    assert!(sidebar.branch_peek.is_none());
+                    sidebar.act(Action::CloseHistory, window, cx);
+                    assert!(sidebar.branch_entry_focus.is_focused(window));
+                    // Reopening a valid same-HEAD preview reuses the bounded data entity.
+                    let cached = sidebar.branch_peek_cache.as_ref().unwrap().data.entity_id();
+                    sidebar.open_branch_peek(true, window, cx);
+                    assert_eq!(
+                        sidebar.branch_peek_cache.as_ref().unwrap().data.entity_id(),
+                        cached
+                    );
+                    sidebar.dismiss_branch_peek(window, cx);
+                    assert!(sidebar.branch_entry_focus.is_focused(window));
+                });
+            });
+            draw(cx);
+            let branch_row = cx.debug_bounds("checkout-branch-history").unwrap();
+            let composer_focus = cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    let Some(Selection::Session(id)) = sidebar.selection else {
+                        panic!("session")
+                    };
+                    let focus = sidebar.codex_views[&id].focus_handle(cx);
+                    focus.focus(window, cx);
+                    focus
+                })
+            });
+            let outside = gpui::point(gpui::px(1.), gpui::px(1.));
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            cx.simulate_mouse_move(branch_row.center(), None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_none()),
+                "hover intent defers opening"
+            );
+            cx.executor().advance_clock(Duration::from_millis(599));
+            draw(cx);
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_none()),
+                "recent history waits the full600ms"
+            );
+            cx.executor().advance_clock(Duration::from_millis(1));
+            draw(cx);
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_some()));
+            cx.update(|window, _| {
+                assert!(
+                    composer_focus.is_focused(window),
+                    "hover preserves composer focus"
+                );
+            });
+            let hover_peek = cx.debug_bounds("branch-history-peek").unwrap();
+            assert_eq!(
+                cx.update(|_, cx| crate::views::inline_html::native_exclusion(cx)),
+                Some(hover_peek),
+                "native HTML mask matches recent history popup"
+            );
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_some()),
+                "pointer crossing grace retains popup"
+            );
+            cx.simulate_mouse_move(hover_peek.center(), None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(300));
+            cx.run_until_parked();
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_some()),
+                "entering popup cancels dismissal"
+            );
+            cx.simulate_mouse_move(outside, None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(261));
+            draw(cx);
+            assert!(
+                sidebar.read_with(cx, |sidebar, _| sidebar.branch_peek.is_none()),
+                "unpinned preview closes after grace"
+            );
+            for width in [1280., 600.] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+                draw(cx);
+                let (selection, view, focus) = cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        let Some(Selection::Session(id)) = sidebar.selection else {
+                            panic!("expected session")
+                        };
+                        let view = sidebar.codex_views[&id].clone();
+                        view.focus_handle(cx).focus(window, cx);
+                        let focus = window.focused(cx);
+                        let selection = sidebar.selection.clone();
+                        sidebar.act(Action::OpenHistory(path.clone()), window, cx);
+                        sidebar.history.as_ref().unwrap().update(cx, |history, cx| {
+                            history.snapshot = Some(snapshot.clone());
+                            history.loading = false;
+                            cx.notify();
+                        });
+                        assert!(
+                            sidebar.html_overlay_open(),
+                            "{provider:?} embedded HTML must be blocked"
+                        );
+                        (selection, view, focus)
+                    })
+                });
+                draw(cx);
+                let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
+                assert_eq!(cx.debug_bounds("branch-history-viewer"), Some(canvas));
+                assert!(cx.debug_bounds("history-commit-row").is_some());
+                let row = cx.debug_bounds("history-commit-row").unwrap();
+                let graph = cx.debug_bounds("history-row-graph").unwrap();
+                let sha = cx.debug_bounds("history-identity-sha").unwrap();
+                let avatar = cx.debug_bounds("history-identity-avatar").unwrap();
+                let subject = cx.debug_bounds("history-identity-subject").unwrap();
+                let date = cx.debug_bounds("history-identity-date").unwrap();
+                assert!(
+                    graph.right() <= sha.left()
+                        && sha.right() <= avatar.left()
+                        && avatar.right() <= subject.left(),
+                    "graph/SHA/initials/subject retain order at {width}"
+                );
+                for bounds in [sha, avatar, subject, date] {
+                    assert!(
+                        bounds.left() >= row.left() && bounds.right() <= row.right(),
+                        "fixed identity slots remain contained at {width}"
+                    );
+                    assert!(
+                        (f32::from(bounds.center().y - row.center().y)).abs() <= 1.0,
+                        "identity slots share a centered baseline at {width}"
+                    );
+                }
+                assert!(
+                    sha.size.width > gpui::px(0.),
+                    "short SHA remains visible at {width}"
+                );
+                assert!(
+                    cx.debug_bounds("history-identity-author").is_none(),
+                    "row has no supporting author line"
+                );
+                // Main cards use the same dwell but retain a separate crossing grace.
+                let a = snapshot.commits[0].id.clone();
+                let b = snapshot.commits[1].id.clone();
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(a.clone(), true, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(599));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, cx| {
+                        let data = sidebar.history.as_ref().unwrap().read(cx);
+                        data.selected.is_none() && !data.detail_loading
+                    }),
+                    "passing a row must not select or load details before600ms"
+                );
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(a.clone(), false, cx);
+                        sidebar.commit_row_hover(b.clone(), true, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(599));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .is_none()),
+                    "movingAtoB resets the dwell"
+                );
+                cx.executor().advance_clock(Duration::from_millis(1));
+                cx.run_until_parked();
+                assert_eq!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .clone()),
+                    Some(b.clone())
+                );
+                // Old hover cards dismiss at260ms independently of the next row's600ms dwell.
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(b.clone(), false, cx);
+                        sidebar.commit_row_hover(a.clone(), true, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(260));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .is_none()),
+                    "old card dismisses while another row still dwells"
+                );
+                cx.executor().advance_clock(Duration::from_millis(340));
+                cx.run_until_parked();
+                assert_eq!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .clone()),
+                    Some(a.clone())
+                );
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(a.clone(), false, cx);
+                        sidebar.commit_row_hover(b.clone(), true, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.run_until_parked();
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(b.clone(), false, cx);
+                        sidebar.commit_card_hover(true, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(300));
+                cx.run_until_parked();
+                assert_eq!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .clone()),
+                    Some(b.clone()),
+                    "crossing into the white card retains it"
+                );
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| sidebar.commit_card_hover(false, cx));
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(259));
+                cx.run_until_parked();
+                assert!(sidebar.read_with(cx, |sidebar, cx| sidebar
+                    .history
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .selected
+                    .is_some()));
+                cx.executor().advance_clock(Duration::from_millis(1));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .is_none()),
+                    "leaving row and card dismisses after260ms"
+                );
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(a.clone(), true, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(100));
+                cx.run_until_parked();
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(a.clone(), false, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .is_none()),
+                    "leaving before deadline cancels the open"
+                );
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(a.clone(), true, cx);
+                        sidebar.cancel_history_hover_intent(cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .is_none()),
+                    "scrolling cancels pending source intent"
+                );
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.commit_row_hover(a.clone(), true, cx);
+                        sidebar.act(Action::SelectCommit(b.clone()), window, cx);
+                    });
+                });
+                assert_eq!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .clone()),
+                    Some(b.clone()),
+                    "explicit selection is immediate"
+                );
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.run_until_parked();
+                assert_eq!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .clone()),
+                    Some(b.clone()),
+                    "explicit selection stays pinned against an old timer"
+                );
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(Action::RefreshHistory, window, cx);
+                        sidebar.history.as_ref().unwrap().update(cx, |data, cx| {
+                            data.snapshot = Some(snapshot.clone());
+                            data.loading = false;
+                            cx.notify();
+                        });
+                        sidebar.commit_row_hover(a.clone(), true, cx);
+                        // Direct entity refresh also invalidates an already scheduled callback.
+                        sidebar
+                            .history
+                            .as_ref()
+                            .unwrap()
+                            .update(cx, BranchHistoryState::reload);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .selected
+                        .is_none()),
+                    "refresh generation rejects stale intent"
+                );
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.history.as_ref().unwrap().update(cx, |data, cx| {
+                            data.snapshot = Some(snapshot.clone());
+                            data.loading = false;
+                            cx.notify();
+                        });
+                        sidebar.commit_row_hover(a.clone(), true, cx);
+                        sidebar.act(Action::CloseHistory, window, cx);
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, _| sidebar.history.is_none()),
+                    "closing cancels pending opens"
+                );
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(Action::OpenHistory(path.clone()), window, cx);
+                        sidebar.history.as_ref().unwrap().update(cx, |data, cx| {
+                            data.snapshot = Some(snapshot.clone());
+                            data.loading = false;
+                            cx.notify();
+                        });
+                        sidebar.commit_row_hover(a.clone(), true, cx);
+                        sidebar.selection = None;
+                    });
+                });
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(600));
+                cx.run_until_parked();
+                assert!(
+                    sidebar.read_with(cx, |sidebar, cx| sidebar
+                        .history
+                        .as_ref()
+                        .is_none_or(|history| history.read(cx).selected.is_none())),
+                    "changed session rejects stale intent"
+                );
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.selection = selection.clone();
+                        view.focus_handle(cx).focus(window, cx);
+                        sidebar.act(Action::OpenHistory(path.clone()), window, cx);
+                        sidebar.history.as_ref().unwrap().update(cx, |data, cx| {
+                            data.snapshot = Some(snapshot.clone());
+                            data.loading = false;
+                            cx.notify();
+                        });
+                    });
+                });
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(
+                            Action::SelectCommit(snapshot.commits[0].id.clone()),
+                            window,
+                            cx,
+                        );
+                        sidebar.history.as_ref().unwrap().update(cx, |history, cx| {
+                            history.details = Some(latest_details.clone());
+                            history.detail_loading = false;
+                            cx.notify();
+                        });
+                    });
+                });
+                draw(cx);
+                let preview = cx.debug_bounds("history-commit-preview").unwrap();
+                assert!(
+                    preview.left() >= canvas.left() && preview.right() <= canvas.right(),
+                    "preview within canvas at {width}"
+                );
+                // Exercise the actual expanded route with a real text change. Prefilling
+                // core results makes the layout oracle independent of executor IO timing.
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(Action::ExpandCommit, window, cx);
+                        sidebar.history.as_ref().unwrap().update(cx, |history, cx| {
+                            assert_eq!(
+                                history.selected_file.as_deref(),
+                                Some("model.txt"),
+                                "opening a commit selects its first changed file for {provider:?}"
+                            );
+                            history.patch = Some(latest_patch.clone());
+                            history.patch_loading = false;
+                            cx.notify();
+                        });
+                    });
+                });
+                draw(cx);
+                assert!(
+                    cx.debug_bounds("history-commit-metadata").is_none(),
+                    "expanded metadata starts collapsed at {width} for {provider:?}"
+                );
+                let header = cx.debug_bounds("history-detail-header").unwrap();
+                let details = cx.debug_bounds("history-details").unwrap();
+                let files = cx.debug_bounds("history-files").unwrap();
+                let diff = cx.debug_bounds("history-diff-area").unwrap();
+                let left_label = cx.debug_bounds("history-split-left-label").unwrap();
+                let right_label = cx.debug_bounds("history-split-right-label").unwrap();
+                assert!(
+                    header.top() >= details.top() && header.bottom() <= files.top(),
+                    "commit header precedes the horizontal file/diff workspace at {width}"
+                );
+                assert!(
+                    files.left() >= details.left()
+                        && files.right() <= diff.left()
+                        && diff.right() <= details.right(),
+                    "files and diff remain side by side within the canvas at {width}"
+                );
+                assert!(
+                    (f32::from(files.top() - diff.top())).abs() <= 1.0
+                        && (f32::from(files.size.height - diff.size.height)).abs() <= 1.0,
+                    "file register and diff use equal-height panes at {width}"
+                );
+                assert!(
+                    left_label.right() <= right_label.left()
+                        && (f32::from(left_label.size.width - right_label.size.width)).abs() <= 1.0,
+                    "split labels reserve balanced before/after panes at {width}: left={left_label:?}, right={right_label:?}"
+                );
+                assert!(
+                    cx.debug_bounds("history-patch").is_some(),
+                    "selected text file renders its patch at {width}"
+                );
+                assert!(
+                    cx.debug_bounds("history-split-spacer").is_some(),
+                    "unmatched additions retain an empty parent cell"
+                );
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(Action::ToggleHistoryMetadata, window, cx);
+                    });
+                });
+                draw(cx);
+                assert!(
+                    cx.debug_bounds("history-commit-metadata").is_some(),
+                    "full commit metadata remains available"
+                );
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(Action::ToggleHistoryMetadata, window, cx);
+                    });
+                });
+                draw(cx);
+
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(
+                            Action::HistoryDiffMode(
+                                crate::entities::branch_history::HistoryDiffMode::Unified,
+                            ),
+                            window,
+                            cx,
+                        );
+                    });
+                });
+                draw(cx);
+                assert!(cx.debug_bounds("history-patch").is_some());
+                assert!(
+                    cx.debug_bounds("history-split-left-label").is_none()
+                        && cx.debug_bounds("history-split-right-label").is_none(),
+                    "Unified replaces the paired split panes at {width}"
+                );
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(Action::HistoryGraph, window, cx);
+                    });
+                });
+                draw(cx);
+                assert!(
+                    cx.debug_bounds("history-commit-row").is_some(),
+                    "Back returns to graph"
+                );
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                cx.update(|window, cx| {
+                    let sidebar = sidebar.read(cx);
+                    assert!(sidebar.history.is_none());
+                    assert_eq!(sidebar.selection, selection);
+                    let Some(Selection::Session(id)) = sidebar.selection else {
+                        panic!("expected session")
+                    };
+                    assert_eq!(
+                        sidebar.codex_views[&id], view,
+                        "conversation view must stay mounted"
+                    );
+                    assert_eq!(window.focused(cx), focus, "source focus restored");
+                    assert_eq!(
+                        sidebar
+                            .runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .codex(id)
+                            .unwrap()
+                            .read(cx)
+                            .state
+                            .saved
+                            .draft,
+                        "Preserved draft"
+                    );
+                });
+            }
+        }
     }
 
     #[gpui::test]

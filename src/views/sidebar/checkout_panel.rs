@@ -1760,6 +1760,11 @@ impl Sidebar {
         let has_agents = self.selected_session_has_agents(cx);
         let has_plan = !self.selected_native_plans(cx).is_empty();
         let agents_only = self.is_zen() || targets.is_empty();
+        if agents_only {
+            self.branch_entry = None;
+            self.branch_peek = None;
+            self.branch_peek_task = None;
+        }
         if self.mode == ViewMode::Grid && !self.is_zen()
             || self.project_panel.is_some()
             || self.project_setup.is_some()
@@ -1771,6 +1776,9 @@ impl Sidebar {
             || (targets.is_empty() && !has_agents && !has_plan)
             || (self.is_zen() && !has_agents && !has_plan)
         {
+            self.branch_peek = None;
+            self.branch_peek_task = None;
+            self.branch_entry = None;
             return self.render_content_body(window, cx);
         }
         let wide = !self.is_zen() && Self::logical_window_width(window) >= WIDE_VIEWPORT;
@@ -1788,6 +1796,20 @@ impl Sidebar {
         if !agents_only {
             if let Some((idx, path)) = selected {
                 if self.checkout_panel.path.as_ref() != Some(&path) {
+                    self.branch_peek = None;
+                    self.branch_peek_task = None;
+                    self.branch_entry = None;
+                    if self
+                        .history
+                        .as_ref()
+                        .is_some_and(|history| history.read(cx).checkout != path)
+                    {
+                        self.history_hover = super::branch_history::HistoryHover::default();
+                        self.history = None;
+                        self.history_observer = None;
+                        self.history_selection = None;
+                        self.history_return_focus = None;
+                    }
                     self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
                     self.checkout_panel.select_path(Some(path.clone()));
                     self.checkout_panel.checked_at = None;
@@ -1827,6 +1849,35 @@ impl Sidebar {
                     .child(self.render_checkout_scripts(&project, &path, window, cx));
                 card = card.child(checkout_divider("checkout-divider"));
                 let state = self.checkout_panel.state.clone().and_then(Result::ok);
+                let branch_label = state.as_ref().map_or_else(
+                    || {
+                        if self
+                            .checkout_panel
+                            .state
+                            .as_ref()
+                            .is_some_and(Result::is_err)
+                        {
+                            "Branch unavailable".to_owned()
+                        } else {
+                            "Loading branch…".to_owned()
+                        }
+                    },
+                    |state| {
+                        state.branch.clone().unwrap_or_else(|| {
+                            state.head.as_deref().map_or_else(
+                                || "No commits yet".to_owned(),
+                                |head| format!("Detached HEAD · {}", &head[..head.len().min(7)]),
+                            )
+                        })
+                    },
+                );
+                card = card.child(self.render_branch_history_entry(
+                    path.clone(),
+                    branch_label,
+                    state.as_ref().map(CheckoutGitState::target_identity),
+                    window,
+                    cx,
+                ));
                 if let Some(state) = state.as_ref() {
                     let identity = state.target_identity();
                     if self.checkout_panel.pr_identity.as_ref() != Some(&identity) {
@@ -1958,10 +2009,32 @@ impl Sidebar {
                         changes_row.child(change_stat_counts(added, removed, stat_widths));
                 }
                 let target = path.clone();
+                let history_path = path.clone();
                 card = card.child(
-                    changes_row.on_click(cx.listener(move |this, _, window, cx| {
-                        this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
-                    })),
+                    div()
+                        .flex()
+                        .items_center()
+                        .min_w_0()
+                        .child(changes_row.flex_1().min_w_0().on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
+                            },
+                        )))
+                        .child(
+                            self.control(
+                                "checkout-history",
+                                "Branch history",
+                                Action::OpenHistory(history_path),
+                                cx,
+                            )
+                            .debug_selector(|| "checkout-history".into())
+                            .mr(rpx(SPACE_LG))
+                            .child(crate::icons::icon(
+                                "history",
+                                ICON_SM,
+                                c::FG_DIM(),
+                            )),
+                        ),
                 );
                 if let Some(summary) = summary {
                     for &(group, added, removed) in &summary.groups {
@@ -2233,6 +2306,10 @@ impl Sidebar {
         }
         if wide || self.checkout_panel.expanded {
             panel = panel.child(card);
+        } else {
+            self.branch_entry = None;
+            self.branch_peek = None;
+            self.branch_peek_task = None;
         }
         if let Some(popup) = self.checkout_panel.popup.clone() {
             panel = panel.child(gpui::deferred(

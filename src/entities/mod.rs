@@ -2,6 +2,7 @@
 
 pub mod activity_store;
 pub mod animation_clock;
+pub mod branch_history;
 pub mod codex_session;
 pub mod diff_viewer;
 pub mod project_tree;

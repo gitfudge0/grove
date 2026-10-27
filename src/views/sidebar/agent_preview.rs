@@ -74,6 +74,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.dismiss_branch_peek(window, cx);
         self.dismiss_script_peek(window, cx);
         self.checkout_panel.peek_task = None;
         if self.confirmation_open()
