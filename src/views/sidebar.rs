@@ -1434,7 +1434,6 @@ impl Sidebar {
             .as_ref()
             .is_some_and(|panel| panel.read(cx).is_open());
         let editor_open = self.pending_new_worktree.is_some()
-            || self.pending_worktree_removal.is_some()
             || self.project_panel.is_some()
             || self.project_setup.is_some()
             || settings_open;
@@ -10262,6 +10261,250 @@ for line in sys.stdin:
         cx.simulate_keystrokes("escape");
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.pending_worktree_removal.is_none()));
+    }
+
+    fn attach_removal_layout_session(
+        sidebar: &mut Sidebar,
+        path: &str,
+        provider: grove_core::codex::Provider,
+        window: &mut Window,
+        cx: &mut Context<Sidebar>,
+    ) {
+        let registry = sidebar.runtime.read(cx).registry.clone();
+        let id = registry.update(cx, |registry, _| {
+            registry.insert_meta("Layout fixture".into(), path.into(), provider.agent())
+        });
+        let (handle, _actions) = grove_core::codex::Handle::channel();
+        let (_updates, receive) = std::sync::mpsc::channel();
+        let saved = grove_core::codex::SavedSession {
+            rich_plans: grove_core::rich_plan::PlanStore::default(),
+            claude_resume: None,
+            edit_checkpoints: Vec::new(),
+            pending_edit: None,
+            provider,
+            composer: grove_core::codex::ComposerSettings::default(),
+            context: None,
+            key: "layout-fixture".into(),
+            project: "Layout fixture".into(),
+            cwd: path.into(),
+            label: provider.label().into(),
+            title: None,
+            title_generation: None,
+            roots: Vec::new(),
+            thread_id: None,
+            items: vec![
+                serde_json::json!({"type":"userMessage", "text":"Keep this conversation in place"}),
+            ],
+            work_periods: Vec::new(),
+            draft: "Preserved draft".into(),
+            draft_images: Vec::new(),
+            draft_reference: None,
+            config_args: Vec::new(),
+            native_config_version: 1,
+        };
+        let session = cx.new(|cx| {
+            crate::entities::codex_session::CodexSession::from_connection(
+                grove_core::codex::Snapshot::new(saved),
+                grove_core::codex::Connection {
+                    handle: handle.clone(),
+                    updates: receive.into(),
+                },
+                cx,
+            )
+        });
+        registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
+        sidebar.selection = Some(Selection::Session(id));
+        sidebar.initial_selection_pending = false;
+        sidebar
+            .worktree_delete_focus
+            .insert(path.into(), cx.focus_handle());
+        sidebar.sync(window, cx);
+        cx.notify();
+    }
+
+    #[gpui::test]
+    fn worktree_removal_preserves_conversation_geometry(cx: &mut gpui::TestAppContext) {
+        let path = "/grove-removal-layout-fixture";
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Layout fixture".into(),
+                    path: path.into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![grove_core::git::Worktree {
+                        path: path.into(),
+                        branch: "feature".into(),
+                        mtime: None,
+                        is_main: false,
+                    }],
+                );
+            });
+            Sidebar::new(runtime, window, cx)
+        });
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    attach_removal_layout_session(sidebar, path, provider, window, cx);
+                });
+            });
+            for width in [1600., 768., 600.] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+                draw(cx);
+                let ids = [
+                    "sidebar-canvas",
+                    "checkout-panel",
+                    "codex-messages",
+                    "codex-composer",
+                ];
+                let before = ids.map(|id| cx.debug_bounds(id).unwrap());
+                for cancel in [true, false] {
+                    cx.update(|window, cx| {
+                        sidebar.update(cx, |sidebar, cx| {
+                            sidebar.act(Action::RemoveWorktree(0, path.into()), window, cx);
+                        });
+                    });
+                    draw(cx);
+                    assert!(cx.debug_bounds("worktree-removal-decision").is_some());
+                    for (id, expected) in ids.into_iter().zip(before) {
+                        assert_eq!(
+                            cx.debug_bounds(id),
+                            Some(expected),
+                            "{provider:?} {id} shifted at {width}px"
+                        );
+                    }
+                    if cancel {
+                        let button = cx.debug_bounds("cancel-worktree-removal").unwrap();
+                        cx.simulate_click(button.center(), gpui::Modifiers::default());
+                    } else {
+                        cx.simulate_keystrokes("escape");
+                    }
+                    draw(cx);
+                    assert!(sidebar
+                        .read_with(cx, |sidebar, _| sidebar.pending_worktree_removal.is_none()));
+                    cx.update(|window, cx| {
+                        assert!(sidebar.read(cx).worktree_delete_focus[path].is_focused(window));
+                    });
+                    for (id, expected) in ids.into_iter().zip(before) {
+                        assert_eq!(
+                            cx.debug_bounds(id),
+                            Some(expected),
+                            "{id} changed after dismissal"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Real macOS rendering with channel-backed Codex/Claude fixtures; no live provider calls.
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes worktree removal screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn worktree_removal_native_snapshots() {
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        let path = "/grove-removal-layout-fixture";
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            crate::theme::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Layout fixture".into(),
+                    path: path.into(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            for width in [1600., 768., 600.] {
+                let owner = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let capture = owner.clone();
+                let window = cx
+                    .open_window(gpui::size(gpui::px(width), gpui::px(900.)), |window, cx| {
+                        let runtime = cx.new(Runtime::new);
+                        runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                            tree.set_active_worktrees(
+                                0,
+                                vec![grove_core::git::Worktree {
+                                    path: path.into(),
+                                    branch: "feature".into(),
+                                    mtime: None,
+                                    is_main: false,
+                                }],
+                            );
+                        });
+                        let sidebar = cx.new(|cx| {
+                            let mut sidebar = Sidebar::new(runtime, window, cx);
+                            attach_removal_layout_session(&mut sidebar, path, provider, window, cx);
+                            sidebar
+                        });
+                        *capture.borrow_mut() = Some(sidebar.clone());
+                        cx.new(|cx| {
+                            gpui_component::Root::new(sidebar, window, cx)
+                                .bordered(false)
+                                .bg(c::BG())
+                        })
+                    })
+                    .unwrap();
+                for open in [false, true] {
+                    cx.update_window(window.into(), |_, window, cx| {
+                        owner.borrow().as_ref().unwrap().update(cx, |sidebar, cx| {
+                            if open {
+                                sidebar.act(Action::RemoveWorktree(0, path.into()), window, cx);
+                            }
+                        });
+                    })
+                    .unwrap();
+                    cx.run_until_parked();
+                    cx.update_window(window.into(), |_, window, cx| {
+                        let _ = window.draw(cx);
+                    })
+                    .unwrap();
+                    let output = format!(
+                        "/tmp/grove-worktree-removal-{provider:?}-{width}-{}.png",
+                        if open { "open" } else { "rest" }
+                    );
+                    cx.capture_screenshot(window.into())
+                        .unwrap()
+                        .save(&output)
+                        .unwrap();
+                    eprintln!("Worktree removal native fixture: {output}");
+                }
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
     }
 
     #[gpui::test]
