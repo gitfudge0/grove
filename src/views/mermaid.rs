@@ -810,6 +810,83 @@ mod tests {
         assert!(!within_limits(&"A;".repeat(MAX_STATEMENTS + 1)));
     }
 
+    pub(super) const FHIR_SEQUENCE: &str = "sequenceDiagram
+    participant EHR as Hospital EHR (FHIR)
+    participant API as MessagesController
+    participant Proc as ProcessMessageService
+    participant ES as Event Store
+    participant CJ as FetchPatientConditionsViaFhirJob
+    participant AJ as FetchPatientAppointmentsViaFhirJob
+    participant Care as Care jobs
+
+    EHR->>API: push Patient.create
+    API->>Proc: store + ProcessMessageJob
+    Proc->>ES: PatientCreated
+    ES->>Care: CreateOrUpdatePatientJob
+    ES->>CJ: perform_later(feed, resource_id)
+    CJ->>EHR: GET Condition?patient=…&category=problem-list-item&clinical-status=active
+    EHR-->>CJ: Bundle
+    Note over CJ: each stored as a follow-up message,<br/>processed inline (a bad one is quarantined)
+    CJ->>ES: ConditionRecorded (spine-mapped only)
+    ES->>Care: CreateOrUpdatePatientEpisodeJob
+    CJ->>ES: PatientConditionListProcessed
+    ES->>AJ: perform_later
+    AJ->>EHR: GET Appointment?patient=…&service-category=surgery
+    EHR-->>AJ: Bundle
+    Note over AJ: stored and queued through the normal pipeline
+    AJ->>ES: CaseScheduled (mapped procedures only)
+    ES->>Care: CreateOrUpdatePatientCaseJob";
+
+    pub(super) const PACS_SEQUENCE: &str = "sequenceDiagram
+    participant ES as Event Store
+    participant J as Pacs::RetrieveStudyJob
+    participant C as PACS config
+    participant P as PACS (DICOMweb)
+    participant S as S3
+    participant DB as pacs_studies / pacs_instances
+    ES->>J: ImagingReportRecorded(study_uid, accession, organisation)
+    J->>C: base URL + auth for the organisation
+    J->>DB: row-lock study, status = searching
+    J->>P: QIDO GET /studies?StudyInstanceUID=… (or AccessionNumber=…)
+    P-->>J: study JSON (modality, date, series count)
+    J->>P: QIDO GET /studies/{uid}/series
+    P-->>J: series list
+    Note over J: keep series by modality / body part rules
+    loop each wanted series, then each instance
+    J->>P: WADO GET …/instances/{sop} Accept: application/dicom; transfer-syntax=*
+    P-->>J: binary (streamed)
+    J->>S: put pacs/{org}/{study}/{series}/{sop}.dcm
+    J->>DB: instance stored (size, checksum)
+    end
+    J->>DB: status = retrieved
+    J->>ES: ImagingStudyRetrieved";
+
+    #[test]
+    fn pacs_sequence_rasterizes() {
+        assert!(within_limits(PACS_SEQUENCE));
+        let (image, ratio, width) =
+            rasterize(PACS_SEQUENCE, options()).expect("PACS sequence must render");
+        assert!(ratio.is_finite() && ratio > 0. && width > 0.);
+        assert!(image::load_from_memory(image.bytes())
+            .unwrap()
+            .to_rgba8()
+            .pixels()
+            .any(|pixel| pixel[3] > 0));
+    }
+
+    #[test]
+    fn fhir_sequence_rasterizes() {
+        assert!(within_limits(FHIR_SEQUENCE));
+        let (image, ratio, width) =
+            rasterize(FHIR_SEQUENCE, options()).expect("FHIR sequence must render");
+        assert!(ratio.is_finite() && ratio > 0. && width > 0.);
+        assert!(image::load_from_memory(image.bytes())
+            .unwrap()
+            .to_rgba8()
+            .pixels()
+            .any(|pixel| pixel[3] > 0));
+    }
+
     #[test]
     fn common_diagram_families_rasterize_and_errors_fall_back() {
         for source in [
@@ -971,7 +1048,14 @@ mod native_snapshots {
             cx.set_reduce_motion(true);
         });
         for light in [false, true] {
-            for (width, rem) in [(760., 16.), (360., 20.)] {
+            for (width, rem, diagram) in [
+                (760., 16., "flowchart"),
+                (360., 20., "flowchart"),
+                (760., 16., "fhir"),
+                (360., 20., "fhir"),
+                (760., 16., "pacs"),
+                (360., 20., "pacs"),
+            ] {
                 cx.update(|cx| {
                     grove_core::theme::set(
                         grove_core::theme::by_name(if light {
@@ -985,11 +1069,19 @@ mod native_snapshots {
                     gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
                 });
                 let source="flowchart LR\nA[Understand request]-->B[Inspect existing behavior]-->C[Choose approach]-->D[Implement change]-->E[Verify interactions]-->F[Review result]-->G[Ready to ship]";
+                let source = match diagram {
+                    "fhir" => tests::FHIR_SEQUENCE,
+                    "pacs" => tests::PACS_SEQUENCE,
+                    _ => source,
+                };
                 let (image, ratio, natural_width) = rasterize(source, options()).unwrap();
                 let gallery_slot = std::rc::Rc::new(std::cell::RefCell::new(None));
                 let gallery_out = gallery_slot.clone();
+                // The taller sequence diagram needs room for its inline viewport
+                // and controls before comparing it with a window-filling camera.
+                let window_height = if diagram == "flowchart" { 400. } else { 760. };
                 let window = cx
-                    .open_window(gpui::size(gpui::px(width), gpui::px(400.)), |window, cx| {
+                    .open_window(gpui::size(gpui::px(width), gpui::px(window_height)), |window, cx| {
                         let gallery = cx.new(|_| DiagramGallery {
                             image,
                             ratio,
@@ -1024,7 +1116,8 @@ mod native_snapshots {
                     .unwrap();
                 }
                 let path = format!(
-                    "/tmp/grove-pele-{}-{width:.0}-rem{rem:.0}.png",
+                    "/tmp/grove-pele-{}-{}-{width:.0}-rem{rem:.0}.png",
+                    diagram,
                     if light { "light" } else { "dark" }
                 );
                 cx.capture_screenshot(window.into())
@@ -1245,7 +1338,12 @@ mod native_snapshots {
                 });
                 cx.update(|cx| {
                     let expanded = fullscreen.read(cx);
-                    assert!(expanded.viewport_bounds.size.height > original.size.height);
+                    assert!(
+                        expanded.viewport_bounds.size.height > original.size.height,
+                        "fullscreen {:?} must exceed inline {:?} in the roomy fixture",
+                        expanded.viewport_bounds,
+                        original,
+                    );
                     assert_eq!(expanded.zoom, 1., "fullscreen starts fitted independently");
                 });
                 let fitted_path = path.replace(".png", "-fullscreen-fit.png");

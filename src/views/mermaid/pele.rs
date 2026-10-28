@@ -165,12 +165,73 @@ pub(super) fn render(
         )
         .ok()?;
         let render: Function = ctx.globals().get("groveRender").ok()?;
-        render.call::<_, String>((source, font_size, now)).ok()
+        match render.call::<_, String>((source, font_size, now)) {
+            Ok(svg) => Some(svg),
+            Err(_) => {
+                // Clear the parser exception before a bounded compatibility retry.
+                // Keep the original source and the same runtime/deadline limits.
+                let _ = ctx.catch();
+                let retry = sequence_mime_parameters(source)?;
+                render.call::<_, String>((retry, font_size, now)).ok()
+            }
+        }
     })?;
     if svg.len() > MAX_SVG_BYTES {
         return None;
     }
     materialize(&svg, palette, font_size)
+}
+
+// Mermaid treats semicolons as statement separators, even in message labels.
+// After a parse failure only, recover the unambiguous MIME-parameter case seen
+// in HTTP labels. Other separators, entities and invalid syntax stay untouched.
+fn sequence_mime_parameters(source: &str) -> Option<String> {
+    if source.lines().find(|line| !line.trim().is_empty())?.trim() != "sequenceDiagram" {
+        return None;
+    }
+    let mime_token = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!$%'+-.^_`|~*".contains(&byte))
+    };
+    let mut changed = false;
+    let lines = source
+        .lines()
+        .map(|line| {
+            let Some((owner, label)) = line.split_once(':') else {
+                return line.to_owned();
+            };
+            let is_message = owner.contains("->") || owner.contains("-->");
+            let is_note = owner.trim().to_ascii_lowercase().starts_with("note ");
+            if !is_message && !is_note {
+                return line.to_owned();
+            }
+            let Some((before, parameters)) = label.split_once(';') else {
+                return line.to_owned();
+            };
+            let media_type = before.split_whitespace().last().unwrap_or("");
+            let Some((kind, subtype)) = media_type.split_once('/') else {
+                return line.to_owned();
+            };
+            if !mime_token(kind)
+                || !mime_token(subtype)
+                || !parameters.split(';').all(|parameter| {
+                    parameter
+                        .trim()
+                        .split_once('=')
+                        .is_some_and(|(key, value)| {
+                            mime_token(key.trim()) && mime_token(value.trim())
+                        })
+                })
+            {
+                return line.to_owned();
+            }
+            changed = true;
+            format!("{owner}:{}", label.replace(';', "#59;"))
+        })
+        .collect::<Vec<_>>();
+    changed.then(|| lines.join("\n"))
 }
 
 // Pele emits CSS variables in attributes and inline style. Resolve only XML
@@ -244,7 +305,7 @@ fn write_node(
         return None;
     }
     if node.is_text() {
-        writer.write_text(node.text()?);
+        writer.write_text(&escape_xml(node.text()?));
         return Some(());
     }
     if !node.is_element() {
@@ -289,7 +350,7 @@ fn write_node(
                 });
                 resolved.push(';');
             }
-            writer.write_attribute("style", &resolved);
+            writer.write_attribute("style", &escape_xml(&resolved));
         } else {
             let value = resolve(attr.value(), &vars)?;
             let name = if attr.namespace() == Some("http://www.w3.org/XML/1998/namespace") {
@@ -299,11 +360,11 @@ fn write_node(
             };
             writer.write_attribute(
                 &name,
-                &if attr.name() == "font-family" {
-                    host_family(&value).to_owned()
+                &escape_xml(if attr.name() == "font-family" {
+                    host_family(&value)
                 } else {
-                    value
-                },
+                    &value
+                }),
             );
         }
     }
@@ -312,6 +373,15 @@ fn write_node(
     }
     writer.end_element();
     Some(())
+}
+
+// xmlwriter escapes quotes in attributes and `<` in text, but expects callers
+// to escape ampersands. roxmltree has already decoded all input entities.
+fn escape_xml(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn host_family(value: &str) -> &'static str {
@@ -339,6 +409,26 @@ mod tests {
         );
         assert!(resolve("var(--unknown)", &palette).is_none());
     }
+    #[test]
+    fn materialization_round_trips_xml_special_characters() {
+        let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><text data-label="a&amp;b&lt;c&gt;&quot;d">patient=…&amp;category=active &lt;value&gt; &amp;amp; ]]&gt;</text></svg>"#;
+        let svg = materialize(source, &HashMap::new(), 13.).unwrap();
+        let before = roxmltree::Document::parse(source).unwrap();
+        let after = roxmltree::Document::parse(&svg).unwrap();
+        let text = |doc: &roxmltree::Document<'_>| {
+            let node = doc
+                .descendants()
+                .find(|node| node.has_tag_name("text"))
+                .unwrap();
+            (
+                node.text().unwrap().to_owned(),
+                node.attribute("data-label").unwrap().to_owned(),
+            )
+        };
+        assert_eq!(text(&before), text(&after));
+        assert!(resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()).is_ok());
+    }
+
     #[test]
     fn materialization_does_not_inject_whitespace_into_styled_labels() {
         let source = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><text xml:space="preserve" text-anchor="middle"><tspan font-family="var(--_fm,JetBrains Mono)">source</tspan></text></svg>"#;
@@ -386,6 +476,45 @@ mod tests {
         )
         .is_none());
     }
+    #[test]
+    fn sequence_mime_retry_preserves_labels_and_statement_separators() {
+        let label = "WADO GET /instances/{sop} Accept: application/dicom; transfer-syntax=*";
+        let source = format!("sequenceDiagram\nJ->>P: {label}");
+        let svg = render(&source, 13., &HashMap::new(), 0).unwrap();
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        assert!(doc
+            .descendants()
+            .filter_map(|node| node.text())
+            .any(|text| text == label));
+        let note_label = "Content-Type: application/dicom; transfer-syntax=*; charset=utf-8";
+        let note = format!("sequenceDiagram\nparticipant J\nNote over J: {note_label}");
+        let svg = render(&note, 13., &HashMap::new(), 0).unwrap();
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        assert!(doc
+            .descendants()
+            .filter_map(|node| node.text())
+            .any(|text| text == note_label));
+        let separated = "sequenceDiagram\nJ->>P: first; P-->>J: second";
+        assert!(sequence_mime_parameters(separated).is_none());
+        let svg = render(separated, 13., &HashMap::new(), 0).unwrap();
+        assert!(svg.contains("first") && svg.contains("second"));
+        let escaped = source.replace(';', "#59;");
+        assert!(sequence_mime_parameters(&escaped).is_none());
+        let svg = render(&escaped, 13., &HashMap::new(), 0).unwrap();
+        let doc = roxmltree::Document::parse(&svg).unwrap();
+        assert!(doc
+            .descendants()
+            .filter_map(|node| node.text())
+            .any(|text| text == label));
+        assert!(
+            sequence_mime_parameters("flowchart LR\nA[application/dicom; transfer-syntax=*]")
+                .is_none()
+        );
+        let malformed = "sequenceDiagram\nJ->>P: application/dicom; this is invalid";
+        assert!(sequence_mime_parameters(malformed).is_none());
+        assert!(render(malformed, 13., &HashMap::new(), 0).is_none());
+    }
+
     #[test]
     fn actual_bundle_disables_links() {
         let source = "flowchart LR\nA[Hello]-->B[World]\nclick A href \"https://example.com\"";
