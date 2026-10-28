@@ -344,6 +344,7 @@ const MODEL_EFFORT_CARD_W: f32 = 256.0;
 const MINIMAP_PREVIEW_W: f32 = 320.0;
 const COMPOSER_MENU_MAX_H: f32 = 280.0;
 const COMPOSER_MIN_H: f32 = 72.0;
+const DASHBOARD_COMPOSER_MIN_H: f32 = 48.0;
 const USER_BUBBLE_MAX_W: f32 = 600.0;
 const IMAGE_PREVIEW_EDGE: f32 = 56.0;
 const COMPOSER_TOKEN_UNDERLINE: f32 = 1.0;
@@ -2347,11 +2348,12 @@ impl CodexView {
         self.composer_transition_generation = self.composer_transition_generation.wrapping_add(1);
         self.composer_motion_finished.set(cx.reduce_motion());
         self.composer_collapsed = collapsed;
+        let min_rows = if self.dashboard_tray.is_some() { 2 } else { 3 };
         self.input.update(cx, |input, cx| {
             if collapsed {
                 input.set_auto_grow(1, 1, cx);
             } else {
-                input.set_auto_grow(3, 10, cx);
+                input.set_auto_grow(min_rows, 10, cx);
             }
         });
         cx.notify();
@@ -2973,8 +2975,20 @@ impl CodexView {
         cx.notify();
     }
 
+    pub(crate) fn attach_dashboard_tray(
+        &mut self,
+        tray: Entity<super::sidebar::dashboard::DestinationTray>,
+        cx: &mut Context<Self>,
+    ) {
+        self.dashboard_tray = Some(tray);
+        self.input
+            .update(cx, |input, cx| input.set_auto_grow(2, 10, cx));
+    }
+
     pub(crate) fn launch_dashboard(&mut self, cx: &mut Context<Self>) {
         self.dashboard_tray = None;
+        self.input
+            .update(cx, |input, cx| input.set_auto_grow(3, 10, cx));
         self.dashboard_pending = true;
         cx.notify();
     }
@@ -5108,6 +5122,11 @@ impl Render for CodexView {
         let choices = (!self.composer_collapsed && self.suggestion_choices(&state, cx).is_some())
             .then(|| self.composer_choices(&state, window, cx));
         let collapsed = self.composer_collapsed;
+        let composer_min_h = if self.dashboard_tray.is_some() {
+            DASHBOARD_COMPOSER_MIN_H
+        } else {
+            COMPOSER_MIN_H
+        };
         let target = self.composer_body_target.clone();
         let expanded_height = self.composer_expanded_height.clone();
         if self.composer_transition_from.is_some() {
@@ -5116,7 +5135,7 @@ impl Render for CodexView {
             } else {
                 expanded_height
                     .get()
-                    .max(rpx(COMPOSER_MIN_H).to_pixels(window.rem_size()))
+                    .max(rpx(composer_min_h).to_pixels(window.rem_size()))
             });
         }
         let owner = cx.entity().downgrade();
@@ -5185,7 +5204,7 @@ impl Render for CodexView {
                             .min_h(rpx(if self.composer_collapsed {
                                 CHROME_CONTROL_H
                             } else {
-                                COMPOSER_MIN_H
+                                composer_min_h
                             }))
                             .capture_any_mouse_down(cx.listener(
                                 |this, _: &gpui::MouseDownEvent, window, cx| {

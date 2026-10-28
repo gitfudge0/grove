@@ -267,6 +267,7 @@ pub struct PopupMenu {
     max_height: Option<Pixels>,
     bounds: Bounds<Pixels>,
     size: Size,
+    item_padding: (Pixels, Pixels),
     check_side: Side,
 
     parent_menu: Option<WeakEntity<Self>>,
@@ -299,6 +300,7 @@ impl PopupMenu {
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
             size: Size::default(),
+            item_padding: (px(8.), Pixels::ZERO),
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
             priority: 1,
             _subscriptions: vec![],
@@ -363,6 +365,13 @@ impl PopupMenu {
 
     pub fn max_h(mut self, height: impl Into<Pixels>) -> Self {
         self.max_height = Some(height.into());
+        self
+    }
+
+    /// Set horizontal and vertical padding for interactive menu rows.
+    /// Defaults preserve the standard menu density; callers may opt into roomier rows.
+    pub fn item_padding(mut self, horizontal: Pixels, vertical: Pixels) -> Self {
+        self.item_padding = (horizontal, vertical);
         self
     }
 
@@ -1080,7 +1089,6 @@ impl PopupMenu {
 
         let selected = self.selected_index == Some(ix);
         const EDGE_PADDING: Pixels = px(4.);
-        const INNER_PADDING: Pixels = px(8.);
 
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
         let group_name = format!("{}:item-{}", cx.entity().entity_id(), ix);
@@ -1093,8 +1101,8 @@ impl PopupMenu {
         let this = MenuItemElement::new(ix, &group_name)
             .relative()
             .text_sm()
-            .py_0()
-            .px(INNER_PADDING)
+            .py(self.item_padding.1)
+            .px(self.item_padding.0)
             .rounded(radius)
             .items_center()
             .selected(selected)
@@ -1173,7 +1181,7 @@ impl PopupMenu {
                     )
                 })
                 .disabled(*disabled)
-                .h(item_height)
+                .h(item_height + self.item_padding.1 * 2.)
                 .gap_x_1()
                 .children(Self::render_icon(
                     has_left_icon,

@@ -24,6 +24,8 @@ pub(crate) struct DestinationTray {
     pub(super) path: String,
     popup: Option<Entity<gpui_component::menu::PopupMenu>>,
     popup_events: Option<gpui::Subscription>,
+    hovered: [bool; 2],
+    open_selector: Option<usize>,
     position: gpui::Point<gpui::Pixels>,
     bounds: [std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>; 2],
 }
@@ -40,6 +42,8 @@ impl DestinationTray {
             error: None,
             popup: None,
             popup_events: None,
+            hovered: [false; 2],
+            open_selector: None,
             position: gpui::Point::default(),
             bounds: std::array::from_fn(|_| std::rc::Rc::default()),
         }
@@ -55,6 +59,10 @@ impl DestinationTray {
         let popup = PopupMenu::build(window, cx, move |mut menu, window, _| {
             menu = menu
                 .scrollable(true)
+                .item_padding(
+                    rpx(SPACE_2XL).to_pixels(window.rem_size()),
+                    rpx(SPACE_MD).to_pixels(window.rem_size()),
+                )
                 .max_h(rpx(MODAL_SCROLL_MAX_H).to_pixels(window.rem_size()));
             if project {
                 for (idx, name, path) in projects {
@@ -93,12 +101,18 @@ impl DestinationTray {
             }
             menu
         });
-        self.position = self.bounds[usize::from(!project)].get().bottom_left();
+        let bounds = self.bounds[usize::from(!project)].get();
+        self.position = if project {
+            bounds.bottom_left()
+        } else {
+            bounds.bottom_right()
+        };
         self.popup_events = Some(cx.subscribe_in(
             &popup,
             window,
             move |this, _, _: &gpui::DismissEvent, window, cx| {
                 this.popup = None;
+                this.open_selector = None;
                 this.popup_events = None;
                 if let Some(focus) = &focus {
                     focus.focus(window, cx);
@@ -108,6 +122,7 @@ impl DestinationTray {
         ));
         popup.focus_handle(cx).focus(window, cx);
         self.popup = Some(popup);
+        self.open_selector = Some(usize::from(!project));
         cx.notify();
     }
 }
@@ -128,26 +143,42 @@ impl Render for DestinationTray {
             .debug_selector(|| "dashboard-destination".into())
             .relative()
             .mx(rpx(SPACE_2XL))
+            // Cancel the composer rail gap so this strip meets its bottom seam.
             .mt(rpx(-SPACE_MD))
-            .pt(rpx(SPACE_LG))
-            .pb(rpx(SPACE_LG))
+            .pt_0()
+            .pb(rpx(SPACE_XS))
             .px(rpx(SPACE_2XL))
             .rounded_b(rpx(RADIUS_PANEL))
-            .border_1()
+            .border_l_1()
+            .border_r_1()
+            .border_b_1()
             .border_color(c::BORDER_SOFT())
             .bg(c::BG_RAIL())
             .flex()
             .flex_wrap()
-            .gap(rpx(SPACE_3XL));
+            .gap(rpx(SPACE_SM));
         for (idx, (is_project, label, glyph)) in
             [(true, project, "folder"), (false, worktree, "git-branch")]
                 .into_iter()
                 .enumerate()
         {
             let bounds = self.bounds[idx].clone();
+            let foreground = if self.hovered[idx] || self.open_selector == Some(idx) {
+                c::FG()
+            } else {
+                c::FG_DIM()
+            };
             tray = tray.child(
                 div()
+                    .id(("dashboard-destination-hover", idx))
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        if this.hovered[idx] != *hovered {
+                            this.hovered[idx] = *hovered;
+                            cx.notify();
+                        }
+                    }))
                     .relative()
+                    .when(!is_project, gpui::Styled::ml_auto)
                     .max_w(rpx(MODAL_W_SM))
                     .child(
                         gpui::canvas(move |b, _, _| bounds.set(b), |_, (), _, _| {})
@@ -155,17 +186,23 @@ impl Render for DestinationTray {
                             .size_full(),
                     )
                     .child(
-                        super::super::components::transcript_action(
+                        super::super::components::dense_action_with_colors(
                             if is_project {
                                 "dashboard-project"
                             } else {
                                 "dashboard-worktree"
                             },
                             label.clone(),
-                            false,
+                            c::BG_RAIL(),
+                            foreground,
+                            c::BG_RAIL(),
                             window,
                             cx,
                         )
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .when(self.open_selector == Some(idx), |button| {
+                            button.bg(c::BG_HOVER())
+                        })
                         .icon_only()
                         .tooltip(label.clone())
                         .max_w(rpx(MODAL_W_SM))
@@ -177,7 +214,7 @@ impl Render for DestinationTray {
                                 .truncate()
                                 .child(label),
                         )
-                        .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                        .child(icon("chev-down", ICON_SM, foreground))
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
                                 this.open(is_project, window, cx);
@@ -206,7 +243,11 @@ impl Render for DestinationTray {
             tray = tray.child(gpui::deferred(
                 gpui::anchored()
                     .position_mode(gpui::AnchoredPositionMode::Window)
-                    .anchor(gpui::Anchor::TopLeft)
+                    .anchor(if self.open_selector == Some(1) {
+                        gpui::Anchor::TopRight
+                    } else {
+                        gpui::Anchor::TopLeft
+                    })
                     .position(self.position)
                     .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
                     .child(
@@ -291,7 +332,7 @@ impl Sidebar {
             });
             let tray = cx.new(|_| DestinationTray::new(projects, idx, project.path));
             let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
-            view.update(cx, |view, _| view.dashboard_tray = Some(tray.clone()));
+            view.update(cx, |view, cx| view.attach_dashboard_tray(tray.clone(), cx));
             let events = vec![
                 cx.subscribe_in(&view, window, |this, _, event, _, cx| {
                     if matches!(event, CodexViewEvent::DashboardSubmit) {
@@ -976,10 +1017,12 @@ mod tests {
         let hints = cx.debug_bounds("codex-composer-hints").unwrap();
         assert!(composer.top() >= summary.bottom());
         assert!(composer.top() - summary.bottom() < gpui::px(100.));
+        assert_eq!(tray.top(), composer.bottom());
         assert!(hints.top() >= tray.bottom());
         assert!(recent.top() >= hints.bottom());
         assert!(recent.top() - hints.bottom() < gpui::px(50.));
         assert!(composer.size.height > gpui::px(50.));
+        assert!(composer.size.height < gpui::px(130.));
 
         cx.simulate_resize(gpui::size(gpui::px(560.), gpui::px(500.)));
         cx.run_until_parked();
@@ -1024,6 +1067,52 @@ mod tests {
             );
             assert!(project.size.width < gpui::px(400.));
             assert!(worktree.size.width < gpui::px(200.));
+        });
+        let strip = cx.debug_bounds("dashboard-destination").unwrap();
+        let bounds = cx.update(|_, cx| {
+            let tray = tray.read(cx);
+            [tray.bounds[0].get(), tray.bounds[1].get()]
+        });
+        assert_eq!(bounds[0].left(), strip.left() + gpui::px(SPACE_2XL + 1.));
+        assert_eq!(bounds[1].right(), strip.right() - gpui::px(SPACE_2XL + 1.));
+        for (idx, bounds) in bounds.iter().enumerate() {
+            cx.simulate_mouse_move(bounds.center(), None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+                let tray = tray.read(cx);
+                assert!(tray.hovered[idx]);
+                assert!(!tray.hovered[1 - idx]);
+                assert_eq!(
+                    tray.bounds[idx].get(),
+                    *bounds,
+                    "hover must not shift layout"
+                );
+            });
+        }
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(900.), gpui::px(250.)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+        cx.update(|_, cx| assert_eq!(tray.read(cx).hovered, [false; 2]));
+
+        cx.simulate_resize(gpui::size(gpui::px(400.), gpui::px(300.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let strip = cx.debug_bounds("dashboard-destination").unwrap();
+        cx.update(|_, cx| {
+            let tray = tray.read(cx);
+            let project = tray.bounds[0].get();
+            let worktree = tray.bounds[1].get();
+            assert!(
+                worktree.top() >= project.bottom() || worktree.left() >= project.right(),
+                "narrow selectors remain separate whether they fit or wrap"
+            );
+            assert_eq!(worktree.right(), strip.right() - gpui::px(SPACE_2XL + 1.));
         });
     }
 }
@@ -1084,7 +1173,23 @@ mod native_snapshots {
             ("normal", 1100.),
             ("narrow", 560.),
             ("worktree-menu", 1100.),
+            ("project-menu", 1100.),
+            ("narrow-worktree-menu", 560.),
+            ("narrow-project-menu", 560.),
+            ("hover", 1100.),
+            ("worktree-hover", 1100.),
+            ("light", 1100.),
+            ("light-hover", 1100.),
         ] {
+            cx.update(|cx| {
+                let theme = if state.starts_with("light") {
+                    "grove-light"
+                } else {
+                    "grove-dark"
+                };
+                grove_core::theme::set(grove_core::theme::by_name(theme).unwrap());
+                c::sync_component_theme(cx);
+            });
             let mut sidebar = None;
             let window = cx
                 .open_window(gpui::size(gpui::px(width), gpui::px(760.)), |window, cx| {
@@ -1113,7 +1218,8 @@ mod native_snapshots {
                 let _ = window.draw(cx);
             })
             .unwrap();
-            if state == "worktree-menu" {
+            if state.ends_with("hover") {
+                let idx = usize::from(state == "worktree-hover");
                 cx.update_window(window.into(), |_, window, cx| {
                     let tray = sidebar
                         .as_ref()
@@ -1124,7 +1230,49 @@ mod native_snapshots {
                         .unwrap()
                         .tray
                         .clone();
-                    tray.update(cx, |tray, cx| tray.open(false, window, cx));
+                    let position = tray.read(cx).bounds[idx].get().center();
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers: gpui::Modifiers::default(),
+                        }),
+                        cx,
+                    );
+                })
+                .unwrap();
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                    let tray = &sidebar
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .dashboard
+                        .as_ref()
+                        .unwrap()
+                        .tray;
+                    assert!(
+                        tray.read(cx).hovered[idx],
+                        "native pointer must enter selector"
+                    );
+                })
+                .unwrap();
+            }
+            if state.ends_with("menu") {
+                cx.update_window(window.into(), |_, window, cx| {
+                    let tray = sidebar
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .dashboard
+                        .as_ref()
+                        .unwrap()
+                        .tray
+                        .clone();
+                    tray.update(cx, |tray, cx| {
+                        tray.open(state.ends_with("project-menu"), window, cx);
+                    });
                     let _ = window.draw(cx);
                 })
                 .unwrap();
