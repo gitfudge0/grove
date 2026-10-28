@@ -22,6 +22,8 @@ const STAT_COL_W: f32 = 48.;
 const AGENT_STATUS_W: f32 = ICON_MD;
 const AGENT_LINE_H: f32 = 18.;
 const SCRIPT_VISIBLE_ROWS: usize = 5;
+/// All top-level checkout copy shares the label column after the leading icon slot.
+const CHECKOUT_LABEL_INSET: f32 = SPACE_2XL + ICON_LG + SPACE_SM;
 
 /// Reuse compact shared actions on the card's neutral field surface.
 fn checkout_action(
@@ -498,11 +500,15 @@ impl Sidebar {
                             .min_w_0()
                             .flex()
                             .items_center()
-                            .gap(rpx(SPACE_SM))
+                            .pl(rpx(ICON_LG + SPACE_SM))
                             .text_size(rpx(TEXT_SMALL))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(c::FG_DIM())
-                            .child("Scripts"),
+                            .child(
+                                div()
+                                    .debug_selector(|| "checkout-scripts-heading".into())
+                                    .child("Scripts"),
+                            ),
                     )
                     .child(script_control_tooltip(
                         "checkout-script-add-tooltip",
@@ -611,7 +617,7 @@ impl Sidebar {
                     .px(rpx(SPACE_2XL))
                     .flex()
                     .items_center()
-                    .gap(rpx(SPACE_LG))
+                    .gap(rpx(SPACE_SM))
                     .on_key_down({
                         let scroll = context_scroll.clone();
                         move |event: &gpui::KeyDownEvent, window, cx| {
@@ -629,17 +635,21 @@ impl Sidebar {
                             }
                         }
                     })
-                    .child(icon(
+                    .child(div().w(rpx(ICON_LG)).flex_shrink_0().child(icon(
                         if prompt { "reply" } else { "terminal" },
                         ICON_SM,
                         c::FG_DIM(),
-                    ))
+                    )))
                     .child(
                         div()
                             .id(SharedString::from(format!(
                                 "checkout-script-name-{}",
                                 entry.id
                             )))
+                            .debug_selector({
+                                let id = entry.id.clone();
+                                move || format!("checkout-script-name-{id}")
+                            })
                             .flex_1()
                             .min_w_0()
                             .truncate()
@@ -758,7 +768,8 @@ impl Sidebar {
             section = section
                 .child(
                     div()
-                        .px(rpx(SPACE_2XL))
+                        .pl(rpx(CHECKOUT_LABEL_INSET))
+                        .pr(rpx(SPACE_2XL))
                         .py(rpx(SPACE_LG))
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_DIM())
@@ -790,11 +801,35 @@ impl Sidebar {
                     cx,
                 )
                 .debug_selector(|| "checkout-scripts-disclosure".into())
-                .icon(
-                    gpui_component::Icon::default()
-                        .path("icons/chev-down.svg")
-                        .size(rpx(ICON_SM))
-                        .when(show_all, |glyph| glyph.rotate(gpui::percentage(0.5))),
+                .icon_only()
+                .w_full()
+                .px(rpx(SPACE_2XL))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(rpx(SPACE_SM))
+                        .child(div().w(rpx(ICON_LG)).flex_shrink_0().child(
+                            icon("chev-down", ICON_SM, c::FG_DIM()).when(show_all, |glyph| {
+                                glyph.with_transformation(gpui::Transformation::rotate(
+                                    gpui::percentage(0.5),
+                                ))
+                            }),
+                        ))
+                        .child(
+                            div()
+                                .debug_selector(|| "checkout-scripts-disclosure-label".into())
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(if show_all {
+                                    "Show fewer".to_owned()
+                                } else {
+                                    format!("Show all {} scripts", entries.len())
+                                }),
+                        ),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if !this.checkout_panel.scripts_show_all.remove(&project_path) {
@@ -832,7 +867,7 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .min_w_0()
-                    .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                    .pl(rpx(CHECKOUT_LABEL_INSET))
                     .pr(rpx(SPACE_2XL))
                     .gap(rpx(SPACE_MD))
                     .min_h(rpx(CONTROL_H))
@@ -934,7 +969,7 @@ impl Sidebar {
                         .flex()
                         .flex_wrap()
                         .gap(rpx(SPACE_SM))
-                        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                        .pl(rpx(CHECKOUT_LABEL_INSET))
                         .pr(rpx(SPACE_2XL));
                     if pr.checks() == "Checks failed" {
                         let target = path.to_string();
@@ -997,7 +1032,7 @@ impl Sidebar {
                         .id("checkout-pr-readiness")
                         .debug_selector(|| "checkout-pr-readiness".into())
                         .min_w_0()
-                        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                        .pl(rpx(CHECKOUT_LABEL_INSET))
                         .pr(rpx(SPACE_2XL))
                         .py(rpx(SPACE_SM))
                         .text_size(rpx(TEXT_SMALL))
@@ -1015,7 +1050,7 @@ impl Sidebar {
                         .debug_selector(|| "checkout-pr-expanded".into())
                         .flex()
                         .flex_col()
-                        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_2XL))
+                        .pl(rpx(CHECKOUT_LABEL_INSET))
                         .pr(rpx(SPACE_2XL))
                         .py(rpx(SPACE_SM))
                         .gap(rpx(SPACE_SM))
@@ -2194,15 +2229,21 @@ impl Sidebar {
                     .child(checkout_divider("checkout-scripts-divider"))
                     .child(
                         div()
-                            .px(rpx(SPACE_2XL))
+                            .pl(rpx(CHECKOUT_LABEL_INSET))
+                            .pr(rpx(SPACE_2XL))
                             .text_size(rpx(TEXT_SMALL))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(c::FG_DIM())
-                            .child("Scripts"),
+                            .child(
+                                div()
+                                    .debug_selector(|| "checkout-scripts-heading".into())
+                                    .child("Scripts"),
+                            ),
                     )
                     .child(
                         div()
-                            .px(rpx(SPACE_2XL))
+                            .pl(rpx(CHECKOUT_LABEL_INSET))
+                            .pr(rpx(SPACE_2XL))
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
                             .child("Choose a checkout to view and run scripts."),
@@ -2650,7 +2691,7 @@ fn checkout_loading_row(
                 .items_center()
                 .flex_1()
                 .min_w_0()
-                .gap(rpx(SPACE_2XL))
+                .gap(rpx(SPACE_SM))
                 .child(
                     div()
                         .id(SharedString::from(format!("{id}-icon")))
@@ -3245,9 +3286,40 @@ mod tests {
                         .h_auto()
                         .px_0()
                         .py(rpx(SPACE_SM))
+                        .child(checkout_row(
+                            "checkout-finder",
+                            "Open in Finder",
+                            "folder",
+                            window,
+                            cx,
+                        ))
                         .child(sidebar.render_checkout_scripts(
                             &self.1,
                             "/tmp/selected-checkout",
+                            window,
+                            cx,
+                        ))
+                        .child(checkout_row(
+                            "checkout-pr",
+                            "main",
+                            "git-branch",
+                            window,
+                            cx,
+                        ))
+                        .child(
+                            checkout_row(
+                                "checkout-commit-publish",
+                                "No local commits",
+                                "git",
+                                window,
+                                cx,
+                            )
+                            .disabled(true),
+                        )
+                        .child(checkout_row(
+                            "checkout-changes",
+                            "Changes",
+                            "unified",
                             window,
                             cx,
                         ))
@@ -3288,6 +3360,26 @@ mod tests {
         assert!(cx.debug_bounds("checkout-script-shell-4").is_some());
         assert!(cx.debug_bounds("checkout-script-shell-5").is_none());
         assert!(cx.debug_bounds("checkout-script-prompt-only").is_none());
+        let heading = cx.debug_bounds("checkout-scripts-heading").unwrap();
+        for selector in [
+            "checkout-finder-label",
+            "checkout-pr-label",
+            "checkout-commit-publish-label",
+            "checkout-changes-label",
+            "checkout-scripts-disclosure-label",
+        ] {
+            assert_eq!(cx.debug_bounds(selector).unwrap().left(), heading.left());
+        }
+        for selector in [
+            "checkout-script-name-shell-0",
+            "checkout-script-name-shell-1",
+            "checkout-script-name-shell-2",
+            "checkout-script-name-shell-3",
+            "checkout-script-name-shell-4",
+        ] {
+            let label = cx.debug_bounds(selector).unwrap();
+            assert_eq!(label.left(), heading.left());
+        }
         let run = cx.debug_bounds("checkout-script-run-shell-0").unwrap();
         let row = cx.debug_bounds("checkout-script-shell-0").unwrap();
         assert!(run.left() > row.left() && run.right() <= row.right());
@@ -4823,7 +4915,7 @@ mod tests {
             let row = cx.debug_bounds(id).unwrap();
             let glyph = cx.debug_bounds(icon_id).unwrap();
             let label = cx.debug_bounds(label_id).unwrap();
-            assert_eq!(label.left() - glyph.right(), gpui::px(SPACE_2XL));
+            assert_eq!(label.left() - glyph.right(), gpui::px(SPACE_SM));
             assert_eq!(glyph.left() - row.left(), gpui::px(SPACE_2XL));
             assert!(row.top() >= card.top() && row.bottom() <= card.bottom());
             assert_eq!(row.size.height, gpui::px(ROW_H));
