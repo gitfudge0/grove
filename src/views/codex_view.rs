@@ -2831,6 +2831,8 @@ impl CodexView {
         composer_tray(window)
             .id("codex-task-strip-panel")
             .debug_selector(|| "codex-task-strip-panel".into())
+            // Balance the visible bottom attachment against the header's top inset.
+            .when(!expanded, |panel| panel.pb(rpx(SPACE_2XL + SPACE_LG)))
             .when(!expanded, |panel| panel.bg(c::BG()))
             .role(gpui::Role::Group)
             .aria_label(format!("Agent tasks, {progress}"))
@@ -2840,15 +2842,8 @@ impl CodexView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .child(header)
-                    .children(body),
-            )
+            .child(header)
+            .children(body)
             .into_any_element()
     }
 
@@ -16130,6 +16125,11 @@ mod tests {
             header.top() - strip.top(),
             rpx(SPACE_LG).to_pixels(rem_size) + gpui::px(1.0),
             "the header keeps the tray's top padding inside its border"
+        );
+        assert_eq!(
+            header.top() - strip.top(),
+            composer.top() - header.bottom(),
+            "the collapsed header has equal visible top and bottom gaps"
         );
         assert!(strip.top() < composer.top());
         assert!(
