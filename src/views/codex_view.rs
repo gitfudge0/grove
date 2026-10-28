@@ -337,7 +337,7 @@ impl TranscriptRenderCache {
 }
 
 const STOP_HOVER_OPACITY: f32 = 0.8;
-const CHAT_MAX_W: f32 = 760.0;
+pub(super) const CHAT_MAX_W: f32 = 760.0;
 const COMPOSER_MENU_W: f32 = 320.0;
 /// Compact reference card, kept local rather than adding a one-use scale tier.
 const MODEL_EFFORT_CARD_W: f32 = 256.0;
@@ -4799,7 +4799,8 @@ impl Render for CodexView {
         let mut surface = div()
             .id("codex-conversation")
             .relative()
-            .size_full()
+            .w_full()
+            .when(self.dashboard_tray.is_none(), |surface| surface.h_full())
             .min_h_0()
             .flex()
             .flex_col()
@@ -4823,7 +4824,7 @@ impl Render for CodexView {
                     .child(transcript)
             })
             .when(
-                focused_launch,
+                focused_launch && self.dashboard_tray.is_none(),
                 gpui::StatefulInteractiveElement::overflow_y_scroll,
             )
             // Cmd+Enter resolves to the shell's global Zen action before Input's
@@ -5273,7 +5274,7 @@ impl Render for CodexView {
                     // the task strip instead of clipping the composer.
                     .min_h_0()
                     .w_full()
-                    .when(focused_launch, |rail| rail.my_auto().pt(rpx(SPACE_3XL)))
+                    .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.my_auto().pt(rpx(SPACE_3XL)))
                     .px(rpx(SPACE_20))
                     // Match the transcript's reserved navigation gutter so both
                     // centered columns retain the same edges at every pane width.

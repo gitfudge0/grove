@@ -1073,6 +1073,7 @@ impl Sidebar {
         {
             self.selection = None;
         }
+        let show_dashboard_on_startup = self.initial_selection_pending;
         if self.selection.is_none() && (switched || self.initial_selection_pending) {
             let next = self
                 .visible_session_order(cx)
@@ -1097,6 +1098,11 @@ impl Sidebar {
                     _ => None,
                 };
             }
+        }
+        if show_dashboard_on_startup {
+            self.initial_selection_pending = false;
+            self.pending_canvas_focus = None;
+            self.open_dashboard(window, cx);
         }
         if switched {
             self.runtime.read(cx).state.clone().update(cx, |state, cx| {
@@ -1200,7 +1206,7 @@ impl Sidebar {
         }
     }
     fn age_visible(&self) -> bool {
-        self.mode == ViewMode::List
+        (self.mode == ViewMode::List || self.dashboard_open)
             && self
                 .snapshot
                 .projects
@@ -2225,7 +2231,7 @@ impl Sidebar {
             return false;
         }
         if let Some(id) = self.runtime.read(cx).state.read(cx).active_session() {
-            self.selection = Some(Selection::Session(id));
+            self.select(Selection::Session(id), cx);
         }
         self.content_error = None;
         cx.notify();
@@ -2254,9 +2260,7 @@ impl Sidebar {
 
     pub(crate) fn select_active_session(&mut self, cx: &mut Context<Self>) -> Option<SessionId> {
         let id = self.runtime.read(cx).state.read(cx).active_session()?;
-        self.selection = Some(Selection::Session(id));
-        self.pending_new_worktree = None;
-        cx.notify();
+        self.select(Selection::Session(id), cx);
         Some(id)
     }
 
@@ -6433,6 +6437,14 @@ mod tests {
             Sidebar::new(runtime, window, cx)
         });
         draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                if let Some(selection) = sidebar.selection.clone() {
+                    sidebar.act(Action::Select(selection), window, cx);
+                }
+            });
+        });
+        draw(cx);
         assert_eq!(
             sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
             Some(Selection::Project(0))
@@ -9394,6 +9406,14 @@ for line in sys.stdin:
             Sidebar::new(runtime, window, cx)
         });
         draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                if let Some(selection) = sidebar.selection.clone() {
+                    sidebar.act(Action::Select(selection), window, cx);
+                }
+            });
+        });
+        draw(cx);
         assert!(cx
             .debug_bounds("worktree-/grove-folder-toggle-one")
             .is_some());
@@ -10544,8 +10564,7 @@ for line in sys.stdin:
             )
         });
         registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
-        sidebar.selection = Some(Selection::Session(id));
-        sidebar.initial_selection_pending = false;
+        sidebar.select(Selection::Session(id), cx);
         sidebar
             .worktree_delete_focus
             .insert(path.into(), cx.focus_handle());
@@ -11795,6 +11814,14 @@ for line in sys.stdin:
         });
         draw(cx);
         cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                if let Some(selection) = sidebar.selection.clone() {
+                    sidebar.act(Action::Select(selection), window, cx);
+                }
+            });
+        });
+        draw(cx);
+        cx.update(|window, cx| {
             let sidebar = sidebar.read(cx);
             let first = sidebar.runtime.read(cx).registry.read(cx).all()[0].id;
             assert_eq!(sidebar.selection, Some(Selection::Session(first)));
@@ -11895,6 +11922,14 @@ for line in sys.stdin:
                 );
             });
             Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                if let Some(selection) = sidebar.selection.clone() {
+                    sidebar.act(Action::Select(selection), window, cx);
+                }
+            });
         });
         draw(cx);
         sidebar.read_with(cx, |sidebar, cx| {
@@ -12680,6 +12715,14 @@ for line in sys.stdin:
         });
         cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
         draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                if let Some(selection) = sidebar.selection.clone() {
+                    sidebar.act(Action::Select(selection), window, cx);
+                }
+            });
+        });
+        draw(cx);
         let header = cx.debug_bounds("terminal-header-1").unwrap();
         let close = cx.debug_bounds("canvas-close-1").unwrap().center();
         cx.simulate_mouse_down(close, gpui::MouseButton::Left, gpui::Modifiers::default());
@@ -12749,6 +12792,14 @@ for line in sys.stdin:
         let first = SessionId::from_raw(1);
         let selected = SessionId::from_raw(2);
         cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                if let Some(selection) = sidebar.selection.clone() {
+                    sidebar.act(Action::Select(selection), window, cx);
+                }
+            });
+        });
         draw(cx);
         let header = cx.debug_bounds("terminal-header-2").unwrap();
         let source = sidebar.read_with(cx, |sidebar, _| {

@@ -1,7 +1,7 @@
 //! Dashboard destination state; the composer remains the shared native editor.
 use super::*;
 use crate::entities::codex_session::CodexSession;
-use crate::views::codex_view::{CodexView, CodexViewEvent};
+use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 
 pub(super) struct Dashboard {
     pub session: Entity<CodexSession>,
@@ -578,20 +578,209 @@ impl Sidebar {
                 )
                 .into_any_element();
         };
+        // Use the workspace snapshot rather than the current navigation mode: collapsed
+        // projects still contribute to the overview.
+        let registry = self.runtime.read(cx).registry.read(cx);
+        let activity = self.runtime.read(cx).activity.read(cx);
+        let mut sessions: Vec<_> = registry
+            .all()
+            .iter()
+            .filter(|meta| {
+                self.snapshot
+                    .projects
+                    .iter()
+                    .any(|project| project.sessions.contains(&meta.id))
+            })
+            .map(|meta| {
+                let (status, _) = self.status(meta, cx);
+                let title = session_display_title(
+                    meta,
+                    registry
+                        .session(meta.id)
+                        .and_then(|session| session.read(cx).title()),
+                );
+                let since = activity.since_of(meta.id).unwrap_or(meta.spawned_at);
+                (meta.clone(), status, title, since)
+            })
+            .collect();
+        sessions.sort_by(|a, b| b.3.cmp(&a.3));
+        let working = sessions
+            .iter()
+            .filter(|(_, status, _, _)| matches!(*status, "Working" | "Starting"))
+            .count();
+        let needs_input = sessions
+            .iter()
+            .filter(|(_, status, _, _)| *status == "Needs you")
+            .count();
+        let projects = self.snapshot.projects.len();
+        let summary = div()
+            .id("dashboard-summary")
+            .debug_selector(|| "dashboard-summary".into())
+            .w_full()
+            .max_w(rpx(CHAT_MAX_W))
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG))
+            .child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child("WORKSPACE OVERVIEW"),
+            )
+            .child(
+                div()
+                    .text_size(rpx(TEXT_DISPLAY))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child("Your workspace"),
+            )
+            .child(
+                div()
+                    .text_size(rpx(TEXT_BODY))
+                    .text_color(c::FG_DIM())
+                    .child("Start a session or pick up where you left off."),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(rpx(SPACE_3XL))
+                    .pt(rpx(SPACE_LG))
+                    .border_t_1()
+                    .border_color(c::BORDER_SOFT())
+                    .children(
+                        [
+                            (working, "Working"),
+                            (needs_input, "Needs input"),
+                            (projects, "Projects"),
+                        ]
+                        .into_iter()
+                        .map(|(count, label)| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(
+                                    div()
+                                        .text_size(rpx(TEXT_TITLE))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .child(count.to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM())
+                                        .child(label),
+                                )
+                        }),
+                    ),
+            );
+        let mut recent = div()
+            .id("dashboard-recent")
+            .debug_selector(|| "dashboard-recent".into())
+            .w_full()
+            .max_w(rpx(CHAT_MAX_W))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .pb(rpx(SPACE_SM))
+                    .text_size(rpx(TEXT_TITLE))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child("Recent activity"),
+            );
+        if sessions.is_empty() {
+            recent = recent.child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child("Your sessions will appear here."),
+            );
+        } else {
+            for (meta, status, title, since) in sessions.into_iter().take(3) {
+                let id = meta.id;
+                let age = session_age_label(since, Instant::now());
+                let label = format!("{title} · {} · {status} · {age}", meta.project);
+                recent = recent.child(
+                    self.row(
+                        format!("dashboard-session-{}", id.raw()),
+                        label,
+                        false,
+                        Action::Select(Selection::Session(id)),
+                        cx,
+                    )
+                    .h_auto()
+                    .min_h(rpx(ROW_H))
+                    .py(rpx(SPACE_SM))
+                    .border_t_1()
+                    .border_color(c::BORDER_SOFT())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rpx(TEXT_BODY))
+                            .child(single_line_session_title(&title)),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(super::super::status::session_kind(status).color())
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(session_status_icon_sized(id, status, ICON_SM, cx))
+                            .child(status),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(age),
+                    ),
+                );
+            }
+        }
         div()
             .id("dashboard-page")
             .debug_selector(|| "dashboard-page".into())
             .size_full()
-            .flex()
-            .flex_col()
-            .children(self.content_error.as_ref().map(|error| {
+            .overflow_y_scroll()
+            .child(
                 div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FORM_ERROR())
-                    .p(rpx(SPACE_2XL))
-                    .child(error.clone())
-            }))
-            .child(div().flex_1().min_h_0().child(d.view.clone()))
+                    .w_full()
+                    .min_h_full()
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .py(rpx(SPACE_3XL))
+                    .children(self.content_error.as_ref().map(|error| {
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FORM_ERROR())
+                            .p(rpx(SPACE_2XL))
+                            .child(error.clone())
+                    }))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .px(rpx(SPACE_20))
+                            .child(summary),
+                    )
+                    .child(div().w_full().pt(rpx(SPACE_3XL)).child(d.view.clone()))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .justify_center()
+                            .px(rpx(SPACE_20))
+                            .pt(rpx(SPACE_3XL))
+                            .child(recent),
+                    ),
+            )
             .into_any_element()
     }
 }
@@ -746,6 +935,62 @@ mod tests {
     #[gpui::test]
     fn claude_dashboard_worktree_round_trip_retains_composer(cx: &mut gpui::TestAppContext) {
         worktree_round_trip(cx, grove_core::codex::Provider::Claude);
+    }
+
+    #[gpui::test]
+    fn dashboard_opens_at_startup_and_groups_content(cx: &mut gpui::TestAppContext) {
+        let repo = tempfile::tempdir().unwrap();
+        let path = repo.path().to_string_lossy().into_owned();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let mut store = grove_core::storage::Store::default();
+            store.projects.push(grove_core::storage::Project {
+                name: "Test project".into(),
+                path: path.clone(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                archived: false,
+                worktree_dir: None,
+            });
+            store.assign_project_to_active_workspace(&path);
+            cx.set_global(SettingsState::new(store));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(900.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.update(|_, cx| {
+            assert!(sidebar.read(cx).dashboard_open);
+            assert!(sidebar.read(cx).dashboard.is_some());
+            assert_eq!(sidebar.read(cx).runtime.read(cx).registry.read(cx).len(), 0);
+        });
+        let summary = cx.debug_bounds("dashboard-summary").unwrap();
+        let composer = cx.debug_bounds("codex-composer").unwrap();
+        let recent = cx.debug_bounds("dashboard-recent").unwrap();
+        let tray = cx.debug_bounds("dashboard-destination").unwrap();
+        let hints = cx.debug_bounds("codex-composer-hints").unwrap();
+        assert!(composer.top() >= summary.bottom());
+        assert!(composer.top() - summary.bottom() < gpui::px(100.));
+        assert!(hints.top() >= tray.bottom());
+        assert!(recent.top() >= hints.bottom());
+        assert!(recent.top() - hints.bottom() < gpui::px(50.));
+        assert!(composer.size.height > gpui::px(50.));
+
+        cx.simulate_resize(gpui::size(gpui::px(560.), gpui::px(500.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let summary = cx.debug_bounds("dashboard-summary").unwrap();
+        let composer = cx.debug_bounds("codex-composer").unwrap();
+        assert!(composer.top() >= summary.bottom());
+        assert!(composer.size.width > gpui::px(100.));
+        assert!(composer.top() - summary.bottom() < gpui::px(100.));
     }
 
     #[gpui::test]
