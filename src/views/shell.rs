@@ -191,7 +191,7 @@ impl Shell {
         let sidebar_events =
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
                 super::sidebar::SidebarEvent::NewMultiProjectSessionRequested => {
-                    if !this.shortcut_blocked(cx) {
+                    if !this.shortcut_blocked_in(window, cx) {
                         this.sidebar
                             .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                         this.launcher
@@ -275,7 +275,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.shortcut_blocked(cx)
+        if self.shortcut_blocked_in(window, cx)
             || self.sidebar.read(cx).highlights_blocked()
             || release.slides.is_empty()
         {
@@ -297,7 +297,7 @@ impl Shell {
 
     fn check_startup_highlights(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.highlights_startup_checked
-            || self.shortcut_blocked(cx)
+            || self.shortcut_blocked_in(window, cx)
             || self.sidebar.read(cx).highlights_blocked()
         {
             return;
@@ -639,8 +639,8 @@ impl Shell {
         }
     }
 
-    fn set_zoom(&self, delta: f32, cx: &mut Context<Self>) {
-        if self.shortcut_blocked(cx) {
+    fn set_zoom(&self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shortcut_blocked_in(window, cx) {
             return;
         }
         let current = cx.global::<crate::zoom::ZoomState>().zoom;
@@ -659,6 +659,10 @@ impl Shell {
             cx.update_global::<crate::zoom::ZoomState, _>(|zoom, _| zoom.zoom = next);
             cx.refresh_windows();
         }
+    }
+
+    fn shortcut_blocked_in(&self, window: &Window, cx: &App) -> bool {
+        super::mermaid::is_expanded(window, cx) || self.shortcut_blocked(cx)
     }
 
     fn shortcut_blocked(&self, cx: &App) -> bool {
@@ -757,7 +761,7 @@ impl Shell {
     fn open_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar
             .update(cx, super::sidebar::Sidebar::dismiss_project_context);
-        if self.shortcut_blocked(cx) {
+        if self.shortcut_blocked_in(window, cx) {
             return;
         }
         self.switcher_return_focus = window.focused(cx);
@@ -1495,7 +1499,7 @@ impl Render for Shell {
         #[cfg(target_os = "macos")]
         {
             let mut state = self.sidebar.read(cx).menu_state(window, cx);
-            state.navigation &= !self.shortcut_blocked(cx);
+            state.navigation &= !self.shortcut_blocked_in(window, cx);
             state.switcher = self.highlights.is_none()
                 && !self.backend_choice_open
                 && !self.launcher.read(cx).is_open()
@@ -1506,17 +1510,20 @@ impl Render for Shell {
             crate::app_menus::refresh(state, cx);
         }
         let html_owner = self.sidebar.read(cx).html_owner(cx);
-        let html_blocked = self.shortcut_blocked(cx) || self.sidebar.read(cx).html_overlay_open();
+        super::mermaid::set_context(html_owner, window, cx);
+        let mermaid_expanded = super::mermaid::render_expanded(window, cx);
+        let html_blocked =
+            self.shortcut_blocked_in(window, cx) || self.sidebar.read(cx).html_overlay_open();
         super::inline_html::set_context(html_owner, html_blocked, cx);
         let html_expanded = super::inline_html::render_expanded(window, cx);
         super::native_plan::set_context(html_owner, html_blocked, cx);
-        let project_hover_blocked = self.shortcut_blocked(cx);
+        let project_hover_blocked = self.shortcut_blocked_in(window, cx);
         self.sidebar.update(cx, |sidebar, cx| {
             sidebar.set_project_hover_blocked(project_hover_blocked, cx);
         });
         if !self.highlights_startup_checked
             && !self.highlights_startup_scheduled
-            && !self.shortcut_blocked(cx)
+            && !self.shortcut_blocked_in(window, cx)
             && !self.sidebar.read(cx).highlights_blocked()
         {
             self.highlights_startup_scheduled = true;
@@ -1592,7 +1599,7 @@ impl Render for Shell {
             .when(
                 self.sidebar.read(cx).is_grid()
                     && !self.sidebar.read(cx).is_zen()
-                    && !self.shortcut_blocked(cx),
+                    && !self.shortcut_blocked_in(window, cx),
                 |shell| shell.key_context(k::Screen::Grid.key_context()),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -1651,7 +1658,7 @@ impl Render for Shell {
                 this.close_after_codex(window, cx);
             }))
             .on_action(cx.listener(|this, _: &k::NewSession, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                     this.launcher
@@ -1660,7 +1667,7 @@ impl Render for Shell {
             }))
             .on_action(
                 cx.listener(|this, _: &k::NewSessionInWorktree, window, cx| {
-                    if !this.shortcut_blocked(cx) {
+                    if !this.shortcut_blocked_in(window, cx) {
                         if let Some((project, path)) = this.sidebar.read(cx).selected_worktree() {
                             this.sidebar
                                 .update(cx, super::sidebar::Sidebar::dismiss_project_context);
@@ -1675,34 +1682,34 @@ impl Render for Shell {
                 this.open_switcher(window, cx);
             }))
             .on_action(cx.listener(|this, _: &k::NextSession, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, |sidebar, cx| sidebar.select_next_session(window, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &k::PrevSession, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.select_previous_session(window, cx);
                     });
                 }
             }))
             .on_action(cx.listener(|this, action: &k::GridMove, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.grid_move(action.dx, action.dy, window, cx);
                     });
                 }
             }))
             .on_action(cx.listener(|this, action: &k::GridSwap, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.grid_swap(action.dx, action.dy, window, cx);
                     });
                 }
             }))
             .on_action(cx.listener(|this, action: &k::SelectSession, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.select_numbered_session(action.index, window, cx);
                     });
@@ -1710,50 +1717,50 @@ impl Render for Shell {
             }))
             .on_action(
                 cx.listener(|this, _: &k::JumpToWaitingSession, window, cx| {
-                    if !this.shortcut_blocked(cx) {
+                    if !this.shortcut_blocked_in(window, cx) {
                         this.sidebar
                             .update(cx, |sidebar, cx| sidebar.select_waiting_session(window, cx));
                     }
                 }),
             )
             .on_action(cx.listener(|this, _: &k::ToggleSidebar, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, |sidebar, cx| sidebar.toggle_sidebar(window, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &k::ToggleRailMode, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &k::ToggleGrid, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, |sidebar, cx| sidebar.toggle_grid(window, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &k::ToggleZen, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, |sidebar, cx| sidebar.toggle_zen(window, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &k::NewHomeTerminal, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, |sidebar, cx| sidebar.add_terminal(window, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &k::CloseFocusedSession, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, |sidebar, cx| sidebar.request_close_focused(window, cx));
                 }
             }))
             .on_action(cx.listener(|this, _: &k::Settings, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                     this.settings
@@ -1761,21 +1768,21 @@ impl Render for Shell {
                 }
             }))
             .on_action(cx.listener(|this, _: &k::ShortcutOverlay, window, cx| {
-                if !this.shortcut_blocked(cx) {
+                if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar
                         .update(cx, super::sidebar::Sidebar::dismiss_project_context);
                     this.settings
                         .update(cx, |settings, cx| settings.open_shortcuts(window, cx));
                 }
             }))
-            .on_action(cx.listener(|this, _: &k::ZoomIn, _, cx| {
-                this.set_zoom(crate::zoom::ZOOM_STEP, cx);
+            .on_action(cx.listener(|this, _: &k::ZoomIn, window, cx| {
+                this.set_zoom(crate::zoom::ZOOM_STEP, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &k::ZoomOut, _, cx| {
-                this.set_zoom(-crate::zoom::ZOOM_STEP, cx);
+            .on_action(cx.listener(|this, _: &k::ZoomOut, window, cx| {
+                this.set_zoom(-crate::zoom::ZOOM_STEP, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &k::ZoomReset, _, cx| {
-                this.set_zoom(0.0, cx);
+            .on_action(cx.listener(|this, _: &k::ZoomReset, window, cx| {
+                this.set_zoom(0.0, window, cx);
             }))
             .when(
                 !self.sidebar.read(cx).is_zen() || self.settings.read(cx).is_open(),
@@ -1837,6 +1844,9 @@ impl Render for Shell {
             })
             .when_some(self.highlights.clone(), |root, carousel| {
                 root.child(gpui::deferred(carousel))
+            })
+            .when_some(mermaid_expanded, |root, overlay| {
+                root.child(gpui::deferred(overlay))
             })
             .when_some(html_expanded, |root, overlay| {
                 root.child(gpui::deferred(overlay))

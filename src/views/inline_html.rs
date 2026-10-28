@@ -1744,7 +1744,8 @@ impl gpui::Element for NativeElement {
             .try_global::<HtmlUi>()
             .and_then(|ui| ui.expanded.as_ref())
             .map(|entity| entity.entity_id());
-        let blocked = !surface_is_selected(self.artifact, selected)
+        let blocked = super::mermaid::is_expanded(window, cx)
+            || !surface_is_selected(self.artifact, selected)
             || (selected.is_none() && super::native_plan::blocks_inline_html(cx))
             || self.paused.get()
             || cx.try_global::<HtmlUi>().is_some_and(|ui| ui.blocked)

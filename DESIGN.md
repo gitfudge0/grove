@@ -218,7 +218,7 @@ General settings exposes Theme with the current name and palette swatches, openi
 
 Theme application refreshes existing and new windows without restarting sessions, replacing drafts, or reloading report documents. Palette neutrals establish surfaces and text; explicit Grove semantic roles retain status hue meaning independently of terminal ANSI accents. The curated built-in catalog does not expose the legacy custom theme editor or JSON import/export.
 
-Mermaid diagrams in native Codex and Claude transcripts start fitted within a bounded inline viewport. Persistent Zoom in, Zoom out and Fit controls and focused keyboard zoom/pan make large diagrams readable; dragging pans only the diagram. Zoom preserves transcript layout and ordinary wheel scrolling. Each diagram owns its camera; source remains available when rendering fails. Detail rendering is bounded and refreshed for the current theme.
+Mermaid diagrams in native Codex and Claude transcripts start fitted within a bounded inline viewport. Persistent Zoom in, Zoom out and Fit controls and focused keyboard zoom/pan make large diagrams readable; dragging pans only the diagram. Zoom preserves transcript layout and ordinary wheel scrolling. A persistent Expand action opens a window-filling diagram with its own fitted zoom/pan camera and the same controls. Close or Escape restores focus to Expand and preserves the inline camera and transcript geometry. The expanded view contains keyboard navigation and blocks background input and native HTML; changing conversations dismisses it. Each diagram owns its camera; source remains available when rendering fails. Detail rendering is bounded and refreshed for the current theme.
 
 ## Project workflow actions
 
