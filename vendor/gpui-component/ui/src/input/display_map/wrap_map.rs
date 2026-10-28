@@ -16,7 +16,11 @@ pub struct WrapMap {
 }
 
 impl WrapMap {
-    pub fn set_text_replacements(&mut self, replacements: Vec<crate::input::TextReplacement>, cx: &mut App) {
+    pub fn set_text_replacements(
+        &mut self,
+        replacements: Vec<crate::input::TextReplacement>,
+        cx: &mut App,
+    ) {
         self.wrapper.set_text_replacements(replacements, cx);
     }
 

@@ -10835,7 +10835,6 @@ impl CodexView {
                 .aria_label("Submitted answers")
                 .flex_shrink_0()
                 .w_full()
-                .max_w(rpx(CHAT_MAX_W))
                 .min_w_0()
                 .flex()
                 .flex_col()
@@ -10859,7 +10858,7 @@ impl CodexView {
                         .child(title.clone()),
                 );
             }
-            for (question, answer) in &receipt.answers {
+            for (answer_index, (question, answer)) in receipt.answers.iter().enumerate() {
                 group = group.child(
                     div()
                         .flex()
@@ -10867,14 +10866,35 @@ impl CodexView {
                         .gap(rpx(SPACE_XS))
                         .child(
                             div()
+                                .id(("question-receipt-question", answer_index))
+                                .debug_selector(move || {
+                                    format!("question-receipt-{index}-question-{answer_index}")
+                                })
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG_DIM())
                                 .child(question.clone()),
                         )
-                        .child(div().child(answer.clone())),
+                        .child(
+                            div()
+                                .id(("question-receipt-answer", answer_index))
+                                .debug_selector(move || {
+                                    format!("question-receipt-{index}-answer-{answer_index}")
+                                })
+                                .child(answer.clone()),
+                        ),
                 );
             }
-            blocks.push(group.into_any_element());
+            // Resolve the transcript width before measuring wrapped receipt text.
+            // A max-width on the flex card itself leaves its intrinsic height
+            // based on the wider transcript, clipping the final answer.
+            blocks.push(
+                div()
+                    .w_full()
+                    .max_w(rpx(CHAT_MAX_W))
+                    .flex_shrink_0()
+                    .child(group)
+                    .into_any_element(),
+            );
         }
         for (index, request) in state.questions.iter().enumerate() {
             if self
@@ -17813,6 +17833,161 @@ mod tests {
             );
             assert!(!view.question_drafts[&key].questions[0].custom);
         });
+    }
+
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn question_receipt_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            c::sync_component_theme(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for (width, rem) in [(1024.0, 16.0), (520.0, 16.0), (520.0, 24.0)] {
+                cx.update(|cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
+                let mut state = snapshot();
+                state.saved.provider = provider;
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let connection = Connection {
+                    handle,
+                    updates: receive.into(),
+                };
+                let mut retained = None;
+                let window = cx
+                    .open_window(
+                        gpui::size(gpui::px(width), gpui::px(1000.0)),
+                        |window, cx| {
+                            window.set_rem_size(gpui::px(rem));
+                            let session =
+                                cx.new(|cx| CodexSession::from_connection(state, connection, cx));
+                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                            retained = Some(chat.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(chat, window, cx)
+                                    .bordered(false)
+                                    .bg(c::BG())
+                            })
+                        },
+                    )
+                    .unwrap();
+                // Initial synchronization clears state from the preceding session.
+                // Insert the acknowledged receipt only after that first render.
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                    retained.as_ref().unwrap().update(cx, |view, cx| {
+                        view.question_receipts = vec![wrapped_question_receipt()];
+                        cx.notify();
+                    });
+                })
+                .unwrap();
+                for _ in 0..4 {
+                    cx.advance_clock(std::time::Duration::from_millis(16));
+                    cx.run_until_parked();
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.simulate_next_frame(cx);
+                        let _ = window.draw(cx);
+                    })
+                    .unwrap();
+                }
+                cx.update_window(window.into(), |_, window, cx| {
+                    assert_eq!(window.rem_size(), gpui::px(rem));
+                    let view = retained.as_ref().unwrap().read(cx);
+                    assert_eq!(
+                        view.question_receipts.len(),
+                        1,
+                        "native fixture must retain its receipt"
+                    );
+                })
+                .unwrap();
+                let path =
+                    format!("/tmp/grove-question-receipt-{provider:?}-{width:.0}-{rem:.0}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Native question receipt fixture: {path}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+
+    fn wrapped_question_receipt() -> QuestionReceipt {
+        QuestionReceipt {
+            anchor: 0,
+            echo_text: None,
+            echo_after: 0,
+            title: None,
+            answers: vec![
+                ("Which web (care-convoy-ai-web) SHA is in prod now, to use as the CC_AI_R5_2 baseline? There's no CC_AI_R5_2 branch in careconvoy-ai-core, so I'm treating this as a web-only release. CC_AI_R5_1 tip 909b3b6 is an ancestor of R5_2, and R5_2 adds just one commit on top of it (d213549, AVA-209 Bun pin).".into(), "909b3b6 (CC_AI_R5_1 tip)".into()),
+                ("Is careconvoy-ai-core really out of scope for this release? It has no CC_AI_R5_2 branch.".into(), "Web only (Recommended)".into()),
+            ],
+        }
+    }
+
+    #[gpui::test]
+    fn codex_and_claude_question_receipts_contain_wrapped_answers(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        let previous_rem = cx.update(|_, cx| gpui_component::Theme::global(cx).font_size);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for (width, rem) in [(1024.0, 16.0), (520.0, 16.0), (520.0, 24.0)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1000.0)));
+                cx.update(|window, cx| {
+                    gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                    window.set_rem_size(gpui::px(rem));
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, _| {
+                            session.state.saved.provider = provider;
+                        });
+                        view.question_receipts = vec![wrapped_question_receipt()];
+                        cx.notify();
+                    });
+                });
+                draw(cx);
+                cx.update(|window, _| assert_eq!(window.rem_size(), gpui::px(rem)));
+                let receipt = cx.debug_bounds("question-receipt-0").unwrap();
+                let mut previous_bottom = receipt.top();
+                for (question_selector, answer_selector) in [
+                    (
+                        "question-receipt-0-question-0",
+                        "question-receipt-0-answer-0",
+                    ),
+                    (
+                        "question-receipt-0-question-1",
+                        "question-receipt-0-answer-1",
+                    ),
+                ] {
+                    let question = cx.debug_bounds(question_selector).unwrap();
+                    let answer = cx.debug_bounds(answer_selector).unwrap();
+                    assert!(
+                        question.top() >= previous_bottom,
+                        "question must follow preceding content"
+                    );
+                    assert!(
+                        answer.top() >= question.bottom(),
+                        "answer must follow its wrapped question"
+                    );
+                    previous_bottom = answer.bottom();
+                }
+                let bottom_padding = gpui::px(SPACE_2XL * rem / 16.0);
+                assert!(
+                    previous_bottom + bottom_padding <= receipt.bottom(),
+                    "{provider:?} width={width} rem={rem}: final answer bottom {previous_bottom:?} must stay within receipt {receipt:?} with bottom padding"
+                );
+            }
+        }
+        cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = previous_rem);
     }
 
     #[gpui::test]

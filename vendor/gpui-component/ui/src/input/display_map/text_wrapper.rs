@@ -133,8 +133,14 @@ impl TextWrapper {
         }
     }
 
-    pub(crate) fn set_text_replacements(&mut self, replacements: Vec<crate::input::TextReplacement>, cx: &mut App) {
-        if self.replacements == replacements { return; }
+    pub(crate) fn set_text_replacements(
+        &mut self,
+        replacements: Vec<crate::input::TextReplacement>,
+        cx: &mut App,
+    ) {
+        if self.replacements == replacements {
+            return;
+        }
         self.replacements = replacements;
         self.update_all(&self.text.clone(), cx);
     }
@@ -280,16 +286,25 @@ impl TextWrapper {
         let mut line_base = new_range.start;
         for line in Rope::from(changed_text.slice(new_range)).iter_lines() {
             let line_str = line.to_string();
-            let projection = (!self.replacements.is_empty()).then(||
-                crate::input::projection::TextProjection::new(&line_str, &self.replacements, line_base));
-            let projected_text = projection.as_ref().map_or(line_str.as_str(), |p| p.text.as_str());
+            let projection = (!self.replacements.is_empty()).then(|| {
+                crate::input::projection::TextProjection::new(
+                    &line_str,
+                    &self.replacements,
+                    line_base,
+                )
+            });
+            let projected_text = projection
+                .as_ref()
+                .map_or(line_str.as_str(), |p| p.text.as_str());
             let font_scale = projection.as_ref().map_or(1., |p| p.font_scale);
             let mut wrapped_lines = SmallVec::<[Range<usize>; 1]>::new();
             let mut prev_boundary_ix = 0;
 
             if let Some(wrap_width) = wrap_width {
                 for boundary in wrap_line(projected_text, wrap_width / font_scale) {
-                    let source_boundary = projection.as_ref().map_or(boundary.ix, |p| p.to_source(boundary.ix));
+                    let source_boundary = projection
+                        .as_ref()
+                        .map_or(boundary.ix, |p| p.to_source(boundary.ix));
                     wrapped_lines.push(prev_boundary_ix..source_boundary);
                     prev_boundary_ix = source_boundary;
                 }
@@ -439,13 +454,19 @@ impl LineLayout {
         self.wrapped_lines = wrapped_lines;
     }
 
-    pub(crate) fn with_projection(mut self, projection: crate::input::projection::TextProjection, source_len: usize) -> Self {
+    pub(crate) fn with_projection(
+        mut self,
+        projection: crate::input::projection::TextProjection,
+        source_len: usize,
+    ) -> Self {
         self.len = source_len;
         self.projection = Some(projection);
         self
     }
     fn source_index(&self, offset: usize) -> usize {
-        self.projection.as_ref().map_or(offset, |p| p.to_source(offset))
+        self.projection
+            .as_ref()
+            .map_or(offset, |p| p.to_source(offset))
     }
 
     pub(crate) fn with_whitespaces(mut self, indicators: Option<WhitespaceIndicators>) -> Self {
@@ -489,7 +510,10 @@ impl LineLayout {
         last_layout: &LastLayout,
         line_end_affinity: bool,
     ) -> Option<Point<Pixels>> {
-        let offset = self.projection.as_ref().map_or(offset, |p| p.to_display(offset));
+        let offset = self
+            .projection
+            .as_ref()
+            .map_or(offset, |p| p.to_display(offset));
         let mut acc_len = 0;
         let mut offset_y = px(0.);
 

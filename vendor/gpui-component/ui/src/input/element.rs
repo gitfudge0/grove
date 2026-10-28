@@ -1202,42 +1202,66 @@ impl TextElement {
             debug_assert_eq!(line_item.len(), line_text.len());
 
             let base = last_layout.visible_line_byte_offsets[vi];
-            if !replacements.iter().any(|r| r.range.start >= base && r.range.end <= base + line_text.len()) {
+            if !replacements
+                .iter()
+                .any(|r| r.range.start >= base && r.range.end <= base + line_text.len())
+            {
                 let mut wrapped_lines = SmallVec::with_capacity(1);
                 for range in &line_item.wrapped_lines {
                     let line_runs = runs_for_range(runs, run_offset, range);
-                    let line_runs = if bg_segments.is_empty() { line_runs } else {
+                    let line_runs = if bg_segments.is_empty() {
+                        line_runs
+                    } else {
                         split_runs_by_bg_segments(base + range.start, &line_runs, bg_segments)
                     };
                     wrapped_lines.push(window.text_system().shape_line(
-                        line_text[range.clone()].to_string().into(), font_size, &line_runs, None));
+                        line_text[range.clone()].to_string().into(),
+                        font_size,
+                        &line_runs,
+                        None,
+                    ));
                 }
-                lines.push(LineLayout::new().lines(wrapped_lines)
-                    .with_whitespaces(whitespace_indicators.clone()));
+                lines.push(
+                    LineLayout::new()
+                        .lines(wrapped_lines)
+                        .with_whitespaces(whitespace_indicators.clone()),
+                );
                 run_offset += line_text.len() + 1;
                 continue;
             }
-            let projection = super::projection::TextProjection::new(
-                &line_text, &replacements, base);
+            let projection =
+                super::projection::TextProjection::new(&line_text, &replacements, base);
             let mut source_offset = 0;
-            let projected_runs: Vec<TextRun> = runs_for_range(runs, run_offset, &(0..line_text.len()))
-                .into_iter().filter_map(|mut run| {
-                    let start = projection.to_display(source_offset);
-                    source_offset += run.len;
-                    let end = projection.to_display(source_offset);
-                    run.len = end - start;
-                    (run.len > 0).then_some(run)
-                }).collect();
+            let projected_runs: Vec<TextRun> =
+                runs_for_range(runs, run_offset, &(0..line_text.len()))
+                    .into_iter()
+                    .filter_map(|mut run| {
+                        let start = projection.to_display(source_offset);
+                        source_offset += run.len;
+                        let end = projection.to_display(source_offset);
+                        run.len = end - start;
+                        (run.len > 0).then_some(run)
+                    })
+                    .collect();
             let base = last_layout.visible_line_byte_offsets[vi];
-            let projected_backgrounds: Vec<_> = bg_segments.iter().filter_map(|(range, color)| {
-                let start = range.start.max(base).saturating_sub(base);
-                let end = range.end.min(base + line_text.len()).saturating_sub(base);
-                (start < end).then(|| (projection.to_display(start)..projection.to_display(end), *color))
-            }).collect();
+            let projected_backgrounds: Vec<_> = bg_segments
+                .iter()
+                .filter_map(|(range, color)| {
+                    let start = range.start.max(base).saturating_sub(base);
+                    let end = range.end.min(base + line_text.len()).saturating_sub(base);
+                    (start < end).then(|| {
+                        (
+                            projection.to_display(start)..projection.to_display(end),
+                            *color,
+                        )
+                    })
+                })
+                .collect();
             let mut wrapped_lines = SmallVec::with_capacity(1);
 
             for range in &line_item.wrapped_lines {
-                let projected_range = projection.to_display(range.start)..projection.to_display(range.end);
+                let projected_range =
+                    projection.to_display(range.start)..projection.to_display(range.end);
                 let line_runs = runs_for_range(&projected_runs, 0, &projected_range);
                 let line_runs = if projected_backgrounds.is_empty() {
                     line_runs
@@ -1250,9 +1274,12 @@ impl TextElement {
                 };
 
                 let sub_line: SharedString = projection.text[projected_range].to_string().into();
-                let shaped_line = window
-                    .text_system()
-                    .shape_line(sub_line, font_size * projection.font_scale, &line_runs, None);
+                let shaped_line = window.text_system().shape_line(
+                    sub_line,
+                    font_size * projection.font_scale,
+                    &line_runs,
+                    None,
+                );
 
                 wrapped_lines.push(shaped_line);
             }
@@ -1513,7 +1540,8 @@ impl Element for TextElement {
 
         self.state.update(cx, |state, cx| {
             if !state.text_replacements.is_empty() {
-                let replacements = state.visible_text_replacements(state.focus_handle.is_focused(window));
+                let replacements =
+                    state.visible_text_replacements(state.focus_handle.is_focused(window));
                 state.display_map.set_text_replacements(replacements, cx);
             }
             state.display_map.set_font(font, text_size, cx);

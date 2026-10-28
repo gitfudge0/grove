@@ -1014,21 +1014,35 @@ impl InputState {
 
     pub(super) fn visible_text_replacements(&self, focused: bool) -> Vec<super::TextReplacement> {
         let cursor = self.cursor();
-        self.text_replacements.iter().filter(|replacement| {
-            // Syntax under an active source caret or IME composition is editable.
-            let caret_inside = focused && self.selected_range.is_empty()
-                && replacement.range.start <= cursor && cursor < replacement.range.end;
-            let marked = self.ime_marked_range.as_ref().is_some_and(|marked|
-                replacement.range.start < marked.end && marked.start < replacement.range.end);
-            !caret_inside && !marked
-        }).cloned().collect()
+        self.text_replacements
+            .iter()
+            .filter(|replacement| {
+                // Syntax under an active source caret or IME composition is editable.
+                let caret_inside = focused
+                    && self.selected_range.is_empty()
+                    && replacement.range.start <= cursor
+                    && cursor < replacement.range.end;
+                let marked = self.ime_marked_range.as_ref().is_some_and(|marked| {
+                    replacement.range.start < marked.end && marked.start < replacement.range.end
+                });
+                !caret_inside && !marked
+            })
+            .cloned()
+            .collect()
     }
 
     /// Set a presentation projection without editing the literal buffer or undo history.
-    pub fn set_text_replacements(&mut self, replacements: Vec<super::TextReplacement>, cx: &mut Context<Self>) {
-        if self.text_replacements == replacements { return; }
+    pub fn set_text_replacements(
+        &mut self,
+        replacements: Vec<super::TextReplacement>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.text_replacements == replacements {
+            return;
+        }
         self.text_replacements = replacements;
-        self.display_map.set_text_replacements(self.text_replacements.clone(), cx);
+        self.display_map
+            .set_text_replacements(self.text_replacements.clone(), cx);
         cx.notify();
     }
 
