@@ -432,8 +432,17 @@ impl Default for Workspaces {
     }
 }
 
+/// Provider and advertised model identity together; names may overlap across providers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelFavorite {
+    pub provider: crate::codex::Provider,
+    pub model: String,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Store {
+    #[serde(default)]
+    pub model_favorites: Vec<ModelFavorite>,
     #[serde(default)]
     pub workspaces: Workspaces,
     /// Membership uses repository paths so project renames preserve identity.
@@ -509,6 +518,24 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn is_model_favorite(&self, provider: crate::codex::Provider, model: &str) -> bool {
+        self.model_favorites
+            .iter()
+            .any(|entry| entry.provider == provider && entry.model == model)
+    }
+
+    pub fn toggle_model_favorite(&mut self, provider: crate::codex::Provider, model: &str) {
+        if self.is_model_favorite(provider, model) {
+            self.model_favorites
+                .retain(|entry| entry.provider != provider || entry.model != model);
+        } else if !model.is_empty() {
+            self.model_favorites.push(ModelFavorite {
+                provider,
+                model: model.to_owned(),
+            });
+        }
+    }
+
     /// A saved appearance takes precedence over legacy theme names.
     pub fn appearance(&self) -> AppearancePreference {
         if let Some(appearance) = self.appearance {
@@ -759,6 +786,25 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::agent::Agent;
+
+    #[test]
+    fn model_favorites_survive_reload_and_keep_provider_identity() {
+        use crate::codex::Provider;
+        let mut store: Store = serde_json::from_str("{}").unwrap();
+        assert!(store.model_favorites.is_empty());
+        store.toggle_model_favorite(Provider::Codex, "shared-model-name");
+        store.toggle_model_favorite(Provider::Claude, "shared-model-name");
+        let bytes = serde_json::to_vec(&store).unwrap();
+        let mut reloaded: Store = serde_json::from_slice(&bytes).unwrap();
+        assert!(reloaded.is_model_favorite(Provider::Codex, "shared-model-name"));
+        assert!(reloaded.is_model_favorite(Provider::Claude, "shared-model-name"));
+        reloaded.toggle_model_favorite(Provider::Codex, "shared-model-name");
+        assert!(!reloaded.is_model_favorite(Provider::Codex, "shared-model-name"));
+        assert!(reloaded.is_model_favorite(Provider::Claude, "shared-model-name"));
+        let restarted: Store =
+            serde_json::from_slice(&serde_json::to_vec(&reloaded).unwrap()).unwrap();
+        assert_eq!(restarted.model_favorites, reloaded.model_favorites);
+    }
 
     #[test]
     fn selected_theme_precedence_unknown_fallback_and_restart() {

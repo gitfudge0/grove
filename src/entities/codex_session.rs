@@ -33,10 +33,13 @@ impl DerefMut for SessionSnapshot {
 }
 pub struct CodexSession {
     pub state: SessionSnapshot,
+    pub catalog_loading: bool,
+    pub catalog_error: Option<String>,
     pub handle: Handle,
     _poll: Task<()>,
     deferred: Option<std::sync::mpsc::Receiver<Action>>,
     catalog_generation: u64,
+    catalog_selection_error: bool,
 }
 impl CodexSession {
     /// A composer-owned draft with no conversation, persistence, or registry entry.
@@ -60,6 +63,9 @@ impl CodexSession {
             _poll: poll,
             deferred: Some(receiver),
             catalog_generation: 0,
+            catalog_loading: false,
+            catalog_error: None,
+            catalog_selection_error: false,
         };
         session.refresh_catalog(cwd, args, cx);
         session
@@ -71,9 +77,16 @@ impl CodexSession {
             return;
         }
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
+        self.catalog_loading = true;
+        if self.catalog_error.is_some() && self.state.error == self.catalog_error {
+            self.state.error = None;
+        }
+        self.catalog_error = None;
+        self.catalog_selection_error = false;
         // Skills and resolved defaults belong to a checkout/provider pair. Do
         // not expose the previous destination's configuration during refresh.
         self.state.skills.clear();
+        self.state.models.clear();
         self.state.permission_modes.clear();
         self.state.resolved_model = None;
         self.state.resolved_effort = None;
@@ -84,6 +97,8 @@ impl CodexSession {
         self.state.speed_disabled_reason = None;
         cx.notify();
         if !std::path::Path::new(&cwd).is_dir() {
+            self.catalog_loading = false;
+            self.catalog_error = Some("The selected checkout is no longer available.".into());
             return;
         }
         let generation = self.catalog_generation;
@@ -93,31 +108,126 @@ impl CodexSession {
         cx.spawn(async move |this, cx| {
             let result = discovery.await;
             let _ = this.update(cx, |this, cx| {
-                if !this.is_deferred() || this.catalog_generation != generation {
-                    return;
-                }
-                match result {
-                    Ok(catalog) => {
-                        this.state.models = catalog.models;
-                        this.state.skills = catalog.skills;
-                        this.state.permission_modes = catalog.permission_modes;
-                        this.state.resolved_model = catalog.resolved_model;
-                        this.state.resolved_effort = catalog.resolved_effort;
-                        this.state.resolved_access = catalog.resolved_access;
-                        this.state.sandbox = catalog.sandbox;
-                        this.state.approval_policy = catalog.approval_policy;
-                        this.state.reported_speed = catalog.reported_speed;
-                        this.state.speed_disabled_reason = catalog.speed_disabled_reason;
-                    }
-                    Err(error) => this.state.error = Some(error),
-                }
-                cx.notify();
+                this.complete_catalog(generation, result, cx);
             });
         })
         .detach();
     }
+    fn complete_catalog(
+        &mut self,
+        generation: u64,
+        result: Result<Snapshot, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_deferred() || self.catalog_generation != generation {
+            return;
+        }
+        self.catalog_loading = false;
+        match result {
+            Ok(catalog) => {
+                self.state.models = catalog.models;
+                self.state.skills = catalog.skills;
+                self.state.permission_modes = catalog.permission_modes;
+                self.state.resolved_model = catalog.resolved_model;
+                self.state.resolved_effort = catalog.resolved_effort;
+                self.state.resolved_access = catalog.resolved_access;
+                self.state.sandbox = catalog.sandbox;
+                self.state.approval_policy = catalog.approval_policy;
+                self.state.reported_speed = catalog.reported_speed;
+                self.state.speed_disabled_reason = catalog.speed_disabled_reason;
+                self.catalog_error = None;
+                self.catalog_error = self.validate_draft_catalog().err();
+                self.catalog_selection_error = self.catalog_error.is_some();
+                if let Some(error) = self.catalog_error.clone() {
+                    self.state.error = Some(error);
+                }
+            }
+            Err(error) => {
+                self.catalog_selection_error = false;
+                self.catalog_error = Some(error.clone());
+                self.state.error = Some(error);
+            }
+        }
+        cx.notify();
+    }
+    fn validate_draft_catalog(&self) -> Result<(), String> {
+        if self.catalog_loading {
+            return Err("Wait for the selected provider's model options to finish loading.".into());
+        }
+        if let Some(error) = &self.catalog_error {
+            return Err(error.clone());
+        }
+        if let Some(selected) = &self.state.saved.composer.model {
+            if !self
+                .state
+                .models
+                .iter()
+                .any(|model| model["model"].as_str() == Some(selected.as_str()))
+            {
+                return Err("The selected model is no longer advertised by this provider. Choose another model.".into());
+            }
+        }
+        Ok(())
+    }
+    /// Changing an explicit model can recover its validation error. It cannot
+    /// recover a failed metadata handshake; that still needs a catalog retry.
+    fn revalidate_catalog_selection(&mut self) {
+        if !self.catalog_selection_error {
+            return;
+        }
+        let previous = self.catalog_error.take();
+        self.catalog_error = self.validate_draft_catalog().err();
+        self.catalog_selection_error = self.catalog_error.is_some();
+        if self.state.error == previous {
+            self.state.error.clone_from(&self.catalog_error);
+        }
+    }
     pub fn is_deferred(&self) -> bool {
         self.deferred.is_some()
+    }
+    /// Provider identity may change only before the dashboard draft is launched.
+    /// Browse-time metadata discovery never calls this method.
+    pub(crate) fn select_draft_model(
+        &mut self,
+        provider: codex::Provider,
+        model: String,
+        args: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if !self.is_deferred() {
+            return Err("A running conversation cannot switch providers.".into());
+        }
+        if model.is_empty() {
+            return Err("Choose an advertised model before switching providers.".into());
+        }
+        provider.launch_options(&args)?;
+        self.drain_deferred(cx);
+        let provider_changed = self.state.saved.provider != provider;
+        if provider_changed {
+            self.state.saved.provider = provider;
+            self.state.saved.label = provider.label().into();
+            self.state.saved.composer = codex::ComposerSettings::default();
+            self.state.model = None;
+            self.state.effort = None;
+            self.state.access = None;
+        }
+        if self.state.model.as_deref() != Some(model.as_str()) {
+            self.state.effort = None;
+            self.state.saved.composer.effort = None;
+        }
+        self.state.error = None;
+        self.state.saved.composer.reset_to_configured = false;
+        self.state.saved.composer.reset_model_effort_only = false;
+        self.send(
+            Action::Configure {
+                model: Some(model),
+                effort: None,
+                access: None,
+            },
+            cx,
+        );
+        self.refresh_catalog(self.state.saved.cwd.clone(), args, cx);
+        Ok(())
     }
     pub(crate) fn drain_deferred(&mut self, cx: &mut Context<Self>) {
         let actions: Vec<_> = self
@@ -145,6 +255,7 @@ impl CodexSession {
             return Err("The selected checkout is no longer available.".into());
         }
         self.drain_deferred(cx);
+        self.validate_draft_catalog()?;
         let mut saved = self.state.saved.clone();
         saved.project = project;
         saved.cwd = cwd;
@@ -190,6 +301,9 @@ impl CodexSession {
             _poll: poll,
             deferred: None,
             catalog_generation: 0,
+            catalog_loading: false,
+            catalog_error: None,
+            catalog_selection_error: false,
         }
     }
     pub fn send(&mut self, action: Action, cx: &mut Context<Self>) {
@@ -245,6 +359,7 @@ impl CodexSession {
                     );
                 }
             }
+            self.revalidate_catalog_selection();
             cx.notify();
             return;
         }
@@ -437,6 +552,237 @@ mod dashboard_tests {
             composer: codex::ComposerSettings::default(),
             context: None,
         }
+    }
+
+    #[gpui::test]
+    fn draft_model_switch_preserves_content_and_resets_provider_configuration(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            for (before, after) in [
+                (codex::Provider::Codex, codex::Provider::Claude),
+                (codex::Provider::Claude, codex::Provider::Codex),
+            ] {
+                let session = cx.new(|cx| CodexSession::draft(saved(before), Vec::new(), cx));
+                session.update(cx, |session, cx| {
+                    let reference = codex::ReferenceDraft {
+                        id: "quote".into(),
+                        thread_id: Some("source".into()),
+                        sources: Vec::new(),
+                        text: "keep this quote".into(),
+                    };
+                    session.send(Action::DraftImages(vec!["image-data".into()]), cx);
+                    session.send(Action::DraftReference(Some(reference.clone())), cx);
+                    session.send(
+                        Action::Configure {
+                            model: Some("old-model".into()),
+                            effort: Some("high".into()),
+                            access: Some("full-access".into()),
+                        },
+                        cx,
+                    );
+                    session.send(Action::SetSpeed(codex::Speed::Ultrafast), cx);
+                    session
+                        .handle
+                        .send(Action::Draft("newest prompt".into()))
+                        .unwrap();
+                    let generation = session.catalog_generation;
+                    session
+                        .select_draft_model(after, "chosen-model".into(), Vec::new(), cx)
+                        .unwrap();
+                    assert!(session.is_deferred());
+                    assert_eq!(session.state.saved.provider, after);
+                    assert_eq!(session.state.saved.label, after.label());
+                    assert_eq!(session.state.saved.project, "before");
+                    assert_eq!(session.state.saved.cwd, "/unused");
+                    assert_eq!(session.state.saved.draft, "newest prompt");
+                    assert_eq!(session.state.saved.draft_images, vec!["image-data"]);
+                    assert_eq!(session.state.saved.draft_reference, Some(reference));
+                    assert_eq!(
+                        session.state.saved.composer.model.as_deref(),
+                        Some("chosen-model")
+                    );
+                    assert!(session.state.saved.composer.effort.is_none());
+                    assert!(session.state.saved.composer.access.is_none());
+                    assert_eq!(
+                        session.state.saved.composer.speed,
+                        Some(codex::Speed::Standard)
+                    );
+                    assert_ne!(session.catalog_generation, generation);
+                    assert!(session.state.saved.thread_id.is_none());
+                });
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn draft_model_selection_rejects_running_session_without_changing_identity(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let session =
+                cx.new(|cx| CodexSession::draft(saved(codex::Provider::Codex), Vec::new(), cx));
+            session.update(cx, |session, cx| {
+                // Simulate activation's invariant without opening a provider process.
+                session.deferred = None;
+                session.state.saved.draft = "keep my task".into();
+                let generation = session.catalog_generation;
+                let error = session
+                    .select_draft_model(codex::Provider::Claude, "other".into(), Vec::new(), cx)
+                    .unwrap_err();
+                assert!(error.contains("cannot switch providers"));
+                assert_eq!(session.state.saved.provider, codex::Provider::Codex);
+                assert_eq!(session.state.saved.draft, "keep my task");
+                assert!(session.state.saved.composer.model.is_none());
+                assert_eq!(session.catalog_generation, generation);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn draft_activation_rejects_pending_failed_and_unadvertised_models(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let checkout = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let session = cx.new(|cx| CodexSession::draft(saved(provider), Vec::new(), cx));
+                session.update(cx, |session, cx| {
+                    let cwd = checkout.path().to_string_lossy().into_owned();
+                    session.state.saved.cwd.clone_from(&cwd);
+                    session.state.saved.draft = "retained task".into();
+                    session.catalog_error = None;
+                    session.catalog_loading = true;
+                    let error = session
+                        .activate("project".into(), cwd.clone(), Vec::new(), cx)
+                        .unwrap_err();
+                    assert!(error.contains("finish loading"));
+                    session.catalog_loading = false;
+                    session.catalog_error = Some("Provider metadata failed".into());
+                    let error = session
+                        .activate("project".into(), cwd.clone(), Vec::new(), cx)
+                        .unwrap_err();
+                    assert_eq!(error, "Provider metadata failed");
+                    session.catalog_error = None;
+                    session
+                        .handle
+                        .send(Action::Configure {
+                            model: Some("missing-model".into()),
+                            effort: None,
+                            access: None,
+                        })
+                        .unwrap();
+                    session.state.models = vec![serde_json::json!({"model":"available-model"})];
+                    let error = session
+                        .activate("project".into(), cwd, Vec::new(), cx)
+                        .unwrap_err();
+                    assert!(error.contains("no longer advertised"));
+                    assert!(session.is_deferred());
+                    assert_eq!(session.state.saved.provider, provider);
+                    assert_eq!(session.state.saved.draft, "retained task");
+                    // Ready defaults need no explicit model. An advertised explicit model is valid.
+                    session.state.saved.composer.model = None;
+                    assert!(session.validate_draft_catalog().is_ok());
+                    session.state.saved.composer.model = Some("available-model".into());
+                    assert!(session.validate_draft_catalog().is_ok());
+                });
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn draft_catalog_ignores_superseded_results_and_rejects_disappeared_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let session =
+                cx.new(|cx| CodexSession::draft(saved(codex::Provider::Codex), Vec::new(), cx));
+            session.update(cx, |session, cx| {
+                let old_generation = session.catalog_generation;
+                session
+                    .select_draft_model(
+                        codex::Provider::Claude,
+                        "chosen-model".into(),
+                        Vec::new(),
+                        cx,
+                    )
+                    .unwrap();
+                session.catalog_loading = true;
+                session.catalog_error = None;
+                let mut stale = Snapshot::new(saved(codex::Provider::Codex));
+                stale.models = vec![serde_json::json!({"model":"stale-codex-model"})];
+                session.complete_catalog(old_generation, Ok(stale), cx);
+                assert!(session.catalog_loading);
+                assert!(session.state.models.is_empty());
+                assert_eq!(session.state.saved.provider, codex::Provider::Claude);
+                session.complete_catalog(old_generation, Err("old failure".into()), cx);
+                assert!(session.catalog_error.is_none());
+                let mut current = Snapshot::new(saved(codex::Provider::Claude));
+                current.models = vec![serde_json::json!({"model":"different-model"})];
+                session.complete_catalog(session.catalog_generation, Ok(current), cx);
+                assert!(!session.catalog_loading);
+                assert!(session
+                    .catalog_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("no longer advertised"));
+                assert_eq!(
+                    session.state.saved.composer.model.as_deref(),
+                    Some("chosen-model")
+                );
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn draft_catalog_selection_recovers_on_reset_but_discovery_failure_does_not(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let session = cx.new(|cx| CodexSession::draft(saved(provider), Vec::new(), cx));
+                session.update(cx, |session, cx| {
+                    for action in [
+                        Action::ResetModelEffort,
+                        Action::ResetConfiguration,
+                        Action::Configure {
+                            model: Some("available".into()),
+                            effort: None,
+                            access: None,
+                        },
+                    ] {
+                        session.state.model = Some("removed".into());
+                        session.state.saved.composer.model = Some("removed".into());
+                        let mut catalog = Snapshot::new(saved(provider));
+                        catalog.models = vec![serde_json::json!({"model":"available"})];
+                        session.complete_catalog(session.catalog_generation, Ok(catalog), cx);
+                        assert!(session.catalog_error.is_some());
+                        assert!(session.state.error.is_some());
+                        session.send(action, cx);
+                        assert!(session.catalog_error.is_none());
+                        assert!(session.state.error.is_none());
+                        assert!(session.validate_draft_catalog().is_ok());
+                    }
+                    for action in [Action::ResetModelEffort, Action::ResetConfiguration] {
+                        session.complete_catalog(
+                            session.catalog_generation,
+                            Err("provider discovery failed".into()),
+                            cx,
+                        );
+                        session.send(action, cx);
+                        assert_eq!(
+                            session.catalog_error.as_deref(),
+                            Some("provider discovery failed")
+                        );
+                        assert_eq!(
+                            session.state.error.as_deref(),
+                            Some("provider discovery failed")
+                        );
+                        assert!(session.validate_draft_catalog().is_err());
+                    }
+                });
+            }
+        });
     }
 
     #[gpui::test]

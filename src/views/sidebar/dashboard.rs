@@ -31,6 +31,10 @@ pub(crate) struct DestinationTray {
 }
 impl EventEmitter<DestinationEvent> for DestinationTray {}
 impl DestinationTray {
+    #[cfg(test)]
+    pub(crate) fn picker_test_tray(path: String) -> Self {
+        Self::new(vec![(0, "Picker fixture".into(), path.clone())], 0, path)
+    }
     fn new(projects: Vec<(usize, String, String)>, project: usize, path: String) -> Self {
         Self {
             projects,
@@ -644,7 +648,7 @@ impl Sidebar {
                 (meta.clone(), status, title, since)
             })
             .collect();
-        sessions.sort_by(|a, b| b.3.cmp(&a.3));
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.3));
         let working = sessions
             .iter()
             .filter(|(_, status, _, _)| matches!(*status, "Working" | "Starting"))

@@ -38,6 +38,9 @@ use std::{
     sync::Arc,
 };
 
+#[path = "model_picker.rs"]
+mod model_picker;
+
 const CODE_COPY_FEEDBACK_MS: u64 = 1200;
 
 /// Paint Markdown source without replacing text or changing editor mode. Leaf
@@ -581,8 +584,13 @@ fn effort_fraction(index: usize, count: usize) -> f32 {
 
 fn composer_scope(state: &codex::Snapshot) -> String {
     format!(
-        "{:?}:{}:{:?}",
-        state.saved.provider, state.saved.key, state.saved.thread_id
+        "{:?}:{}:{:?}:{}:{:?}:{}",
+        state.saved.provider,
+        state.saved.key,
+        state.saved.thread_id,
+        state.saved.cwd,
+        state.saved.config_args,
+        state.saved.native_config_version
     )
 }
 
@@ -959,6 +967,7 @@ impl gpui::EventEmitter<CodexViewEvent> for CodexView {}
 pub struct CodexView {
     pub(crate) dashboard_tray: Option<Entity<super::sidebar::dashboard::DestinationTray>>,
     dashboard_pending: bool,
+    dashboard_retry_focus: FocusHandle,
     script_runtime: Option<Entity<crate::runtime::Runtime>>,
     preview_child: Option<String>,
     session: Entity<CodexSession>,
@@ -992,7 +1001,9 @@ pub struct CodexView {
     popup: Option<Entity<PopupMenu>>,
     popup_subscription: Option<Subscription>,
     composer_menu_scope: Option<String>,
+    composer_menu_launch_config: Option<(bool, bool)>,
     model_from_card: bool,
+    model_picker: Option<Entity<model_picker::ModelPicker>>,
     effort_drag: Option<EffortDrag>,
     effort_visual: Option<EffortVisual>,
     effort_pending: Option<(String, String)>,
@@ -1153,6 +1164,9 @@ impl CodexView {
         let mut subscriptions = vec![
             cx.observe(&session, |this, _, cx| {
                 this.sync_native_plans(cx);
+                if this.menu.is_some() && !this.composer_menu_valid(cx) {
+                    this.close_menu(cx);
+                }
                 cx.notify();
             }),
             cx.observe(&input, |this, _, cx| {
@@ -1251,7 +1265,9 @@ impl CodexView {
             popup: None,
             popup_subscription: None,
             composer_menu_scope: None,
+            composer_menu_launch_config: None,
             model_from_card: false,
+            model_picker: None,
             effort_drag: None,
             effort_visual: None,
             effort_pending: None,
@@ -1319,6 +1335,7 @@ impl CodexView {
             transcript_cache: None,
             dashboard_tray: None,
             dashboard_pending: false,
+            dashboard_retry_focus: cx.focus_handle(),
             script_runtime: None,
             checkout_context: None,
             subscriptions,
@@ -2992,8 +3009,28 @@ impl CodexView {
         self.dashboard_pending = true;
         cx.notify();
     }
+    fn retry_dashboard_catalog(&mut self, cx: &mut Context<Self>) {
+        if self.dashboard_tray.is_none() || !self.session.read(cx).is_deferred() {
+            return;
+        }
+        let settings = &cx.global::<crate::settings::SettingsState>().store;
+        let provider = self.session.read(cx).state.saved.provider;
+        let args = provider.agent().launch_args_for_backend(
+            true,
+            settings.yolo_enabled,
+            settings.chrome_enabled.unwrap_or(false),
+        );
+        self.session.update(cx, |session, cx| {
+            session.refresh_catalog(session.state.saved.cwd.clone(), args, cx);
+        });
+    }
+
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dashboard_tray.is_some() {
+            let session = self.session.read(cx);
+            if session.catalog_loading || session.catalog_error.is_some() {
+                return;
+            }
             if !self.input.read(cx).value().trim().is_empty() || !self.images.is_empty() {
                 cx.emit(CodexViewEvent::DashboardSubmit);
             }
@@ -4814,7 +4851,7 @@ impl Render for CodexView {
             .id("codex-conversation")
             .relative()
             .w_full()
-            .when(self.dashboard_tray.is_none(), |surface| surface.h_full())
+            .when(self.dashboard_tray.is_none(), gpui::Styled::h_full)
             .min_h_0()
             .flex()
             .flex_col()
@@ -5312,6 +5349,19 @@ impl Render for CodexView {
                             .gap(rpx(SPACE_MD))
                             .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_intro(&state)))
                             .when_some(self.session_notice(&state, window, cx), gpui::ParentElement::child)
+                            .when(self.dashboard_tray.is_some(), |rail| {
+                                let session = self.session.read(cx);
+                                if session.catalog_loading {
+                                    rail.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(format!("Loading {} options…", state.saved.provider.label())))
+                                } else if let Some(error) = &session.catalog_error {
+                                    rail.child(div().flex().flex_col().gap(rpx(SPACE_SM))
+                                        .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FORM_ERROR()).child(error.clone()))
+                                        .child(header_control("dashboard-catalog-retry", "Retry provider options").track_focus(&self.dashboard_retry_focus).focus_visible(|s|s.bg(c::BG_HOVER())).w_auto().tab_index(0).gap(rpx(SPACE_SM))
+                                            .child(crate::icons::icon("restart",ICON_SM,c::FG_DIM())).child("Retry")
+                                            .on_click(cx.listener(|this,_,_,cx|this.retry_dashboard_catalog(cx)))
+                                            .on_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,_,cx|{if action_key(event){this.retry_dashboard_catalog(cx);cx.stop_propagation();}}))))
+                                } else {rail}
+                            })
                             .when_some(agent_controls, gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
@@ -5343,27 +5393,6 @@ impl Render for CodexView {
                                     .flex_wrap()
                                     .items_center()
                                     .gap(rpx(SPACE_LG))
-                                    .when(self.dashboard_tray.is_some(), |row| row.child(
-                                        super::components::transcript_action("dashboard-provider", state.saved.provider.label(), false, window, cx)
-                                            .icon(gpui_component::Icon::default().path(format!("icons/{}.svg",state.saved.provider.agent().icon_name())))
-                                            .tooltip("Switch between Codex and Claude")
-                                            .on_click(cx.listener(|this,_,window,cx|{
-                                                this.session.update(cx,|s,cx|{
-                                                    s.drain_deferred(cx);
-                                                    s.state.saved.provider=if s.state.saved.provider==codex::Provider::Codex {codex::Provider::Claude}else{codex::Provider::Codex};
-                                                    s.state.saved.label=s.state.saved.provider.label().into(); s.state.error=None;
-                                                    s.state.saved.composer=codex::ComposerSettings::default();
-                                                    s.state.model=None; s.state.effort=None; s.state.access=None;
-                                                    s.state.models.clear();
-                                                    let args=s.state.saved.provider.agent().launch_args_for_backend(true,cx.global::<crate::settings::SettingsState>().store.yolo_enabled,cx.global::<crate::settings::SettingsState>().store.chrome_enabled.unwrap_or(false));
-                                                    s.refresh_catalog(s.state.saved.cwd.clone(),args,cx);
-                                                    cx.notify();
-                                                });
-                                                let placeholder=composer_placeholder(this.session.read(cx).state.saved.provider);
-                                                this.input.update(cx,|i,cx|i.set_placeholder(placeholder,window,cx));
-                                                cx.notify();
-                                            }))
-                                    ))
                                     .children(self.option_triggers(&state, window, cx))
                                     .child(div().flex_1())
                                     .when_some(
@@ -5437,6 +5466,8 @@ impl Render for CodexView {
         if let Some(menu) = self.menu {
             let popup = if menu == ComposerMenu::Settings {
                 Some(self.model_effort_card(&state, window, cx))
+            } else if menu == ComposerMenu::Model {
+                self.model_picker.clone().map(IntoElement::into_any_element)
             } else {
                 self.popup.clone().map(IntoElement::into_any_element)
             };
@@ -6123,8 +6154,10 @@ impl CodexView {
     fn close_menu(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
         self.popup = None;
+        self.model_picker = None;
         self.popup_subscription = None;
         self.composer_menu_scope = None;
+        self.composer_menu_launch_config = None;
         self.model_from_card = false;
         self.effort_drag = None;
         self.effort_visual = None;
@@ -6138,8 +6171,85 @@ impl CodexView {
             return;
         }
         self.composer_menu_scope = Some(composer_scope(&state));
+        self.composer_menu_launch_config = Some(
+            cx.try_global::<crate::settings::SettingsState>()
+                .map_or((false, false), |s| {
+                    (
+                        s.store.yolo_enabled,
+                        s.store.chrome_enabled.unwrap_or(false),
+                    )
+                }),
+        );
         self.effort_drag = None;
         self.effort_visual = None;
+        if menu == ComposerMenu::Model {
+            self.popup = None;
+            self.menu = Some(menu);
+            let allow_switch = self.dashboard_tray.is_some() && self.session.read(cx).is_deferred();
+            let picker =
+                cx.new(|cx| model_picker::ModelPicker::new(&state, allow_switch, window, cx));
+            self.popup_subscription = Some(cx.subscribe_in(
+                &picker,
+                window,
+                |this, _, event, window, cx| {
+                    if !this.composer_menu_valid(cx) {
+                        this.close_menu(cx);
+                        return;
+                    }
+                    match event {
+                        model_picker::PickerEvent::Dismiss => {
+                            if this.model_from_card {
+                                this.model_from_card = false;
+                                this.open_menu(ComposerMenu::Settings, window, cx);
+                                this.card_model_focus.focus(window, cx);
+                            } else {
+                                this.close_menu(cx);
+                                this.option_focus[0].focus(window, cx);
+                            }
+                        }
+                        model_picker::PickerEvent::Select(provider, model) => {
+                            let current = this.session.read(cx).state.saved.provider;
+                            if this.dashboard_tray.is_some() && this.session.read(cx).is_deferred()
+                            {
+                                let settings = &cx.global::<crate::settings::SettingsState>().store;
+                                let args = provider.agent().launch_args_for_backend(
+                                    true,
+                                    settings.yolo_enabled,
+                                    settings.chrome_enabled.unwrap_or(false),
+                                );
+                                let result = this.session.update(cx, |session, cx| {
+                                    session.select_draft_model(*provider, model.clone(), args, cx)
+                                });
+                                if let Err(error) = result {
+                                    this.session.update(cx, |session, cx| {
+                                        session.state.error = Some(error);
+                                        cx.notify();
+                                    });
+                                    return;
+                                }
+                                this.input.update(cx, |input, cx| {
+                                    input.set_placeholder(
+                                        composer_placeholder(*provider),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                                this.model_from_card = false;
+                                this.open_menu(ComposerMenu::Settings, window, cx);
+                            } else if *provider == current {
+                                this.choose_option(model, window, cx);
+                            }
+                        }
+                    }
+                    cx.notify();
+                },
+            ));
+            self.model_picker = Some(picker.clone());
+            picker.update(cx, model_picker::ModelPicker::discover);
+            cx.notify();
+            return;
+        }
+        self.model_picker = None;
         if matches!(menu, ComposerMenu::Settings | ComposerMenu::Effort) {
             self.popup = None;
             self.popup_subscription = None;
@@ -6207,6 +6317,18 @@ impl CodexView {
         self.composer_menu_scope
             .as_ref()
             .is_some_and(|scope| *scope == composer_scope(&self.session.read(cx).state))
+            && self.composer_menu_launch_config.is_some_and(|config| {
+                config
+                    == cx.try_global::<crate::settings::SettingsState>().map_or(
+                        (false, false),
+                        |s| {
+                            (
+                                s.store.yolo_enabled,
+                                s.store.chrome_enabled.unwrap_or(false),
+                            )
+                        },
+                    )
+            })
     }
 
     fn effort_choices(state: &codex::Snapshot) -> Vec<String> {
@@ -6793,7 +6915,7 @@ impl CodexView {
             .rounded(rpx(RADIUS_PANEL))
             .border_1()
             .border_color(c::BORDER())
-            .bg(c::MENU_HOVER())
+            .bg(c::BG_RAIL())
             .text_size(rpx(TEXT_SMALL))
             .text_color(c::FG_DIM())
             .flex()
@@ -12345,7 +12467,7 @@ mod tests {
             .unwrap();
         bytes.into_inner()
     }
-    fn snapshot() -> Snapshot {
+    pub(super) fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             claude_resume: None,
@@ -12404,7 +12526,14 @@ mod tests {
         mpsc::Receiver<Action>,
         mpsc::Sender<Snapshot>,
     ) {
-        cx.update(gpui_component::init);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            if cx.try_global::<crate::settings::SettingsState>().is_none() {
+                cx.set_global(crate::settings::SettingsState::new(
+                    grove_core::storage::Store::default(),
+                ));
+            }
+        });
         let (handle, actions) = Handle::channel();
         let (updates, receive) = mpsc::channel();
         let connection = Connection {
@@ -14280,6 +14409,110 @@ mod tests {
             assert!(view.menu == Some(ComposerMenu::Access));
             assert!(view.input.read(cx).value().is_empty());
         });
+    }
+
+    #[gpui::test]
+    fn provider_picker_dashboard_entry_commit_and_escape_preserve_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::settings::SettingsState::new(
+                grove_core::storage::Store::default(),
+            ));
+        });
+        let reference = codex::ReferenceDraft {
+            id: "picker-reference".into(),
+            thread_id: None,
+            sources: Vec::new(),
+            text: "Keep this quote".into(),
+        };
+        let mut state = snapshot();
+        state.saved.thread_id = None;
+        state.saved.cwd = "/missing-grove-picker-fixture".into();
+        state.saved.draft = "Keep the prompt".into();
+        state.saved.draft_images = vec!["attachment-fixture".into()];
+        state.saved.draft_reference = Some(reference.clone());
+        let mut retained = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let session = cx.new(|cx| CodexSession::draft(state.saved, Vec::new(), cx));
+            session.update(cx, |session, _| {
+                session.state.models = vec![json!({"model":"code-1","displayName":"Code model"})];
+                session.state.model = Some("code-1".into());
+            });
+            let tray = cx.new(|_| {
+                super::super::sidebar::dashboard::DestinationTray::picker_test_tray(
+                    "/missing-grove-picker-fixture".into(),
+                )
+            });
+            let chat = cx.new(|cx| {
+                let mut view = CodexView::new(session, window, cx);
+                view.attach_dashboard_tray(tray, cx);
+                view
+            });
+            retained = Some(chat.clone());
+            gpui_component::Root::new(chat, window, cx).bordered(false)
+        });
+        let view = retained.unwrap();
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.open_menu(ComposerMenu::Settings, window, cx);
+            });
+        });
+        draw(cx);
+        let model = cx.debug_bounds("codex-card-model-label").unwrap().center();
+        cx.simulate_click(model, gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            view.read(cx)
+                .model_picker
+                .clone()
+                .unwrap()
+                .update(cx, |picker, cx| {
+                    picker.seed_test_catalogs();
+                    cx.notify();
+                });
+        });
+        draw(cx);
+        let rail = cx.debug_bounds("model-provider-2").unwrap().center();
+        cx.simulate_click(rail, gpui::Modifiers::default());
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                view.session.read(cx).state.saved.provider,
+                codex::Provider::Codex
+            );
+        });
+        let row = cx.debug_bounds("model-picker-row-0").unwrap();
+        cx.simulate_click(
+            gpui::point(row.left() + gpui::px(35.), row.center().y),
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            let state = &view.session.read(cx).state;
+            assert_eq!(state.saved.provider, codex::Provider::Claude);
+            assert_eq!(state.saved.composer.model.as_deref(), Some("claude-1"));
+            assert!(view.menu == Some(ComposerMenu::Settings));
+            assert_eq!(view.input.read(cx).value().as_ref(), "Keep the prompt");
+            assert_eq!(state.saved.draft_images, ["attachment-fixture"]);
+            assert_eq!(state.saved.draft_reference.as_ref(), Some(&reference));
+            assert_eq!(state.saved.cwd, "/missing-grove-picker-fixture");
+            assert!(view.session.read(cx).is_deferred());
+        });
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.model_from_card = true;
+                view.open_menu(ComposerMenu::Model, window, cx);
+            });
+        });
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        view.read_with(cx, |view, _| {
+            assert!(view.menu == Some(ComposerMenu::Settings));
+        });
+        assert!(cx.update(|window, cx| view.read(cx).card_model_focus.is_focused(window)));
     }
 
     #[gpui::test]
