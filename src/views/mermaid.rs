@@ -64,6 +64,66 @@ impl CacheEntry {
 }
 static CACHE: Mutex<VecDeque<CacheEntry>> = Mutex::new(VecDeque::new());
 
+#[derive(Default)]
+struct FullscreenUi {
+    viewer: Option<gpui::Entity<DiagramViewer>>,
+    source: Option<gpui::WeakEntity<DiagramViewer>>,
+    owner: Option<gpui::EntityId>,
+    contexts: std::collections::HashMap<gpui::WindowId, Option<gpui::EntityId>>,
+    window: Option<gpui::WindowId>,
+}
+impl gpui::Global for FullscreenUi {}
+
+pub(super) fn is_expanded(window: &Window, cx: &App) -> bool {
+    cx.try_global::<FullscreenUi>().is_some_and(|ui| {
+        ui.viewer.is_some() && ui.window == Some(window.window_handle().window_id())
+    })
+}
+
+pub(super) fn set_context(owner: Option<gpui::EntityId>, window: &Window, cx: &mut App) {
+    if !cx.has_global::<FullscreenUi>() {
+        cx.set_global(FullscreenUi::default());
+    }
+    let ui = cx.global_mut::<FullscreenUi>();
+    ui.contexts
+        .insert(window.window_handle().window_id(), owner);
+    if ui
+        .window
+        .is_some_and(|id| id != window.window_handle().window_id())
+    {
+        return;
+    }
+    if ui.owner != owner
+        || ui
+            .source
+            .as_ref()
+            .is_some_and(|source| source.upgrade().is_none())
+    {
+        ui.viewer = None;
+        ui.source = None;
+        ui.window = None;
+    }
+}
+
+pub(super) fn render_expanded(window: &Window, cx: &App) -> Option<AnyElement> {
+    let ui = cx.try_global::<FullscreenUi>()?;
+    if ui.window != Some(window.window_handle().window_id()) {
+        return None;
+    }
+    Some(
+        div()
+            .id("mermaid-fullscreen-overlay")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(c::BG())
+            .child(ui.viewer.clone()?)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .into_any_element(),
+    )
+}
+
 pub(super) fn extensions() -> MarkdownExtensions {
     static EXTENSIONS: OnceLock<MarkdownExtensions> = OnceLock::new();
     EXTENSIONS
@@ -256,6 +316,9 @@ fn ready_view(
             #[cfg(test)]
             viewport_bounds: gpui::Bounds::default(),
             focus: cx.focus_handle(),
+            controls: std::array::from_fn(|_| cx.focus_handle()),
+            fullscreen: false,
+            return_focus: None,
         }
     });
     viewer.update(cx, |viewer, _| {
@@ -288,8 +351,101 @@ struct DiagramViewer {
     #[cfg(test)]
     viewport_bounds: gpui::Bounds<Pixels>,
     focus: FocusHandle,
+    controls: [FocusHandle; 4],
+    fullscreen: bool,
+    return_focus: Option<FocusHandle>,
 }
 impl DiagramViewer {
+    fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !cx.has_global::<FullscreenUi>() {
+            cx.set_global(FullscreenUi::default());
+        }
+        if self.fullscreen {
+            let ui = cx.global_mut::<FullscreenUi>();
+            ui.viewer = None;
+            ui.source = None;
+            ui.window = None;
+            if let Some(focus) = self.return_focus.take() {
+                focus.focus(window, cx);
+            }
+        } else {
+            let image = self.image.clone();
+            let source = self.source.clone();
+            let ratio = self.ratio;
+            let width = self.width;
+            let return_focus = self.controls[3].clone();
+            let expanded = cx.new(|cx| Self {
+                image,
+                source,
+                ratio,
+                width,
+                detail_image: None,
+                zoom: 1.,
+                pan: gpui::point(gpui::px(0.), gpui::px(0.)),
+                drag: None,
+                viewport: gpui::size(gpui::px(0.), gpui::px(0.)),
+                #[cfg(test)]
+                viewport_bounds: gpui::Bounds::default(),
+                focus: cx.focus_handle(),
+                controls: std::array::from_fn(|_| cx.focus_handle()),
+                fullscreen: true,
+                return_focus: Some(return_focus),
+            });
+            let focus = expanded.read(cx).focus.clone();
+            focus.focus(window, cx);
+            let source = cx.entity().downgrade();
+            let ui = cx.global_mut::<FullscreenUi>();
+            ui.owner = ui
+                .contexts
+                .get(&window.window_handle().window_id())
+                .copied()
+                .flatten();
+            ui.source = Some(source);
+            ui.viewer = Some(expanded);
+            ui.window = Some(window.window_handle().window_id());
+        }
+        cx.refresh_windows();
+    }
+    fn fullscreen_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.fullscreen {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "escape" => self.toggle_fullscreen(window, cx),
+            "tab" => {
+                let mut stops = Vec::new();
+                if self.zoom > 1. {
+                    stops.push(self.controls[0].clone());
+                }
+                if self.zoom < MAX_ZOOM {
+                    stops.push(self.controls[1].clone());
+                }
+                stops.extend([
+                    self.controls[2].clone(),
+                    self.controls[3].clone(),
+                    self.focus.clone(),
+                ]);
+                let current = stops
+                    .iter()
+                    .position(|focus| focus.is_focused(window))
+                    .unwrap_or(stops.len() - 1);
+                let next = if event.keystroke.modifiers.shift {
+                    (current + stops.len() - 1) % stops.len()
+                } else {
+                    (current + 1) % stops.len()
+                };
+                stops[next].focus(window, cx);
+            }
+            _ => return,
+        }
+        window.prevent_default();
+        cx.stop_propagation();
+    }
     fn image_size(&self) -> Size<Pixels> {
         let fit_width = self.viewport.width.min(self.viewport.height * self.ratio);
         gpui::size(fit_width * self.zoom, fit_width / self.ratio * self.zoom)
@@ -377,7 +533,7 @@ impl Render for DiagramViewer {
         {
             self.detail_image = None;
         }
-        let image = if self.zoom > 1. {
+        let image = if self.zoom > 1. || self.fullscreen {
             if self.detail_image.is_none() {
                 if let Rendered::Ready(image, _, _) = rendered(&self.source, true, cx) {
                     self.detail_image = Some((theme, clock, image));
@@ -408,8 +564,12 @@ impl Render for DiagramViewer {
             .debug_selector(|| "transcript-mermaid-chart".to_owned())
             .w_full().min_w_0().p(rpx(SPACE_2XL)).bg(c::FIELD_FILL()).rounded(rpx(RADIUS_GROUP))
             .flex().flex_col().gap(rpx(SPACE_SM))
-            .child(div().flex().items_center().gap(rpx(SPACE_SM))
+            .when(self.fullscreen, |el| el.h_full().min_h_0().rounded_none()
+                .capture_key_down(cx.listener(Self::fullscreen_key))
+                .on_key_down(|_, _, cx| cx.stop_propagation()))
+            .child(div().flex().flex_wrap().items_center().gap(rpx(SPACE_SM))
                 .child(components::form_action("mermaid-zoom-out", "Zoom out diagram", false, window, cx)
+                    .with_focus_handle(self.controls[0].clone())
                     .icon_only().tooltip("Zoom out diagram")
                     .child(icon("minus", ICON_SM, c::FG()))
                     .disabled(self.zoom <= 1.)
@@ -417,6 +577,7 @@ impl Render for DiagramViewer {
                     .on_key_down(cx.listener(|this, event, window, cx| this.control_key(event, this.zoom / ZOOM_STEP, window, cx)))
                     .on_click(cx.listener(|this, _, _, cx| this.set_zoom(this.zoom / ZOOM_STEP, cx))))
                 .child(components::form_action("mermaid-zoom-in", "Zoom in diagram", false, window, cx)
+                    .with_focus_handle(self.controls[1].clone())
                     .icon_only().tooltip("Zoom in diagram")
                     .child(icon("plus", ICON_SM, c::FG()))
                     .disabled(self.zoom >= MAX_ZOOM)
@@ -424,14 +585,28 @@ impl Render for DiagramViewer {
                     .on_key_down(cx.listener(|this, event, window, cx| this.control_key(event, this.zoom * ZOOM_STEP, window, cx)))
                     .on_click(cx.listener(|this, _, _, cx| this.set_zoom(this.zoom * ZOOM_STEP, cx))))
                 .child(components::form_action("mermaid-fit", "Reset diagram to fit", false, window, cx)
+                    .with_focus_handle(self.controls[2].clone())
                     .icon_only().child(icon("reset", ICON_SM, c::FG())).child("Fit").gap(rpx(SPACE_SM))
                     .focus_visible(|s| s.bg(c::BG_HOVER()))
                     .on_key_down(cx.listener(|this, event, window, cx| this.control_key(event, 1., window, cx)))
                     .on_click(cx.listener(|this, _, _, cx| this.set_zoom(1., cx))))
+                .child(components::form_action("mermaid-expand", if self.fullscreen { "Close fullscreen diagram" } else { "Expand diagram to fullscreen" }, false, window, cx)
+                    .with_focus_handle(self.controls[3].clone())
+                    .icon_only().tooltip(if self.fullscreen { "Close fullscreen diagram (Escape)" } else { "Expand diagram to fullscreen" })
+                    .child(icon(if self.fullscreen { "close" } else { "zen" }, ICON_SM, c::FG()))
+                    .focus_visible(|s| s.bg(c::BG_HOVER()))
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.toggle_fullscreen(window, cx); window.prevent_default(); cx.stop_propagation();
+                        }
+                    }))
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_fullscreen(window, cx))))
                 .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(format!("{:.0}%", self.zoom * 100.))))
             .child(div().id("mermaid-viewport")
                 .debug_selector(|| "mermaid-viewport".to_owned())
-                .relative().w_full().min_w_0().max_w(rpx(self.width)).h(height)
+                .relative().w_full().min_w_0()
+                .when(!self.fullscreen, |el| el.max_w(rpx(self.width)).h(height))
+                .when(self.fullscreen, |el| el.flex_1().min_h_0())
                 .overflow_hidden().track_focus(&self.focus).tab_index(0).tab_stop(true)
                 .role(gpui::Role::Image).aria_label("Mermaid diagram")
                 .aria_description(format!("{}. Zoom with plus or minus, reset with 0. Drag or use arrow keys to pan when zoomed.", self.source))
@@ -676,6 +851,7 @@ mod native_snapshots {
     }
     impl Render for DiagramGallery {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            set_context(Some(cx.entity_id()), window, cx);
             let viewer = window.with_element_namespace("first-message", |window| {
                 ready_view(
                     &self.diagram,
@@ -711,6 +887,9 @@ mod native_snapshots {
                 .flex_col()
                 .gap(rpx(SPACE_LG))
                 .child(viewer)
+                .when_some(render_expanded(window, cx), |el, overlay| {
+                    el.child(gpui::deferred(overlay))
+                })
                 .child(source_view(
                     &Diagram {
                         source: "flowchart LR\nA-->".to_owned(),
@@ -1027,6 +1206,7 @@ mod native_snapshots {
                 });
                 key(&mut cx, window.into(), "=");
                 key(&mut cx, window.into(), "shift-tab");
+                key(&mut cx, window.into(), "shift-tab");
                 key(&mut cx, window.into(), "enter");
                 cx.update(|cx| {
                     assert_eq!(
@@ -1048,6 +1228,123 @@ mod native_snapshots {
                         "native Fit click must reset camera"
                     );
                 });
+                // Activate Expand through the native pointer hit target.
+                click(&mut cx, window.into(), original.center());
+                key(&mut cx, window.into(), "=");
+                let inline_zoom = cx.update(|cx| viewer.read(cx).zoom);
+                let expand = gpui::point(
+                    original.origin.x + gpui::px(126. * scale),
+                    original.origin.y - gpui::px(16. * scale),
+                );
+                click(&mut cx, window.into(), expand);
+                let fullscreen = cx.update(|cx| {
+                    cx.global::<FullscreenUi>()
+                        .viewer
+                        .clone()
+                        .expect("Expand opens fullscreen")
+                });
+                cx.update(|cx| {
+                    let expanded = fullscreen.read(cx);
+                    assert!(expanded.viewport_bounds.size.height > original.size.height);
+                    assert_eq!(expanded.zoom, 1., "fullscreen starts fitted independently");
+                });
+                let fitted_path = path.replace(".png", "-fullscreen-fit.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&fitted_path)
+                    .unwrap();
+                for _ in 0..7 {
+                    key(&mut cx, window.into(), "tab");
+                }
+                cx.update_window(window.into(), |_, window, cx| {
+                    let view = fullscreen.read(cx);
+                    assert!(
+                        view.focus.is_focused(window)
+                            || view.controls.iter().any(|focus| focus.is_focused(window)),
+                        "Tab stays within fullscreen"
+                    );
+                })
+                .unwrap();
+                let center = cx.update(|cx| fullscreen.read(cx).viewport_bounds.center());
+                click(&mut cx, window.into(), center);
+                key(&mut cx, window.into(), "=");
+                key(&mut cx, window.into(), "right");
+                cx.update(|cx| assert!(fullscreen.read(cx).zoom > 1.));
+                let fullscreen_bounds = cx.update(|cx| fullscreen.read(cx).viewport_bounds);
+                let wheel_before = wheel.get();
+                dispatch(
+                    &mut cx,
+                    window.into(),
+                    gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                        position: fullscreen_bounds.center(),
+                        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-30.))),
+                        modifiers: gpui::Modifiers::default(),
+                        touch_phase: gpui::TouchPhase::Moved,
+                    }),
+                );
+                assert_eq!(
+                    wheel.get(),
+                    wheel_before,
+                    "fullscreen shields transcript wheel input"
+                );
+                let fullscreen_path = path.replace(".png", "-fullscreen.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&fullscreen_path)
+                    .unwrap();
+                eprintln!("Native fullscreen fixture: {fullscreen_path}");
+                key(&mut cx, window.into(), "escape");
+                cx.update(|cx| {
+                    assert!(cx.global::<FullscreenUi>().viewer.is_none());
+                    assert_eq!(viewer.read(cx).zoom, inline_zoom);
+                    assert_eq!(viewer.read(cx).viewport_bounds, original);
+                });
+                cx.update_window(window.into(), |_, window, cx| {
+                    assert!(
+                        viewer.read(cx).controls[3].is_focused(window),
+                        "Escape restores Expand focus"
+                    );
+                })
+                .unwrap();
+                key(&mut cx, window.into(), "enter");
+                key(&mut cx, window.into(), "shift-tab"); // viewport -> Close
+                key(&mut cx, window.into(), "enter");
+                cx.update(|cx| {
+                    assert!(
+                        cx.global::<FullscreenUi>().viewer.is_none(),
+                        "Close works by keyboard"
+                    );
+                });
+                key(&mut cx, window.into(), "enter");
+                let expanded_bounds = cx.update(|cx| {
+                    cx.global::<FullscreenUi>()
+                        .viewer
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .viewport_bounds
+                });
+                let close = gpui::point(
+                    expanded_bounds.origin.x + gpui::px(126. * scale),
+                    expanded_bounds.origin.y - gpui::px(16. * scale),
+                );
+                click(&mut cx, window.into(), close);
+                cx.update(|cx| {
+                    assert!(
+                        cx.global::<FullscreenUi>().viewer.is_none(),
+                        "pointer Close works"
+                    );
+                });
+                key(&mut cx, window.into(), "enter");
+                cx.update_window(window.into(), |_, window, cx| {
+                    set_context(Some(viewer.entity_id()), window, cx);
+                    assert!(
+                        cx.global::<FullscreenUi>().viewer.is_none(),
+                        "changing conversation dismisses fullscreen"
+                    );
+                })
+                .unwrap();
+                eprintln!("PASS fullscreen bounds, independent camera, keyboard zoom/pan, wheel shielding, Escape/focus return, keyboard Close, conversation dismissal: {width} rem{rem} light={light}");
                 eprintln!("PASS native zoom click, focused keyboard zoom/arrows/reset, pointer pan, outside release, wheel propagation, equal-offset isolation: {width} rem{rem} light={light}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window())
                     .unwrap();
