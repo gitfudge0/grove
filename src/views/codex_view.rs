@@ -370,6 +370,9 @@ const CONTEXT_RING_SEGMENTS: f32 = 48.0;
 const TASK_STRIP_HEAD_H: f32 = CONTROL_H;
 /// One task row in the expanded strip (DESIGN.md row-h).
 const TASK_ROW_H: f32 = CONTROL_H + SPACE_SM;
+/// Rows reserve the header disclosure column before their status mark.
+const TASK_MARK_INSET: f32 = ICON_MD + SPACE_SM;
+const TASK_LABEL_INSET: f32 = TASK_MARK_INSET + ICON_SM + SPACE_LG;
 /// One full turn of the running task mark.
 const TASK_SPINNER_PERIOD: std::time::Duration =
     std::time::Duration::from_millis(MOTION_SLOW_MS * 4);
@@ -2685,7 +2688,13 @@ impl CodexView {
                 task_mark_phase(header_status, phase),
                 cx,
             ))
-            .child(div().flex_shrink_0().text_color(c::FG_DIM()).child("Tasks"))
+            .child(
+                div()
+                    .debug_selector(|| "codex-task-header-label".into())
+                    .flex_shrink_0()
+                    .text_color(c::FG_DIM())
+                    .child("Tasks"),
+            )
             .child(
                 div()
                     .flex_shrink_0()
@@ -2741,12 +2750,17 @@ impl CodexView {
                         div()
                             .id("codex-task-explanation")
                             .debug_selector(|| "codex-task-explanation".into())
-                            .px(rpx(SPACE_LG))
+                            .pl(rpx(TASK_LABEL_INSET))
+                            .pr(rpx(SPACE_LG))
                             .py(rpx(SPACE_SM))
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
                             .whitespace_normal()
-                            .child(explanation),
+                            .child(
+                                div()
+                                    .debug_selector(|| "codex-task-explanation-text".into())
+                                    .child(explanation),
+                            ),
                     )
                 });
             for (task_index, (task, child)) in list.tasks.iter().zip(jumps).enumerate() {
@@ -2769,7 +2783,8 @@ impl CodexView {
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .px(rpx(SPACE_LG))
+                        .pl(rpx(TASK_MARK_INSET))
+                        .pr(rpx(SPACE_LG))
                         .rounded(rpx(RADIUS_CONTROL))
                         .text_size(rpx(TEXT_SMALL))
                         .hover(|style| style.bg(c::MENU_HOVER()))
@@ -8800,7 +8815,18 @@ fn animated_task_mark(
     phase: TaskPhase,
     cx: &App,
 ) -> gpui::AnyElement {
+    let id = id.into();
+    let selector = match &id {
+        gpui::ElementId::Name(name) if name.as_ref() == "codex-task-strip-mark" => {
+            "codex-task-header-mark".to_owned()
+        }
+        gpui::ElementId::NamedInteger(name, index) if name.as_ref() == "codex-task-row-mark" => {
+            format!("codex-task-row-status-{index}")
+        }
+        _ => "codex-task-status".to_owned(),
+    };
     let slot = div()
+        .debug_selector(move || selector.clone())
         .size(rpx(ICON_SM))
         .flex_shrink_0()
         .flex()
@@ -8808,7 +8834,7 @@ fn animated_task_mark(
         .justify_center();
     if status == TaskStatus::InProgress && phase == TaskPhase::Running && !cx.reduce_motion() {
         slot.with_animation(
-            id.into(),
+            id,
             gpui::Animation::new(TASK_SPINNER_PERIOD).repeat(),
             move |slot, progress| {
                 let frame =
@@ -16119,7 +16145,7 @@ mod tests {
                     session.state.saved.items = vec![
                         json!({"id":"u1", "type":"userMessage", "content":[{"text":"Go"}]}),
                         json!({"id":"a0", "type":"agentMessage", "text":"Long reply.\n\n".repeat(60)}),
-                        json!({"id":"grove-plan-t1", "type":"plan", "text":"", "plan":[
+                        json!({"id":"grove-plan-t1", "type":"plan", "text":"", "explanation":"Keep the task register aligned.", "plan":[
                             {"step":"Inspect","status":"completed"},
                             {"step":"Implement","status":"inProgress"},
                             {"step":"Test","status":"pending"}]}),
@@ -16132,6 +16158,47 @@ mod tests {
         draw(cx);
         assert!(view.read_with(cx, |view, _| view.tasks_expanded));
         assert!(cx.debug_bounds("codex-task-row-2").is_some());
+        // Both providers use this native checklist; fixtures exercise rendering,
+        // not live provider transport. Narrow widths and rem zoom keep its columns.
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for (width, rem) in [(1000., 16.), (600., 16.), (600., 20.)] {
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            cx.notify();
+                        });
+                    });
+                });
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+                draw(cx);
+                let label = cx.debug_bounds("codex-task-header-label").unwrap();
+                let mark = cx.debug_bounds("codex-task-header-mark").unwrap();
+                for selector in [
+                    "codex-task-title-0",
+                    "codex-task-title-1",
+                    "codex-task-title-2",
+                    "codex-task-explanation-text",
+                ] {
+                    assert_eq!(cx.debug_bounds(selector).unwrap().left(), label.left());
+                }
+                for selector in [
+                    "codex-task-row-status-0",
+                    "codex-task-row-status-1",
+                    "codex-task-row-status-2",
+                ] {
+                    assert_eq!(cx.debug_bounds(selector).unwrap().left(), mark.left());
+                }
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_rem_size(gpui::px(16.));
+            gpui_component::Theme::global_mut(cx).font_size = gpui::px(16.);
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(800.)));
+        draw(cx);
         let initial_header = cx.debug_bounds("codex-task-strip").unwrap();
         cx.simulate_click(initial_header.center(), gpui::Modifiers::default());
         draw(cx);
@@ -17917,6 +17984,76 @@ mod tests {
                     .save(&path)
                     .unwrap();
                 eprintln!("Native question receipt fixture: {path}");
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+
+    /// Real native task rendering with synthetic provider snapshots; no live transport.
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn task_strip_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            c::sync_component_theme(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for (width, rem) in [(1024., 16.), (600., 16.), (600., 20.)] {
+                cx.update(|cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
+                let mut state = snapshot();
+                state.saved.provider = provider;
+                state.status = Status::Working;
+                state.saved.items = vec![
+                    json!({"id":"u","type":"userMessage","content":[{"text":"Align the task register"}]}),
+                    json!({"id":"tasks","type":"plan","explanation":"Keep task labels aligned with the header while preserving jump actions.","plan":[
+                        {"step":"Inspect the existing task dock","status":"completed"},
+                        {"step":"Align task text and stable status slots","status":"inProgress"},
+                        {"step":"Verify narrow widths and larger text","status":"pending"}
+                    ]}),
+                ];
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let connection = Connection {
+                    handle,
+                    updates: receive.into(),
+                };
+                let window = cx
+                    .open_window(gpui::size(gpui::px(width), gpui::px(700.)), |window, cx| {
+                        window.set_rem_size(gpui::px(rem));
+                        let session =
+                            cx.new(|cx| CodexSession::from_connection(state, connection, cx));
+                        let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                        cx.new(|cx| {
+                            gpui_component::Root::new(chat, window, cx)
+                                .bordered(false)
+                                .bg(c::BG())
+                        })
+                    })
+                    .unwrap();
+                for _ in 0..3 {
+                    cx.run_until_parked();
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.simulate_next_frame(cx);
+                        let _ = window.draw(cx);
+                    })
+                    .unwrap();
+                }
+                let path = format!("/tmp/grove-task-strip-{provider:?}-{width:.0}-{rem:.0}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&path)
+                    .unwrap();
+                eprintln!("Native task strip fixture: {path}");
                 cx.update_window(window.into(), |_, window, _| window.remove_window())
                     .unwrap();
             }

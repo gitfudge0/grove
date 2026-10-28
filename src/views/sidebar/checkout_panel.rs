@@ -22,7 +22,7 @@ const STAT_COL_W: f32 = 48.;
 const AGENT_STATUS_W: f32 = ICON_MD;
 const AGENT_LINE_H: f32 = 18.;
 const SCRIPT_VISIBLE_ROWS: usize = 5;
-/// All top-level checkout copy shares the label column after the leading icon slot.
+/// Top-level action and supporting copy starts after the leading icon slot.
 const CHECKOUT_LABEL_INSET: f32 = SPACE_2XL + ICON_LG + SPACE_SM;
 
 /// Reuse compact shared actions on the card's neutral field surface.
@@ -500,7 +500,6 @@ impl Sidebar {
                             .min_w_0()
                             .flex()
                             .items_center()
-                            .pl(rpx(ICON_LG + SPACE_SM))
                             .text_size(rpx(TEXT_SMALL))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(c::FG_DIM())
@@ -1885,7 +1884,9 @@ impl Sidebar {
                 card = card
                     .child(checkout_divider("checkout-scripts-divider"))
                     .child(self.render_checkout_scripts(&project, &path, window, cx));
-                card = card.child(checkout_divider("checkout-divider"));
+                card = card
+                    .child(checkout_divider("checkout-divider"))
+                    .child(checkout_git_heading());
                 let state = self.checkout_panel.state.clone().and_then(Result::ok);
                 let branch_label = state.as_ref().map_or_else(
                     || {
@@ -2229,8 +2230,7 @@ impl Sidebar {
                     .child(checkout_divider("checkout-scripts-divider"))
                     .child(
                         div()
-                            .pl(rpx(CHECKOUT_LABEL_INSET))
-                            .pr(rpx(SPACE_2XL))
+                            .px(rpx(SPACE_2XL))
                             .text_size(rpx(TEXT_SMALL))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(c::FG_DIM())
@@ -2253,6 +2253,7 @@ impl Sidebar {
                             .disabled(true),
                     )
                     .child(checkout_divider("checkout-divider"))
+                    .child(checkout_git_heading())
                     .child(
                         checkout_row(
                             "checkout-commit-publish",
@@ -2508,6 +2509,22 @@ fn checkout_agent_groups<'a>(
                     | grove_core::codex::SubagentStatus::Unknown
             )
     })
+}
+
+fn checkout_git_heading() -> gpui::Div {
+    div()
+        .px(rpx(SPACE_2XL))
+        .h(rpx(CONTROL_H))
+        .flex()
+        .items_center()
+        .text_size(rpx(TEXT_SMALL))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(c::FG_DIM())
+        .child(
+            div()
+                .debug_selector(|| "checkout-git-heading".into())
+                .child("Git"),
+        )
 }
 
 fn checkout_divider(id: &'static str) -> gpui::Stateful<gpui::Div> {
@@ -3293,12 +3310,15 @@ mod tests {
                             window,
                             cx,
                         ))
+                        .child(checkout_divider("checkout-scripts-divider"))
                         .child(sidebar.render_checkout_scripts(
                             &self.1,
                             "/tmp/selected-checkout",
                             window,
                             cx,
                         ))
+                        .child(checkout_divider("checkout-divider"))
+                        .child(checkout_git_heading())
                         .child(checkout_row(
                             "checkout-pr",
                             "main",
@@ -3361,6 +3381,16 @@ mod tests {
         assert!(cx.debug_bounds("checkout-script-shell-5").is_none());
         assert!(cx.debug_bounds("checkout-script-prompt-only").is_none());
         let heading = cx.debug_bounds("checkout-scripts-heading").unwrap();
+        let git_heading = cx.debug_bounds("checkout-git-heading").unwrap();
+        assert_eq!(heading.left(), git_heading.left());
+        let label_column = cx.debug_bounds("checkout-finder-label").unwrap().left();
+        assert!(heading.left() < label_column);
+        let finder = cx.debug_bounds("checkout-finder").unwrap();
+        for selector in ["checkout-scripts-divider", "checkout-divider"] {
+            let divider = cx.debug_bounds(selector).unwrap();
+            assert_eq!(divider.left(), finder.left());
+            assert_eq!(divider.right(), finder.right());
+        }
         for selector in [
             "checkout-finder-label",
             "checkout-pr-label",
@@ -3368,7 +3398,7 @@ mod tests {
             "checkout-changes-label",
             "checkout-scripts-disclosure-label",
         ] {
-            assert_eq!(cx.debug_bounds(selector).unwrap().left(), heading.left());
+            assert_eq!(cx.debug_bounds(selector).unwrap().left(), label_column);
         }
         for selector in [
             "checkout-script-name-shell-0",
@@ -3378,7 +3408,7 @@ mod tests {
             "checkout-script-name-shell-4",
         ] {
             let label = cx.debug_bounds(selector).unwrap();
-            assert_eq!(label.left(), heading.left());
+            assert_eq!(label.left(), label_column);
         }
         let run = cx.debug_bounds("checkout-script-run-shell-0").unwrap();
         let row = cx.debug_bounds("checkout-script-shell-0").unwrap();
