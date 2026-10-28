@@ -1729,6 +1729,9 @@ impl Sidebar {
     ) -> AnyElement {
         self.checkout_panel.narrow_content = None;
         self.checkout_panel.agents_visible = false;
+        if self.dashboard_open {
+            return self.render_content_body(window, cx);
+        }
         for kind in ["checkout", "publish", "summary", "commit", "pr-merge"] {
             self.checkout_panel
                 .trigger_focus

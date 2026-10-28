@@ -3070,6 +3070,39 @@ pub fn launch_options(args: &[String]) -> Result<(Vec<String>, Option<String>), 
     Ok((configs, prompt))
 }
 
+/// Read provider capabilities without creating a conversation or persisting a session.
+/// The subprocess is bounded to a handshake and is always reaped on return.
+pub fn discover_composer(saved: SavedSession, args: Vec<String>) -> Result<Snapshot, String> {
+    if saved.provider == Provider::Claude {
+        return crate::claude::discover_composer(saved, args);
+    }
+    let (_handle, receive) = Handle::channel();
+    let (updates, _output) = crate::latest::channel();
+    let mut actor = Actor::new(saved, receive, updates, args);
+    actor.discovery_only = true;
+    actor.start()?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !actor.pending.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("Timed out reading Codex composer options.".into());
+        }
+        let message = actor
+            .process
+            .as_ref()
+            .ok_or("Codex discovery disconnected")?
+            .lines
+            .recv_timeout(remaining)
+            .map_err(|error| format!("Could not read Codex composer options: {error}"))??;
+        actor.message(message)?;
+        if let Some(error) = &actor.state.error {
+            return Err(error.clone());
+        }
+    }
+    actor.state.status = Status::Idle;
+    Ok(actor.state.clone())
+}
+
 pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
     if saved.provider == Provider::Claude {
         return crate::claude::connect(saved, args);
@@ -3265,6 +3298,7 @@ struct StopTracking {
     deadline: Option<Instant>,
 }
 struct Actor {
+    discovery_only: bool,
     state: Snapshot,
     actions: mpsc::Receiver<Action>,
     updates: crate::latest::Sender<Snapshot>,
@@ -3299,6 +3333,7 @@ impl Actor {
     ) -> Self {
         let reset_configuration = saved.composer.reset_to_configured;
         Self {
+            discovery_only: false,
             state: Snapshot::new(saved),
             actions,
             updates,
@@ -5297,7 +5332,20 @@ impl Actor {
                 if self.configured_turn["sandboxPolicy"]["type"] == "workspaceWrite" {
                     self.configured_turn["sandboxPolicy"]["writableRoots"] = json!(roots);
                 }
-                self.start_thread(Some(roots))?;
+                if self.discovery_only {
+                    self.state.sandbox = self.configured_turn.get("sandboxPolicy").cloned();
+                    self.state.approval_policy =
+                        self.configured_turn.get("approvalPolicy").cloned();
+                    self.state.resolved_access =
+                        match self.configured_turn["sandboxPolicy"]["type"].as_str() {
+                            Some("dangerFullAccess") => Some("full-access".into()),
+                            Some("readOnly") => Some("read-only".into()),
+                            Some("workspaceWrite") => Some("workspace-write".into()),
+                            _ => None,
+                        };
+                } else {
+                    self.start_thread(Some(roots))?;
+                }
             }
             Pending::Thread => {
                 if let Some(model) = result["model"].as_str() {
@@ -5949,6 +5997,34 @@ mod tests {
             context: None,
         }
     }
+    #[test]
+    fn composer_discovery_reads_configuration_without_starting_a_thread() {
+        let (_handle, actions) = Handle::channel();
+        let (updates, _output) = crate::latest::channel();
+        let mut actor = Actor::new(saved(), actions, updates, Vec::new());
+        actor.discovery_only = true;
+        actor.state.saved.thread_id = None;
+        actor.pending.insert(
+            1,
+            Request {
+                kind: Pending::Config,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+        );
+        // There is deliberately no process. The ordinary Config path would
+        // attempt thread/start and fail; discovery must only read metadata.
+        actor.message(json!({"id":1,"result":{"config":{"model":"configured-model","model_reasoning_effort":"high","sandbox_mode":"read-only","approval_policy":"on-request"}}})).unwrap();
+        assert!(actor.pending.is_empty());
+        assert!(actor.state.saved.thread_id.is_none());
+        assert!(actor.process.is_none());
+        assert_eq!(
+            actor.state.resolved_model.as_deref(),
+            Some("configured-model")
+        );
+        assert_eq!(actor.state.resolved_effort.as_deref(), Some("high"));
+        assert_eq!(actor.state.resolved_access.as_deref(), Some("read-only"));
+    }
+
     #[test]
     fn claude_recovery_removes_shell_tools_misidentified_as_children() {
         for provider in [Provider::Claude, Provider::Codex] {

@@ -90,6 +90,52 @@ pub fn launch_options(args: &[String]) -> Result<(Vec<String>, Option<String>), 
     Ok((options, prompt))
 }
 
+/// Initialize a temporary, non-persistent CLI peer solely to read composer metadata.
+pub(crate) fn discover_composer(
+    saved: SavedSession,
+    args: Vec<String>,
+) -> Result<Snapshot, String> {
+    let (_handle, input) = Handle::channel();
+    let (updates, _output) = crate::latest::channel();
+    let stopping = Arc::new(AtomicBool::new(false));
+    let mut actor = Actor::new(
+        saved,
+        args.clone(),
+        input,
+        updates,
+        Arc::new(AtomicU32::new(0)),
+        stopping.clone(),
+    );
+    let (mut options, _) = launch_options(&args)?;
+    options.push("--no-session-persistence".into());
+    actor.state.permission_modes = available_permission_modes(&stopping);
+    actor.process = Some(spawn(&options, &actor.state.saved)?);
+    actor.control(json!({"subtype":"initialize","hooks":null}))?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !actor.initialized {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("Timed out reading Claude composer options.".into());
+        }
+        let message = actor
+            .process
+            .as_ref()
+            .ok_or("Claude discovery disconnected")?
+            .lines
+            .recv_timeout(remaining)
+            .map_err(|error| format!("Could not read Claude composer options: {error}"))??;
+        // Only the host-requested response is relevant; no user message or
+        // conversation activity is accepted by this metadata-only peer.
+        if message["type"] == "control_response" {
+            actor.message(message)?;
+        }
+        if let Some(error) = &actor.state.error {
+            return Err(error.clone());
+        }
+    }
+    Ok(actor.state.clone())
+}
+
 pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
     let (handle, input) = Handle::channel();
     let (updates, output) = crate::latest::channel();

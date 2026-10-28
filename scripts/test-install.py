@@ -13,7 +13,7 @@ class InstallerTests(unittest.TestCase):
     def run_installer(self, *, local=True, host='aarch64-apple-darwin',
                       system='Darwin', arch='arm64', args=(), download_fails=False, build_target='',
                       build_succeeds=False, install_fails=False, fallback=False,
-                      clean_fails=False):
+                      clean_fails=False, missing_webkit=False, dependency_install_fails=False):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             commands = root / 'bin'
@@ -41,7 +41,11 @@ class InstallerTests(unittest.TestCase):
                 'curl': ('exit 22\n' if download_fails else
                          'case "$*" in *url_effective*) echo https://github.com/gitfudge0/grove/releases/tag/v1.2.3;; esac\n'),
                 'dpkg': 'exit 0\n',
-                'sudo': 'exit ' + ('76' if install_fails else '0') + '\n',
+                'sudo': ('case "$1" in pacman) ' +
+                         ('exit 75' if dependency_install_fails else 'touch "$TEST_WEBKIT"; exit 0') +
+                         ';; esac\nexit ' + ('76' if install_fails else '0') + '\n'),
+                'pkg-config': ('[ -e "$TEST_WEBKIT" ]\n' if missing_webkit else 'exit 0\n'),
+                'pacman': 'exit 0\n',
                 'git': 'exit 78\n',
                 'cp': ('exit 76\n' if install_fails else 'case "$3" in */osx/) mkdir -p "$3/Grove.app";; esac\n'),
                 'rm': 'exit 0\n',
@@ -60,7 +64,7 @@ class InstallerTests(unittest.TestCase):
                                 '" >> "$TEST_LOG"\nprintf " <%s>" "$@" >> "$TEST_LOG"\nprintf "\\n" >> "$TEST_LOG"\n' + body)
                 path.chmod(0o755)
             env = dict(os.environ, PATH=f'{commands}:/usr/bin:/bin',
-                       TEST_LOG=str(log), HOME=str(root), CARGO_TARGET_DIR='artifacts',
+                       TEST_LOG=str(log), TEST_WEBKIT=str(root / 'webkit'), HOME=str(root), CARGO_TARGET_DIR='artifacts',
                        CARGO_BUILD_TARGET=build_target)
             result = subprocess.run(['/bin/bash', str(script), *args], env=env,
                                     text=True, capture_output=True)
@@ -128,6 +132,18 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 77)
         self.assertIn('<--profile> <local> <--format> <deb>', log)
         self.assertNotIn('<--target>', log)
+
+    def test_linux_installs_missing_webkit_before_build(self):
+        result, log = self.run_installer(system='Linux', arch='x86_64', missing_webkit=True)
+        self.assertEqual(result.returncode, 77, result.stderr)
+        self.assertLess(log.index('sudo <pacman> <-S> <--needed> <webkit2gtk-4.1>'),
+                        log.index('cargo <bundle>'))
+
+    def test_dependency_install_failure_stops_build(self):
+        result, log = self.run_installer(system='Linux', arch='x86_64', missing_webkit=True,
+                                         dependency_install_fails=True)
+        self.assertEqual(result.returncode, 75)
+        self.assertNotIn('cargo <bundle>', log)
 
     def test_release_profile_is_explicit(self):
         result, log = self.run_installer(args=['--release'])

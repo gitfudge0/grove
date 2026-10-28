@@ -116,6 +116,7 @@ fn svg_for(name: &str) -> String {
         "person" => r#"<circle cx="8" cy="5" r="2.5"/><path d="M3 14v-1.5a5 5 0 0 1 10 0V14"/>"#,
         "history" => r#"<path d="M2 7a6 6 0 1 1 1.2 4M2 2v5h5M8 4v4l2.5 1.5"/>"#,
         "reset" => r#"<path d="M2.5 6a5.5 5.5 0 1 1 .5 5M2.5 2.5V6H6"/>"#,
+        "home" => r#"<path d="m2 7 6-5 6 5v7H9.5v-4h-3v4H2z"/>"#,
         "plus" => r#"<path d="M8 3v10M3 8h10"/>"#,
         "reply" => r#"<path d="m6 3-4 4 4 4M2 7h7a5 5 0 0 1 5 5v1"/>"#,
         "copy" => r#"<rect x="5" y="5" width="8" height="8" rx="1"/><path d="M10 5V3H3v7h2"/>"#,

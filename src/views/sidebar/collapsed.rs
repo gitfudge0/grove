@@ -253,6 +253,14 @@ impl Sidebar {
             .border_t_1()
             .border_color(c::BORDER_SOFT())
             .child(self.compact_item(
+                "sidebar-dashboard".into(),
+                "Dashboard".into(),
+                "home",
+                self.dashboard_open,
+                Action::OpenDashboard,
+                cx,
+            ))
+            .child(self.compact_item(
                 "sidebar-settings".into(),
                 "Open settings".into(),
                 "cog",

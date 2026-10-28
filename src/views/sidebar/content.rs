@@ -373,7 +373,18 @@ impl Sidebar {
             Ok(path) => {
                 self.pending_new_worktree = None;
                 self.content_error = None;
-                self.select(Selection::Worktree(idx, path.clone()), cx);
+                if self.dashboard_open {
+                    if let Some(d) = &self.dashboard {
+                        d.tray.update(cx, |t, cx| {
+                            t.path.clone_from(&path);
+                            cx.notify();
+                        });
+                    }
+                    self.refresh_dashboard_worktrees(cx);
+                    self.refresh_dashboard_catalog(cx);
+                } else {
+                    self.select(Selection::Worktree(idx, path.clone()), cx);
+                }
             }
             Err(error) => {
                 let field = worktree_error_field(&error);
@@ -1664,6 +1675,9 @@ impl Sidebar {
                     ),
                 );
             return motion::base(editor, "worktree-editor-enter", cx);
+        }
+        if self.dashboard_open {
+            return self.render_dashboard(window, cx);
         }
         if self.is_zen() {
             match self.selection.clone() {

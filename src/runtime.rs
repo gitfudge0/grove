@@ -507,6 +507,37 @@ impl Runtime {
         self.observe_native_title(id, &session, cx);
         id
     }
+    /// Register the exact Dashboard session entity so its composer and process retain ownership.
+    pub(crate) fn adopt_dashboard_session(
+        &mut self,
+        session: Entity<crate::entities::codex_session::CodexSession>,
+        cx: &mut Context<Self>,
+    ) -> SessionId {
+        let saved = session.read(cx).state.saved.clone();
+        let handle = session.read(cx).handle.clone();
+        let id = self.registry.update(cx, |registry, cx| {
+            let id = registry.insert_meta_with_context(
+                saved.project,
+                saved.cwd,
+                saved.provider.agent(),
+                saved.roots,
+                None,
+            );
+            registry.take_attention_args(id);
+            registry.attach_codex(id, session.clone(), handle);
+            cx.notify();
+            id
+        });
+        self.observe_native_title(id, &session, cx);
+        let snap = self.snapshot(cx);
+        let old = self.state.read(cx).proj_idx();
+        ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
+        self.state.update(cx, |state, cx| {
+            state.select_session(id, &snap);
+            cx.notify();
+        });
+        id
+    }
     fn observe_native_title(
         &mut self,
         id: SessionId,

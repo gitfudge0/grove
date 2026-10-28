@@ -98,6 +98,28 @@ if [ "$PREBUILT" = 0 ]; then
     exit 1
   fi
 
+  if [ "$OS" = Linux ] && ! command -v pkg-config >/dev/null 2>&1; then
+    echo "Error: pkg-config is required to check Linux build dependencies." >&2
+    exit 1
+  fi
+  if [ "$OS" = Linux ] && ! pkg-config --exists webkit2gtk-4.1; then
+    echo "WebKitGTK 4.1 development files are required to build Grove."
+    if command -v pacman >/dev/null 2>&1; then
+      echo "Installing webkit2gtk-4.1 with pacman (sudo)..."
+      sudo pacman -S --needed webkit2gtk-4.1
+    elif command -v apt-get >/dev/null 2>&1; then
+      echo "Installing libwebkit2gtk-4.1-dev with apt (sudo)..."
+      sudo apt-get install -y libwebkit2gtk-4.1-dev
+    else
+      echo "Error: install WebKitGTK 4.1 development files using your package manager, then rerun install.sh." >&2
+      exit 1
+    fi
+    if ! pkg-config --exists webkit2gtk-4.1; then
+      echo "Error: pkg-config still cannot find webkit2gtk-4.1; check your PKG_CONFIG_PATH." >&2
+      exit 1
+    fi
+  fi
+
   BUNDLE_VERSION="0.12.0"
   if [ "$(cargo bundle --version 2>/dev/null || true)" != "cargo-bundle v$BUNDLE_VERSION" ]; then
     echo "Installing cargo-bundle $BUNDLE_VERSION..."

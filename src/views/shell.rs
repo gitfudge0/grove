@@ -20,12 +20,12 @@ use grove_core::agent::Agent;
 
 const TRAFFIC_LIGHT_D: f32 = 12.0;
 const TRAFFIC_CONTROL_W: f32 = 18.0;
-// Fixed traffic lights, workspace glyphs/insets, and Settings/Collapse hit targets.
+// Fixed traffic lights, workspace glyphs/insets, and Dashboard/Settings/Collapse hit targets.
 const WORKSPACE_HEADER_RAIL_MIN_W: f32 = TRAFFIC_CONTROL_W * 3.0
     + SPACE_LG
     + SIDEBAR_CONTENT_INSET * 2.0
     + SPACE_2XL
-    + CHROME_CONTROL_H * 2.0
+    + CHROME_CONTROL_H * 3.0
     + ICON_MD
     + ICON_SM
     + SPACE_MD * 2.0;

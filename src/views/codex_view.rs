@@ -950,11 +950,14 @@ fn snippet_shell_supported(language: &str) -> bool {
 }
 
 pub(crate) enum CodexViewEvent {
+    DashboardSubmit,
     ScriptLaunched,
 }
 impl gpui::EventEmitter<CodexViewEvent> for CodexView {}
 
 pub struct CodexView {
+    pub(crate) dashboard_tray: Option<Entity<super::sidebar::dashboard::DestinationTray>>,
+    dashboard_pending: bool,
     script_runtime: Option<Entity<crate::runtime::Runtime>>,
     preview_child: Option<String>,
     session: Entity<CodexSession>,
@@ -1313,6 +1316,8 @@ impl CodexView {
             tasks_expanded: true,
             task_cache: None,
             transcript_cache: None,
+            dashboard_tray: None,
+            dashboard_pending: false,
             script_runtime: None,
             checkout_context: None,
             subscriptions,
@@ -2322,8 +2327,9 @@ impl CodexView {
         let state = &self.session.read(cx).state;
         self.submitted.is_some()
             || self.pending_image_pastes > 0
-            || state.status == codex::Status::Disconnected
-            || (state.status == codex::Status::Starting
+            || (self.dashboard_tray.is_none() && state.status == codex::Status::Disconnected)
+            || (self.dashboard_tray.is_none()
+                && state.status == codex::Status::Starting
                 && state.saved.provider != codex::Provider::Claude)
             || (state.status.busy()
                 && state.turn_id.is_some()
@@ -2967,7 +2973,18 @@ impl CodexView {
         cx.notify();
     }
 
+    pub(crate) fn launch_dashboard(&mut self, cx: &mut Context<Self>) {
+        self.dashboard_tray = None;
+        self.dashboard_pending = true;
+        cx.notify();
+    }
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dashboard_tray.is_some() {
+            if !self.input.read(cx).value().trim().is_empty() || !self.images.is_empty() {
+                cx.emit(CodexViewEvent::DashboardSubmit);
+            }
+            return;
+        }
         if self.message_editor.is_some()
             || self.edit_confirmation.is_some()
             || self.edit_request_pending
@@ -3111,6 +3128,14 @@ impl Render for CodexView {
                     .push(cx.observe(&root, |_, _, cx| cx.notify()));
                 self.selection_root_observed = true;
             }
+        }
+        if self.dashboard_pending
+            && (self.session.read(cx).state.saved.provider == codex::Provider::Claude
+                || self.session.read(cx).state.saved.thread_id.is_some())
+            && self.session.read(cx).state.status == codex::Status::Idle
+        {
+            self.dashboard_pending = false;
+            self.submit(window, cx);
         }
         let source = self.input.read(cx).value().to_string();
         let generation = grove_core::theme::generation();
@@ -5265,7 +5290,7 @@ impl Render for CodexView {
                             .flex()
                             .flex_col()
                             .gap(rpx(SPACE_MD))
-                            .when(focused_launch, |rail| rail.child(self.launch_intro(&state)))
+                            .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_intro(&state)))
                             .when_some(self.session_notice(&state, window, cx), gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
@@ -5298,6 +5323,27 @@ impl Render for CodexView {
                                     .flex_wrap()
                                     .items_center()
                                     .gap(rpx(SPACE_LG))
+                                    .when(self.dashboard_tray.is_some(), |row| row.child(
+                                        super::components::transcript_action("dashboard-provider", state.saved.provider.label(), false, window, cx)
+                                            .icon(gpui_component::Icon::default().path(format!("icons/{}.svg",state.saved.provider.agent().icon_name())))
+                                            .tooltip("Switch between Codex and Claude")
+                                            .on_click(cx.listener(|this,_,window,cx|{
+                                                this.session.update(cx,|s,cx|{
+                                                    s.drain_deferred(cx);
+                                                    s.state.saved.provider=if s.state.saved.provider==codex::Provider::Codex {codex::Provider::Claude}else{codex::Provider::Codex};
+                                                    s.state.saved.label=s.state.saved.provider.label().into(); s.state.error=None;
+                                                    s.state.saved.composer=codex::ComposerSettings::default();
+                                                    s.state.model=None; s.state.effort=None; s.state.access=None;
+                                                    s.state.models.clear();
+                                                    let args=s.state.saved.provider.agent().launch_args_for_backend(true,cx.global::<crate::settings::SettingsState>().store.yolo_enabled,cx.global::<crate::settings::SettingsState>().store.chrome_enabled.unwrap_or(false));
+                                                    s.refresh_catalog(s.state.saved.cwd.clone(),args,cx);
+                                                    cx.notify();
+                                                });
+                                                let placeholder=composer_placeholder(this.session.read(cx).state.saved.provider);
+                                                this.input.update(cx,|i,cx|i.set_placeholder(placeholder,window,cx));
+                                                cx.notify();
+                                            }))
+                                    ))
                                     .children(self.option_triggers(&state, window, cx))
                                     .child(div().flex_1())
                                     .when_some(
@@ -5335,6 +5381,7 @@ impl Render for CodexView {
                                     ),
                             )
                             ))
+                            .children(self.dashboard_tray.clone())
                             .child(
                                 div()
                                     .id("codex-composer-hints")
@@ -5364,7 +5411,7 @@ impl Render for CodexView {
                                         "Enter to send"
                                     })
                             )
-                            .when(focused_launch, |rail| rail.child(self.launch_starters(provider, cx))),
+                            .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_starters(provider, cx))),
                     ),
             );
         if let Some(menu) = self.menu {

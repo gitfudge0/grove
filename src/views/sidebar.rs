@@ -9,6 +9,7 @@ mod grid;
 mod multi_project;
 mod plan_preview;
 use multi_project::SidebarContext;
+pub(crate) mod dashboard;
 mod project_flyout;
 mod project_setup;
 pub(super) mod projects;
@@ -337,6 +338,7 @@ enum Action {
     SelectDiffFile(String),
     RefreshDiff,
     AddTerminal,
+    OpenDashboard,
     OpenSettings,
     UpdateApp,
     NewMultiProjectSession,
@@ -488,6 +490,8 @@ pub struct Sidebar {
     diff_return_focus: Option<FocusHandle>,
     diff_observer: Option<gpui::Subscription>,
     terminal_views: HashMap<SessionId, Entity<TerminalView>>,
+    dashboard: Option<dashboard::Dashboard>,
+    dashboard_open: bool,
     codex_views: HashMap<SessionId, Entity<super::codex_view::CodexView>>,
     home_terminal_views: HashMap<SessionId, Entity<TerminalView>>,
     available: [bool; 4],
@@ -703,6 +707,8 @@ impl Sidebar {
             diff_return_focus: None,
             diff_observer: None,
             terminal_views: HashMap::new(),
+            dashboard: None,
+            dashboard_open: false,
             codex_views: HashMap::new(),
             home_terminal_views: HashMap::new(),
             available: WORKTREE_LAUNCH_AGENTS.map(Agent::available),
@@ -830,6 +836,7 @@ impl Sidebar {
             self.focus.focus(window, cx);
         }
         if active != self.active_workspace {
+            self.dashboard_open = false;
             self.branch_peek = None;
             self.branch_peek_task = None;
             self.branch_entry = None;
@@ -1765,6 +1772,13 @@ impl Sidebar {
                 div()
                     .flex_shrink_0()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .flex()
+                    .items_center()
+                    .child(
+                        self.control("sidebar-dashboard", "Dashboard", Action::OpenDashboard, cx)
+                            .debug_selector(|| "sidebar-dashboard".into())
+                            .child(icon("home", ICON_MD, c::FG_DIM())),
+                    )
                     .child(self.settings_control(cx)),
             )
             .child(
@@ -2091,6 +2105,7 @@ impl Sidebar {
             })
     }
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.dashboard_open = false;
         if self
             .history_selection
             .as_ref()
@@ -2963,6 +2978,7 @@ impl Sidebar {
                     }
                 }
             }
+            Action::OpenDashboard => self.open_dashboard(window, cx),
             Action::OpenSettings => {
                 if self.navigation_available() {
                     cx.emit(SidebarEvent::SettingsRequested);

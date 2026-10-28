@@ -66,7 +66,7 @@ To build and install an app locally on macOS or Linux:
 ./install.sh
 ```
 
-The script installs `cargo-bundle` if needed and uses the `local` profile, which skips release LTO and allows parallel code generation. Use `./install.sh --release` for the optimized shipping profile. Native macOS builds share Cargo's normal target directory; a translated toolchain explicitly targets native hardware to avoid a Rosetta app. `CARGO_TARGET_DIR` is respected. On Windows, use `cargo run` for development.
+The script installs `cargo-bundle` if needed and uses the `local` profile, which skips release LTO and allows parallel code generation. On Arch and Debian-based Linux, it also installs missing WebKitGTK 4.1 development files using `sudo`. Other Linux build prerequisites are listed in the workflow above. Use `./install.sh --release` for the optimized shipping profile. Native macOS builds share Cargo's normal target directory; a translated toolchain explicitly targets native hardware to avoid a Rosetta app. `CARGO_TARGET_DIR` is respected. On Windows, use `cargo run` for development.
 
 Build artifacts remain cached to speed up subsequent builds. To reclaim space explicitly, run `cargo clean --profile local` or `cargo clean --release`; `cargo clean` removes all artifacts for this checkout and makes the next build slower. Older installers may have left `target/aarch64-apple-darwin` or `target/x86_64-apple-darwin` artifacts; `cargo clean --target <triple> --release` removes that target's old release artifacts. The installer never clears caches automatically.
 
