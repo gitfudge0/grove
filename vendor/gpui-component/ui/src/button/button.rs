@@ -489,11 +489,22 @@ impl RenderOnce for Button {
             ButtonRounded::None => Pixels::ZERO,
         };
 
-        let observed_background=if self.loading && !self.disabled {normal_style.bg.opacity(Button::LOADING_OPACITY).as_solid()}
-            else if let Some(fill)=self.style.background.as_ref(){fill.color().and_then(|background|background.as_solid())}
-            else if self.disabled {style.disabled(self.outline,cx).bg.as_solid()}else{normal_style.bg.as_solid()};
-        let observed_icon_path=if self.loading {self.loading_icon.as_ref().map(|icon|icon.path_ref().clone())}
-            else {self.icon.as_ref().and_then(ButtonIcon::source_path)};
+        let observed_background = if self.loading && !self.disabled {
+            normal_style.bg.opacity(Button::LOADING_OPACITY).as_solid()
+        } else if let Some(fill) = self.style.background.as_ref() {
+            fill.color().and_then(|background| background.as_solid())
+        } else if self.disabled {
+            style.disabled(self.outline, cx).bg.as_solid()
+        } else {
+            normal_style.bg.as_solid()
+        };
+        let observed_icon_path = if self.loading {
+            self.loading_icon
+                .as_ref()
+                .map(|icon| icon.path_ref().clone())
+        } else {
+            self.icon.as_ref().and_then(ButtonIcon::source_path)
+        };
         self.base
             .role(if self.variant.is_link() {
                 Role::Link
@@ -647,7 +658,19 @@ impl RenderOnce for Button {
                 });
                 h_flex()
                     .when_some(self.content_observer, |this, observer| {
-                        this.on_children_prepainted(move |bounds, window, cx| observer(ButtonContentMetrics{bounds,label:label_layout.clone(),radius:rounding,background:observed_background,icon_path:observed_icon_path.clone()}, window, cx))
+                        this.on_children_prepainted(move |bounds, window, cx| {
+                            observer(
+                                ButtonContentMetrics {
+                                    bounds,
+                                    label: label_layout.clone(),
+                                    radius: rounding,
+                                    background: observed_background,
+                                    icon_path: observed_icon_path.clone(),
+                                },
+                                window,
+                                cx,
+                            )
+                        })
                     })
                     .id("label")
                     .size_full()

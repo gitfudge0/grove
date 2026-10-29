@@ -1081,27 +1081,30 @@ mod native_snapshots {
                 // and controls before comparing it with a window-filling camera.
                 let window_height = if diagram == "flowchart" { 400. } else { 760. };
                 let window = cx
-                    .open_window(gpui::size(gpui::px(width), gpui::px(window_height)), |window, cx| {
-                        let gallery = cx.new(|_| DiagramGallery {
-                            image,
-                            ratio,
-                            width: natural_width,
-                            viewer: None,
-                            sibling: None,
-                            wheel: std::rc::Rc::default(),
-                            diagram: Diagram {
-                                source: source.to_owned(),
-                                markdown: format!("```mermaid\n{source}\n```"),
-                                offset: 0,
-                            },
-                        });
-                        *gallery_out.borrow_mut() = Some(gallery.clone());
-                        cx.new(|cx| {
-                            gpui_component::Root::new(gallery, window, cx)
-                                .bordered(false)
-                                .bg(c::BG())
-                        })
-                    })
+                    .open_window(
+                        gpui::size(gpui::px(width), gpui::px(window_height)),
+                        |window, cx| {
+                            let gallery = cx.new(|_| DiagramGallery {
+                                image,
+                                ratio,
+                                width: natural_width,
+                                viewer: None,
+                                sibling: None,
+                                wheel: std::rc::Rc::default(),
+                                diagram: Diagram {
+                                    source: source.to_owned(),
+                                    markdown: format!("```mermaid\n{source}\n```"),
+                                    offset: 0,
+                                },
+                            });
+                            *gallery_out.borrow_mut() = Some(gallery.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(gallery, window, cx)
+                                    .bordered(false)
+                                    .bg(c::BG())
+                            })
+                        },
+                    )
                     .unwrap();
                 cx.run_until_parked();
                 cx.update_window(window.into(), |_, window, cx| {
