@@ -10,6 +10,7 @@ mod multi_project;
 mod plan_preview;
 use multi_project::SidebarContext;
 pub(crate) mod dashboard;
+mod dashboard_timeline;
 mod project_flyout;
 mod project_setup;
 pub(super) mod projects;
@@ -532,6 +533,7 @@ pub struct Sidebar {
     >,
     task_glances: HashMap<SessionId, task_glance::TaskGlanceCache>,
     header_tasks: task_glance::HeaderTasks,
+    dashboard_timelines: dashboard_timeline::DashboardTimelines,
     age_timer: Option<gpui::Task<()>>,
     #[cfg(test)]
     age_ticks: u64,
@@ -737,6 +739,7 @@ impl Sidebar {
             task_glance_observers: HashMap::new(),
             task_glances: HashMap::new(),
             header_tasks: task_glance::HeaderTasks::default(),
+            dashboard_timelines: dashboard_timeline::DashboardTimelines::default(),
             age_timer: None,
             #[cfg(test)]
             age_ticks: 0,

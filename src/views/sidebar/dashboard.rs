@@ -3,6 +3,14 @@ use super::*;
 use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 
+/// Preferences for a fresh dashboard draft after adopting the previous one.
+struct DashboardDefaults {
+    project: usize,
+    path: String,
+    provider: grove_core::codex::Provider,
+    composer: grove_core::codex::ComposerSettings,
+    config_args: Vec<String>,
+}
 pub(super) struct Dashboard {
     pub session: Entity<CodexSession>,
     pub view: Entity<CodexView>,
@@ -267,6 +275,14 @@ impl Render for DestinationTray {
 }
 impl Sidebar {
     pub(crate) fn open_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_dashboard_with_defaults(None, window, cx);
+    }
+    fn open_dashboard_with_defaults(
+        &mut self,
+        defaults: Option<DashboardDefaults>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.dismiss_project_panel_for_navigation();
         if let Some(settings) = &self.settings_panel {
             settings.update(cx, |settings, cx| settings.close(window, cx));
@@ -278,13 +294,26 @@ impl Sidebar {
                 .workspace_projects(self.active_workspace)
                 .map(|(i, p)| (i, p.name.clone(), p.path.clone()))
                 .collect();
-            let Some((idx, _, _)) = projects.first() else {
+            let selected = defaults
+                .as_ref()
+                .and_then(|defaults| projects.iter().find(|(idx, _, _)| *idx == defaults.project))
+                .or_else(|| projects.first());
+            let Some((idx, _, _)) = selected else {
                 self.dashboard_open = true;
                 cx.notify();
                 return;
             };
             let idx = *idx;
             let project = cx.global::<SettingsState>().store.projects[idx].clone();
+            let provider = defaults
+                .as_ref()
+                .map_or(grove_core::codex::Provider::Codex, |defaults| {
+                    defaults.provider
+                });
+            let checkout = defaults
+                .as_ref()
+                .filter(|defaults| defaults.project == idx)
+                .map_or_else(|| project.path.clone(), |defaults| defaults.path.clone());
             let key = match grove_core::identity::random_id() {
                 Ok(key) => key,
                 Err(error) => {
@@ -301,13 +330,16 @@ impl Sidebar {
                 claude_subagents: HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
-                provider: grove_core::codex::Provider::Codex,
-                composer: grove_core::codex::ComposerSettings::default(),
+                provider,
+                composer: defaults
+                    .as_ref()
+                    .map(|defaults| defaults.composer.clone())
+                    .unwrap_or_default(),
                 context: None,
                 key,
                 project: project.name,
-                cwd: project.path.clone(),
-                label: "Codex".into(),
+                cwd: checkout.clone(),
+                label: provider.label().into(),
                 title: None,
                 title_generation: None,
                 roots: Vec::new(),
@@ -317,13 +349,16 @@ impl Sidebar {
                 draft: String::new(),
                 draft_images: Vec::new(),
                 draft_reference: None,
-                config_args: Vec::new(),
+                config_args: defaults
+                    .as_ref()
+                    .map(|defaults| defaults.config_args.clone())
+                    .unwrap_or_default(),
                 native_config_version: 1,
             };
             let session = cx.new(|cx| {
                 CodexSession::draft(
                     saved,
-                    Agent::Codex.launch_args_for_backend(
+                    provider.agent().launch_args_for_backend(
                         true,
                         cx.global::<SettingsState>().store.yolo_enabled,
                         cx.global::<SettingsState>()
@@ -334,13 +369,18 @@ impl Sidebar {
                     cx,
                 )
             });
-            let tray = cx.new(|_| DestinationTray::new(projects, idx, project.path));
+            let tray = cx.new(|_| DestinationTray::new(projects, idx, checkout));
             let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
             view.update(cx, |view, cx| view.attach_dashboard_tray(tray.clone(), cx));
             let events = vec![
-                cx.subscribe_in(&view, window, |this, _, event, _, cx| {
-                    if matches!(event, CodexViewEvent::DashboardSubmit) {
-                        this.launch_dashboard(cx);
+                cx.subscribe_in(&view, window, |this, source, event, window, cx| {
+                    if matches!(event, CodexViewEvent::DashboardSubmit)
+                        && this
+                            .dashboard
+                            .as_ref()
+                            .is_some_and(|draft| &draft.view == source)
+                    {
+                        this.launch_dashboard(window, cx);
                     }
                 }),
                 cx.subscribe_in(&tray, window, |this, _, event, window, cx| {
@@ -424,12 +464,13 @@ impl Sidebar {
             self.refresh_dashboard_catalog(cx);
         }
         self.dashboard_open = true;
+        self.enter_dashboard_timeline_scope(cx);
         if let Some(d) = &self.dashboard {
             d.view.focus_handle(cx).focus(window, cx);
         }
         cx.notify();
     }
-    fn launch_dashboard(&mut self, cx: &mut Context<Self>) {
+    fn launch_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(d) = &self.dashboard else {
             return;
         };
@@ -476,14 +517,33 @@ impl Sidebar {
         }
         let session = d.session.clone();
         let view = d.view.clone();
+        self.adopt_dashboard_launch(idx, session, view, window, cx);
+    }
+    fn adopt_dashboard_launch(
+        &mut self,
+        project: usize,
+        session: Entity<CodexSession>,
+        view: Entity<CodexView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let defaults = {
+            let saved = &session.read(cx).state.saved;
+            DashboardDefaults {
+                project,
+                path: saved.cwd.clone(),
+                provider: saved.provider,
+                composer: saved.composer.clone(),
+                config_args: saved.config_args.clone(),
+            }
+        };
         let id = self.runtime.update(cx, |runtime, cx| {
             runtime.adopt_dashboard_session(session, cx)
         });
-        view.update(cx, CodexView::launch_dashboard);
+        view.update(cx, |view, cx| view.launch_dashboard(window, cx));
         self.codex_views.insert(id, view);
         self.dashboard = None;
-        self.dashboard_open = false;
-        self.select_active_session(cx);
+        self.open_dashboard_with_defaults(Some(defaults), window, cx);
     }
     pub(super) fn refresh_dashboard_catalog(&mut self, cx: &mut Context<Self>) {
         let Some(d) = &self.dashboard else {
@@ -623,6 +683,7 @@ impl Sidebar {
                 )
                 .into_any_element();
         };
+        let dashboard_composer = d.view.clone();
         // Use the workspace snapshot rather than the current navigation mode: collapsed
         // projects still contribute to the overview.
         let registry = self.runtime.read(cx).registry.read(cx);
@@ -741,10 +802,101 @@ impl Sidebar {
                     .child("Your sessions will appear here."),
             );
         } else {
-            for (meta, status, title, since) in sessions.into_iter().take(3) {
+            let mut quiet = 0;
+            for (meta, status, title, since) in sessions {
+                let expanded = self
+                    .dashboard_timelines
+                    .is_open(self.active_workspace, meta.id);
+                if !matches!(status, "Working" | "Starting") && !expanded {
+                    if quiet >= 3 {
+                        continue;
+                    }
+                    quiet += 1;
+                }
+
                 let id = meta.id;
                 let age = session_age_label(since, Instant::now());
-                let label = format!("{title} · {} · {status} · {age}", meta.project);
+                let label = format!(
+                    "{title} · {} · {} · {status} · {age} · {}",
+                    meta.project,
+                    meta.agent.label(),
+                    meta.wt_path
+                );
+                let structured = self
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .codex(id)
+                    .map(|session| {
+                        let state = &session.read(cx).state;
+                        (
+                            state.status,
+                            state.saved.provider,
+                            state
+                                .effort
+                                .as_deref()
+                                .filter(|effort| !effort.trim().is_empty())
+                                .or(state
+                                    .resolved_effort
+                                    .as_deref()
+                                    .filter(|effort| !effort.trim().is_empty()))
+                                .or(state
+                                    .saved
+                                    .composer
+                                    .effort
+                                    .as_deref()
+                                    .filter(|effort| !effort.trim().is_empty()))
+                                .map(str::to_owned),
+                        )
+                    });
+                if let Some((structured_status, provider, effort)) = structured {
+                    let worktree = self
+                        .snapshot
+                        .projects
+                        .iter()
+                        .flat_map(|project| &project.worktrees)
+                        .find(|worktree| worktree.path == meta.wt_path);
+                    let worktree =
+                        worktree.map_or_else(
+                            || {
+                                let main = cx.global::<SettingsState>().store.projects.iter().any(
+                                    |project| {
+                                        project.name == meta.project
+                                            && crate::paths::normalize_wt_path(&project.path)
+                                                == crate::paths::normalize_wt_path(&meta.wt_path)
+                                    },
+                                );
+                                if main {
+                                    sidebar_worktree_name("", true).to_owned()
+                                } else {
+                                    std::path::Path::new(&meta.wt_path).file_name().map_or_else(
+                                        || meta.wt_path.clone(),
+                                        |name| name.to_string_lossy().into_owned(),
+                                    )
+                                }
+                            },
+                            |worktree| {
+                                sidebar_worktree_name(&worktree.name, worktree.is_main).to_owned()
+                            },
+                        );
+                    let metadata = super::dashboard_timeline::RowMetadata {
+                        project: meta.project.clone(),
+                        worktree,
+                        provider,
+                        effort,
+                        context: label,
+                    };
+                    recent = recent.child(self.render_dashboard_progress(
+                        id,
+                        &title,
+                        structured_status,
+                        &age,
+                        &metadata,
+                        cx,
+                    ));
+                    continue;
+                }
                 recent = recent.child(
                     self.row(
                         format!("dashboard-session-{}", id.raw()),
@@ -815,7 +967,7 @@ impl Sidebar {
                             .px(rpx(SPACE_20))
                             .child(summary),
                     )
-                    .child(div().w_full().pt(rpx(SPACE_3XL)).child(d.view.clone()))
+                    .child(div().w_full().pt(rpx(SPACE_3XL)).child(dashboard_composer))
                     .child(
                         div()
                             .w_full()
@@ -833,6 +985,143 @@ impl Sidebar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Exercise the real adoption/fresh-draft owner with mocked connected sessions.
+    // Live provider normalization and native submit are verified separately.
+    fn sequential_dashboard_adoption(
+        cx: &mut gpui::TestAppContext,
+        provider: grove_core::codex::Provider,
+    ) {
+        let repo = tempfile::tempdir().unwrap();
+        let first = repo.path().join("first");
+        let selected = repo.path().join("selected");
+        let checkout = repo.path().join("selected-checkout");
+        for path in [&first, &selected, &checkout] {
+            fs_err::create_dir(path).unwrap();
+        }
+        let checkout = checkout.to_string_lossy().into_owned();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let mut store = grove_core::storage::Store::default();
+            for (name, path) in [("First", &first), ("Selected", &selected)] {
+                let path = path.to_string_lossy().into_owned();
+                store.projects.push(grove_core::storage::Project {
+                    name: name.into(),
+                    path: path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                });
+                store.assign_project_to_active_workspace(&path);
+            }
+            cx.set_global(SettingsState::new(store));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.run_until_parked();
+        let mut receivers = Vec::new();
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.open_dashboard(window, cx);
+                let initial_key = sidebar
+                    .dashboard
+                    .as_ref()
+                    .unwrap()
+                    .session
+                    .read(cx)
+                    .state
+                    .saved
+                    .key
+                    .clone();
+                let mut fresh_keys = vec![initial_key];
+                let mut adopted_ids = Vec::new();
+                for turn in 1..=2 {
+                    let mut saved = sidebar
+                        .dashboard
+                        .as_ref()
+                        .unwrap()
+                        .session
+                        .read(cx)
+                        .state
+                        .saved
+                        .clone();
+                    saved.provider = provider;
+                    saved.project = "Selected".into();
+                    saved.cwd = checkout.clone();
+                    saved.key = format!("mock-dashboard-turn-{turn}");
+                    saved.draft = format!("Independent prompt {turn}");
+                    saved.composer.model = Some("fixture-model".into());
+                    saved.composer.effort = Some("high".into());
+                    saved.composer.access = Some("fixture-permission".into());
+                    saved.composer.speed = Some(grove_core::codex::Speed::Fast);
+                    saved.config_args = vec!["fixture-configuration".into()];
+                    let (handle, actions) = grove_core::codex::Handle::channel();
+                    receivers.push(actions);
+                    let (_updates, receive) = std::sync::mpsc::channel();
+                    let session = cx.new(|cx| {
+                        CodexSession::from_connection(
+                            grove_core::codex::Snapshot::new(saved),
+                            grove_core::codex::Connection {
+                                handle,
+                                updates: receive.into(),
+                            },
+                            cx,
+                        )
+                    });
+                    let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
+                    sidebar.adopt_dashboard_launch(1, session.clone(), view.clone(), window, cx);
+                    assert!(
+                        sidebar.dashboard_open,
+                        "successful submit remains on Dashboard"
+                    );
+                    let d = sidebar.dashboard.as_ref().unwrap();
+                    let next = &d.session.read(cx).state.saved;
+                    assert_ne!(d.session, session);
+                    assert_ne!(d.view, view);
+                    assert!(d.session.read(cx).is_deferred());
+                    assert_eq!(next.provider, provider);
+                    assert_eq!(next.cwd, checkout);
+                    assert_eq!(d.tray.read(cx).project, 1);
+                    assert_eq!(d.tray.read(cx).path, checkout);
+                    assert_eq!(next.composer.model.as_deref(), Some("fixture-model"));
+                    assert_eq!(next.composer.effort.as_deref(), Some("high"));
+                    assert_eq!(next.composer.access.as_deref(), Some("fixture-permission"));
+                    assert_eq!(next.composer.speed, Some(grove_core::codex::Speed::Fast));
+                    assert_eq!(next.config_args, ["fixture-configuration"]);
+                    assert!(next.draft.is_empty());
+                    assert!(next.draft_images.is_empty());
+                    assert!(next.draft_reference.is_none());
+                    assert!(next.thread_id.is_none());
+                    assert!(next.items.is_empty());
+                    assert!(!fresh_keys.contains(&next.key));
+                    fresh_keys.push(next.key.clone());
+                    let registry = sidebar.runtime.read(cx).registry.read(cx);
+                    assert_eq!(registry.all().len(), turn);
+                    adopted_ids.push(registry.all().last().unwrap().id);
+                    assert_eq!(
+                        session.read(cx).state.saved.draft,
+                        format!("Independent prompt {turn}")
+                    );
+                }
+                assert_ne!(adopted_ids[0], adopted_ids[1]);
+            });
+        });
+    }
+    #[gpui::test]
+    fn dashboard_sequential_codex_submits_keep_fresh_composer_and_destination(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Codex);
+    }
+    #[gpui::test]
+    fn dashboard_sequential_claude_submits_keep_fresh_composer_and_destination(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Claude);
+    }
     fn worktree_round_trip(cx: &mut gpui::TestAppContext, provider: grove_core::codex::Provider) {
         let fixture = tempfile::tempdir().unwrap();
         let repo = fixture.path().join("repo");

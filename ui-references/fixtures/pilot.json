@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "design_system": "grove",
-  "contract_hash": "7e67d5ae8d728ddc56c54fb69b6bdd11936d8fd7157c5c063a2658f5a44f94ec",
+  "contract_hash": "70f720b3bc42012a2d96a930cf4ec42aff5068f0cd7fdd90a10f5f0af5d4d0f4",
   "owners": {
-    "DESIGN.md": "a95d858f07a33735e4bf970be74f9ec9facbc5ed4cca328e4c8adf535f9d54eb",
+    "DESIGN.md": "302543abfa143694df48dfe079bedee1e11ba0d0c8a450b91c5ffd51cd788c8c",
     "build.rs": "817461b07a7d2e32f2c18329cbbf2314cb70ca97ff7a44a7c7cafd9b00deca00",
     "native-engine": "7ac8802fcee1339b49fe8b105d6a723c1f0c2df4b5b3e46079621d153de173e4",
     "reference/compose": "04cd53d2ec55676cf3a356b4d353a6aa7cbd9bd4ba741b872098c6aff7bd07e6",

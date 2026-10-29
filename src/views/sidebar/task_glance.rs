@@ -83,9 +83,27 @@ pub(super) struct TaskGlanceCache {
     index: Option<usize>,
     item: Value,
     glance: Option<TaskGlance>,
+    list: Option<std::sync::Arc<TaskList>>,
+    timeline: std::sync::Arc<super::dashboard_timeline::TimelineData>,
+    dashboard_status: Option<Status>,
 }
 
 impl TaskGlanceCache {
+    pub fn timeline(&self) -> std::sync::Arc<super::dashboard_timeline::TimelineData> {
+        self.timeline.clone()
+    }
+    pub fn refresh_dashboard(&mut self, items: &[Value], status: Status) -> bool {
+        let activity = super::dashboard_timeline::recent_activity(items);
+        let changed = activity != self.timeline.activity || self.dashboard_status != Some(status);
+        if activity != self.timeline.activity {
+            self.timeline = std::sync::Arc::new(super::dashboard_timeline::TimelineData {
+                list: self.list.clone(),
+                activity,
+            });
+        }
+        self.dashboard_status = Some(status);
+        changed
+    }
     pub fn glance(&self) -> Option<&TaskGlance> {
         self.glance.as_ref()
     }
@@ -93,23 +111,18 @@ impl TaskGlanceCache {
     /// Refreshes from `items`; returns whether checklist content or its summary changed.
     pub fn refresh(&mut self, items: &[Value]) -> bool {
         let index = items.iter().rposition(tasks::is_checklist);
-        let snapshot_changed =
-            self.index != index || index.is_some_and(|at| self.item != items[at]);
-        let glance = match index {
-            None => {
-                self.item = Value::Null;
-                None
-            }
-            Some(at) if self.index == Some(at) && self.item == items[at] => self.glance.clone(),
-            Some(at) => {
-                self.item = items[at].clone();
-                tasks::current(items).map(|list| TaskGlance::from_list(&list))
-            }
-        };
+        let changed = self.index != index || index.is_some_and(|at| self.item != items[at]);
+        if changed {
+            self.item = index.map_or(Value::Null, |at| items[at].clone());
+            self.list = tasks::current(items).map(std::sync::Arc::new);
+            self.glance = self.list.as_deref().map(TaskGlance::from_list);
+            self.timeline = std::sync::Arc::new(super::dashboard_timeline::TimelineData {
+                list: self.list.clone(),
+                activity: self.timeline.activity.clone(),
+            });
+        }
         self.index = index;
-        let changed = glance != self.glance;
-        self.glance = glance;
-        snapshot_changed || changed
+        changed
     }
 }
 
@@ -128,6 +141,15 @@ impl Sidebar {
         self.header_tasks.bounds.retain(|id, _| live.contains(id));
         self.task_glance_observers.retain(|id, _| live.contains(id));
         self.task_glances.retain(|id, _| live.contains(id));
+        let workspaces = cx
+            .global::<crate::settings::SettingsState>()
+            .store
+            .workspaces
+            .rows
+            .iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        self.dashboard_timelines.retain(&live, &workspaces);
         for (id, session) in sessions {
             if self
                 .task_glance_observers
@@ -137,20 +159,28 @@ impl Sidebar {
                 continue;
             }
             let mut cache = TaskGlanceCache::default();
-            cache.refresh(&session.read(cx).state.saved.items);
+            {
+                let state = &session.read(cx).state;
+                cache.refresh(&state.saved.items);
+                if self.dashboard_open && self.dashboard_owns_session(id) {
+                    cache.refresh_dashboard(&state.saved.items, state.status);
+                }
+            }
             self.task_glances.insert(id, cache);
             let observer = cx.observe(&session, move |this, session, cx| {
-                let changed = this
-                    .task_glances
-                    .entry(id)
-                    .or_default()
-                    .refresh(&session.read(cx).state.saved.items);
-                if changed {
+                let visible = this.dashboard_open && this.dashboard_owns_session(id);
+                let state = &session.read(cx).state;
+                let cache = this.task_glances.entry(id).or_default();
+                let changed = cache.refresh(&state.saved.items);
+                let activity_changed =
+                    visible && cache.refresh_dashboard(&state.saved.items, state.status);
+                if changed || activity_changed {
                     cx.notify();
                 }
             });
             self.task_glance_observers.insert(id, (session, observer));
         }
+        self.sync_dashboard_timeline_scope(cx);
     }
 
     pub(super) fn task_glance(&self, id: SessionId) -> Option<&TaskGlance> {
@@ -635,5 +665,50 @@ mod tests {
         items.push(plan(&[]));
         assert!(cache.refresh(&items));
         assert!(cache.glance().is_none());
+    }
+    #[test]
+    fn dashboard_activity_and_lifecycle_refresh_without_checklist_change() {
+        let mut cache = TaskGlanceCache::default();
+        let mut items = vec![
+            plan(&[("A", "completed")]),
+            json!({"type":"agentMessage","text":"First observed activity"}),
+        ];
+        assert!(cache.refresh(&items));
+        assert!(cache.refresh_dashboard(&items, Status::Working));
+        let first = cache.timeline();
+        items.push(json!({"type":"agentMessage","text":"New activity after the plan completed"}));
+        assert!(!cache.refresh(&items));
+        assert!(cache.refresh_dashboard(&items, Status::Working));
+        assert_eq!(cache.timeline().list.as_ref().unwrap().done(), 1);
+        assert_eq!(
+            cache.timeline().activity.last().unwrap().text,
+            "New activity after the plan completed"
+        );
+        assert!(!std::sync::Arc::ptr_eq(&first, &cache.timeline()));
+        let current = cache.timeline();
+        items.push(json!({"type":"reasoning","text":"not displayed"}));
+        assert!(!cache.refresh_dashboard(&items, Status::Working));
+        assert!(std::sync::Arc::ptr_eq(&current, &cache.timeline()));
+        assert!(cache.refresh_dashboard(&items, Status::Waiting));
+        assert!(!cache.refresh_dashboard(&items, Status::Waiting));
+        let mut no_plan = TaskGlanceCache::default();
+        no_plan.refresh(&items[1..]);
+        assert!(no_plan.refresh_dashboard(&items[1..], Status::Working));
+        assert!(no_plan.timeline().list.is_none());
+        assert!(!no_plan.timeline().activity.is_empty());
+    }
+    #[test]
+    fn dashboard_tool_completion_refreshes_shimmer_fact_without_text_change() {
+        let mut cache = TaskGlanceCache::default();
+        let mut items = vec![
+            json!({"type":"commandExecution","command":"observe progress","status":"inProgress"}),
+        ];
+        assert!(cache.refresh_dashboard(&items, Status::Working));
+        assert_eq!(cache.timeline().activity[0].observed_active, Some(true));
+        items[0]["status"] = json!("completed");
+        assert!(!cache.refresh(&items));
+        assert!(cache.refresh_dashboard(&items, Status::Working));
+        assert_eq!(cache.timeline().activity[0].observed_active, Some(false));
+        assert_eq!(cache.timeline().activity[0].text, "observe progress");
     }
 }

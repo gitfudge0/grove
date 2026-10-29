@@ -1165,7 +1165,8 @@ impl CodexView {
         });
         let card_focus = cx.focus_handle();
         let mut subscriptions = vec![
-            cx.observe(&session, |this, _, cx| {
+            cx.observe_in(&session, window, |this, _, window, cx| {
+                this.flush_dashboard_submission(window, cx);
                 this.sync_native_plans(cx);
                 if this.menu.is_some() && !this.composer_menu_valid(cx) {
                     this.close_menu(cx);
@@ -3018,12 +3019,23 @@ impl CodexView {
             .update(cx, |input, cx| input.set_auto_grow(2, 10, cx));
     }
 
-    pub(crate) fn launch_dashboard(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn launch_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.dashboard_tray = None;
         self.input
             .update(cx, |input, cx| input.set_auto_grow(3, 10, cx));
         self.dashboard_pending = true;
+        self.flush_dashboard_submission(window, cx);
         cx.notify();
+    }
+    fn flush_dashboard_submission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dashboard_pending
+            && (self.session.read(cx).state.saved.provider == codex::Provider::Claude
+                || self.session.read(cx).state.saved.thread_id.is_some())
+            && self.session.read(cx).state.status == codex::Status::Idle
+        {
+            self.dashboard_pending = false;
+            self.submit(window, cx);
+        }
     }
     fn retry_dashboard_catalog(&mut self, cx: &mut Context<Self>) {
         if self.dashboard_tray.is_none() || !self.session.read(cx).is_deferred() {
@@ -3196,14 +3208,7 @@ impl Render for CodexView {
                 self.selection_root_observed = true;
             }
         }
-        if self.dashboard_pending
-            && (self.session.read(cx).state.saved.provider == codex::Provider::Claude
-                || self.session.read(cx).state.saved.thread_id.is_some())
-            && self.session.read(cx).state.status == codex::Status::Idle
-        {
-            self.dashboard_pending = false;
-            self.submit(window, cx);
-        }
+        self.flush_dashboard_submission(window, cx);
         let source = self.input.read(cx).value().to_string();
         let generation = grove_core::theme::generation();
         if self
@@ -12651,6 +12656,116 @@ mod tests {
                 .size_full()
                 .on_key_down(super::super::shell::traverse_unhandled_tab)
                 .child(self.0.clone())
+        }
+    }
+
+    struct UnmountedDashboardHost;
+    impl Render for UnmountedDashboardHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().child("Dashboard remains visible")
+        }
+    }
+    #[gpui::test]
+    fn dashboard_pending_submit_dispatches_once_when_unmounted_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|cx| {
+                gpui_component::init(cx);
+                cx.set_global(crate::settings::SettingsState::new(
+                    grove_core::storage::Store::default(),
+                ));
+            });
+            let (handle, actions) = Handle::channel();
+            let (_updates, receive) = mpsc::channel();
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.saved.thread_id = None;
+            state.status = Status::Starting;
+            state.saved.draft = "Launch from the unmounted Dashboard".into();
+            let image="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jM1sAAAAASUVORK5CYII=".to_string();
+            state.saved.draft_images = vec![image.clone()];
+            let reference = codex::ReferenceDraft {
+                id: "quoted-source".into(),
+                thread_id: Some("source".into()),
+                sources: Vec::new(),
+                text: "Keep the quoted context".into(),
+            };
+            state.saved.draft_reference = Some(reference.clone());
+            let mut hidden = None;
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let session = cx.new(|cx| {
+                    CodexSession::from_connection(
+                        state,
+                        Connection {
+                            handle,
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                hidden = Some(cx.new(|cx| CodexView::new(session, window, cx)));
+                let host = cx.new(|_| UnmountedDashboardHost);
+                gpui_component::Root::new(host, window, cx).bordered(false)
+            });
+            let hidden = hidden.unwrap();
+            cx.update(|window, cx| hidden.update(cx, |view, cx| view.launch_dashboard(window, cx)));
+            assert!(
+                !actions
+                    .try_iter()
+                    .any(|action| matches!(action, Action::Submit { .. })),
+                "not ready must not send"
+            );
+            cx.update(|_, cx| {
+                let session = hidden.read(cx).session.clone();
+                session.update(cx, |session, cx| {
+                    session.state.status = Status::Idle;
+                    if provider == codex::Provider::Codex {
+                        session.state.saved.thread_id = Some("ready-thread".into());
+                    }
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
+            let dispatched = actions.try_iter().collect::<Vec<_>>();
+            let submits = dispatched
+                .iter()
+                .filter_map(|action| match action {
+                    Action::Submit { text, images, .. } => Some((text, images)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                submits.len(),
+                1,
+                "{provider:?} unmounted readiness must send exactly once"
+            );
+            assert!(submits[0].0.contains("Launch from the unmounted Dashboard"));
+            assert!(submits[0].0.contains("Keep the quoted context"));
+            assert_eq!(submits[0].1, &vec![image]);
+            hidden.read_with(cx, |view, cx| {
+                assert!(view.reference.as_ref() == Some(&reference));
+                assert_eq!(view.images.len(), 1);
+                assert!(view
+                    .input
+                    .read(cx)
+                    .value()
+                    .contains("Launch from the unmounted Dashboard"));
+                assert!(!view.dashboard_pending);
+            });
+            for _ in 0..3 {
+                cx.update(|_, cx| {
+                    let session = hidden.read(cx).session.clone();
+                    session.update(cx, |_, cx| cx.notify());
+                });
+                cx.run_until_parked();
+            }
+            assert!(
+                !actions
+                    .try_iter()
+                    .any(|action| matches!(action, Action::Submit { .. })),
+                "later readiness notifications cannot duplicate the submit"
+            );
         }
     }
     fn fixture(
