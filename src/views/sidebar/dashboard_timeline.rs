@@ -218,7 +218,6 @@ impl DashboardTimelines {
     }
     pub(super) fn toggle(&mut self, key: Scope) {
         if !self.opened.remove(&key) {
-            self.opened.retain(|(workspace, _)| *workspace != key.0);
             self.opened.insert(key);
         }
     }
@@ -1373,14 +1372,12 @@ mod tests {
         state.toggle((1, second));
         state.reveals.insert((1, second), TimelineReveal::default());
         assert!(!state.is_open(3, first));
-        assert!(
-            !state.is_open(1, first),
-            "opening another session closes the prior session in that workspace"
-        );
+        assert!(state.is_open(1, first));
         assert!(state.is_open(1, second));
         assert!(state.is_open(2, first));
         state.toggle((1, second));
         assert!(!state.is_open(1, second));
+        assert!(state.is_open(1, first));
         state.retain(&HashSet::from([first]), &HashSet::from([1, 2]));
         assert!(!state.is_open(1, second));
         assert!(state.reveals.is_empty());
