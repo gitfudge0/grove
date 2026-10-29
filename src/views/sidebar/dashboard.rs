@@ -1327,6 +1327,27 @@ mod tests {
         assert!(composer.top() >= summary.bottom());
         assert!(composer.size.width > gpui::px(100.));
         assert!(composer.top() - summary.bottom() < gpui::px(100.));
+
+        // A workspace switch lands on the actual Dashboard even from grid mode.
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.toggle_grid(window, cx);
+            });
+            let store = &mut cx.global_mut::<SettingsState>().store;
+            store.workspaces.create("Other workspace").unwrap();
+            store.assign_project_to_active_workspace(&path);
+            sidebar.update(cx, |sidebar, cx| sidebar.sync(window, cx));
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert_eq!(sidebar.read(cx).mode, ViewMode::Grid);
+            assert!(sidebar.read(cx).dashboard_open);
+            assert_eq!(sidebar.read(cx).runtime.read(cx).registry.read(cx).len(), 0);
+        });
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        assert!(cx.debug_bounds("codex-composer").is_some());
+        assert!(cx.debug_bounds("dashboard-destination").is_some());
     }
 
     #[gpui::test]

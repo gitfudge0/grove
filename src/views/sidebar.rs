@@ -1102,11 +1102,6 @@ impl Sidebar {
                 };
             }
         }
-        if show_dashboard_on_startup {
-            self.initial_selection_pending = false;
-            self.pending_canvas_focus = None;
-            self.open_dashboard(window, cx);
-        }
         if switched {
             self.runtime.read(cx).state.clone().update(cx, |state, cx| {
                 state.clear_canvas_selection();
@@ -1132,6 +1127,12 @@ impl Sidebar {
                 self.pending_grid_workspace_focus = self.pending_canvas_focus;
             }
             cx.notify();
+        }
+        if show_dashboard_on_startup || switched {
+            self.initial_selection_pending = false;
+            self.pending_canvas_focus = None;
+            self.pending_grid_workspace_focus = None;
+            self.open_dashboard(window, cx);
         }
         let checked_indices = [
             match &self.selection {
@@ -1286,6 +1287,10 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         self.sync(window, cx);
+        if self.dashboard_open {
+            self.open_dashboard(window, cx);
+            return;
+        }
         if self.mode != ViewMode::Grid || self.is_zen() {
             return;
         }
@@ -6292,6 +6297,9 @@ mod tests {
             cx.global_mut::<SettingsState>().store.workspaces.select(2);
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.sync(window, cx);
+                assert!(sidebar.dashboard_open);
+                assert!(sidebar.pending_canvas_focus.is_none());
+                assert!(sidebar.pending_grid_workspace_focus.is_none());
                 assert_eq!(sidebar.mode, sidebar_mode);
                 assert_eq!(sidebar.last_mode, sidebar_mode);
                 assert_eq!(sidebar.selection, Some(Selection::Project(1)));
@@ -6306,6 +6314,9 @@ mod tests {
             cx.global_mut::<SettingsState>().store.workspaces.select(3);
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.sync(window, cx);
+                assert!(sidebar.dashboard_open);
+                assert!(sidebar.pending_canvas_focus.is_none());
+                assert!(sidebar.pending_grid_workspace_focus.is_none());
                 assert_eq!(sidebar.mode, ViewMode::Grid);
                 assert_eq!(sidebar.last_mode, sidebar_mode);
                 sidebar.toggle_sidebar(window, cx);
@@ -6320,6 +6331,9 @@ mod tests {
             cx.global_mut::<SettingsState>().store.workspaces.select(1);
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.sync(window, cx);
+                assert!(sidebar.dashboard_open);
+                assert!(sidebar.pending_canvas_focus.is_none());
+                assert!(sidebar.pending_grid_workspace_focus.is_none());
                 assert_eq!(sidebar.mode, ViewMode::Grid);
                 // Grid selects a canvas session; this fixture has no sessions.
                 assert_eq!(sidebar.selection, None);
@@ -6328,11 +6342,17 @@ mod tests {
                 assert!(sidebar.is_collapsed(cx));
                 sidebar.toggle_grid(window, cx);
                 assert_eq!(sidebar.mode, sidebar_mode);
+                sidebar.select(Selection::Project(0), cx);
+                sidebar.sync(window, cx);
+                assert!(!sidebar.dashboard_open);
             });
             // Revisiting C must honor the latest explicit exit from grid.
             cx.global_mut::<SettingsState>().store.workspaces.select(3);
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.sync(window, cx);
+                assert!(sidebar.dashboard_open);
+                assert!(sidebar.pending_canvas_focus.is_none());
+                assert!(sidebar.pending_grid_workspace_focus.is_none());
                 assert_eq!(sidebar.mode, sidebar_mode);
                 assert_eq!(sidebar.last_mode, sidebar_mode);
                 assert_eq!(sidebar.selection, Some(Selection::Project(2)));
@@ -6342,6 +6362,9 @@ mod tests {
             cx.global_mut::<SettingsState>().store.workspaces.select(2);
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.sync(window, cx);
+                assert!(sidebar.dashboard_open);
+                assert!(sidebar.pending_canvas_focus.is_none());
+                assert!(sidebar.pending_grid_workspace_focus.is_none());
                 assert_eq!(sidebar.mode, sidebar_mode);
                 assert_eq!(sidebar.selection, Some(Selection::Project(1)));
                 assert_eq!(sidebar.scroll.offset().y, gpui::px(-80.0));
@@ -11870,7 +11893,9 @@ for line in sys.stdin:
     }
 
     #[gpui::test]
-    fn workspace_restoration_focuses_selected_cached_terminal(cx: &mut gpui::TestAppContext) {
+    fn workspace_restoration_lands_on_dashboard_and_retains_cached_terminal(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let paths = ["/grove-focus-one", "/grove-focus-two"];
         cx.update(|cx| {
             gpui_component::init(cx);
@@ -11971,10 +11996,22 @@ for line in sys.stdin:
             let sidebar = sidebar.read(cx);
             let second = sidebar.runtime.read(cx).registry.read(cx).all()[1].id;
             assert_eq!(sidebar.selection, Some(Selection::Session(second)));
-            assert!(sidebar.terminal_views[&second]
+            assert!(sidebar.dashboard_open);
+            assert!(sidebar
+                .dashboard
+                .as_ref()
+                .unwrap()
+                .view
                 .focus_handle(cx)
                 .is_focused(window));
         });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let second = sidebar.runtime.read(cx).registry.read(cx).all()[1].id;
+                sidebar.select_session_id(second, window, cx);
+            });
+        });
+        draw(cx);
         cx.update(|window, cx| {
             let picker = sidebar.read(cx).workspace_selector.clone().unwrap();
             picker.focus_handle(cx).focus(window, cx);
@@ -11985,7 +12022,15 @@ for line in sys.stdin:
             let sidebar = sidebar.read(cx);
             let first = sidebar.runtime.read(cx).registry.read(cx).all()[0].id;
             assert_eq!(sidebar.selection, Some(Selection::Session(first)));
-            assert!(sidebar.terminal_views[&first]
+            assert!(sidebar.dashboard_open);
+            assert!(sidebar
+                .dashboard
+                .as_ref()
+                .unwrap()
+                .view
+                .focus_handle(cx)
+                .is_focused(window));
+            assert!(!sidebar.terminal_views[&first]
                 .focus_handle(cx)
                 .is_focused(window));
         });

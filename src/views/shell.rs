@@ -3673,7 +3673,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn grid_workspace_switch_focuses_first_destination_tile(cx: &mut gpui::TestAppContext) {
+    fn grid_workspace_switch_lands_on_dashboard(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
         let destination_path = "/grove-shell-grid-destination".to_string();
@@ -3737,6 +3737,9 @@ mod tests {
             })
         });
         cx.update(|window, cx| {
+            shell.read(cx).sidebar.clone().update(cx, |sidebar, cx| {
+                sidebar.select_session_id(prior, window, cx);
+            });
             let focus = shell.read(cx).focus.clone();
             focus.focus(window, cx);
             window.dispatch_action(Box::new(k::ToggleGrid), cx);
@@ -3757,7 +3760,7 @@ mod tests {
         draw(cx);
         cx.simulate_keystrokes("enter");
         draw(cx);
-        let first_focus = cx.update(|window, cx| {
+        cx.update(|window, cx| {
             let sidebar = shell.read(cx).sidebar.clone();
             let sidebar = sidebar.read(cx);
             assert!(sidebar.is_grid());
@@ -3765,13 +3768,10 @@ mod tests {
                 sidebar.active_canvas_sessions(cx),
                 vec![(first, false), (second, false)]
             );
-            let first_focus = sidebar
-                .canvas_terminal_focus(first, false, cx)
-                .expect("first destination tile");
-            assert!(first_focus.is_focused(window));
             assert!(!prior_focus.is_focused(window));
-            first_focus
         });
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        assert!(cx.debug_bounds("codex-composer").is_some());
         cx.update(|window, cx| window.dispatch_action(Box::new(k::SwitchSession), cx));
         draw(cx);
         cx.simulate_input("Grove");
@@ -3793,12 +3793,8 @@ mod tests {
         draw(cx);
         cx.simulate_keystrokes("enter");
         draw(cx);
-        cx.update(|window, _| {
-            assert!(
-                first_focus.is_focused(window),
-                "mounted first tile must regain focus"
-            );
-        });
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        assert!(cx.debug_bounds("codex-composer").is_some());
         cx.update(|window, cx| {
             let focus = shell.read(cx).focus.clone();
             focus.focus(window, cx);
@@ -3809,11 +3805,10 @@ mod tests {
         });
         draw(cx);
         cx.update(|window, _| {
-            assert!(
-                prior_focus.is_focused(window),
-                "Grid focus should also follow workspace changes outside the picker"
-            );
+            assert!(!prior_focus.is_focused(window));
         });
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        assert!(cx.debug_bounds("codex-composer").is_some());
     }
 
     #[gpui::test]
