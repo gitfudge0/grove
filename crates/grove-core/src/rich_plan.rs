@@ -58,6 +58,9 @@ pub struct PlanReference {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlanRevision {
+    /// Actor-owned provenance for the exact approval payload; never authored plan content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_digest: Option<String>,
     pub message_id: String,
     pub source: String,
     pub document: PlanDocument,
@@ -470,6 +473,7 @@ impl PlanStore {
             }
             self.remember_reference(message_id, source, &doc.plan_id, &doc.revision_id);
             self.revisions.push(PlanRevision {
+                approval_digest: None,
                 message_id: message_id.into(),
                 source: source.into(),
                 document: doc,
@@ -874,7 +878,33 @@ fn markdown_links(text: &str) -> Vec<String> {
     links
 }
 
+fn approval_digest(text: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
+    let mut encoded = String::with_capacity(digest.as_ref().len() * 2);
+    for byte in digest.as_ref() {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    encoded
+}
+
 impl PlanStore {
+    /// Resolve a receipt only from locally journaled approval provenance and the exact payload.
+    /// Older saved sessions have no digest, so use their locked canonical approval instead.
+    pub fn approval_for_payload(&self, text: &str) -> Option<&PlanRevision> {
+        let digest = approval_digest(text);
+        self.revisions.iter().find(|revision| {
+            if let Some(held) = &revision.approval_digest {
+                held == &digest
+            } else {
+                matches!(
+                    revision.review.approval,
+                    ResponseDelivery::Queued { .. }
+                        | ResponseDelivery::Sent { .. }
+                        | ResponseDelivery::Uncertain { .. }
+                ) && revision.approval_text().is_ok_and(|held| held == text)
+            }
+        })
+    }
     pub fn is_delivery(&self, id: u64) -> bool {
         self.revisions.iter().any(|r| [&r.review.delivery, &r.review.approval].iter().any(|delivery| matches!(delivery,ResponseDelivery::Queued{id:held}|ResponseDelivery::Sent{id:held}|ResponseDelivery::Uncertain{id:held} if *held==id)))
     }
@@ -957,6 +987,7 @@ impl PlanStore {
         let mut bytes = [0; 8];
         bytes.copy_from_slice(&digest.as_ref()[..8]);
         let id = u64::from_be_bytes(bytes) | (1 << 63);
+        r.approval_digest = Some(approval_digest(&text));
         r.review.approval = ResponseDelivery::Queued { id };
         Ok(Some((id, text)))
     }
@@ -1206,6 +1237,7 @@ mod tests {
     fn approval_store() -> PlanStore {
         let mut store = PlanStore::default();
         store.revisions.push(PlanRevision {
+            approval_digest: None,
             message_id: "m".into(),
             source: "plan.grove-plan.json".into(),
             document: document(),
@@ -1244,6 +1276,44 @@ mod tests {
             store.revisions[0].review.approval,
             ResponseDelivery::Failed { .. }
         ));
+    }
+    #[test]
+    fn approval_receipt_requires_journaled_exact_payload_and_survives_restore() {
+        let mut store = approval_store();
+        store.revisions[0]
+            .review
+            .own_answers
+            .insert("choice".into(), "Use inline".into());
+        let canonical = store.revisions[0].approval_text().unwrap();
+        assert!(store.approval_for_payload(&canonical).is_none());
+        let (id, text) = store.prepare_approval("plan", "r1").unwrap().unwrap();
+        assert_eq!(
+            text, canonical,
+            "receipt provenance must not change the provider payload"
+        );
+        assert_eq!(
+            store
+                .approval_for_payload(&text)
+                .unwrap()
+                .document
+                .revision_id,
+            "r1"
+        );
+        assert!(store
+            .approval_for_payload("# Explicit plan approval: Review me")
+            .is_none());
+        assert!(store
+            .approval_for_payload(&(text.clone() + " altered"))
+            .is_none());
+        store.confirm_delivery(id);
+        let mut restored: PlanStore =
+            serde_json::from_slice(&serde_json::to_vec(&store).unwrap()).unwrap();
+        assert!(restored.approval_for_payload(&text).is_some());
+        // Historical sessions predate digest provenance but retain locked approval journals.
+        restored.revisions[0].approval_digest = None;
+        assert!(restored.approval_for_payload(&text).is_some());
+        restored.revisions[0].review.approval = ResponseDelivery::Draft;
+        assert!(restored.approval_for_payload(&text).is_none());
     }
     #[test]
     fn approval_size_failure_never_journals_and_review_cannot_forge_approval() {
@@ -1315,6 +1385,7 @@ mod tests {
         assert!(old.summary.is_none());
         assert!(old.claims[0].detail.is_none());
         let original = PlanRevision {
+            approval_digest: None,
             message_id: "m".into(),
             source: "plan.grove-plan.json".into(),
             document: old.clone(),

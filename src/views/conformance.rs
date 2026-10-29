@@ -732,6 +732,6 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(!preview_return.contains("session.send("));
     assert!(transcript.contains("if this.preview_child.is_some() {\n                    return;"));
     assert!(transcript.contains(
-        "if self.preview_child.is_none() {\n                    actions = actions.child("
+        "if self.preview_child.is_none() && approval.is_none() {\n                    actions = actions.child(\n                        header_control(\"codex-edit-message\", \"Edit sent message\")"
     ));
 }

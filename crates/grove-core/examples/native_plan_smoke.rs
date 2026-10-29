@@ -215,11 +215,17 @@ fn main() -> Result<(), String> {
         .iter()
         .filter(|item| {
             item["type"] == "userMessage"
-                && codex::item_text(item).starts_with("# Explicit plan approval:")
+                && approved
+                    .saved
+                    .rich_plans
+                    .approval_for_payload(&codex::item_text(item))
+                    .is_some()
         })
         .count();
     if approvals != 1 {
-        return Err(format!("Expected one explicit approval, saw {approvals}"));
+        return Err(format!(
+            "Expected one journal-backed approval receipt, saw {approvals}"
+        ));
     }
     if fs_err::read_to_string(cwd.join("approval-result.txt")).map_err(|e| e.to_string())?
         != "APPROVAL_SMOKE_OK\n"

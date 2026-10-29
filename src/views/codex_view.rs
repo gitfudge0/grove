@@ -2079,15 +2079,21 @@ impl CodexView {
                 let locked = exiting || !state.queue_editable(id) || self.queue_editor.is_some();
                 let steer = !locked && active_turn_redirect_available(state);
                 let selected = self.queue_selected == Some(id);
-                let label = if prompt.images.is_empty() {
-                    collapsed_draft_preview(&reference_prompt_copy(&prompt.text))
-                } else {
-                    format!(
-                        "{} · {} images",
-                        collapsed_draft_preview(&reference_prompt_copy(&prompt.text)),
-                        prompt.images.len()
-                    )
-                };
+                let label =
+                    if let Some(plan) = state.saved.rich_plans.approval_for_payload(&prompt.text) {
+                        format!(
+                            "Plan approval · {} · Revision {}",
+                            plan.document.title, plan.document.revision_id
+                        )
+                    } else if prompt.images.is_empty() {
+                        collapsed_draft_preview(&reference_prompt_copy(&prompt.text))
+                    } else {
+                        format!(
+                            "{} · {} images",
+                            collapsed_draft_preview(&reference_prompt_copy(&prompt.text)),
+                            prompt.images.len()
+                        )
+                    };
                 let number = state
                     .queued_prompts
                     .iter()
@@ -4094,6 +4100,9 @@ impl Render for CodexView {
                 && state.saved.provider == codex::Provider::Claude
                 && item["tool"].is_string();
             let text = codex::item_text(item);
+            let approval = (kind == "userMessage")
+                .then(|| state.saved.rich_plans.approval_for_payload(&text))
+                .flatten();
             let role = match kind {
                 "userMessage" => "You",
                 "agentMessage" => provider,
@@ -4265,7 +4274,100 @@ impl Render for CodexView {
                 let html_extensions = self
                     .html
                     .update(cx, |html, cx| html.extensions(&html_message, cx));
-                if let Some(editor) = self.message_editor.as_ref().filter(|editor| {
+                if let Some(approval) = approval {
+                    let plan_key = (
+                        approval.document.plan_id.clone(),
+                        approval.document.revision_id.clone(),
+                    );
+                    let mut receipt = div()
+                        .debug_selector(move || format!("plan-approval-receipt-{index}"))
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(format!(
+                                    "Plan approved · Revision {}",
+                                    approval.document.revision_id
+                                )),
+                        )
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_TITLE))
+                                .child(approval.document.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_BODY))
+                                .child("Implementation authorized with your selected decisions."),
+                        );
+                    let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_LG));
+                    if let Some(plan) = self.native_plans.get(&plan_key) {
+                        let plan = plan.clone();
+                        actions = actions.child(
+                            transcript_action(
+                                "approval-view-plan",
+                                "View approved plan",
+                                false,
+                                window,
+                                cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/zen.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .debug_selector(move || format!("plan-approval-open-{index}"))
+                            .on_click(move |_, window, cx| {
+                                plan.update(cx, |plan, cx| plan.reveal(window, cx));
+                            }),
+                        );
+                    }
+                    let detail_id = format!("approval-details-{id}");
+                    let details_open = self.expanded.contains(&detail_id);
+                    actions =
+                        actions.child(
+                            transcript_action(
+                                "approval-view-details",
+                                if details_open {
+                                    "Hide approval details"
+                                } else {
+                                    "View approval details"
+                                },
+                                false,
+                                window,
+                                cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path(if details_open {
+                                        "icons/chev-down.svg"
+                                    } else {
+                                        "icons/chev-right.svg"
+                                    })
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .debug_selector(move || format!("plan-approval-details-toggle-{index}"))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| this.toggle_expansion(&detail_id, cx),
+                            )),
+                        );
+                    receipt = receipt.child(actions);
+                    if details_open {
+                        receipt = receipt.child(
+                            div()
+                                .debug_selector(move || format!("plan-approval-details-{index}"))
+                                .child(
+                                    TextView::markdown(("approval-payload", index), text.clone())
+                                        .style(markdown_style(window))
+                                        .selectable(true),
+                                ),
+                        );
+                    }
+                    row = row.child(receipt);
+                } else if let Some(editor) = self.message_editor.as_ref().filter(|editor| {
                     editor.index == index && editor.message_id == item["id"].as_str().unwrap_or("")
                 }) {
                     row = row.child(self.render_inline_editor(editor, window, cx));
@@ -4669,7 +4771,7 @@ impl Render for CodexView {
                     );
                 }
                 let unavailable = state.editable_message(index).err();
-                if self.preview_child.is_none() {
+                if self.preview_child.is_none() && approval.is_none() {
                     actions = actions.child(
                         header_control("codex-edit-message", "Edit sent message")
                             .aria_description(
@@ -13307,6 +13409,157 @@ mod tests {
     }
 
     /// Opt-in real text shaping / Metal snapshots, independent of installed Grove.
+    fn approval_receipt_snapshot(provider: codex::Provider) -> Snapshot {
+        let mut state = snapshot();
+        state.saved.provider = provider;
+        state.saved.rich_plans = serde_json::from_value(json!({"revisions":[{
+            "message_id":"plan-message", "source":"plan.grove-plan.json", "assets":[],
+            "document":{"schema_version":1,"plan_id":"receipt-plan","revision_id":"reviewed-r1",
+                "title":"Deterministic Grove Reference Translation with a longer approved plan title",
+                "claims":[{"id":"outcome","text":"Preserve the exact approved document and decision answers."}]}
+        }]})).unwrap();
+        let (id, payload) = state
+            .saved
+            .rich_plans
+            .prepare_approval("receipt-plan", "reviewed-r1")
+            .unwrap()
+            .unwrap();
+        state.saved.rich_plans.confirm_delivery(id);
+        state.saved.items = vec![
+            json!({"id":"approval-message","type":"userMessage","content":[{"type":"text","text":payload}]}),
+        ];
+        // Exercise the persisted journal rather than relying on ephemeral UI state.
+        state.saved = serde_json::from_slice(&serde_json::to_vec(&state.saved).unwrap()).unwrap();
+        state
+    }
+
+    #[gpui::test]
+    fn plan_approval_receipt_discloses_payload_and_opens_exact_revision(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.expanded.clear();
+                    view.session.update(cx, |session, cx| {
+                        session.state = approval_receipt_snapshot(provider).into();
+                        cx.notify();
+                    });
+                });
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("plan-approval-receipt-0").is_some());
+            assert!(cx.debug_bounds("plan-approval-details-0").is_none());
+            assert!(cx.debug_bounds("codex-message-body-0").is_none());
+            let payload = view.read_with(cx, |view, cx| {
+                codex::item_text(&view.session.read(cx).state.saved.items[0])
+            });
+            let row = cx.debug_bounds("codex-message-row-0").unwrap();
+            cx.simulate_mouse_move(row.center(), None, gpui::Modifiers::default());
+            draw(cx);
+            let copy = cx.debug_bounds("codex-copy").unwrap();
+            cx.simulate_click(copy.center(), gpui::Modifiers::default());
+            assert_eq!(
+                cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some(payload)
+            );
+            let toggle = cx.debug_bounds("plan-approval-details-toggle-0").unwrap();
+            cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(cx.debug_bounds("plan-approval-details-0").is_some());
+            let toggle = cx.debug_bounds("plan-approval-details-toggle-0").unwrap();
+            cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(cx.debug_bounds("plan-approval-details-0").is_none());
+            let open = cx.debug_bounds("plan-approval-open-0").unwrap();
+            cx.simulate_click(open.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(view.read_with(cx, |view, cx| view.native_plans
+                [&("receipt-plan".into(), "reviewed-r1".into())]
+                .read(cx)
+                .is_expanded(cx)));
+            cx.update(|_, cx| super::super::native_plan::set_context(None, false, cx));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn plan_approval_receipt_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            c::sync_component_theme(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_reduce_motion(true);
+        });
+        for (width, rem) in [(1024.0, 16.0), (400.0, 16.0), (400.0, 20.0)] {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let mut captured = None;
+                let window = cx
+                    .open_window(
+                        gpui::size(gpui::px(width), gpui::px(900.0)),
+                        |window, cx| {
+                            gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                            let session = cx.new(|cx| {
+                                CodexSession::from_connection(
+                                    approval_receipt_snapshot(provider),
+                                    Connection {
+                                        handle,
+                                        updates: receive.into(),
+                                    },
+                                    cx,
+                                )
+                            });
+                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                            captured = Some(chat.clone());
+                            cx.new(|cx| {
+                                gpui_component::Root::new(chat, window, cx)
+                                    .bordered(false)
+                                    .bg(c::BG())
+                            })
+                        },
+                    )
+                    .unwrap();
+                cx.run_until_parked();
+                for details in [false, true] {
+                    cx.update_window(window.into(), |_, window, cx| {
+                        captured.as_ref().unwrap().update(cx, |view, cx| {
+                            if details {
+                                view.expanded
+                                    .insert("approval-details-approval-message".into());
+                            }
+                            cx.notify();
+                        });
+                        let _ = window.draw(cx);
+                    })
+                    .unwrap();
+                    cx.run_until_parked();
+                    let path = format!(
+                        "/tmp/grove-plan-approval-{provider:?}-{width:.0}-{rem:.0}-{}.png",
+                        if details { "details" } else { "receipt" }
+                    );
+                    cx.capture_screenshot(window.into())
+                        .unwrap()
+                        .save(&path)
+                        .unwrap();
+                    eprintln!("Native plan approval receipt: {path}");
+                }
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires macOS Metal renderer; writes fixture screenshots to /tmp"]
     #[cfg(target_os = "macos")]
