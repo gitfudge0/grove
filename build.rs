@@ -1,4 +1,23 @@
 fn main() {
+    // Reference tooling compiles each validated generated document independently.
+    // No generated document is interpreted or loaded by the production app.
+    println!("cargo:rustc-check-cfg=cfg(grove_reference_capture)");
+    println!("cargo:rerun-if-env-changed=GROVE_REFERENCE_GENERATED");
+    if let Some(path) = std::env::var_os("GROVE_REFERENCE_GENERATED") {
+        let path = std::path::PathBuf::from(path);
+        assert!(
+            path.is_absolute() && path.is_file(),
+            "reference generated source must be an existing absolute file path: {}",
+            path.display()
+        );
+        println!("cargo:rerun-if-changed={}", path.display());
+        println!(
+            "cargo:rustc-env=GROVE_REFERENCE_GENERATED={}",
+            path.display()
+        );
+        println!("cargo:rustc-cfg=grove_reference_capture");
+    }
+
     println!("cargo:rerun-if-changed=src/platform/inline_html.m");
     println!("cargo:rerun-if-changed=src/platform/inline_html_keyboard.inc");
     println!("cargo:rerun-if-changed=src/platform/inline_html_accessibility.inc");

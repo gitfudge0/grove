@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "design_system": "grove",
+  "contract_hash": "b063b39d3cc77ce9f7db963b8f8e17ffda65d8f51493e93e02645b2d094528b5",
+  "owners": {
+    "DESIGN.md": "4beba71165f83929427a46b7d5a04ffbbdfc1ab1364a12145ea80c1f15dea388",
+    "build.rs": "817461b07a7d2e32f2c18329cbbf2314cb70ca97ff7a44a7c7cafd9b00deca00",
+    "native-engine": "7ac8802fcee1339b49fe8b105d6a723c1f0c2df4b5b3e46079621d153de173e4",
+    "reference/compose": "6cfa0be21121b4329c704c7045523afe7c4cedaa42c05df04b4517912d237522",
+    "reference/contract": "bc2deb4ea0c954e273194d038ace9f237a5a4b2da055a0e23dccb3aedfac786b",
+    "reference/generate": "de581c807f193a786f63ad89dfc569b537791c8cbf7a8891bc2ac39869aba6fd",
+    "reference/generated-recipe": "a6dac5a47404adc4533634807868380c39aab1ff1a30446406dd546286e37be3",
+    "reference/html": "b09b5d1e4b81631cbc13b7e4040dffc084d48f84bd5a06f58146dba67fef10bf",
+    "reference/native": "75b37db223bece44d774017acbc248316811b296716a544a9be921dbfb4e6e73",
+    "reference/production-guard": "314c98ec9be6cdf3d29d5fc960d62d25207a5735bf35653412625638e14ebd6e",
+    "reference/runtime": "82b10db35ee73f5fab3aa3eae3dac63666ddfc605a27a0ca7a1a37af0099a283",
+    "reference/schema": "130bc7701ac1183dcc7646ae0864b430c39e68eea8143723732b715311e384fc",
+    "resolved/src/fonts.rs": "49c87ecbdab618efdc504c5032a97d99b1a04a7f31ceab423c2ed3c81f0a8815",
+    "resolved/src/theme.rs": "c2bae60d11f61135264c9afcc02fb898849a011cf923d17e3c4b2be5d12d8a70",
+    "resolved/src/views/components.rs": "7e6f730ed177f509c885415b460dac9455a9da2dea112d0641b258a56787c03f",
+    "resolved/src/views/tokens.rs": "26d9ffc0ad225335c8ca4a530017645733f5715a066974c074d31313b1684a12",
+    "rust-toolchain": "819ed8387d66fc0d1c5a49a089ed161192ae699e99881b0675779e50d1f01c81",
+    "src/fonts.rs": "a8819c94a459afc59dc58cee36b3e565c7fdbb539c0935da4c9d4529d1f3be50",
+    "src/icons.rs": "c808d0a08e173586b5f12f98468c70718f617132ad61e4e23f3b9219d4690c30",
+    "src/theme.rs": "bf49d00a71df1e2d7786f7fc40876e36b82d2f94be675902e38013223324b61a",
+    "src/views/components.rs": "bdc7eabda0f8bdb7e5a4a9c26f87375c6bbfdbfade120b0f62bebd5e7bcccdb4",
+    "src/views/tokens.rs": "40200cf82c59209ab34c7b75d7e8a30900a299ca288bc6f9108f9342fed5e7ca",
+    "vendor/button": "71e6aa53db3770a517871bd50f37c2ad9bffa8c834732cde798832456b725fe7",
+    "vendor/button_icon": "93f9bcc9cbfed390fd6f69f554f48536d01faed143ab924594c2feaac7b8b5e8",
+    "vendor/icon": "5eff4a7bf6e088c290f796da09511943a172d26b9851924e331a0a7adf1a671a",
+    "vendor/spinner": "2382b14913ad80f0493b03e92047b876fe80eabf2aa2182230eaa39273f0dfef",
+    "vendor/styled": "7dc2d4bef4bdbf980f18d40f1a1c3149e391771da8e86ceda97d4b028fdfde60",
+    "workspace-manifest": "3951e53509d675ff0de353054dacfe449c38f4af5d78b698a2f2de5263a15cc9"
+  },
+  "fixture": {
+    "viewport": {
+      "width": 420.0,
+      "height": 180.0
+    },
+    "theme": "grove-dark",
+    "rem": 16.0,
+    "scale": 2.0,
+    "locale": "en-US",
+    "motion": "reduced"
+  },
+  "actions": [
+    "run"
+  ],
+  "values": {
+    "run_label": "Run"
+  },
+  "root": {
+    "id": "pilot",
+    "kind": "column",
+    "layout": {
+      "width": "fill",
+      "gap": "space_lg",
+      "padding": "space_lg",
+      "text_policy": "single_line"
+    },
+    "state": "rest",
+    "text": null,
+    "text_binding": null,
+    "text_role": null,
+    "color": null,
+    "icon": null,
+    "action": null,
+    "children": [
+      {
+        "id": "row-rest",
+        "kind": "checkout_row",
+        "layout": {
+          "width": "fill",
+          "gap": "space_sm",
+          "padding": "space_2xl",
+          "text_policy": "truncate"
+        },
+        "state": "rest",
+        "text": "Build checkout",
+        "text_binding": null,
+        "text_role": "text_body",
+        "color": "foreground",
+        "icon": "folder",
+        "action": null,
+        "children": [
+          {
+            "id": "action-rest",
+            "kind": "dense_action",
+            "layout": {
+              "width": "auto",
+              "gap": "space_lg",
+              "padding": "space_lg",
+              "text_policy": "single_line"
+            },
+            "state": "rest",
+            "text": null,
+            "text_binding": "run_label",
+            "text_role": null,
+            "color": null,
+            "icon": "play",
+            "action": "run",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "row-disabled",
+        "kind": "checkout_row",
+        "layout": {
+          "width": "fill",
+          "gap": "space_sm",
+          "padding": "space_2xl",
+          "text_policy": "truncate"
+        },
+        "state": "rest",
+        "text": "A long checkout label that must yield to the fixed trailing action",
+        "text_binding": null,
+        "text_role": "text_body",
+        "color": "foreground",
+        "icon": "folder",
+        "action": null,
+        "children": [
+          {
+            "id": "action-disabled",
+            "kind": "dense_action",
+            "layout": {
+              "width": "auto",
+              "gap": "space_lg",
+              "padding": "space_lg",
+              "text_policy": "single_line"
+            },
+            "state": "disabled",
+            "text": null,
+            "text_binding": "run_label",
+            "text_role": null,
+            "color": null,
+            "icon": "play",
+            "action": "run",
+            "children": []
+          }
+        ]
+      },
+      {
+        "id": "row-loading",
+        "kind": "checkout_row",
+        "layout": {
+          "width": "fill",
+          "gap": "space_sm",
+          "padding": "space_2xl",
+          "text_policy": "truncate"
+        },
+        "state": "rest",
+        "text": "A long checkout label that must yield to the fixed trailing action",
+        "text_binding": null,
+        "text_role": "text_body",
+        "color": "foreground",
+        "icon": "folder",
+        "action": null,
+        "children": [
+          {
+            "id": "action-loading",
+            "kind": "dense_action",
+            "layout": {
+              "width": "auto",
+              "gap": "space_lg",
+              "padding": "space_lg",
+              "text_policy": "single_line"
+            },
+            "state": "loading",
+            "text": null,
+            "text_binding": "run_label",
+            "text_role": null,
+            "color": null,
+            "icon": "play",
+            "action": "run",
+            "children": []
+          }
+        ]
+      }
+    ]
+  }
+}

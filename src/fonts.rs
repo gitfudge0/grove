@@ -13,17 +13,75 @@ pub const FONT_SIZE: f32 = 12.5;
 pub const MONO_FAMILY: &str = "JetBrains Mono";
 pub const UI_FAMILY: &str = "DM Sans";
 
-const FONT_FILES: [&str; 10] = [
-    "fonts/JetBrainsMono-Regular.ttf",
-    "fonts/JetBrainsMono-Bold.ttf",
-    "fonts/JetBrainsMono-Medium.ttf",
-    "fonts/JetBrainsMono-SemiBold.ttf",
-    "fonts/JetBrainsMono-Italic.ttf",
-    "fonts/JetBrainsMono-BoldItalic.ttf",
-    "fonts/DMSans-Regular.ttf",
-    "fonts/DMSans-Medium.ttf",
-    "fonts/DMSans-SemiBold.ttf",
-    "fonts/DMSans-Bold.ttf",
+/// The registered font faces are also the reference renderer's face authority.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FontFace {
+    pub path: &'static str,
+    pub family: &'static str,
+    pub weight: u16,
+    pub style: &'static str,
+}
+pub(crate) const FONT_FACES: [FontFace; 10] = [
+    FontFace {
+        path: "fonts/JetBrainsMono-Regular.ttf",
+        family: MONO_FAMILY,
+        weight: 400,
+        style: "normal",
+    },
+    FontFace {
+        path: "fonts/JetBrainsMono-Bold.ttf",
+        family: MONO_FAMILY,
+        weight: 700,
+        style: "normal",
+    },
+    FontFace {
+        path: "fonts/JetBrainsMono-Medium.ttf",
+        family: MONO_FAMILY,
+        weight: 500,
+        style: "normal",
+    },
+    FontFace {
+        path: "fonts/JetBrainsMono-SemiBold.ttf",
+        family: MONO_FAMILY,
+        weight: 600,
+        style: "normal",
+    },
+    FontFace {
+        path: "fonts/JetBrainsMono-Italic.ttf",
+        family: MONO_FAMILY,
+        weight: 400,
+        style: "italic",
+    },
+    FontFace {
+        path: "fonts/JetBrainsMono-BoldItalic.ttf",
+        family: MONO_FAMILY,
+        weight: 700,
+        style: "italic",
+    },
+    FontFace {
+        path: "fonts/DMSans-Regular.ttf",
+        family: UI_FAMILY,
+        weight: 400,
+        style: "normal",
+    },
+    FontFace {
+        path: "fonts/DMSans-Medium.ttf",
+        family: UI_FAMILY,
+        weight: 500,
+        style: "normal",
+    },
+    FontFace {
+        path: "fonts/DMSans-SemiBold.ttf",
+        family: UI_FAMILY,
+        weight: 600,
+        style: "normal",
+    },
+    FontFace {
+        path: "fonts/DMSans-Bold.ttf",
+        family: UI_FAMILY,
+        weight: 700,
+        style: "normal",
+    },
 ];
 
 /// A genuinely wrong font/size is off by >= 0.3px per cell; float noise from shaping is ~5e-7.
@@ -67,12 +125,23 @@ impl std::fmt::Display for MetricError {
 
 /// Must run before the window opens, using the same `Assets` handed to `with_assets`.
 pub fn register(cx: &mut gpui::App) -> Result<(), MetricError> {
-    let mut bytes = Vec::with_capacity(FONT_FILES.len());
-    for path in FONT_FILES {
+    let mut bytes = Vec::with_capacity(FONT_FACES.len());
+    for face in FONT_FACES {
+        let path = face.path;
         match Assets.load(path) {
             Ok(Some(b)) => bytes.push(b),
-            Ok(None) => return Err(MetricError::Registration(format!("{path} not bundled"))),
-            Err(e) => return Err(MetricError::Registration(format!("{path}: {e}"))),
+            Ok(None) => {
+                return Err(MetricError::Registration(format!(
+                    "{path} ({} {} {}) not bundled",
+                    face.family, face.weight, face.style
+                )))
+            }
+            Err(e) => {
+                return Err(MetricError::Registration(format!(
+                    "{path} ({} {} {}): {e}",
+                    face.family, face.weight, face.style
+                )))
+            }
         }
     }
     cx.text_system()

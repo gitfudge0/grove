@@ -61,12 +61,11 @@ garbage-collectable and therefore not durable. A fork is outward-facing (a
 second repo to own) and unavailable to an offline build. Vendoring is the only
 option that is durable, offline and reviewable.
 
-## The tree is unmodified except for these manifest edits
+## Recorded changes to the upstream copy
 
-The Rust source under `ui/src`, `macros/src`, `assets/src`, the `build.rs`
-files, `ui/locales` and `assets/assets` are **byte-identical to the rev above**.
-Only the three `Cargo.toml` files were edited, as follows. **Any future edit to
-the vendored source must be appended to this list or it is invisible.**
+The copy starts from the rev above. Manifest edits and local source amendments
+are recorded below. **Any future edit to the vendored source must be appended
+to this list or it is invisible.**
 
 Applied to all three manifests:
 
@@ -189,3 +188,21 @@ Applied to `ui/src` (source, not manifests):
     earlier lines and glyphs, so a pasted 52K-char log line cost seconds per
     frame. A forward-only `PositionCursor` in `text/inline.rs` returns the same
     positions in amortized O(1); bounds and selections are unchanged.
+
+16. **Observe genuine button content for deterministic references.**
+    `Button::on_content_prepainted` exposes `ButtonContentMetrics`: actual
+    icon/label bounds, the label's `TextLayout`, resolved rounding/background
+    and icon asset identity. The observer reads the real vendor label, icon and
+    loading path; it does not replace them with reference-only children.
+    `ButtonIcon::source_path` supplies asset provenance, and `Icon::path_ref`
+    is available on every target for that read-only lookup. Existing disabled
+    and loading opacity values are named by `CUSTOM_DISABLED_OPACITY` and
+    `LOADING_OPACITY` so the native recipe and reference export use the same
+    factors. Without an observer, layout, paint, focus and activation retain
+    their existing behavior. Grove uses these hooks to inspect actual shaped
+    text and visible ellipsis, rather than predicting vendor internals; see
+    [the reference workflow](../../ui-references/README.md). Grove's shared
+    `DENSE_ACTION_RECIPE.loading_icon` owns the existing Working ring
+    (`status-working`) used by dense actions, including loading references.
+    This avoids the unavailable vendor Loader asset without a generated
+    factory override; the shared native recipe supplies the icon.

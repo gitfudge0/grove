@@ -171,6 +171,15 @@ impl ButtonVariant {
     }
 }
 
+/// Observed native recipe values; callbacks cannot change rendering.
+pub struct ButtonContentMetrics {
+    pub bounds: Vec<gpui::Bounds<Pixels>>,
+    pub label: Option<gpui::TextLayout>,
+    pub radius: Pixels,
+    pub background: Option<Hsla>,
+    pub icon_path: Option<SharedString>,
+}
+
 /// A Button element.
 #[derive(IntoElement)]
 pub struct Button {
@@ -199,6 +208,7 @@ pub struct Button {
     tooltip_builder: Option<Rc<dyn Fn(&mut Window, &mut App) -> gpui::AnyView>>,
     on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
     on_hover: Option<Rc<dyn Fn(&bool, &mut Window, &mut App)>>,
+    content_observer: Option<Rc<dyn Fn(ButtonContentMetrics, &mut Window, &mut App)>>,
     loading: bool,
     loading_icon: Option<Icon>,
 
@@ -213,6 +223,10 @@ impl From<Button> for AnyElement {
 }
 
 impl Button {
+    /// Native custom-variant state factors, also exported to paired references.
+    pub const CUSTOM_DISABLED_OPACITY: f32 = 0.5;
+    pub const LOADING_OPACITY: f32 = 0.8;
+
     /// Expose the expanded accessibility state for disclosure buttons.
     pub fn aria_expanded(mut self, expanded: bool) -> Self {
         self.base = self.base.aria_expanded(expanded);
@@ -224,6 +238,16 @@ impl Button {
         self.focus_handle = Some(focus);
         self
     }
+    /// Observe the real inner icon/label geometry without adding layout wrappers.
+    /// Used by paired rendering acceptance; absent observers change no behavior.
+    pub fn on_content_prepainted(
+        mut self,
+        observer: impl Fn(ButtonContentMetrics, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.content_observer = Some(Rc::new(observer));
+        self
+    }
+
     pub fn new(id: impl Into<ElementId>) -> Self {
         let id = id.into();
 
@@ -252,6 +276,7 @@ impl Button {
             tooltip_builder: None,
             on_click: None,
             on_hover: None,
+            content_observer: None,
             loading: false,
             compact: false,
             outline: false,
@@ -464,6 +489,11 @@ impl RenderOnce for Button {
             ButtonRounded::None => Pixels::ZERO,
         };
 
+        let observed_background=if self.loading && !self.disabled {normal_style.bg.opacity(Button::LOADING_OPACITY).as_solid()}
+            else if let Some(fill)=self.style.background.as_ref(){fill.color().and_then(|background|background.as_solid())}
+            else if self.disabled {style.disabled(self.outline,cx).bg.as_solid()}else{normal_style.bg.as_solid()};
+        let observed_icon_path=if self.loading {self.loading_icon.as_ref().map(|icon|icon.path_ref().clone())}
+            else {self.icon.as_ref().and_then(ButtonIcon::source_path)};
         self.base
             .role(if self.variant.is_link() {
                 Role::Link
@@ -605,7 +635,20 @@ impl RenderOnce for Button {
                 })
             })
             .child({
+                let mut label_layout = None;
+                let label = self.label.map(|label| {
+                    if self.content_observer.is_some() {
+                        let text = gpui::StyledText::new(label);
+                        label_layout = Some(text.layout().clone());
+                        text.into_any_element()
+                    } else {
+                        label.into_any_element()
+                    }
+                });
                 h_flex()
+                    .when_some(self.content_observer, |this, observer| {
+                        this.on_children_prepainted(move |bounds, window, cx| observer(ButtonContentMetrics{bounds,label:label_layout.clone(),radius:rounding,background:observed_background,icon_path:observed_icon_path.clone()}, window, cx))
+                    })
                     .id("label")
                     .size_full()
                     .items_center()
@@ -623,7 +666,7 @@ impl RenderOnce for Button {
                                 .with_size(icon_size),
                         )
                     })
-                    .when_some(self.label, |this, label| {
+                    .when_some(label, |this, label| {
                         this.child(div().flex_none().line_height(relative(1.)).child(label))
                     })
                     .children(self.children)
@@ -633,9 +676,9 @@ impl RenderOnce for Button {
                     })
             })
             .when(self.loading && !self.disabled, |this| {
-                this.bg(normal_style.bg.opacity(0.8))
-                    .border_color(normal_style.border.opacity(0.8))
-                    .text_color(normal_style.fg.opacity(0.8))
+                this.bg(normal_style.bg.opacity(Button::LOADING_OPACITY))
+                    .border_color(normal_style.border.opacity(Button::LOADING_OPACITY))
+                    .text_color(normal_style.fg.opacity(Button::LOADING_OPACITY))
             })
             .map(|this| {
                 if let Some(builder) = self.tooltip_builder {
@@ -1102,10 +1145,10 @@ impl ButtonVariant {
             Self::Success => cx.theme().tokens.button_success.background.opacity(0.15),
             Self::Info => cx.theme().tokens.button_info.background.opacity(0.15),
             Self::Secondary => cx.theme().tokens.button_secondary.background.opacity(1.5),
-            Self::Custom(style) => style.color.opacity(0.5).into(),
+            Self::Custom(style) => style.color.opacity(Button::CUSTOM_DISABLED_OPACITY).into(),
         };
         let fg = match self {
-            Self::Custom(style) => style.foreground.opacity(0.5),
+            Self::Custom(style) => style.foreground.opacity(Button::CUSTOM_DISABLED_OPACITY),
             _ => cx.theme().muted_foreground.opacity(0.5),
         };
         let (bg, border) = if outline {

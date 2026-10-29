@@ -45,6 +45,7 @@ mod terminal;
 #[allow(dead_code)]
 mod terminal_element;
 mod theme;
+pub mod ui_reference;
 mod views;
 // Preserved services have no feature controls while the shell is empty.
 #[allow(dead_code)]

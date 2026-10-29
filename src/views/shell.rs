@@ -66,7 +66,7 @@ actions!(shell, [Quit, CloseWindow, PreviewReleaseHighlights]);
 /// Bubble only unconsumed navigation keys. Mounting component Root would also
 /// install its Copy action context, which can steal PTY Ctrl+C. TerminalView
 /// consumes Tab as input first; open menus and confirmations trap it in capture.
-pub(super) fn traverse_unhandled_tab(
+pub(crate) fn traverse_unhandled_tab(
     event: &gpui::KeyDownEvent,
     window: &mut Window,
     cx: &mut App,

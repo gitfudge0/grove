@@ -20,6 +20,10 @@ where
 }
 
 impl ButtonIcon {
+    pub(crate) fn source_path(&self) -> Option<gpui::SharedString> {
+        match &self.icon { ButtonIconVariant::Icon(icon) => Some(icon.path_ref().clone()), _ => None }
+    }
+
     pub fn new(icon: impl Into<ButtonIconVariant>) -> Self {
         Self {
             icon: icon.into(),

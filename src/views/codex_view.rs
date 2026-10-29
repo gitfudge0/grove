@@ -4339,17 +4339,20 @@ impl Render for CodexView {
                                                 let cwd = cwd.clone();
                                                 let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
                                                 let available = owner.is_ok();
-                                                actions = actions.child(transcript_action("codex-run-code", if available { "Run" } else { "Checkout unavailable" }, false, window, cx)
-                                                    .disabled(!available)
-                                                    .debug_selector(|| "codex-run-code".into())
-                                                    .icon(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM)))
-                                                    .on_click(move |_, _, cx| {
+                                                actions = actions.child(crate::ui_reference::runtime::dense_action(crate::ui_reference::runtime::DenseActionBindings {
+                                                    id: "codex-run-code".into(),
+                                                    label: if available { "Run" } else { "Checkout unavailable" }.into(),
+                                                    icon: Some(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))),
+                                                    disabled: !available,
+                                                    loading: false,
+                                                    on_activate: std::rc::Rc::new(move |_, _, cx| {
                                                         let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
                                                         if let Ok(project) = owner {
                                                             let launched = runtime.update(cx, |runtime, cx| runtime.spawn_checkout_command(&project, &cwd, &code, cx));
                                                             if launched { let _ = event_owner.update(cx, |_,cx| cx.emit(CodexViewEvent::ScriptLaunched)); }
                                                         }
-                                                    }));
+                                                    }),
+                                                }, window, cx).debug_selector(|| "codex-run-code".into()));
                                             } else {
                                                 actions = actions.child(transcript_action("codex-run-code", "Checkout unavailable", false, window, cx).disabled(true).debug_selector(|| "codex-run-code".into()).icon(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))));
                                             }
@@ -13021,71 +13024,120 @@ mod tests {
             crate::fonts::register(cx).unwrap();
             cx.set_reduce_motion(true);
         });
-        for width in [1024.0, 600.0] {
-            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-                let mut state = snapshot();
-                state.saved.provider = provider;
-                state.saved.items = vec![
-                    json!({"type":"agentMessage", "id":"snippet", "text":"Copy this code:\n\n```sh\n  cargo test --workspace\n```", "groveCompleted":true}),
-                ];
-                let thread = state.saved.thread_id.clone().unwrap_or_default();
-                let (handle, _actions) = Handle::channel();
-                let (_updates, receive) = mpsc::channel();
-                let connection = Connection {
-                    handle,
-                    updates: receive.into(),
-                };
-                let mut retained = None;
-                let window = cx
-                    .open_window(
-                        gpui::size(gpui::px(width), gpui::px(600.0)),
-                        |window, cx| {
-                            let session =
-                                cx.new(|cx| CodexSession::from_connection(state, connection, cx));
-                            let chat = cx.new(|cx| CodexView::new(session, window, cx));
-                            retained = Some(chat.clone());
-                            cx.new(|cx| {
-                                gpui_component::Root::new(chat, window, cx)
-                                    .bordered(false)
-                                    .bg(c::BG())
-                            })
+        // Channel-backed provider-shaped views: no provider launch or script activation.
+        let checkout = std::env::temp_dir().join(format!(
+            "grove-snippet-metal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs_err::create_dir_all(&checkout).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&checkout)
+            .status()
+            .unwrap()
+            .success());
+        let checkout = checkout.canonicalize().unwrap();
+        let cwd = checkout.to_string_lossy().into_owned();
+        for available in [true, false] {
+            cx.update(|cx| {
+                cx.set_global(crate::settings::SettingsState::new(
+                    grove_core::storage::Store {
+                        projects: if available {
+                            vec![grove_core::storage::Project {
+                                name: "Snippet Metal fixture".into(),
+                                path: cwd.clone(),
+                                scripts: grove_core::storage::ProjectScripts::default(),
+                                archived: false,
+                                worktree_dir: None,
+                            }]
+                        } else {
+                            vec![]
                         },
-                    )
-                    .unwrap();
-                for copied in [false, true] {
-                    if copied {
-                        cx.update_window(window.into(), |_, _, cx| {
-                            retained.as_ref().unwrap().update(cx, |view, cx| {
-                                view.copy_code_block(
-                                    format!("{thread}:snippet:code:17"),
-                                    "  cargo test --workspace\n".into(),
-                                    cx,
+                        ..Default::default()
+                    },
+                ));
+                cx.set_global(crate::zoom::CurrentPtyDims::default());
+                gpui_component::Theme::global_mut(cx).font_size = gpui::px(16.0);
+            });
+            for width in [1024.0, 600.0] {
+                for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                    let mut state = snapshot();
+                    state.saved.provider = provider;
+                    state.saved.cwd = cwd.clone();
+                    state.saved.items = vec![
+                        json!({"type":"agentMessage", "id":"snippet", "text":"Copy this code:\n\n```sh\n  cargo test --workspace\n```", "groveCompleted":true}),
+                    ];
+                    let thread = state.saved.thread_id.clone().unwrap_or_default();
+                    let (handle, _actions) = Handle::channel();
+                    let (_updates, receive) = mpsc::channel();
+                    let connection = Connection {
+                        handle,
+                        updates: receive.into(),
+                    };
+                    let mut retained = None;
+                    let window = cx
+                        .open_window(
+                            gpui::size(gpui::px(width), gpui::px(600.0)),
+                            |window, cx| {
+                                let session = cx
+                                    .new(|cx| CodexSession::from_connection(state, connection, cx));
+                                let runtime = cx.new(crate::runtime::Runtime::new);
+                                let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                                chat.update(cx, |view, cx| view.set_script_runtime(runtime, cx));
+                                retained = Some(chat.clone());
+                                cx.new(|cx| {
+                                    gpui_component::Root::new(chat, window, cx)
+                                        .bordered(false)
+                                        .bg(c::BG())
+                                })
+                            },
+                        )
+                        .unwrap();
+                    for copied in [false, true] {
+                        if copied {
+                            cx.update_window(window.into(), |_, _, cx| {
+                                retained.as_ref().unwrap().update(cx, |view, cx| {
+                                    view.copy_code_block(
+                                        format!("{thread}:snippet:code:17"),
+                                        "  cargo test --workspace\n".into(),
+                                        cx,
+                                    );
+                                });
+                            })
+                            .unwrap();
+                        }
+                        for _ in 0..4 {
+                            cx.advance_clock(std::time::Duration::from_millis(16));
+                            cx.run_until_parked();
+                            cx.update_window(window.into(), |_, window, cx| {
+                                assert_eq!(window.rem_size(), gpui::px(16.0));
+                                assert!(
+                                    retained.as_ref().unwrap().read(cx).script_runtime.is_some(),
+                                    "both availability states must render the generated Run path"
                                 );
-                            });
-                        })
-                        .unwrap();
+                                window.simulate_next_frame(cx);
+                                let _ = window.draw(cx);
+                            })
+                            .unwrap();
+                        }
+                        let path =
+                        format!("/tmp/grove-snippet-copy-{provider:?}-{width:.0}-available-{available}-copied-{copied}.png");
+                        cx.capture_screenshot(window.into())
+                            .unwrap()
+                            .save(&path)
+                            .unwrap();
+                        eprintln!("Headless Metal provider-shaped fixture (not live provider): provider={provider:?} width={width:.0} rem=16 generated_runtime=true available={available} copied={copied} path={path}");
                     }
-                    for _ in 0..4 {
-                        cx.advance_clock(std::time::Duration::from_millis(16));
-                        cx.run_until_parked();
-                        cx.update_window(window.into(), |_, window, cx| {
-                            window.simulate_next_frame(cx);
-                            let _ = window.draw(cx);
-                        })
+                    cx.update_window(window.into(), |_, window, _| window.remove_window())
                         .unwrap();
-                    }
-                    let path =
-                        format!("/tmp/grove-snippet-copy-{provider:?}-{width:.0}-{copied}.png");
-                    cx.capture_screenshot(window.into())
-                        .unwrap()
-                        .save(&path)
-                        .unwrap();
-                    eprintln!("Native snippet copy fixture: {path}");
                 }
-                cx.update_window(window.into(), |_, window, _| window.remove_window())
-                    .unwrap();
             }
         }
+        fs_err::remove_dir_all(checkout).unwrap();
     }
 
     #[test]

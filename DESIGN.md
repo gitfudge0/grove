@@ -20,6 +20,16 @@ Use the [project UI skill](.agents/skills/grove-ui/SKILL.md) for implementation 
 
 - Fields/cards are flat, without bevels or inset shadows. Surface steps and neutral seams establish hierarchy; floating menus, tooltips, and panels use their shared recipes. Grid tiles meet flush with subtle seams, including the top edge, without item gaps or heavy tile borders.
 
+## Deterministic component references
+
+HTML references used to implement Grove components must use the current native design system. Author a validated typed component document and generate both the GPUI composition and the measured HTML reference from it. Tokens, resolved semantic colors, bundled fonts, catalog icons and complete native component recipes remain the sole executable authority; exported JSON, HTML and generated Rust do not create another design system. The [reference workflow](ui-references/README.md) defines the commands and supported vocabulary.
+
+The HTML reference uses actual native layout and shaped text, including displayed truncation, instead of approximating GPUI with browser flex or text defaults. The authored document independently owns expected node identities, kinds, source text, recipe roles and icon identities. Validate those semantics before accepting native measurements, so a missing node or wrong label cannot become its own reference. Reject unsupported properties, states, glyphs, layouts and capture contexts. Extend the owning native recipe, its reference adapter and acceptance checks together before using a new treatment.
+
+Freeze the selected reference revision, measured payload and artifact hashes. Candidate captures must preserve that baseline; changed content, geometry or design-system dependencies require an explicit new reference revision. A generated document, successful compilation or frozen artifact is not evidence of parity or user approval. Implementation-ready status requires current source/artifact/context checks, exact measured geometry, the supported raster criterion and actual native interaction evidence. Any permitted raster difference must be characterized as edge coverage with matching paint, font and path identity; it must not conceal layout, content, color, radius or interior-pixel drift.
+
+Free-form HTML may still express exploratory ideas, but it cannot serve as an implementation-ready Grove reference. Convert the selected direction into the supported component document without silently changing its design. Certification is limited to the measured component states, native/browser versions, fonts, theme, zoom and platform; it does not establish unobserved provider behavior or universal component coverage.
+
 ## Controls, forms, and states
 
 | Need | Shared recipe | Contract |
