@@ -3346,16 +3346,10 @@ impl Sidebar {
                 self.cancel_focus.focus(window, cx);
             }
             Action::ConfirmClose(id) => {
-                let from_canvas = self.canvas_close_anchor.take().is_some();
+                self.canvas_close_anchor = None;
                 self.runtime.update(cx, |r, cx| r.kill_session(id, cx));
                 self.pending_close = None;
-                if from_canvas {
-                    self.focus_remaining_canvas(window, cx);
-                } else {
-                    // The confirmation controls disappear after closing the session.
-                    // Keep keyboard shortcuts routed through the mounted sidebar.
-                    self.focus.focus(window, cx);
-                }
+                self.open_dashboard(window, cx);
             }
             Action::Retry(id) => {
                 if let Some(session) = self.runtime.read(cx).registry.read(cx).codex(id).cloned() {
@@ -10317,6 +10311,7 @@ for line in sys.stdin:
                 assert_eq!(sidebar.selection, Some(Selection::Session(first_id)));
                 sidebar.act(Action::Close(first_id), window, cx);
                 sidebar.act(Action::ConfirmClose(first_id), window, cx);
+                assert!(sidebar.dashboard_open);
                 let registry = sidebar.runtime.read(cx).registry.read(cx);
                 assert!(registry.meta(first_id).is_none());
                 assert!(registry.meta(second_id).is_some());
@@ -10324,6 +10319,7 @@ for line in sys.stdin:
                 assert_eq!(sidebar.selection, Some(Selection::Session(second_id)));
                 sidebar.act(Action::Close(second_id), window, cx);
                 sidebar.act(Action::ConfirmClose(second_id), window, cx);
+                assert!(sidebar.dashboard_open);
                 assert!(sidebar.runtime.read(cx).registry.read(cx).all().is_empty());
             });
         });
@@ -13039,7 +13035,9 @@ for line in sys.stdin:
         });
         assert!(sidebar.read_with(cx, |sidebar, cx| {
             let registry = sidebar.runtime.read(cx).registry.read(cx);
-            registry.meta(first).is_some() && registry.meta(selected).is_none()
+            sidebar.dashboard_open
+                && registry.meta(first).is_some()
+                && registry.meta(selected).is_none()
         }));
     }
     #[test]
