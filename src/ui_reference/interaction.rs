@@ -153,9 +153,14 @@ pub fn observe(
         .find(|n| n.state == State::Loading)
         .expect("control reference requires a loading state");
     let target = bounds(observed, &primary.id);
-    let initial_slots = slots(observed, &primary.id);
-    let disabled_slots = slots(observed, &disabled.id);
-    let loading_slots = slots(observed, &loading.id);
+    // Compare only like treatments. An iconless rest action and an icon-bearing
+    // loading action are separate authored controls, not one changing icon slot.
+    let mut slot_groups = BTreeMap::<bool, Vec<serde_json::Value>>::new();
+    for node in &controls {
+        slot_groups.entry(node.icon.is_some()).or_default().push(
+            serde_json::json!({"node_id":node.id,"state":node.state,"slots":slots(observed, &node.id)}),
+        );
+    }
     let original = "interaction-original-recipe.png";
     let mut evidence = BTreeMap::from([(
         original.into(),
@@ -255,18 +260,25 @@ pub fn observe(
         "inactive pointer actions must preserve source focus"
     );
     cases.push(serde_json::json!({"name":"focus_restoration","status":"passed","observed":{"before":focused_before,"after":focused_after}}));
-    for state in [
-        &disabled_slots,
-        &loading_slots,
-        &hover_slots,
-        &focused_slots,
-    ] {
-        assert_eq!(
-            &initial_slots, state,
-            "native icon/label slot offsets must not drift across states"
-        );
+    let primary_group = slot_groups.get_mut(&primary.icon.is_some()).unwrap();
+    primary_group
+        .push(serde_json::json!({"node_id":primary.id,"state":"hover","slots":hover_slots}));
+    primary_group
+        .push(serde_json::json!({"node_id":primary.id,"state":"focused","slots":focused_slots}));
+    let mut groups = Vec::new();
+    for (has_icon, samples) in slot_groups {
+        let baseline = &samples[0]["slots"];
+        for sample in &samples {
+            assert_eq!(
+                baseline, &sample["slots"],
+                "native icon/label slot offsets must not drift within an icon treatment"
+            );
+        }
+        groups.push(serde_json::json!({"has_icon":has_icon,"samples":samples}));
     }
-    cases.push(serde_json::json!({"name":"stable_slots","status":"passed","observed":{"rest":initial_slots,"disabled":disabled_slots,"loading":loading_slots,"hover":hover_slots,"focused":focused_slots}}));
+    cases.push(
+        serde_json::json!({"name":"stable_slots","status":"passed","observed":{"groups":groups}}),
+    );
     let mut routes = vec![primary_route];
     for node in active.iter().skip(1) {
         let before = log.borrow().len();

@@ -9,7 +9,7 @@ if(!process.env.GROVE_CHROME_EXECUTABLE)throw new Error('Set GROVE_CHROME_EXECUT
 const output=resolve(process.argv[2]??mkdtempSync(join(tmpdir(),'grove-reference-native-')));
 const resume=process.argv[3]==='--resume';
 function run(...args){const r=spawnSync(process.execPath,['scripts/ui-reference.mjs',...args],{stdio:'inherit',env:process.env});if(r.error)throw r.error;if(r.status!==0)throw new Error(`Native gate failed: ${args.join(' ')}`);}
-for(const [name,theme] of [['registered-row','grove-dark'],['distinct-actions','grove-light'],['catalog-theme','nord']]){
+for(const [name,theme] of [['registered-row','grove-dark'],['distinct-actions','grove-light'],['catalog-theme','nord'],['textless','grove-dark'],['iconless-rest','grove-dark']]){
  const bootstrap=join(output,`${name}-source`),revision=join(output,name);
  const path=join(bootstrap,'document.json');
  const existing=existsSync(path);
@@ -21,7 +21,7 @@ for(const [name,theme] of [['registered-row','grove-dark'],['distinct-actions','
   row.text='A separate application-owned action';
   row.children[0].icon=null;
   row.children[0].id='inspect-action';row.children[0].action='inspect';row.children[0].text_binding='inspect_label';
-  doc.actions.push('inspect');doc.values.inspect_label='Inspect';doc.root.children.push(row);
+  doc.actions.push('inspect');doc.values.inspect_label='Inspect';doc.root.children.unshift(row);
   writeFileSync(path,JSON.stringify(doc,null,2));
  }
  if(!existing&&name==='catalog-theme'){
@@ -30,9 +30,22 @@ for(const [name,theme] of [['registered-row','grove-dark'],['distinct-actions','
   doc.root.children=[wrap('z-outer-surface',[wrap('a-inner-surface',doc.root.children)])];
   writeFileSync(path,JSON.stringify(doc,null,2));
  }
+ if(!existing&&name==='textless'){
+  const doc=JSON.parse(readFileSync(path,'utf8'));
+  doc.actions=[];doc.values={};doc.root.kind='surface';
+  doc.root.children=[{id:'standalone-icon',kind:'icon',layout:{...doc.root.layout,width:'auto'},state:'rest',text:null,text_binding:null,text_role:null,color:null,icon:'folder',action:null,children:[]}];
+  writeFileSync(path,JSON.stringify(doc,null,2));
+ }
+ if(!existing&&name==='iconless-rest'){
+  const doc=JSON.parse(readFileSync(path,'utf8'));
+  doc.root.children[0].children[0].icon=null;
+  writeFileSync(path,JSON.stringify(doc,null,2));
+ }
  if(!existsSync(join(revision,'reference-lock.json')))run('author',path,revision);
  run('check',path,revision);run('ready',path,revision);
  const cert=JSON.parse(readFileSync(join(revision,'certificate.json'),'utf8'));
- if(cert.status!=='certified')throw new Error('All gates must pass for both independent generated compositions');
+ if(cert.status!=='certified')throw new Error('All gates must pass for every independent generated composition');
+ for(const gate of ['source_validation','font_bindings','paint','geometry','raster','interaction'])if(cert[gate]?.status!=='passed')throw new Error(`${name}: ${gate} must pass`);
+ if(name==='textless'&&cert.interaction.scope!=='inert')throw new Error('Textless reference must be independently audited as inert');
 }
 console.log(`Native component acceptance evidence: ${output}`);

@@ -21,6 +21,33 @@ mod generated {
     include!(env!("GROVE_REFERENCE_GENERATED"));
 }
 
+// This include is intentionally present in ordinary cfg(test), without the
+// capture cfg. It compiles exactly the full generated integration API.
+mod ordinary_generated {
+    include!("generated_test_composition.rs");
+}
+const _: fn(&ordinary_generated::Bindings, &mut gpui::Window, &mut gpui::App) -> gpui::AnyElement =
+    ordinary_generated::render;
+
+#[test]
+fn generated_composition_compiles_with_ordinary_test_bindings() {
+    let snapshot = contract::export("grove-dark").unwrap();
+    let doc = document::pilot(&snapshot);
+    let current = generate::generate(&doc, &snapshot).unwrap();
+    // Provenance comments change with native owner bytes. The composition body
+    // must remain exact; source/contract fingerprint tests cover provenance.
+    assert_eq!(
+        current.lines().skip(3).collect::<Vec<_>>(),
+        include_str!("generated_test_composition.rs")
+            .lines()
+            .skip(3)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(ordinary_generated::LAYOUT_HASH, generate::layout_hash(&doc));
+    let bindings = ordinary_generated::Bindings::fixture(std::rc::Rc::new(|_, _, _| {}));
+    assert_eq!(bindings.run_label.as_ref(), "Run");
+}
+
 fn output() -> PathBuf {
     PathBuf::from(std::env::var("GROVE_REFERENCE_OUTPUT").expect("GROVE_REFERENCE_OUTPUT"))
 }

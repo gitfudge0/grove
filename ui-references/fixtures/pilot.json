@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "design_system": "grove",
-  "contract_hash": "b063b39d3cc77ce9f7db963b8f8e17ffda65d8f51493e93e02645b2d094528b5",
+  "contract_hash": "ee5e77936bddea777d7e9ef3a06c75c98fa706e137f2c8d029aed1e49144e701",
   "owners": {
     "DESIGN.md": "4beba71165f83929427a46b7d5a04ffbbdfc1ab1364a12145ea80c1f15dea388",
     "build.rs": "817461b07a7d2e32f2c18329cbbf2314cb70ca97ff7a44a7c7cafd9b00deca00",
     "native-engine": "7ac8802fcee1339b49fe8b105d6a723c1f0c2df4b5b3e46079621d153de173e4",
-    "reference/compose": "6cfa0be21121b4329c704c7045523afe7c4cedaa42c05df04b4517912d237522",
+    "reference/compose": "04cd53d2ec55676cf3a356b4d353a6aa7cbd9bd4ba741b872098c6aff7bd07e6",
     "reference/contract": "bc2deb4ea0c954e273194d038ace9f237a5a4b2da055a0e23dccb3aedfac786b",
     "reference/generate": "de581c807f193a786f63ad89dfc569b537791c8cbf7a8891bc2ac39869aba6fd",
     "reference/generated-recipe": "a6dac5a47404adc4533634807868380c39aab1ff1a30446406dd546286e37be3",

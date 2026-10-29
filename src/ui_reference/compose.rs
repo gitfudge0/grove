@@ -7,7 +7,7 @@ use crate::{
 use gpui::{div, prelude::*, AnyElement, App, Hsla, SharedString, Window};
 use gpui_component::button::Button;
 pub(crate) type Action = super::runtime::Action;
-#[cfg(all(test, grove_reference_capture))]
+#[cfg(test)]
 pub(crate) type FixtureAction = std::rc::Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
 pub fn measure(id: &str, kind: &str, fill: bool, child: AnyElement) -> AnyElement {

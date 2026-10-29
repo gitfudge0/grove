@@ -130,6 +130,64 @@ for (const [name, html, paintResult, expectedError] of [
   assert.notEqual(certificate.status, 'certified');
   console.log(`${name}: observed paint=${paintResult}; no GPUI certification`);
 }
+// Synthetic, hand-calculated textless input exercises verifier orchestration.
+// Its passing certificate gates are not real native capture/readiness evidence.
+const textlessNative = { ...native, reference_context: context,
+  context: { ...context, native_build_hash: 'browser-harness-not-a-native-build' }, nodes: {
+    root: { kind: 'surface', bounds: { x: 0, y: 0, width: 20, height: 20 }, paint: { kind: 'surface', radius: 0, fill_rgba: [0,0,0,1], background_rgba: [0,0,0,1], html_fill: [0,0,0], html_background: [0,0,0] } },
+    icon: { kind: 'icon', bounds: { x: 0, y: 0, width: 12, height: 12 }, paint: { kind: 'svg', asset_svg: catalog, asset_sha256: sha256(catalog), foreground_rgba: [0,0,0,1], html_fill: [0,0,0], html_background: [0,0,0] } }
+  }
+};
+textlessNative.reference_context = textlessNative.context;
+textlessNative.interaction = { schema_version: 1, status: 'passed', scope: 'inert', reference_hash: native.reference_hash, contract_hash: native.contract_hash, native_build_hash: textlessNative.context.native_build_hash, cases: [], action_routes: [] };
+const textlessDocument = { contract_hash: native.contract_hash, fixture: { rem: 16 }, actions: [], values: {}, root: {
+  id: 'root', kind: 'surface', children: [{ id: 'icon', kind: 'icon', icon: 'test-catalog', children: [] }]
+} };
+const textlessSnapshot = { contract_hash: native.contract_hash, rem_base: 16, tokens: { icon_sm: 12 }, dense_action: {},
+  icons: { 'test-catalog': catalog }, colors_rgba: { foreground: [0,0,0,1], rail: [0,0,0,1] },
+  font_hashes: context.font_hashes, font_faces: [{ path: 'fonts/DMSans-Regular.ttf', family: 'DM Sans', weight: 400, style: 'normal', sha256: sha256(font) }]
+};
+const textlessMetadata = { ...metadata, context: textlessNative.context };
+const textlessIcon = catalog.replace('<svg ', '<svg data-icon="icon" x="0" y="0" width="12" height="12" style="color:rgb(0,0,0)" ');
+const textlessBody = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32" viewBox="0 0 64 32"><rect data-node="root" data-kind="surface" x="0" y="0" width="20" height="20" rx="0" fill="rgb(0,0,0)"/><rect data-node="icon" data-kind="icon" x="0" y="0" width="12" height="12" fill="none"/>${textlessIcon}</svg>`;
+const textlessValid = valid.replace('[data-node]{width:20px;height:10px;background:#000}', '').replace('<div data-node="root" data-kind="surface"></div>', textlessBody).replace(JSON.stringify(metadata), JSON.stringify(textlessMetadata));
+for (const name of ['textless-valid', 'textless-source-icon', 'textless-painted-fill', 'textless-extra-primitive', 'textless-lock-edit', 'textless-manifest-mode', 'textless-manifest-identity', 'textless-missing-lock', 'textless-restored-valid']) {
+  const directory = path.join(output, name); await mkdir(directory, { recursive: true });
+  let html = textlessValid;
+  if (name === 'textless-painted-fill') html = html.replace('rx="0" fill="rgb(0,0,0)"', 'rx="0" fill="rgb(1,0,0)"');
+  if (name === 'textless-extra-primitive') html = html.replace('</svg><script>', '<path d="M0 0L1 1" stroke="black"/></svg><script>');
+  const candidate = structuredClone(textlessNative);
+  if (name === 'textless-source-icon') candidate.nodes.icon.paint.asset_sha256 = 'wrong';
+  const manifest = { schema_version: 1, render_mode: 'native-measured-svg', reference_hash: native.reference_hash, contract_hash: native.contract_hash };
+  if (name === 'textless-manifest-mode') manifest.render_mode = 'bootstrap';
+  if (name === 'textless-manifest-identity') manifest.reference_hash = 'wrong';
+  for (const [filename, data] of Object.entries({ 'native.json': candidate, 'measured-layout.json': textlessNative, 'document.json': textlessDocument, 'snapshot.json': textlessSnapshot, 'manifest.json': manifest }))
+    await writeFile(path.join(directory, filename), JSON.stringify(data));
+  await writeFile(path.join(directory, 'reference.html'), html);
+  await writeFile(path.join(directory, 'generated.rs'), '// Synthetic browser fixture; no native build.');
+  await writeFile(path.join(directory, 'native.png'), png);
+  const artifacts = {};
+  for (const filename of ['document.json', 'snapshot.json', 'generated.rs', 'manifest.json', 'reference.html', 'measured-layout.json']) artifacts[filename] = sha256(await readFile(path.join(directory, filename)));
+  if (name !== 'textless-missing-lock') await writeFile(path.join(directory, 'reference-lock.json'), JSON.stringify({ schema_version: 1, render_mode: 'native-measured-svg', reference_hash: native.reference_hash, contract_hash: native.contract_hash, context: textlessNative.context, artifacts }));
+  if (name === 'textless-lock-edit') await writeFile(path.join(directory, 'document.json'), JSON.stringify(textlessDocument) + '\n');
+  const certificate = await verifyDirectory(directory);
+  const good = ['textless-valid', 'textless-restored-valid'].includes(name);
+  if (good) {
+    for (const gate of ['source_validation', 'font_bindings', 'paint', 'geometry', 'raster', 'interaction'])
+      assert.equal(certificate[gate].status, 'passed', `${name}.${gate}: ${JSON.stringify(certificate[gate])}`);
+    assert.equal(certificate.status, 'certified');
+    assert.equal(certificate.interaction.scope, 'inert');
+  } else {
+    assert.equal(certificate.status, 'failed', `${name}: ${JSON.stringify(certificate)}`);
+    if (name === 'textless-source-icon') assert.equal(certificate.source_validation.status, 'failed');
+    if (name === 'textless-painted-fill') assert.equal(certificate.paint.status, 'failed');
+    if (name === 'textless-extra-primitive') assert.ok(certificate.geometry.errors.some(error => JSON.stringify(error).includes('Unowned painted SVG primitive')));
+    if (name === 'textless-lock-edit') assert.ok(certificate.source_validation.errors.some(error => error.where === 'reference-lock.document.json'));
+    if (name.startsWith('textless-manifest-')) assert.ok(certificate.source_validation.errors.some(error => error.where === 'manifest.identity'));
+  }
+  console.log(`${name}: complete textless verifier gates ${good ? 'passed' : 'rejected'}; synthetic browser fixture only`);
+}
+
 const bold = await readFile(path.join(root, 'assets/fonts/DMSans-Bold.ttf'));
 const faceSnapshot = { font_hashes: { regular: sha256(font), bold: sha256(bold) }, font_faces: [
   { path: 'regular', family: 'DM Sans', weight: 400, style: 'normal', sha256: sha256(font) },

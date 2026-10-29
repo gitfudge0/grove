@@ -322,16 +322,38 @@ export function verifyInteraction(native, snapshot, document) {
       if (!rgba(facts.rest) || !rgba(facts.hover) || !rgba(facts.released) || !same(facts.rest, facts.released) || same(facts.rest, facts.hover)) fail('interaction.hover_release.pixels', 'actual distinct hover and restored rest pixels', facts);
       if (!same(facts.rest, unorm(snapshot?.colors_rgba?.rail)) || !same(facts.hover, unorm(snapshot?.colors_rgba?.hover))) fail('interaction.hover_release.design_system', 'actual rest/hover palette roles', facts);
     } else if (entry.name === 'stable_slots') {
-      const states = ['rest', 'disabled', 'loading', 'hover', 'focused'];
-      const noIcons = Boolean(document?.root) && controls.length > 0 && controls.every(control => !control.icon);
-      if (noIcons && states.some(state => facts[state]?.icon !== null)) fail('interaction.stable_slots.icon_presence', 'all source controls lack icons and every observed icon slot is null', facts);
-      const values = state => (noIcons ? [] : ['x', 'y', 'width', 'height'].map(key => facts[state]?.icon?.[key])).concat(['x', 'y'].map(key => facts[state]?.label?.[key]));
-      const rest = values('rest');
-      if (rest.some(v => !Number.isFinite(v)) || !noIcons && (rest[2] <= 0 || rest[3] <= 0)) fail('interaction.stable_slots.rest', 'finite actual relative slot bounds', facts.rest);
-      for (const state of states.slice(1)) {
-        const observed = values(state);
-        if (observed.some((v, index) => !sameF32(v, rest[index]))) fail(`interaction.stable_slots.${state}`, rest, observed);
+      const groups = facts.groups;
+      const primary = controls.find(control => control.state === 'rest');
+      const expectedSamples = controls.map(control => `${control.id}:${control.state}`);
+      if (primary) expectedSamples.push(`${primary.id}:hover`, `${primary.id}:focused`);
+      if (!document?.root || !Array.isArray(groups) || !groups.length) {
+        fail('interaction.stable_slots.groups', 'authored icon-treatment groups with actual samples', groups);
+        continue;
       }
+      const samples = [], treatments = new Set();
+      for (const group of groups) {
+        if (typeof group.has_icon !== 'boolean' || treatments.has(group.has_icon) || !Array.isArray(group.samples) || !group.samples.length) {
+          fail('interaction.stable_slots.group', 'unique icon treatment with nonempty samples', group);
+          continue;
+        }
+        treatments.add(group.has_icon);
+        let rest;
+        for (const sample of group.samples) {
+          samples.push(`${sample.node_id}:${sample.state}`);
+          const control = controls.find(control => control.id === sample.node_id);
+          const transient = ['hover', 'focused'].includes(sample.state);
+          if (!control || Boolean(control.icon) !== group.has_icon || (transient ? control !== primary : sample.state !== control.state))
+            fail('interaction.stable_slots.source', 'sample identity/state/icon treatment matches authored control', sample);
+          const slot = sample.slots;
+          const values = (group.has_icon ? ['x', 'y', 'width', 'height'].map(key => slot?.icon?.[key]) : []).concat(['x', 'y'].map(key => slot?.label?.[key]));
+          if (values.some(value => !Number.isFinite(value)) || group.has_icon && (values[2] <= 0 || values[3] <= 0) || !group.has_icon && slot?.icon !== null)
+            fail('interaction.stable_slots.bounds', 'finite actual slots with authored icon presence and positive icon size', sample);
+          if (rest && values.some((value, index) => !sameF32(value, rest[index])))
+            fail('interaction.stable_slots.drift', rest, values);
+          rest ??= values;
+        }
+      }
+      if (!same(samples.sort(), expectedSamples.sort())) fail('interaction.stable_slots.samples', expectedSamples, samples);
     }
   }
   return { status: errors.length ? 'failed' : 'passed', method: 'actual GPUI pointer/key/focus facts and frame evidence; no browser inference', cases, errors };
@@ -523,7 +545,7 @@ async function loadPlaywright() {
 }
 
 /** Executed in Chromium. No native measurement values influence DOM measurement. */
-export function measureBrowserDocument(expectedSvgSources = {}) {
+export function measureBrowserDocument({ expectedSvgSources = {}, measuredReference = false } = {}) {
   const metadata = window.__GROVE_REFERENCE__;
   const errors = [], duplicates = [], nodes = {};
   const rect = r => ({ x: r.x, y: r.y, width: r.width, height: r.height });
@@ -676,7 +698,7 @@ export function measureBrowserDocument(expectedSvgSources = {}) {
         asset_canonical: actualCanonical, expected_asset_canonical: expectedCanonical, computed_styles: actualStyles, expected_computed_styles: expectedStyles };
     }
   }
-  if (document.querySelector('[data-layout-mode="native-measured"]')) {
+  if (measuredReference || document.querySelector('[data-layout-mode="native-measured"]')) {
     for (const child of document.body.children) if (!['svg', 'style', 'script'].includes(child.localName)) errors.push('Unowned body rendering outside measured SVG');
     for (const primitive of document.querySelectorAll('svg rect,svg path,svg circle,svg ellipse,svg polygon,svg polyline,svg line,svg text,svg image,svg use,svg foreignObject')) {
       if (primitive.closest('[data-icon]')) continue;
@@ -706,7 +728,7 @@ export function measureBrowserDocument(expectedSvgSources = {}) {
   return { schema_version: 1, reference_hash: metadata?.reference_hash, contract_hash: metadata?.contract_hash, context: { ...metadata?.context, viewport: { width: window.innerWidth, height: window.innerHeight }, scale: window.devicePixelRatio, rem: Number.parseFloat(getComputedStyle(document.documentElement).fontSize), locale: navigator.language, motion: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'reduced' : 'normal' }, observed: { browser_engine: navigator.userAgent, fonts_ready: document.fonts.status === 'loaded', fonts: faces, font_faces: cssFaces, font_errors: faces.filter(f => f.status !== 'loaded') }, nodes, duplicates, errors };
 }
 
-async function captureBrowser(directory, native, html) {
+async function captureBrowser(directory, native, html, measuredReference) {
   const playwright = await loadPlaywright();
   const launch = { headless: true };
   if (process.env.GROVE_CHROME_EXECUTABLE) launch.executablePath = process.env.GROVE_CHROME_EXECUTABLE;
@@ -728,7 +750,7 @@ async function captureBrowser(directory, native, html) {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
     const expectedSvgSources = Object.fromEntries(Object.entries(native.nodes).filter(([, n]) => n.paint?.kind === 'svg').map(([id, n]) => [id, n.paint.asset_svg]));
-    const measured = await page.evaluate(measureBrowserDocument, expectedSvgSources);
+    const measured = await page.evaluate(measureBrowserDocument, { expectedSvgSources, measuredReference });
     measured.observed.browser_version = browser.version();
     for (const face of measured.observed.font_faces) {
       const bytes = face.source_base64 ? Buffer.from(face.source_base64, 'base64') : Buffer.alloc(0);
@@ -759,10 +781,20 @@ export async function verifyDirectory(directory) {
   let snapshot, authoredDocument;
   const artifacts = { 'native.json': sha256(nativeBytes), 'reference.html': sha256(htmlBytes) };
   try {
-    measured = await captureBrowser(directory, native, html);
+    // Frozen identity selects the measured workflow even when no text exists.
+    // Partial or malformed authored evidence must fail rather than fall back to
+    // the browser-only geometry harness.
+    const readOptional = async name => {
+      try { return JSON.parse(await readFile(path.join(directory, name), 'utf8')); }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    };
+    const manifest = await readOptional('manifest.json');
+    const referenceLock = await readOptional('reference-lock.json');
+    const measuredReference = manifest !== null || referenceLock !== null;
+    measured = await captureBrowser(directory, native, html, measuredReference);
     await writeFile(path.join(directory, 'browser.json'), JSON.stringify(measured, null, 2) + '\n');
     geometry = compareMeasurements(native, measured);
-    if (Object.values(measured.nodes).some(node => node.text?.layout_mode === 'native-measured')) {
+    if (measuredReference || Object.values(measured.nodes).some(node => node.text?.layout_mode === 'native-measured')) {
       const payloadBytes = await readFile(path.join(directory, 'measured-layout.json'));
       const payload = JSON.parse(payloadBytes);
       artifacts['measured-layout.json'] = sha256(payloadBytes);
@@ -771,6 +803,8 @@ export async function verifyDirectory(directory) {
       snapshot = JSON.parse(await readFile(path.join(directory, 'snapshot.json')));
       const candidateAudit = auditSource(document, snapshot, native), baselineAudit = auditSource(document, snapshot, payload);
       source_validation = { status: 'passed', errors: [...candidateAudit.errors, ...baselineAudit.errors.map(error => ({ ...error, where: `baseline.${error.where}` }))] };
+      if (manifest?.schema_version !== 1 || manifest?.render_mode !== 'native-measured-svg' || manifest.reference_hash !== payload.reference_hash || manifest.contract_hash !== payload.contract_hash)
+        source_validation.errors.push({ where: 'manifest.identity', expected: 'native-measured-svg authored identity', actual: manifest });
       font_bindings = compareFontBindings(snapshot, measured);
       source_validation.errors.push(...font_bindings.errors);
       for (const field of ['reference_hash', 'contract_hash'])
