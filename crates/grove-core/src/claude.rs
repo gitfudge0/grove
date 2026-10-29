@@ -1020,6 +1020,9 @@ impl Actor {
             // write recovery while its Stop action is still in flight.
             if self.stopping.load(Ordering::SeqCst) {
                 self.title_generator.cancel();
+                if self.title_generator.update_pending(&mut self.state, true) {
+                    self.publish();
+                }
                 continue;
             }
             // The UI consumes complete state, so intermediate protocol deltas
@@ -1028,10 +1031,11 @@ impl Actor {
             if self.receive_batch() {
                 self.publish();
             }
-            if self
-                .title_generator
-                .tick(&mut self.state.saved, self.state.status, false)
-            {
+            let title_changed =
+                self.title_generator
+                    .tick(&mut self.state.saved, self.state.status, false);
+            let pending_changed = self.title_generator.update_pending(&mut self.state, false);
+            if title_changed || pending_changed {
                 self.dirty = true;
                 self.publish();
             }
@@ -1182,6 +1186,7 @@ impl Actor {
         if let Some(prompt) = self.deferred.take() {
             self.state.rejected_submission = Some(prompt.id);
         }
+        self.title_generator.update_pending(&mut self.state, false);
     }
     fn write(&mut self, value: Value) -> Result<(), String> {
         let process = self
@@ -1233,6 +1238,9 @@ impl Actor {
         let (args, initial) = launch_options(&self.args)?;
         if self.state.saved.thread_id.is_none() && self.initial.is_none() && self.deferred.is_none()
         {
+            if let Some(prompt) = initial.as_deref() {
+                crate::session_title::Generator::anticipate_initial(&mut self.state, prompt);
+            }
             self.initial = initial;
         }
         self.state.permission_modes = available_permission_modes(&self.stopping);
@@ -1568,6 +1576,7 @@ impl Actor {
         let content = user_content(&text, &images);
         let uuid = nonce();
         self.write(json!({"type":"user","uuid":uuid,"session_id":self.state.saved.thread_id.as_deref().unwrap_or(""),"message":{"role":"user","content":content},"parent_tool_use_id":null}))?;
+        crate::session_title::Generator::anticipate_initial(&mut self.state, &text);
         if let Some(checkpoint) = self
             .state
             .saved

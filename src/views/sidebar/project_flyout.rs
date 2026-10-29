@@ -638,7 +638,12 @@ impl Sidebar {
                                         })
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .line_height(rpx(SESSION_TITLE_LINE_H))
-                                        .child(single_line_session_title(&title)),
+                                        .child(self.session_title_label(
+                                            *id,
+                                            &title,
+                                            "flyout-title-shimmer",
+                                            cx,
+                                        )),
                                 )
                                 .child(
                                     div()

@@ -3661,6 +3661,27 @@ impl Sidebar {
         }
         cx.notify();
     }
+    fn session_title_label(
+        &self,
+        id: SessionId,
+        title: &str,
+        surface: &'static str,
+        cx: &App,
+    ) -> AnyElement {
+        let pending = self
+            .runtime
+            .read(cx)
+            .registry
+            .read(cx)
+            .codex(id)
+            .is_some_and(|session| session.read(cx).state.title_generation_pending);
+        super::components::shimmer_label(
+            (surface, id.raw()).into(),
+            single_line_session_title(title),
+            pending,
+            cx,
+        )
+    }
     fn status(&self, meta: &SessionMeta, cx: &App) -> (&'static str, gpui::Hsla) {
         let runtime = self.runtime.read(cx);
         let registry = runtime.registry.read(cx);
@@ -4033,7 +4054,12 @@ impl Sidebar {
                             .line_height(rpx(SESSION_LIST_TITLE_H))
                             .id(("session-list-title", id.raw()))
                             .debug_selector(move || format!("session-list-title-{}", id.raw()))
-                            .child(single_line_session_title(&title)),
+                            .child(self.session_title_label(
+                                id,
+                                &title,
+                                "session-list-title-shimmer",
+                                cx,
+                            )),
                     )
                     .child(
                         div()
@@ -4214,7 +4240,12 @@ impl Sidebar {
                             .line_height(rpx(SESSION_TITLE_LINE_H))
                             .font_weight(gpui::FontWeight::NORMAL)
                             .text_size(rpx(TEXT_SMALL))
-                            .child(single_line_session_title(&title)),
+                            .child(self.session_title_label(
+                                id,
+                                &title,
+                                "session-tree-title-shimmer",
+                                cx,
+                            )),
                     )
                     .when_some(worktree_names, |column, names| {
                         column.child(

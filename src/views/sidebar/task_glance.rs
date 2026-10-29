@@ -87,6 +87,7 @@ pub(super) struct TaskGlanceCache {
     timeline: std::sync::Arc<super::dashboard_timeline::TimelineData>,
     dashboard_status: Option<Status>,
     lifecycle_status: Option<Status>,
+    title_generation_pending: bool,
 }
 
 impl TaskGlanceCache {
@@ -199,6 +200,7 @@ impl Sidebar {
                 let state = &session.read(cx).state;
                 cache.refresh(&state.saved.items);
                 cache.refresh_lifecycle(state.status);
+                cache.title_generation_pending = state.title_generation_pending;
                 if self.dashboard_open && self.dashboard_owns_session(id) {
                     cache.refresh_dashboard_reporting(
                         &state.saved.items,
@@ -215,6 +217,9 @@ impl Sidebar {
                 let cache = this.task_glances.entry(id).or_default();
                 let changed = cache.refresh(&state.saved.items);
                 let lifecycle_changed = cache.refresh_lifecycle(state.status);
+                let title_pending_changed =
+                    cache.title_generation_pending != state.title_generation_pending;
+                cache.title_generation_pending = state.title_generation_pending;
                 let activity_changed = visible
                     && cache.refresh_dashboard_reporting(
                         &state.saved.items,
@@ -222,7 +227,7 @@ impl Sidebar {
                         state.turn_id.as_deref(),
                         state.saved.activity_reporting,
                     );
-                if changed || lifecycle_changed || activity_changed {
+                if changed || lifecycle_changed || activity_changed || title_pending_changed {
                     cx.notify();
                 }
             });

@@ -1,5 +1,5 @@
 //! Bounded, isolated title requests. These never enter the session transcript.
-use crate::codex::{item_text, Provider, SavedSession, Status};
+use crate::codex::{item_text, Provider, SavedSession, Snapshot, Status};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -81,6 +81,46 @@ fn context(saved: &SavedSession, assistant: bool) -> Option<(String, Value)> {
 }
 
 impl Generator {
+    /// Mark a first submitted prompt while the provider has yet to echo it into history.
+    pub(crate) fn anticipate_initial(state: &mut Snapshot, text: &str) {
+        if !text.trim().is_empty()
+            && state.saved.pending_edit.is_none()
+            && state.saved.title_generation.is_none()
+            && !state
+                .saved
+                .items
+                .iter()
+                .any(|item| item["type"] == "userMessage")
+        {
+            state.rejected_submission = None;
+            state.title_generation_pending = true;
+        }
+    }
+
+    pub(crate) fn update_pending(&self, state: &mut Snapshot, stopping: bool) -> bool {
+        let awaiting_echo = !stopping
+            && state.title_generation_pending
+            && state.status.busy()
+            && state.rejected_submission.is_none()
+            && state.saved.pending_edit.is_none()
+            && state.saved.title_generation.is_none()
+            && !state
+                .saved
+                .items
+                .iter()
+                .any(|item| item["type"] == "userMessage");
+        let pending = !stopping && (awaiting_echo || self.initial_pending(&state.saved));
+        let changed = state.title_generation_pending != pending;
+        state.title_generation_pending = pending;
+        changed
+    }
+    pub(crate) fn initial_pending(&self, saved: &SavedSession) -> bool {
+        self.job.is_some()
+            && !saved
+                .title_generation
+                .as_ref()
+                .is_some_and(|state| state.generated)
+    }
     pub(crate) fn cancel(&mut self) {
         self.job.take();
     }
@@ -390,6 +430,57 @@ mod tests {
         source
     }
     #[test]
+    fn initial_submission_shimmers_before_provider_echo_and_stops_on_failure() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut fresh = saved(provider);
+            fresh.items.clear();
+            let mut state = Snapshot::new(fresh);
+            state.status = Status::Working;
+            let mut generator = Generator::default();
+            Generator::anticipate_initial(&mut state, "Fix the sharing dialog");
+            assert!(state.title_generation_pending);
+            generator.tick(&mut state.saved, state.status, false);
+            generator.update_pending(&mut state, false);
+            assert!(state.title_generation_pending, "wait for the provider echo");
+
+            state.saved.items.push(json!({"id":"first","type":"userMessage","content":[{"type":"text","text":"Fix the sharing dialog"}]}));
+            generator.tick(&mut state.saved, state.status, false);
+            generator.update_pending(&mut state, false);
+            assert!(
+                !state.title_generation_pending,
+                "unavailable title launch is static"
+            );
+
+            Generator::anticipate_initial(&mut state, "another prompt");
+            assert!(
+                !state.title_generation_pending,
+                "later prompts do not shimmer"
+            );
+        }
+    }
+    #[test]
+    fn anticipation_ends_on_rejection_or_stop_and_ignores_empty_prompts() {
+        let mut fresh = saved(Provider::Codex);
+        fresh.items.clear();
+        let mut state = Snapshot::new(fresh);
+        let generator = Generator::default();
+        state.status = Status::Working;
+        Generator::anticipate_initial(&mut state, " ");
+        assert!(!state.title_generation_pending);
+        Generator::anticipate_initial(&mut state, "First prompt");
+        state.status = Status::Disconnected;
+        generator.update_pending(&mut state, false);
+        assert!(!state.title_generation_pending);
+        state.status = Status::Working;
+        Generator::anticipate_initial(&mut state, "First prompt");
+        state.rejected_submission = Some(42);
+        generator.update_pending(&mut state, false);
+        assert!(!state.title_generation_pending);
+        Generator::anticipate_initial(&mut state, "First prompt");
+        generator.update_pending(&mut state, true);
+        assert!(!state.title_generation_pending);
+    }
+    #[test]
     fn generated_title_survives_provider_events_and_recovery_for_both_providers() {
         for provider in [Provider::Codex, Provider::Claude] {
             let mut saved = saved(provider);
@@ -498,7 +589,13 @@ mod tests {
                 attempt: 1,
             }),
         };
+        let mut saved = saved(Provider::Codex);
+        pending(&mut saved, 1);
+        assert!(generator.initial_pending(&saved));
+        saved.title_generation.as_mut().unwrap().generated = true;
+        assert!(!generator.initial_pending(&saved));
         generator.cancel();
+        assert!(!generator.initial_pending(&saved));
         assert!(generator.job.is_none());
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
     }
@@ -509,6 +606,10 @@ mod tests {
             saved.title = Some("Provider fallback".into());
             let mut generator = Generator::default();
             assert!(generator.tick(&mut saved, Status::Working, false));
+            assert!(
+                !generator.initial_pending(&saved),
+                "failed launch must be static"
+            );
             assert_eq!(saved.title_generation.as_ref().unwrap().attempts, 1);
             assert!(!generator.tick(&mut saved, Status::Working, false));
             saved.items.push(json!({"id":"answer-1","type":"agentMessage","text":"The QR sharing dialog needs a simpler preview."}));

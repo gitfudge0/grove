@@ -16,20 +16,21 @@ pub(super) struct RowMetadata {
     pub project: String,
     pub worktree: String,
     pub provider: grove_core::codex::Provider,
+    pub model: String,
     pub effort: Option<String>,
     pub context: String,
     pub status: Status,
     pub age: String,
 }
 impl RowMetadata {
-    fn provider_label(&self) -> String {
-        let provider = self.provider.label();
+    fn model_label(&self) -> String {
+        let model = &self.model;
         self.effort
             .as_deref()
             .map(str::trim)
             .filter(|effort| !effort.is_empty())
             .map_or_else(
-                || provider.to_owned(),
+                || model.to_owned(),
                 |effort| {
                     let effort = if effort == "xhigh" {
                         "Extra high".into()
@@ -39,7 +40,7 @@ impl RowMetadata {
                             first.to_uppercase().chain(letters).collect()
                         })
                     };
-                    format!("{provider} {effort}")
+                    format!("{model} {effort}")
                 },
             )
     }
@@ -73,7 +74,7 @@ fn render_metadata(metadata: &RowMetadata) -> AnyElement {
         .child(metadata_group("git-branch", metadata.worktree.clone()))
         .child(metadata_group(
             metadata.provider.agent().icon_name(),
-            metadata.provider_label(),
+            metadata.model_label(),
         ))
         .into_any_element()
 }
@@ -185,7 +186,6 @@ pub(super) struct DashboardTimelines {
     task_opened: HashSet<(Scope, String)>,
     task_focus: HashMap<(Scope, String), FocusHandle>,
     task_hovered: HashSet<(Scope, String)>,
-    task_focus_subscriptions: HashMap<(Scope, String), Vec<gpui::Subscription>>,
 }
 impl DashboardTimelines {
     fn invalidate_scope(&mut self) {
@@ -236,8 +236,6 @@ impl DashboardTimelines {
         self.task_opened.retain(|(key, _)| keep(key));
         self.task_focus.retain(|(key, _), _| keep(key));
         self.task_hovered.retain(|(key, _)| keep(key));
-        self.task_focus_subscriptions
-            .retain(|(key, _), _| keep(key));
     }
 }
 #[derive(Default)]
@@ -437,7 +435,12 @@ impl Sidebar {
                                     .min_w_0()
                                     .whitespace_normal()
                                     .text_size(rpx(TEXT_BODY))
-                                    .child(single_line_session_title(title)),
+                                    .child(self.session_title_label(
+                                        id,
+                                        title,
+                                        "dashboard-title-shimmer",
+                                        cx,
+                                    )),
                             )
                             .child(
                                 super::super::status::label(
@@ -514,7 +517,7 @@ impl Sidebar {
         scope: Scope,
         data: &TimelineData,
         status: Status,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = format!("{}-{}", scope.0, scope.1.raw());
@@ -531,9 +534,6 @@ impl Sidebar {
         self.dashboard_timelines
             .task_hovered
             .retain(|(owner, task)| *owner != scope || live_keys.contains(task));
-        self.dashboard_timelines
-            .task_focus_subscriptions
-            .retain(|(owner, task), _| *owner != scope || live_keys.contains(task));
         let mut body = div()
             .w_full()
             .pl(rpx(SPACE_20))
@@ -554,22 +554,9 @@ impl Sidebar {
                 .entry(state_key.clone())
                 .or_insert_with(|| cx.focus_handle())
                 .clone();
-            if complete
-                && !self
-                    .dashboard_timelines
-                    .task_focus_subscriptions
-                    .contains_key(&state_key)
-            {
-                let focused = cx.on_focus(&focus, window, |_, _, cx| cx.notify());
-                let blurred = cx.on_blur(&focus, window, |_, _, cx| cx.notify());
-                self.dashboard_timelines
-                    .task_focus_subscriptions
-                    .insert(state_key.clone(), vec![focused, blurred]);
-            }
-            let focused = focus.is_focused(window);
             let row_id = format!("dashboard-task-{key}-{identity}");
             let label_id = format!("dashboard-task-label-{key}-{identity}");
-            let disclosure = complete && (open || hovered || focused);
+            let disclosure = complete && hovered;
             let mark_selector = format!(
                 "dashboard-task-{}-{key}-{identity}",
                 if disclosure { "chevron" } else { "status" }
@@ -1141,6 +1128,8 @@ mod tests {
             Box::leak(format!("dashboard-task-1-1-{completed_key}").into_boxed_str());
         let completed_chevron: &'static str =
             Box::leak(format!("dashboard-task-chevron-1-1-{completed_key}").into_boxed_str());
+        let completed_status: &'static str =
+            Box::leak(format!("dashboard-task-status-1-1-{completed_key}").into_boxed_str());
         for (width, rem) in [
             (620., crate::zoom::REM_BASE),
             (260., crate::zoom::REM_BASE),
@@ -1192,16 +1181,23 @@ mod tests {
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
             });
+            assert!(cx.debug_bounds(completed_chevron).is_none());
             assert!(
-                cx.debug_bounds(completed_chevron).is_some(),
-                "keyboard focus keeps disclosure visible without hover"
+                cx.debug_bounds(completed_status).is_some(),
+                "status returns when the pointer leaves, even with keyboard focus"
             );
+            assert_eq!(label, cx.debug_bounds(completed_label).unwrap());
             cx.simulate_keystrokes("enter");
             cx.run_until_parked();
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
             });
             assert!(cx.debug_bounds("dashboard-activity-label-1-1-1").is_some());
+            assert!(cx.debug_bounds(completed_chevron).is_none());
+            assert!(
+                cx.debug_bounds(completed_status).is_some(),
+                "expanded tasks retain their status when not hovered"
+            );
             let child = cx.debug_bounds("dashboard-activity-label-1-1-1").unwrap();
             assert!(child.left() > label.left());
             assert!(child.right() <= gpui::px(width));
@@ -1513,25 +1509,27 @@ mod tests {
         });
     }
     #[test]
-    fn metadata_preserves_provider_and_formats_only_actual_effort() {
+    fn metadata_shows_model_and_formats_only_actual_effort() {
         let mut metadata = RowMetadata {
             project: "Actual project".into(),
             worktree: sidebar_worktree_name("root", true).into(),
             provider: grove_core::codex::Provider::Codex,
+            model: "GPT-6.1".into(),
             effort: None,
             context: String::new(),
             status: Status::Idle,
             age: String::new(),
         };
         assert_eq!(metadata.worktree, "Main checkout");
-        assert_eq!(metadata.provider_label(), "Codex");
+        assert_eq!(metadata.model_label(), "GPT-6.1");
         metadata.effort = Some("xhigh".into());
-        assert_eq!(metadata.provider_label(), "Codex Extra high");
+        assert_eq!(metadata.model_label(), "GPT-6.1 Extra high");
         metadata.provider = grove_core::codex::Provider::Claude;
+        metadata.model = "Claude Opus".into();
         metadata.effort = Some("high".into());
-        assert_eq!(metadata.provider_label(), "Claude Code High");
+        assert_eq!(metadata.model_label(), "Claude Opus High");
         metadata.effort = Some(String::new());
-        assert_eq!(metadata.provider_label(), "Claude Code");
+        assert_eq!(metadata.model_label(), "Claude Opus");
     }
     #[test]
     fn prior_turn_and_final_answers_never_shimmer_as_current_work() {

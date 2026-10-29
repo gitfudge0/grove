@@ -853,6 +853,8 @@ pub struct SessionNotice {
 pub struct Snapshot {
     restored_subagents: HashSet<String>,
     pub saved: SavedSession,
+    /// A title request is running before any generated title; never persisted across reconnects.
+    pub title_generation_pending: bool,
     pub subagent_activity: HashMap<String, SubagentActivity>,
     pub subagent_activity_evicted: HashSet<String>,
     pub status: Status,
@@ -1422,6 +1424,7 @@ impl Snapshot {
         let context_tokens = saved.context.map(|usage| usage.used);
         Self {
             saved,
+            title_generation_pending: false,
             status: Status::Starting,
             turn_id: None,
             work_started: None,
@@ -3513,6 +3516,9 @@ impl Actor {
             self.state.saved.native_config_version = 1;
         }
         if self.state.saved.thread_id.is_none() {
+            if let Some(prompt) = initial.as_deref() {
+                crate::session_title::Generator::anticipate_initial(&mut self.state, prompt);
+            }
             self.initial = initial;
         }
         self.state.mark_queue_uncertain();
@@ -3874,6 +3880,7 @@ impl Actor {
             self.turn_params(self.input(&text, images)),
             pending,
         )?;
+        crate::session_title::Generator::anticipate_initial(&mut self.state, &text);
         self.state.status = Status::Working;
         self.state.clear_error();
         Ok(())
@@ -4009,6 +4016,7 @@ impl Actor {
         .inspect_err(|_| {
             self.state.mark_queue_uncertain();
         })?;
+        crate::session_title::Generator::anticipate_initial(&mut self.state, &prompt.text);
         self.queue_ready = false;
         self.state.status = Status::Working;
         self.state.clear_error();
@@ -5968,6 +5976,7 @@ impl Actor {
         if let Err(e) = self.start() {
             self.state.fail(e);
         }
+        self.title_generator.update_pending(&mut self.state, false);
         self.emit();
         loop {
             match self.actions.recv_timeout(Duration::from_millis(40)) {
@@ -6008,6 +6017,12 @@ impl Actor {
                 self.state.status,
                 self.stopping.load(Ordering::SeqCst),
             ) {
+                self.dirty = true;
+            }
+            if self
+                .title_generator
+                .update_pending(&mut self.state, self.stopping.load(Ordering::SeqCst))
+            {
                 self.dirty = true;
             }
             self.advance_stop(Instant::now());

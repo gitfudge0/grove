@@ -851,6 +851,7 @@ impl Sidebar {
                         (
                             state.status,
                             state.saved.provider,
+                            super::super::codex_view::composer_model_name(state),
                             state
                                 .effort
                                 .as_deref()
@@ -868,7 +869,7 @@ impl Sidebar {
                                 .map(str::to_owned),
                         )
                     });
-                if let Some((structured_status, provider, effort)) = structured {
+                if let Some((structured_status, provider, model, effort)) = structured {
                     let worktree = self
                         .snapshot
                         .projects
@@ -902,6 +903,7 @@ impl Sidebar {
                         project: meta.project.clone(),
                         worktree,
                         provider,
+                        model,
                         effort,
                         context: label,
                         status: structured_status,

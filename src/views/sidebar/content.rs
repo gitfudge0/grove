@@ -960,7 +960,12 @@ impl Sidebar {
                                     .truncate()
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(c::FG())
-                                    .child(task),
+                                    .child(self.session_title_label(
+                                        id,
+                                        &task,
+                                        "session-header-title-shimmer",
+                                        cx,
+                                    )),
                             ),
                     ),
             )

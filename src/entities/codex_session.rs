@@ -40,6 +40,7 @@ pub struct CodexSession {
     deferred: Option<std::sync::mpsc::Receiver<Action>>,
     catalog_generation: u64,
     catalog_selection_error: bool,
+    dashboard_title_waiting: Option<String>,
 }
 impl CodexSession {
     /// A composer-owned draft with no conversation, persistence, or registry entry.
@@ -66,6 +67,7 @@ impl CodexSession {
             catalog_loading: false,
             catalog_error: None,
             catalog_selection_error: false,
+            dashboard_title_waiting: None,
         };
         session.refresh_catalog(cwd, args, cx);
         session
@@ -259,8 +261,19 @@ impl CodexSession {
         let mut saved = self.state.saved.clone();
         saved.project = project;
         saved.cwd = cwd;
+        let pending_title = saved
+            .draft
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(|line| line.chars().take(80).collect::<String>());
         let connection = codex::connect(saved.clone(), args);
         *self = Self::from_connection(Snapshot::new(saved), connection, cx);
+        self.dashboard_title_waiting = pending_title;
+        if let Some(title) = &self.dashboard_title_waiting {
+            self.state.saved.title = Some(title.clone());
+            self.state.title_generation_pending = true;
+        }
         cx.notify();
         Ok(())
     }
@@ -286,7 +299,7 @@ impl CodexSession {
             if let Some(state) = latest {
                 if this
                     .update(cx, |this, cx| {
-                        this.state = state.into();
+                        this.accept_snapshot(state);
                         cx.notify();
                     })
                     .is_err()
@@ -304,6 +317,34 @@ impl CodexSession {
             catalog_loading: false,
             catalog_error: None,
             catalog_selection_error: false,
+            dashboard_title_waiting: None,
+        }
+    }
+    fn accept_snapshot(&mut self, mut state: Snapshot) {
+        if let Some(title) = &self.dashboard_title_waiting {
+            if (state.title_generation_pending && state.saved.title.is_some())
+                || state.saved.title_generation.is_some()
+                || state.rejected_submission.is_some()
+                || matches!(
+                    state.status,
+                    codex::Status::Failed
+                        | codex::Status::Disconnected
+                        | codex::Status::Interrupted
+                )
+            {
+                self.dashboard_title_waiting = None;
+            } else {
+                state.title_generation_pending = true;
+                if state.saved.title.is_none() {
+                    state.saved.title = Some(title.clone());
+                }
+            }
+        }
+        self.state = state.into();
+    }
+    pub(crate) fn cancel_dashboard_title_waiting(&mut self) {
+        if self.dashboard_title_waiting.take().is_some() {
+            self.state.title_generation_pending = false;
         }
     }
     pub fn send(&mut self, action: Action, cx: &mut Context<Self>) {
@@ -525,6 +566,67 @@ impl Drop for CodexSession {
 #[cfg(test)]
 mod dashboard_tests {
     use super::*;
+
+    #[gpui::test]
+    fn dashboard_title_remains_pending_through_startup_and_hands_off_or_fails(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|cx| {
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = std::sync::mpsc::channel();
+                let mut starting = Snapshot::new(saved(provider));
+                starting.status = codex::Status::Starting;
+                let session = cx.new(|cx| {
+                    CodexSession::from_connection(
+                        starting.clone(),
+                        codex::Connection {
+                            handle,
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                session.update(cx, |session, _| {
+                    session.dashboard_title_waiting = Some("First prompt".into());
+                    session.accept_snapshot(starting.clone());
+                    assert!(session.state.title_generation_pending);
+                    assert_eq!(session.state.saved.title.as_deref(), Some("First prompt"));
+                    let mut failed = starting.clone();
+                    failed.status = codex::Status::Disconnected;
+                    session.accept_snapshot(failed);
+                    assert!(!session.state.title_generation_pending);
+                    assert!(session.dashboard_title_waiting.is_none());
+                    session.dashboard_title_waiting = Some("First prompt".into());
+                    let mut actor_pending = starting.clone();
+                    actor_pending.title_generation_pending = true;
+                    session.accept_snapshot(actor_pending.clone());
+                    assert!(session.state.title_generation_pending);
+                    assert!(session.dashboard_title_waiting.is_some());
+                    let mut rejected = actor_pending.clone();
+                    rejected.rejected_submission = Some(42);
+                    rejected.title_generation_pending = false;
+                    session.accept_snapshot(rejected);
+                    assert!(!session.state.title_generation_pending);
+                    assert!(session.dashboard_title_waiting.is_none());
+                    session.dashboard_title_waiting = Some("First prompt".into());
+                    session.accept_snapshot(starting.clone());
+                    session.cancel_dashboard_title_waiting();
+                    assert!(!session.state.title_generation_pending);
+                    session.dashboard_title_waiting = Some("First prompt".into());
+                    let mut actor_pending = starting;
+                    actor_pending.title_generation_pending = true;
+                    actor_pending.saved.title = Some("First prompt".into());
+                    session.accept_snapshot(actor_pending.clone());
+                    assert!(session.state.title_generation_pending);
+                    assert!(session.dashboard_title_waiting.is_none());
+                    actor_pending.title_generation_pending = false;
+                    session.accept_snapshot(actor_pending);
+                    assert!(!session.state.title_generation_pending);
+                });
+            });
+        }
+    }
 
     fn saved(provider: codex::Provider) -> SavedSession {
         SavedSession {

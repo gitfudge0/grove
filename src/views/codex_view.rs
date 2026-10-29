@@ -649,7 +649,7 @@ fn composer_scope(state: &codex::Snapshot) -> String {
     )
 }
 
-fn composer_model_name(state: &codex::Snapshot) -> String {
+pub(super) fn composer_model_name(state: &codex::Snapshot) -> String {
     effective_model(state)
         .and_then(|model| model["displayName"].as_str())
         .or(state.model.as_deref())
@@ -4112,6 +4112,7 @@ impl CodexView {
             self.follow_after_submit = true;
         } else if let Err(error) = result {
             self.session.update(cx, |session, cx| {
+                session.cancel_dashboard_title_waiting();
                 session.state.error = Some(error);
                 cx.notify();
             });
