@@ -1002,13 +1002,8 @@ impl Sidebar {
                     section = section.child(actions);
                 }
                 let reasons = state.map(|state| pr.readiness_reasons(state));
-                let refreshing = self.checkout_panel.pr_loading || self.checkout_panel.loading;
-                let (readiness, readiness_kind) = if refreshing {
-                    (
-                        "Merge readiness: refreshing".to_owned(),
-                        super::super::status::StatusKind::Working,
-                    )
-                } else if let Some(reasons) = &reasons {
+                // Poll in the background: cached facts remain visible until replaced.
+                let (readiness, readiness_kind) = if let Some(reasons) = &reasons {
                     if reasons.is_empty() {
                         (
                             "Ready to merge".into(),
@@ -1074,28 +1069,24 @@ impl Sidebar {
                             ICON_SM,
                             cx,
                         ));
-                    if !refreshing {
-                        if let Some(reasons) = reasons {
-                            for (index, reason) in reasons.into_iter().enumerate() {
-                                let kind = if reason.contains("unavailable")
-                                    || reason.contains("pending")
-                                {
+                    if let Some(reasons) = reasons {
+                        for (index, reason) in reasons.into_iter().enumerate() {
+                            let kind =
+                                if reason.contains("unavailable") || reason.contains("pending") {
                                     super::super::status::StatusKind::Unknown
                                 } else {
                                     super::super::status::StatusKind::Warning
                                 };
-                                details = details.child(super::super::status::label(
-                                    SharedString::from(format!("checkout-pr-gate-{index}")),
-                                    kind,
-                                    reason,
-                                    ICON_SM,
-                                    cx,
-                                ));
-                            }
-                        } else {
-                            details =
-                                details.child("Refresh checkout status to inspect merge gates");
+                            details = details.child(super::super::status::label(
+                                SharedString::from(format!("checkout-pr-gate-{index}")),
+                                kind,
+                                reason,
+                                ICON_SM,
+                                cx,
+                            ));
                         }
+                    } else {
+                        details = details.child("Refresh checkout status to inspect merge gates");
                     }
                     section = section.child(details);
                 }
@@ -3712,11 +3703,13 @@ mod tests {
             cx.set_global(crate::zoom::ZoomState::new(1.0));
         });
         for (width, expanded) in [(280., true), (220., true), (280., false), (220., false)] {
+            let mut sidebar_entity = None;
             let window = cx.open_window(gpui::size(gpui::px(width),gpui::px(700.)), |window,cx| {
                 let runtime = cx.new(crate::runtime::Runtime::new);
                 let sidebar = cx.new(|cx| { let mut sidebar = Sidebar::new(runtime,window,cx);
-                    sidebar.checkout_panel.pr_state = Some(Ok(Some(serde_json::from_value(serde_json::json!({"number":142,"title":"A long pull request title that must yield to fixed actions and wrap readiness", "url":"https://github.com/example/project/pull/142","state":"OPEN","isDraft":false,"headRefOid":"head","headRefName":"topic","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"CI / integration","status":"COMPLETED","conclusion":"FAILURE"}]})).unwrap())));
+                    sidebar.checkout_panel.pr_state = Some(Ok(Some(serde_json::from_value(serde_json::json!({"number":142,"title":"A long pull request title that must yield to fixed actions and wrap readiness", "url":"https://github.com/example/project/pull/142","state":"OPEN","isDraft":false,"headRefOid":"head","headRefName":"topic","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"CI / integration","status":"COMPLETED","conclusion":"SUCCESS"}]})).unwrap())));
                     sidebar.checkout_panel.pr_expanded = expanded; sidebar });
+                sidebar_entity = Some(sidebar.clone());
                 let repo = tempfile::tempdir().unwrap();
                 assert!(std::process::Command::new("git").current_dir(repo.path()).args(["init", "-b", "topic"]).output().unwrap().status.success());
                 let state = grove_core::checkout_git::inspect(repo.path()).unwrap();
@@ -3735,6 +3728,29 @@ mod tests {
                 format!("/tmp/grove-pr-workflows-{width}-collapsed.png")
             };
             image.save(&path).unwrap();
+            let sidebar = sidebar_entity.unwrap();
+            for (loading, pr_loading) in [(true, false), (false, true), (true, true)] {
+                cx.update(|cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.checkout_panel.loading = loading;
+                        sidebar.checkout_panel.pr_loading = pr_loading;
+                        cx.notify();
+                    });
+                });
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                let refreshing = cx.capture_screenshot(window.into()).unwrap();
+                assert!(
+                    image.as_raw() == refreshing.as_raw(),
+                    "cached PR summary and expanded gates must remain unchanged during refresh \
+                     (width={width}, expanded={expanded}, git={loading}, pr={pr_loading})"
+                );
+            }
+            cx.update_window(window.into(), |_, window, _| window.remove_window())
+                .unwrap();
         }
     }
 
