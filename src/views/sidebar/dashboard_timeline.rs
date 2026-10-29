@@ -45,7 +45,16 @@ impl RowMetadata {
             )
     }
 }
-fn metadata_group(glyph: &str, text: String) -> AnyElement {
+fn metadata_group(glyph: &str, text: String, window: &Window) -> AnyElement {
+    let selector = format!("dashboard-meta-label-{glyph}");
+    let mut run = window.text_style().to_run(text.len());
+    run.font.family = crate::fonts::UI_FAMILY.into();
+    let text_width = super::super::components::truncation_safe_label_width(
+        &text,
+        rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+        &run,
+        window.text_system(),
+    );
     div()
         .id(gpui::SharedString::from(format!(
             "dashboard-meta-{glyph}-{text}"
@@ -53,15 +62,23 @@ fn metadata_group(glyph: &str, text: String) -> AnyElement {
         .role(gpui::Role::Group)
         .aria_label(text.clone())
         .min_w_0()
+        .w(text_width + rpx(ICON_SM + SPACE_SM).to_pixels(window.rem_size()))
         .max_w(gpui::relative(1.))
         .flex()
-        .items_center()
+        .items_start()
         .gap(rpx(SPACE_SM))
         .child(icon(glyph, ICON_SM, c::FG_DIM()).flex_shrink_0())
-        .child(div().min_w_0().truncate().child(text))
+        .child(
+            div()
+                .debug_selector(move || selector.clone())
+                .flex_1()
+                .min_w_0()
+                .whitespace_normal()
+                .child(text),
+        )
         .into_any_element()
 }
-fn render_metadata(metadata: &RowMetadata) -> AnyElement {
+fn render_metadata(metadata: &RowMetadata, window: &Window) -> AnyElement {
     div()
         .flex()
         .flex_wrap()
@@ -70,11 +87,16 @@ fn render_metadata(metadata: &RowMetadata) -> AnyElement {
         .text_size(rpx(TEXT_SMALL))
         .line_height(rpx(SESSION_META_LINE_H))
         .text_color(c::FG_DIM())
-        .child(metadata_group("folder", metadata.project.clone()))
-        .child(metadata_group("git-branch", metadata.worktree.clone()))
+        .child(metadata_group("folder", metadata.project.clone(), window))
+        .child(metadata_group(
+            "git-branch",
+            metadata.worktree.clone(),
+            window,
+        ))
         .child(metadata_group(
             metadata.provider.agent().icon_name(),
             metadata.model_label(),
+            window,
         ))
         .into_any_element()
 }
@@ -461,7 +483,7 @@ impl Sidebar {
                                     .child(age.to_owned()),
                             ),
                     )
-                    .child(render_metadata(metadata)),
+                    .child(render_metadata(metadata, window)),
             );
         let open_button = super::super::components::header_control_frame(
             ("dashboard-open-session", id.raw()),
@@ -1528,6 +1550,57 @@ mod tests {
         assert_eq!(metadata.model_label(), "Claude Opus High");
         metadata.effort = Some(String::new());
         assert_eq!(metadata.model_label(), "Claude Opus");
+    }
+    #[gpui::test]
+    fn metadata_model_uses_available_width_and_wraps_when_narrow(cx: &mut gpui::TestAppContext) {
+        struct MetadataProbe;
+        impl gpui::Render for MetadataProbe {
+            fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                render_metadata(
+                    &RowMetadata {
+                        project: "Project".into(),
+                        worktree: "Main checkout".into(),
+                        provider: grove_core::codex::Provider::Codex,
+                        model: "GPT-6.1 Terra".into(),
+                        effort: Some("high".into()),
+                        context: String::new(),
+                        status: Status::Idle,
+                        age: String::new(),
+                    },
+                    window,
+                )
+            }
+        }
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|_, _| MetadataProbe);
+        for width in [440., 110.] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(500.)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let label = cx.debug_bounds("dashboard-meta-label-codex").unwrap();
+            assert!(label.right() <= gpui::px(width));
+            if width > 200. {
+                cx.update(|window, _| {
+                    let text = "GPT-6.1 Terra High";
+                    let mut run = window.text_style().to_run(text.len());
+                    run.font.family = crate::fonts::UI_FAMILY.into();
+                    let required = super::super::super::components::truncation_safe_label_width(
+                        text,
+                        rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                        &run,
+                        window.text_system(),
+                    );
+                    assert!(label.size.width >= required);
+                });
+            } else {
+                assert!(
+                    label.size.height
+                        > rpx(SESSION_META_LINE_H).to_pixels(gpui::px(crate::zoom::REM_BASE))
+                );
+            }
+        }
     }
     #[test]
     fn prior_turn_and_final_answers_never_shimmer_as_current_work() {

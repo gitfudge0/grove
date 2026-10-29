@@ -1,6 +1,7 @@
 //! UI observable projection of the background Codex actor.
 use gpui::{AppContext as _, Context, Task};
 use grove_core::codex::{self, Action, Handle, SavedSession, Snapshot};
+use grove_core::composer_catalog::{self, Scope};
 use std::{
     ops::{Deref, DerefMut},
     rc::Rc,
@@ -39,6 +40,7 @@ pub struct CodexSession {
     _poll: Task<()>,
     deferred: Option<std::sync::mpsc::Receiver<Action>>,
     catalog_generation: u64,
+    catalog_scope: Option<Scope>,
     catalog_selection_error: bool,
     dashboard_title_waiting: Option<String>,
 }
@@ -64,11 +66,30 @@ impl CodexSession {
             _poll: poll,
             deferred: Some(receiver),
             catalog_generation: 0,
+            catalog_scope: None,
             catalog_loading: false,
             catalog_error: None,
             catalog_selection_error: false,
             dashboard_title_waiting: None,
         };
+        // The startup dashboard is created before model browsing. Warm the other
+        // provider concurrently; the selected provider is loaded by refresh below.
+        if let Some(settings) = cx.try_global::<crate::settings::SettingsState>() {
+            let mut other = session.state.saved.clone();
+            other.provider = match other.provider {
+                codex::Provider::Codex => codex::Provider::Claude,
+                codex::Provider::Claude => codex::Provider::Codex,
+            };
+            let other_args = other.provider.agent().launch_args_for_backend(
+                true,
+                settings.store.yolo_enabled,
+                settings.store.chrome_enabled.unwrap_or(false),
+            );
+            if std::path::Path::new(&cwd).is_dir() {
+                cx.background_spawn(async move { composer_catalog::discover(other, other_args) })
+                    .detach();
+            }
+        }
         session.refresh_catalog(cwd, args, cx);
         session
     }
@@ -106,7 +127,12 @@ impl CodexSession {
         let generation = self.catalog_generation;
         let mut saved = self.state.saved.clone();
         saved.cwd = cwd;
-        let discovery = cx.background_spawn(async move { codex::discover_composer(saved, args) });
+        self.catalog_scope = Some(Scope::new(&saved, &args));
+        if let Some(catalog) = composer_catalog::cached(&saved, &args) {
+            self.complete_catalog(generation, Ok(catalog), cx);
+            return;
+        }
+        let discovery = cx.background_spawn(async move { composer_catalog::discover(saved, args) });
         cx.spawn(async move |this, cx| {
             let result = discovery.await;
             let _ = this.update(cx, |this, cx| {
@@ -114,6 +140,10 @@ impl CodexSession {
             });
         })
         .detach();
+    }
+    pub fn retry_catalog(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        composer_catalog::invalidate(&self.state.saved, &args);
+        self.refresh_catalog(self.state.saved.cwd.clone(), args, cx);
     }
     fn complete_catalog(
         &mut self,
@@ -228,7 +258,17 @@ impl CodexSession {
             },
             cx,
         );
-        self.refresh_catalog(self.state.saved.cwd.clone(), args, cx);
+        // Models already include effort capabilities. Selecting another advertised
+        // model in the same scope is local, not another provider initialization.
+        let ready = !provider_changed
+            && !self.catalog_loading
+            && self.catalog_error.is_none()
+            && self.catalog_scope.as_ref() == Some(&Scope::new(&self.state.saved, &args))
+            && std::path::Path::new(&self.state.saved.cwd).is_dir()
+            && self.validate_draft_catalog().is_ok();
+        if !ready {
+            self.refresh_catalog(self.state.saved.cwd.clone(), args, cx);
+        }
         Ok(())
     }
     pub(crate) fn drain_deferred(&mut self, cx: &mut Context<Self>) {
@@ -314,6 +354,7 @@ impl CodexSession {
             _poll: poll,
             deferred: None,
             catalog_generation: 0,
+            catalog_scope: None,
             catalog_loading: false,
             catalog_error: None,
             catalog_selection_error: false,
@@ -655,6 +696,45 @@ mod dashboard_tests {
             composer: codex::ComposerSettings::default(),
             context: None,
         }
+    }
+
+    #[gpui::test]
+    fn draft_model_selection_keeps_ready_efforts_without_another_handshake(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let checkout = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                // Start outside a real checkout so this fixture never launches a CLI.
+                let session = cx.new(|cx| CodexSession::draft(saved(provider), Vec::new(), cx));
+                session.update(cx, |session, cx| {
+                    session.state.saved.cwd = checkout.path().to_string_lossy().into_owned();
+                    session.catalog_scope = Some(Scope::new(&session.state.saved, &[]));
+                    session.catalog_loading = false;
+                    session.catalog_error = None;
+                    session.state.models = vec![
+                        serde_json::json!({"model":"first", "supportedReasoningEfforts":[{"reasoningEffort":"low"}]}),
+                        serde_json::json!({"model":"second", "supportedReasoningEfforts":[{"reasoningEffort":"high"},{"reasoningEffort":"max"}]}),
+                    ];
+                    session.state.skills = vec![serde_json::json!({"name":"checkout-skill"})];
+                    session.state.resolved_access = Some("read-only".into());
+                    session.state.saved.draft = "keep my draft".into();
+                    session.state.effort = Some("low".into());
+                    session.state.saved.composer.effort = Some("low".into());
+                    let generation = session.catalog_generation;
+                    session.select_draft_model(provider, "second".into(), Vec::new(), cx).unwrap();
+                    assert_eq!(session.catalog_generation, generation);
+                    assert!(!session.catalog_loading);
+                    assert!(session.catalog_error.is_none());
+                    assert_eq!(session.state.models[1]["supportedReasoningEfforts"][1]["reasoningEffort"], "max");
+                    assert_eq!(session.state.skills[0]["name"], "checkout-skill");
+                    assert_eq!(session.state.resolved_access.as_deref(), Some("read-only"));
+                    assert_eq!(session.state.saved.composer.model.as_deref(), Some("second"));
+                    assert!(session.state.saved.composer.effort.is_none());
+                    assert_eq!(session.state.saved.draft, "keep my draft");
+                });
+            }
+        });
     }
 
     #[gpui::test]

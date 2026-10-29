@@ -14,6 +14,7 @@ pub mod claude_agents;
 mod claude_transcript;
 pub mod codex;
 pub mod commit_agent;
+pub mod composer_catalog;
 pub mod controls;
 pub mod diff;
 pub mod elicitation;

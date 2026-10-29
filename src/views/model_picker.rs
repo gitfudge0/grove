@@ -148,6 +148,7 @@ impl ModelPicker {
     }
     fn load(&mut self, provider: codex::Provider, cx: &mut Context<Self>) {
         let i = index(provider);
+        let retry = matches!(self.catalogs[i], Catalog::Error(_));
         self.generations[i] = self.generations[i].wrapping_add(1);
         let generation = self.generations[i];
         self.catalogs[i] = Catalog::Loading;
@@ -173,7 +174,16 @@ impl ModelPicker {
             settings.yolo_enabled,
             settings.chrome_enabled.unwrap_or(false),
         );
-        let task = cx.background_spawn(async move { codex::discover_composer(saved, args) });
+        if retry {
+            grove_core::composer_catalog::invalidate(&saved, &args);
+        }
+        if let Some(state) = grove_core::composer_catalog::cached(&saved, &args) {
+            self.catalogs[i] = Catalog::Ready(models(provider, state.models));
+            cx.notify();
+            return;
+        }
+        let task =
+            cx.background_spawn(async move { grove_core::composer_catalog::discover(saved, args) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
             let _ = this.update(cx, |this, cx| {

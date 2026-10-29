@@ -3973,7 +3973,7 @@ impl CodexView {
             settings.chrome_enabled.unwrap_or(false),
         );
         self.session.update(cx, |session, cx| {
-            session.refresh_catalog(session.state.saved.cwd.clone(), args, cx);
+            session.retry_catalog(args, cx);
         });
     }
 
