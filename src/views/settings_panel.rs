@@ -726,6 +726,22 @@ impl SettingsPanel {
                                 crate::entities::provider_updates::ProviderUpdates::check,
                             );
                         }))
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                    && !event.keystroke.modifiers.control
+                                    && !event.keystroke.modifiers.alt
+                                    && !event.keystroke.modifiers.platform
+                                {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    this.runtime.read(cx).provider_updates.clone().update(
+                                        cx,
+                                        crate::entities::provider_updates::ProviderUpdates::check,
+                                    );
+                                }
+                            },
+                        ))
                     }),
                 ),
             )
@@ -745,17 +761,10 @@ impl SettingsPanel {
             let provider = &row.status;
             let agent = provider.agent;
             let id = format!("settings-provider-{}", agent.label());
-            let expanded = self.provider_details.contains(agent.label());
-            let sessions = state.active_sessions(agent, cx);
-            let external = matches!(
+            let native = matches!(
                 provider.installer,
-                grove_core::provider_updates::Installer::External { .. }
+                grove_core::provider_updates::Installer::ClaudeNative
             );
-            let enabled = provider.can_update()
-                && sessions.is_empty()
-                && !checking
-                && !updating
-                && row.error.is_none();
             let installed =
                 provider
                     .installed
@@ -765,129 +774,22 @@ impl SettingsPanel {
                     } else {
                         "Version unavailable"
                     });
-            let versions = match provider.latest.as_deref() {
-                Some(latest) if provider.update_available() => format!("{installed} → {latest}"),
-                Some(latest) if provider.installed.as_deref() != Some(latest) => {
-                    format!("{installed} · public {latest}")
-                }
-                _ => installed.to_string(),
-            };
-            let current = !row.checking
-                && !row.updating
-                && row.error.is_none()
-                && provider.installed.is_some()
-                && provider.latest.is_some()
-                && !provider.update_available();
-            let external_action = external && !current;
-            let mut supporting = div()
-                .min_w_0()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(rpx(SPACE_SM))
-                .pl(rpx(ICON_MD + SPACE_SM))
-                .child(
-                    super::components::readonly_value(format!("{id}-versions"), versions)
-                        .text_size(rpx(TEXT_SMALL))
-                        .line_height(rpx(CARD_LINE_SM_H))
-                        .text_color(c::FG_DIM()),
-                );
-            if provider.latest.is_some() && (external || row.error.is_some()) {
-                supporting =
-                    supporting.child(div().text_color(c::FG_DIM()).child(if row.error.is_some() {
-                        if external {
-                            "Latest public · cached"
-                        } else {
-                            "Cached"
-                        }
-                    } else {
-                        "Latest public"
-                    }));
-            }
-            if row.checking || row.updated {
-                supporting = supporting.child(status::label(
-                    format!("{id}-status"),
-                    if row.checking {
-                        StatusKind::Working
-                    } else {
-                        StatusKind::Success
-                    },
-                    if row.checking {
-                        "Checking…"
-                    } else {
-                        "Verified"
-                    },
-                    ICON_SM,
-                    cx,
-                ));
-            }
-            let mut actions = div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(rpx(SPACE_SM));
-            let disclosure_label = if external_action {
-                "How to update"
-            } else {
-                "Details"
-            };
-            let disclosure = self
-                .button(
-                    format!("{id}-details"),
-                    format!("{} {disclosure_label}", agent_display_label(agent)),
-                    false,
-                    true,
+            let versions = if !native && provider.update_available() {
+                format!(
+                    "{installed} → {}",
+                    provider.latest.as_deref().unwrap_or_default()
                 )
-                .debug_selector({
-                    let id = id.clone();
-                    move || format!("{id}-details")
-                })
-                .border_0()
-                .bg(c::BG())
-                .text_color(c::FG_DIM())
-                .tab_stop(true)
-                .aria_expanded(expanded)
-                .aria_description(if expanded {
-                    "Expanded. Activate to collapse"
-                } else {
-                    "Collapsed. Activate to expand"
-                })
-                .child(crate::icons::icon(
-                    if expanded { "chev-down" } else { "chev-right" },
-                    ICON_SM,
-                    c::FG_DIM(),
-                ))
-                .child(disclosure_label)
-                .on_click(
-                    cx.listener(move |this, _, _, cx| this.toggle_provider_details(agent, cx)),
-                )
-                .on_key_down(
-                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            && !event.keystroke.modifiers.control
-                            && !event.keystroke.modifiers.alt
-                            && !event.keystroke.modifiers.platform
-                        {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.toggle_provider_details(agent, cx);
-                        }
-                    }),
-                );
-            if external_action {
-                actions = actions.child(disclosure);
             } else {
-                supporting = supporting.child(disclosure);
-            }
-            if current {
-                actions = actions.child(status::label(
-                    format!("{id}-current"),
-                    StatusKind::Success,
-                    "Up to date",
-                    ICON_SM,
-                    cx,
-                ));
-            }
+                installed.to_string()
+            };
+            let current = row.update_verified
+                || (!native
+                    && !row.checking
+                    && row.error.is_none()
+                    && provider.installed.is_some()
+                    && provider.latest.is_some()
+                    && !provider.update_available());
+            let enabled = provider.can_update() && !checking && !updating;
             let identity = div()
                 .flex_1()
                 .min_w_0()
@@ -907,22 +809,49 @@ impl SettingsPanel {
                                 .child(agent_display_label(agent)),
                         ),
                 )
-                .child(supporting);
-            if provider.can_update() || row.updating {
+                .child(
+                    super::components::readonly_value(format!("{id}-versions"), versions)
+                        .text_size(rpx(TEXT_SMALL))
+                        .line_height(rpx(CARD_LINE_SM_H))
+                        .text_color(c::FG_DIM())
+                        .pl(rpx(ICON_MD + SPACE_SM)),
+                );
+            let mut actions = div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(rpx(SPACE_SM));
+            if row.updating || (!current && provider.can_update()) {
+                let retry = row.error.is_some();
                 actions = actions.child(
                     self.button(
                         format!("{id}-update"),
-                        format!("Update {}", agent_display_label(agent)),
+                        format!(
+                            "{} {}",
+                            if retry { "Retry updating" } else { "Update" },
+                            agent_display_label(agent)
+                        ),
                         false,
                         enabled,
                     )
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("{id}-update")
+                    })
                     .child(if row.updating {
                         status::mark(format!("{id}-updating"), StatusKind::Working, ICON_SM, cx)
                     } else {
-                        crate::icons::icon("arrow-up", ICON_SM, c::FG_DIM()).into_any_element()
+                        crate::icons::icon(
+                            if retry { "reset" } else { "arrow-up" },
+                            ICON_SM,
+                            c::FG_DIM(),
+                        )
+                        .into_any_element()
                     })
                     .child(if row.updating {
                         "Updating…"
+                    } else if retry {
+                        "Retry"
                     } else {
                         "Update"
                     })
@@ -934,8 +863,37 @@ impl SettingsPanel {
                                 .clone()
                                 .update(cx, |updates, cx| updates.start_update(agent, cx));
                         }))
+                    })
+                    .when(enabled, |el| {
+                        el.on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                    && !event.keystroke.modifiers.control
+                                    && !event.keystroke.modifiers.alt
+                                    && !event.keystroke.modifiers.platform
+                                {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    this.runtime
+                                        .read(cx)
+                                        .provider_updates
+                                        .clone()
+                                        .update(cx, |updates, cx| updates.start_update(agent, cx));
+                                }
+                            },
+                        ))
                     }),
                 );
+            } else if current && row.error.is_none() {
+                actions = actions.child(status::label(
+                    format!("{id}-current"),
+                    StatusKind::Success,
+                    if row.updated { "Updated" } else { "Up to date" },
+                    ICON_SM,
+                    cx,
+                ));
+            } else if provider.update_available() {
+                actions = actions.child(div().text_color(c::FG_DIM()).child("Update unavailable"));
             }
             let mut card = div()
                 .id(id.clone())
@@ -950,111 +908,77 @@ impl SettingsPanel {
                 .child(
                     div()
                         .flex()
-                        .flex_wrap()
                         .items_center()
                         .gap(rpx(SPACE_LG))
                         .child(identity)
                         .child(actions),
                 );
             if let Some(error) = &row.error {
-                let first_line = error.lines().next().unwrap_or(error);
-                let mut summary = first_line.chars().take(120).collect::<String>();
-                if first_line.chars().count() > 120 {
-                    summary.push('…');
-                }
-                card = card.child(status::label(
-                    format!("{id}-error-summary"),
-                    StatusKind::Failed,
-                    summary,
-                    ICON_SM,
-                    cx,
-                ));
-            } else if !sessions.is_empty() {
-                card = card.child(div().text_color(c::FG_DIM()).child(format!(
-                    "Close {} Grove session{} before updating. See details.",
-                    sessions.len(),
-                    if sessions.len() == 1 { "" } else { "s" }
-                )));
-            }
-            if expanded {
-                let mut details = div()
-                    .id(format!("{id}-detail-body"))
-                    .debug_selector({
-                        let id = id.clone();
-                        move || format!("{id}-detail-body")
-                    })
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_SM))
-                    .pt(rpx(SPACE_SM))
-                    .child(
-                        super::components::readonly_value(
-                            format!("{id}-instructions"),
-                            provider.installer.guidance().to_string(),
-                        )
-                        .text_size(rpx(TEXT_SMALL))
-                        .line_height(rpx(CARD_LINE_SM_H))
-                        .text_color(c::FG_DIM()),
-                    )
-                    .child(
-                        div()
+                let expanded = self.provider_details.contains(agent.label());
+                card = card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .child(status::label(
+                            format!("{id}-error-summary"),
+                            StatusKind::Failed,
+                            if provider.error.is_some() {
+                                "Could not check."
+                            } else {
+                                "Update failed."
+                            },
+                            ICON_SM,
+                            cx,
+                        ))
+                        .child(
+                            self.button(
+                                format!("{id}-details"),
+                                format!("Error details for {}", agent_display_label(agent)),
+                                false,
+                                true,
+                            )
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("{id}-details")
+                            })
+                            .border_0()
+                            .bg(c::BG())
                             .text_color(c::FG_DIM())
-                            .child(format!("Source: {}", provider.installer.label())),
-                    );
-                if let Some(path) = &provider.executable {
-                    details = details.child(
-                        super::components::readonly_value(
-                            format!("{id}-path"),
-                            path.display().to_string(),
-                        )
-                        .text_size(rpx(TEXT_SMALL))
-                        .line_height(rpx(CARD_LINE_SM_H))
-                        .text_color(c::FG_DIM()),
-                    );
-                }
-                if let Some(timestamp) = row.last_success {
-                    let age = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |now| {
-                            now.as_secs().saturating_sub(timestamp.max(0) as u64)
-                        });
-                    let freshness = if age < 60 {
-                        "Checked just now".to_string()
-                    } else {
-                        let (amount, unit) = if age < 3600 {
-                            (age / 60, "minute")
-                        } else if age < 86400 {
-                            (age / 3600, "hour")
-                        } else {
-                            (age / 86400, "day")
-                        };
-                        format!(
-                            "Checked {amount} {unit}{} ago",
-                            if amount == 1 { "" } else { "s" }
-                        )
-                    };
-                    details = details.child(div().text_color(c::FG_DIM()).child(freshness));
-                }
-                if external {
-                    details = details.child(div().text_color(c::FG_DIM()).child("Latest public uses npm’s public release. Your installer may follow a different channel or managed version policy."));
-                }
-                details = details.child(div().text_color(c::FG_DIM()).child(
-                    "Grove checks its own sessions; processes outside Grove are not tracked.",
-                ));
-                if !sessions.is_empty() {
-                    details = details.child(
-                        div()
-                            .text_color(c::FG_DIM())
-                            .child(format!("In use: {}", sessions.join(", "))),
+                            .tab_stop(true)
+                            .aria_expanded(expanded)
+                            .child(crate::icons::icon(
+                                if expanded { "chev-down" } else { "chev-right" },
+                                ICON_SM,
+                                c::FG_DIM(),
+                            ))
+                            .child("Details")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_provider_details(agent, cx);
+                            }))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                        && !event.keystroke.modifiers.control
+                                        && !event.keystroke.modifiers.alt
+                                        && !event.keystroke.modifiers.platform
+                                    {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                        this.toggle_provider_details(agent, cx);
+                                    }
+                                },
+                            )),
+                        ),
+                );
+                if expanded {
+                    card = card.child(
+                        super::components::readonly_value(format!("{id}-error"), error.clone())
+                            .text_size(rpx(TEXT_SMALL))
+                            .line_height(rpx(CARD_LINE_SM_H))
+                            .text_color(c::FG_DIM()),
                     );
                 }
-                if let Some(error) = &row.error {
-                    details = details.child(super::components::readonly_value(format!("{id}-error"), error.clone()).text_size(rpx(TEXT_SMALL)).line_height(rpx(CARD_LINE_SM_H)))
-                        .child(div().text_color(c::FG_DIM()).child("Check for updates again before retrying. Cached public versions retain the last successful check."));
-                }
-                card = card.child(details);
             }
             body = body.child(card);
         }
@@ -2460,6 +2384,95 @@ mod tests {
             assert_eq!(panel.read(cx).page, Page::Settings);
             assert_eq!(panel.read(cx).category, Category::Agents);
         });
+    }
+
+    #[gpui::test]
+    fn provider_rows_keep_codex_and_claude_actions_compact_and_errors_keyboard_accessible(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::entities::provider_updates::ProviderRow;
+        use grove_core::provider_updates::{Installer, ProviderStatus};
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.open_provider_updates(window, cx));
+            let updates = panel.read(cx).runtime.read(cx).provider_updates.clone();
+            updates.update(cx, |updates, cx| {
+                updates.set_rows_for_test(
+                    [Agent::Codex, Agent::Claude]
+                        .into_iter()
+                        .map(|agent| ProviderRow {
+                            status: ProviderStatus {
+                                agent,
+                                installed: Some("1.0.0".into()),
+                                latest: Some("1.1.0".into()),
+                                executable: Some("/fixture/provider".into()),
+                                error: None,
+                                installer: if agent == Agent::Claude {
+                                    Installer::ClaudeNative
+                                } else {
+                                    Installer::Npm {
+                                        executable: "/fixture/npm".into(),
+                                        prefix: "/fixture".into(),
+                                        package: "@openai/codex".into(),
+                                    }
+                                },
+                            },
+                            checking: false,
+                            updating: false,
+                            updated: false,
+                            update_verified: false,
+                            last_success: Some(1),
+                            error: if agent == Agent::Claude {
+                                Some("Permission denied".into())
+                            } else {
+                                None
+                            },
+                        })
+                        .collect(),
+                    cx,
+                );
+            });
+        });
+        draw(cx);
+        let codex = cx
+            .debug_bounds("settings-provider-codex-update")
+            .expect("Codex Update");
+        let claude = cx
+            .debug_bounds("settings-provider-claude-update")
+            .expect("Claude Retry");
+        assert_eq!(
+            codex.right(),
+            claude.right(),
+            "Both providers reserve the same action edge"
+        );
+        assert_eq!(codex.size.height, claude.size.height);
+        let details = cx
+            .debug_bounds("settings-provider-claude-details")
+            .expect("error disclosure");
+        cx.simulate_click(details.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(panel
+                .read(cx)
+                .provider_details
+                .contains(Agent::Claude.label()));
+        });
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(!panel
+                .read(cx)
+                .provider_details
+                .contains(Agent::Claude.label()));
+        });
+        assert!(
+            cx.debug_bounds("settings-provider-codex-details").is_none(),
+            "No routine disclosure"
+        );
     }
 
     #[gpui::test]

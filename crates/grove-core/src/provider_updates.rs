@@ -17,6 +17,8 @@ pub enum Installer {
         prefix: PathBuf,
         package: String,
     },
+    /// The official versioned native installation; its updater owns channel selection.
+    ClaudeNative,
     External {
         guidance: String,
     },
@@ -25,12 +27,14 @@ impl Installer {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Npm { .. } => "npm",
+            Self::ClaudeNative => "Claude native",
             Self::External { .. } => "External installation",
         }
     }
     pub fn guidance(&self) -> &str {
         match self {
             Self::Npm { .. } => "Managed by npm. Grove updates only this installation.",
+            Self::ClaudeNative => "Managed by Claude Code’s native updater.",
             Self::External { guidance } => guidance,
         }
     }
@@ -53,7 +57,11 @@ impl ProviderStatus {
             .is_some_and(|(a, b)| b > a)
     }
     pub fn can_update(&self) -> bool {
-        self.update_available() && !matches!(self.installer, Installer::External { .. })
+        match self.installer {
+            Installer::ClaudeNative => self.installed.as_deref().and_then(version).is_some(),
+            Installer::Npm { .. } => self.update_available(),
+            Installer::External { .. } => false,
+        }
     }
 }
 fn package(agent: Agent) -> Option<&'static str> {
@@ -139,11 +147,35 @@ fn installer_with_npm(agent: Agent, resolved: &Path, fallback_npm: Option<&Path>
     if agent == Agent::Claude
         && dirs::home_dir().is_some_and(|home| {
             resolved.parent() == Some(home.join(".local/share/claude/versions").as_path())
+                && resolved
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .and_then(|name| version(name.strip_suffix(".exe").unwrap_or(name)))
+                    .is_some()
         })
     {
-        return Installer::External { guidance: "Use Claude Code’s native updater (claude update in your terminal). Automatic updates follow your configured channel. Check again afterward.".into() };
+        return Installer::ClaudeNative;
     }
     external(agent)
+}
+
+// The native updater only owns its standard launcher. A custom symlink or
+// direct version-file invocation would keep launching the old version afterward.
+fn installer_for_invocation(agent: Agent, launcher: &Path, resolved: &Path) -> Installer {
+    let detected = installer(agent, resolved);
+    if matches!(detected, Installer::ClaudeNative)
+        && !dirs::home_dir().is_some_and(|home| {
+            launcher
+                == home.join(".local/bin").join(if cfg!(windows) {
+                    "claude.exe"
+                } else {
+                    "claude"
+                })
+        })
+    {
+        return external(agent);
+    }
+    detected
 }
 
 /// Return the actual resolved provider, including Windows npm command wrappers.
@@ -240,7 +272,7 @@ pub fn discover(agent: Agent) -> ProviderStatus {
     status.executable = Some(path.clone());
     if args.is_empty() {
         if let Ok(canonical) = path.canonicalize() {
-            status.installer = installer(agent, &canonical);
+            status.installer = installer_for_invocation(agent, &path, &canonical);
         }
     }
     let mut command = Command::new(program);
@@ -277,6 +309,9 @@ pub fn latest(agent: Agent) -> Result<String, String> {
 }
 pub fn check(agent: Agent) -> ProviderStatus {
     let mut status = discover(agent);
+    if matches!(status.installer, Installer::ClaudeNative) {
+        return status;
+    }
     match latest(agent) {
         Ok(v) => status.latest = Some(v),
         Err(e) => status.error = Some(format!("Could not check for updates: {e}")),
@@ -303,6 +338,38 @@ fn update_with(
     let fresh = discover_provider(request.agent);
     if fresh.executable != request.executable || fresh.installer != request.installer {
         return Err("The provider installation changed. Check for updates again.".into());
+    }
+    if matches!(fresh.installer, Installer::ClaudeNative) {
+        // The native updater selects the configured channel, not npm's public latest.
+        // Invoke the stable launcher, never its versioned symlink target.
+        let before = fresh
+            .installed
+            .as_deref()
+            .and_then(version)
+            .ok_or("Could not read the installed version. Check for updates again.")?;
+        let launcher = fresh
+            .executable
+            .as_ref()
+            .ok_or("The provider executable is unavailable.")?;
+        let mut command = Command::new(launcher);
+        command.arg("update");
+        execute(command)?;
+        let mut result = discover_provider(request.agent);
+        if result.executable != fresh.executable
+            || result.installer != fresh.installer
+            || result
+                .installed
+                .as_deref()
+                .and_then(version)
+                .is_none_or(|v| v < before)
+        {
+            return Err(
+                "The updater finished, but Grove could not verify the installation. Check again."
+                    .into(),
+            );
+        }
+        result.latest = None;
+        return Ok(result);
     }
     let target = request
         .latest
@@ -340,6 +407,7 @@ fn update_with(
             }
             c
         }
+        Installer::ClaudeNative => unreachable!("native updater handled above"),
         Installer::External { guidance } => return Err(guidance.clone()),
     };
     command.env("CI", "1");
@@ -387,6 +455,109 @@ mod tests {
                 package: "@openai/codex".into(),
             },
             error: None,
+        }
+    }
+    fn native_status(installed: &str) -> ProviderStatus {
+        ProviderStatus {
+            agent: Agent::Claude,
+            installer: Installer::ClaudeNative,
+            executable: Some("/home/user/.local/bin/claude".into()),
+            installed: Some(installed.into()),
+            latest: None,
+            error: None,
+        }
+    }
+    #[test]
+    fn native_update_uses_owned_launcher_and_accepts_configured_channel() {
+        for after in ["1.0.0", "1.1.0"] {
+            let request = native_status("1.0.0");
+            assert!(request.can_update());
+            let mut discoveries = [request.clone(), native_status(after)].into_iter();
+            let result = update_with(
+                &request,
+                |_| discoveries.next().unwrap(),
+                |_| panic!("native channel must not use npm latest"),
+                |command| {
+                    assert_eq!(command.get_program(), "/home/user/.local/bin/claude");
+                    assert_eq!(command.get_args().collect::<Vec<_>>(), ["update"]);
+                    Ok(String::new())
+                },
+            )
+            .unwrap();
+            assert_eq!(result.installed.as_deref(), Some(after));
+            assert!(result.latest.is_none());
+        }
+    }
+    #[test]
+    fn native_update_rejects_failed_commands_changed_identity_and_unverified_versions() {
+        let request = native_status("1.0.0");
+        assert!(update_with(
+            &request,
+            |_| request.clone(),
+            |_| panic!(),
+            |_| Err("permission denied".into())
+        )
+        .unwrap_err()
+        .contains("permission denied"));
+        for installed in [Some("0.9.0"), None] {
+            let mut after = native_status("1.1.0");
+            after.installed = installed.map(str::to_string);
+            let mut discoveries = [request.clone(), after].into_iter();
+            assert!(update_with(
+                &request,
+                |_| discoveries.next().unwrap(),
+                |_| panic!(),
+                |_| Ok(String::new())
+            )
+            .unwrap_err()
+            .contains("could not verify"));
+        }
+        let mut changed = native_status("1.1.0");
+        changed.installer = external(Agent::Claude);
+        let mut discoveries = [request.clone(), changed].into_iter();
+        assert!(update_with(
+            &request,
+            |_| discoveries.next().unwrap(),
+            |_| panic!(),
+            |_| Ok(String::new())
+        )
+        .is_err());
+    }
+    #[test]
+    fn only_versioned_claude_native_paths_authorize_native_updater() {
+        let home = dirs::home_dir().unwrap();
+        let directory = home.join(".local/share/claude/versions");
+        assert_eq!(
+            installer_with_npm(Agent::Claude, &directory.join("2.1.312"), None),
+            Installer::ClaudeNative
+        );
+        assert!(matches!(
+            installer_with_npm(Agent::Claude, &directory.join("unrelated"), None),
+            Installer::External { .. }
+        ));
+        assert!(matches!(
+            installer_with_npm(Agent::Codex, &directory.join("2.1.312"), None),
+            Installer::External { .. }
+        ));
+    }
+    #[test]
+    fn native_updater_requires_the_installer_owned_launcher() {
+        let home = dirs::home_dir().unwrap();
+        let resolved = home.join(".local/share/claude/versions/2.1.312");
+        let launcher = home.join(".local/bin").join(if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        });
+        assert_eq!(
+            installer_for_invocation(Agent::Claude, &launcher, &resolved),
+            Installer::ClaudeNative
+        );
+        for custom in [home.join("custom/claude"), resolved.clone()] {
+            assert!(matches!(
+                installer_for_invocation(Agent::Claude, &custom, &resolved),
+                Installer::External { .. }
+            ));
         }
     }
     #[test]

@@ -1,5 +1,6 @@
 //! App-owned provider maintenance. Install intent is always explicit and reserved
-//! synchronously against launches; cached network facts never grant install authority.
+//! synchronously against new launches; existing sessions are preserved. Cached
+//! network facts never grant install authority.
 use super::session_registry::SessionRegistry;
 use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Context, Entity, Task};
@@ -18,6 +19,7 @@ pub struct ProviderRow {
     pub checking: bool,
     pub updating: bool,
     pub updated: bool,
+    pub update_verified: bool,
     pub last_success: Option<i64>,
     pub error: Option<String>,
 }
@@ -116,6 +118,11 @@ impl ProviderUpdates {
     pub fn rows(&self) -> &[ProviderRow] {
         &self.rows
     }
+    #[cfg(test)]
+    pub(crate) fn set_rows_for_test(&mut self, rows: Vec<ProviderRow>, cx: &mut Context<Self>) {
+        self.rows = rows;
+        cx.notify();
+    }
     pub fn checking(&self) -> bool {
         self.rows.iter().any(|r| r.checking) || self.check_task.is_some()
     }
@@ -148,6 +155,7 @@ impl ProviderUpdates {
         for row in &mut self.rows {
             row.checking = true;
             row.updated = false;
+            row.update_verified = false;
         }
         let (sender, mut receiver) = futures::channel::mpsc::unbounded();
         let work = PROVIDERS
@@ -157,8 +165,12 @@ impl ProviderUpdates {
                 cx.background_spawn(async move {
                     let mut status = provider_updates::discover(agent);
                     let _ = sender.unbounded_send((status.clone(), true));
-                    match provider_updates::latest(agent) {
-                        Ok(latest) => status.latest = Some(latest),
+                    match if matches!(status.installer, provider_updates::Installer::ClaudeNative) {
+                        Ok(None)
+                    } else {
+                        provider_updates::latest(agent).map(Some)
+                    } {
+                        Ok(latest) => status.latest = latest,
                         Err(error) => {
                             status.error = Some(format!("Could not check for updates: {error}"));
                         }
@@ -176,13 +188,21 @@ impl ProviderUpdates {
                     .update(cx, |this, cx| {
                         let key = cache_key(&status);
                         let error = status.error.clone();
+                        if matches!(status.installer, provider_updates::Installer::ClaudeNative) {
+                            status.latest = None;
+                        }
                         if let Some(latest) = &status.latest {
                             this.cache
                                 .latest
                                 .insert(key.clone(), (latest.clone(), now()));
                         }
                         let last_success = this.cache.latest.get(&key).map(|(_, at)| *at);
-                        if status.latest.is_none() {
+                        if status.latest.is_none()
+                            && !matches!(
+                                status.installer,
+                                provider_updates::Installer::ClaudeNative
+                            )
+                        {
                             status.latest = this.cache.latest.get(&key).map(|(v, _)| v.clone());
                         }
                         let row = ProviderRow {
@@ -190,6 +210,7 @@ impl ProviderUpdates {
                             checking,
                             updating: false,
                             updated: false,
+                            update_verified: false,
                             last_success,
                             error,
                         };
@@ -224,23 +245,15 @@ impl ProviderUpdates {
         if self.checking() || self.rows.iter().any(|r| r.updating) {
             return;
         }
-        let busy = self.active_sessions(agent, cx);
         let Some(row) = self.rows.iter_mut().find(|r| r.status.agent == agent) else {
             return;
         };
-        if !busy.is_empty() {
-            row.error = Some(format!(
-                "Close these Grove sessions before updating: {}",
-                busy.join(", ")
-            ));
-            cx.notify();
-            return;
-        }
-        if !row.status.can_update() || row.error.is_some() {
+        if !row.status.can_update() {
             return;
         }
         row.updating = true;
         row.updated = false;
+        row.update_verified = false;
         row.error = None;
         let status = row.status.clone();
         let work = cx.background_spawn(async move {
@@ -248,7 +261,7 @@ impl ProviderUpdates {
             let detected = result
                 .as_ref()
                 .err()
-                .map(|_| provider_updates::discover(status.agent));
+                .map(|_| provider_updates::check(status.agent));
             (result, detected)
         });
         self.update_task = Some(cx.spawn(async move |this, cx| {
@@ -260,13 +273,21 @@ impl ProviderUpdates {
                 row.updating = false;
                 match result {
                     Ok(status) => {
+                        row.updated = status.installed != row.status.installed;
+                        row.update_verified = true;
                         row.status = status;
-                        row.updated = true;
                         row.error = None;
                     }
                     Err(error) => {
                         if let Some(mut detected) = detected {
-                            detected.latest.clone_from(&row.status.latest);
+                            if detected.latest.is_none()
+                                && !matches!(
+                                    detected.installer,
+                                    provider_updates::Installer::ClaudeNative
+                                )
+                            {
+                                detected.latest.clone_from(&row.status.latest);
+                            }
                             row.status = detected;
                         }
                         row.error = Some(error);
@@ -366,28 +387,34 @@ mod tests {
             checking: false,
             updating: false,
             updated: false,
+            update_verified: false,
             last_success: Some(1),
             error: None,
         }
     }
     #[gpui::test]
-    fn open_sessions_block_updates_before_worker_dispatch(cx: &mut gpui::TestAppContext) {
-        let registry = cx.new(|_| SessionRegistry::new());
-        registry.update(cx, |registry, _| {
-            registry.insert_meta("Project".into(), "/fixture".into(), Agent::Codex);
-        });
-        let updates = cx.new(|cx| ProviderUpdates::new(registry, cx));
-        updates.update(cx, |updates, cx| {
-            updates.rows.push(row());
-            updates.start_update(Agent::Codex, cx);
-            assert!(!updates.is_updating(Agent::Codex));
-            assert!(updates.update_task.is_none());
-            assert!(updates.rows[0]
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("Grove sessions"));
-        });
+    fn open_sessions_allow_updates_before_worker_dispatch(cx: &mut gpui::TestAppContext) {
+        for agent in [Agent::Codex, Agent::Claude] {
+            let registry = cx.new(|_| SessionRegistry::new());
+            registry.update(cx, |registry, _| {
+                registry.insert_meta("Project".into(), "/fixture".into(), agent);
+            });
+            let updates = cx.new(|cx| ProviderUpdates::new(registry, cx));
+            updates.update(cx, |updates, cx| {
+                let mut fixture = row();
+                fixture.status.agent = agent;
+                if agent == Agent::Claude {
+                    fixture.status.installer = provider_updates::Installer::ClaudeNative;
+                }
+                fixture.error = Some("Earlier update failed".into());
+                updates.rows.push(fixture);
+                updates.set_restoring(true, cx);
+                updates.start_update(agent, cx);
+                assert!(updates.is_updating(agent));
+                assert!(updates.update_task.is_some());
+                assert!(updates.rows[0].error.is_none());
+            });
+        }
     }
     #[gpui::test]
     fn provider_stopping_process_completion_refreshes_maintenance_state(
