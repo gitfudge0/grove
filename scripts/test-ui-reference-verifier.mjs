@@ -276,23 +276,41 @@ for (const [name, mutate] of [
   assert.equal(classifyEdgeRaster(encodePng(f.nativeImage), encodePng(f.browserImage), f.native, f.browser, f.gates).status, 'failed');
 });
 
+function slotGroups(document) {
+  const controls = document.root.children, groups = new Map();
+  const sample = (control, state = control.state) => ({ node_id: control.id, state, slots: {
+    icon: control.icon ? { x: 8, y: 6, width: 12, height: 12 } : null,
+    label: { x: control.icon ? 24 : 8, y: 6 }
+  } });
+  for (const control of controls) {
+    const hasIcon = Boolean(control.icon);
+    if (!groups.has(hasIcon)) groups.set(hasIcon, []);
+    groups.get(hasIcon).push(sample(control));
+  }
+  const primary = controls.find(control => control.state === 'rest');
+  groups.get(Boolean(primary.icon)).push(sample(primary, 'hover'), sample(primary, 'focused'));
+  return [...groups].map(([has_icon, samples]) => ({ has_icon, samples }));
+}
 function interactionFixture() {
   const snapshot = { colors_rgba: { rail: [0, 0, 0, 1], hover: [1, 1, 1, 1] } };
+  const document = { actions: ['run'], root: { kind: 'column', children: ['rest', 'disabled', 'loading'].map(state => ({
+    id: state, kind: 'dense_action', state, action: 'run', icon: 'play'
+  })) } };
   const facts = {
     pointer_activation: { before: 0, after: 1 }, keyboard_enter: { before: 1, after: 2 }, keyboard_space: { before: 2, after: 3 },
     disabled_rejection: { before: 3, after: 3 }, loading_rejection: { before: 3, after: 3 },
     tab_traversal: { before: 'one', after: 'two', returned: 'one' }, focus_restoration: { before: 'one', after: 'one' },
-    hover_release: { rest: [0, 0, 0, 255], hover: [255, 255, 255, 255], released: [0, 0, 0, 255] }, stable_slots: {}
+    hover_release: { rest: [0, 0, 0, 255], hover: [255, 255, 255, 255], released: [0, 0, 0, 255] }, stable_slots: { groups: slotGroups(document) }
   };
-  for (const state of ['rest', 'disabled', 'loading', 'hover', 'focused']) facts.stable_slots[state] = { icon: { x: 8, y: 6, width: 12, height: 12 }, label: { x: 24, y: 6 } };
   const native = { reference_hash: 'ref', contract_hash: 'contract', context: { native_build_hash: 'build' }, interaction: { schema_version: 1, status: 'passed', reference_hash: 'ref', contract_hash: 'contract', native_build_hash: 'build',
-    cases: Object.entries(facts).map(([name, observed]) => ({ name, status: 'passed', observed, evidence: { 'interaction-rest.png': 'a'.repeat(64) } })) } };
-  return { native, snapshot };
+    cases: Object.entries(facts).map(([name, observed]) => ({ name, status: 'passed', observed, evidence: { 'interaction-rest.png': 'a'.repeat(64) } })),
+    action_routes: [{ node_id: 'rest', expected: 'run', observed: 'run', before: 3, after: 4 }] } };
+  return { native, snapshot, document };
 }
 test('interaction policy requires actual case facts and frame evidence, not a passed flag', () => {
-  const { native, snapshot } = interactionFixture(); assert.equal(verifyInteraction(native, snapshot).status, 'passed');
-  native.interaction.cases = []; assert.equal(verifyInteraction(native, snapshot).status, 'failed');
-  native.interaction = { status: 'untested' }; assert.equal(verifyInteraction(native, snapshot).status, 'untested');
+  const { native, snapshot, document } = interactionFixture(); assert.equal(verifyInteraction(native, snapshot, document).status, 'passed');
+  native.interaction.cases = []; assert.equal(verifyInteraction(native, snapshot, document).status, 'failed');
+  native.interaction = { status: 'untested' }; assert.equal(verifyInteraction(native, snapshot, document).status, 'untested');
 });
 for (const [name, mutate] of [
   ['missing activation', n => { n.interaction.cases[0].observed.after = 0; }],
@@ -301,39 +319,43 @@ for (const [name, mutate] of [
   ['wrong hover palette', n => { n.interaction.cases.find(c => c.name === 'hover_release').observed.hover = [254, 255, 255, 255]; }],
   ['lost focus restoration', n => { n.interaction.cases.find(c => c.name === 'focus_restoration').observed.after = 'wrong'; }],
   ['stuck tab focus', n => { n.interaction.cases.find(c => c.name === 'tab_traversal').observed.after = 'one'; }],
-  ['loading slot shift', n => { n.interaction.cases.find(c => c.name === 'stable_slots').observed.loading.icon.x++; }],
+  ['loading slot shift', n => { n.interaction.cases.find(c => c.name === 'stable_slots').observed.groups[0].samples.find(s => s.state === 'loading').slots.icon.x++; }],
   ['missing evidence', n => { n.interaction.cases[0].evidence = {}; }],
-  ['stale native build', n => { n.interaction.native_build_hash = 'old-build'; }]
+  ['stale native build', n => { n.interaction.native_build_hash = 'old-build'; }],
+  ['missing slot sample', n => { n.interaction.cases.find(c => c.name === 'stable_slots').observed.groups[0].samples.pop(); }],
+  ['forged slot identity', n => { n.interaction.cases.find(c => c.name === 'stable_slots').observed.groups[0].samples[0].node_id = 'missing'; }],
+  ['wrong icon treatment', n => { n.interaction.cases.find(c => c.name === 'stable_slots').observed.groups[0].has_icon = false; }],
+  ['duplicated slot treatment', n => { const groups = n.interaction.cases.find(c => c.name === 'stable_slots').observed.groups; groups.push(structuredClone(groups[0])); }]
 ]) test(`interaction policy rejects ${name}`, () => {
-  const { native, snapshot } = interactionFixture(); mutate(native);
-  assert.equal(verifyInteraction(native, snapshot).status, 'failed');
+  const { native, snapshot, document } = interactionFixture(); mutate(native);
+  assert.equal(verifyInteraction(native, snapshot, document).status, 'failed');
 });
 test('inert interaction scope is derived from authored controls and actions', () => {
   const { native, snapshot } = interactionFixture();
-  native.interaction.scope = 'inert'; native.interaction.cases = [];
+  native.interaction.scope = 'inert'; native.interaction.cases = []; native.interaction.action_routes = [];
   const document = { actions: [], root: { id: 'text', kind: 'text', children: [] } };
   assert.equal(verifyInteraction(native, snapshot, document).status, 'passed');
   document.root.kind = 'dense_action';
   assert.equal(verifyInteraction(native, snapshot, document).status, 'failed');
 });
 test('all enabled authored actions require observed native routes and callback count changes', () => {
-  const { native, snapshot } = interactionFixture();
-  const document = { actions: ['first', 'second'], root: { kind: 'column', children: [
-    { id: 'one', kind: 'dense_action', state: 'rest', action: 'first', icon: 'play' },
-    { id: 'two', kind: 'dense_action', state: 'rest', action: 'second', icon: 'play' }
-  ] } };
-  native.interaction.action_routes = [ { node_id: 'one', expected: 'first', observed: 'first', before: 3, after: 4 }, { node_id: 'two', expected: 'second', observed: 'second', before: 4, after: 5 } ];
+  const { native, snapshot, document } = interactionFixture();
+  document.actions.push('inspect');
+  document.root.children.unshift({ id: 'inspect', kind: 'dense_action', state: 'rest', action: 'inspect', icon: null });
+  native.interaction.action_routes.unshift({ node_id: 'inspect', expected: 'inspect', observed: 'inspect', before: 4, after: 5 });
+  const slots = native.interaction.cases.find(c => c.name === 'stable_slots').observed;
+  slots.groups = slotGroups(document);
   assert.equal(verifyInteraction(native, snapshot, document).status, 'passed');
-  native.interaction.action_routes[1].observed = 'first';
+  native.interaction.action_routes[0].observed = 'run';
   assert.equal(verifyInteraction(native, snapshot, document).status, 'failed');
 });
-test('iconless stable-slot scope permits null slots only when every authored control lacks an icon', () => {
-  const { native, snapshot } = interactionFixture();
-  const document = { actions: ['run'], root: { id: 'button', kind: 'dense_action', state: 'rest', action: 'run', icon: null } };
-  native.interaction.action_routes = [{ node_id: 'button', expected: 'run', observed: 'run', before: 3, after: 4 }];
-  for (const state of Object.values(native.interaction.cases.find(c => c.name === 'stable_slots').observed)) state.icon = null;
+test('iconless rest is compared with its own transient states, separate from icon-bearing inactive states', () => {
+  const { native, snapshot, document } = interactionFixture();
+  document.root.children[0].icon = null;
+  const slots = native.interaction.cases.find(c => c.name === 'stable_slots').observed;
+  slots.groups = slotGroups(document);
   assert.equal(verifyInteraction(native, snapshot, document).status, 'passed');
-  document.root.icon = 'play';
+  slots.groups[0].samples.find(sample => sample.state === 'hover').slots.label.x++;
   assert.equal(verifyInteraction(native, snapshot, document).status, 'failed');
 });
 

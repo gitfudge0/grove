@@ -100,7 +100,7 @@ values are exposed only through the test-only `Bindings::fixture` constructor.
 The generated full tree calls the production
 [composition adapter](../src/ui_reference/compose.rs); capture decorates those
 same elements under test configuration. Production `render` takes no
-measurement recorder or test-platform argument. Compile the owning integration
+measurement recorder or test-platform argument. Ordinary test builds also compile a checked full-tree generated fixture, including its fixture binding constructor. Compile the owning integration
 and run its affected interaction checks; successful fixture capture alone does
 not verify application wiring or live Codex/Claude behavior.
 
@@ -195,10 +195,10 @@ node scripts/test-ui-reference-native.mjs .fudge/ui-reference/native-evidence
 node scripts/test-ui-reference-native-mutations.mjs .fudge/ui-reference/native-evidence/registered-row .fudge/ui-reference/mutation-evidence
 ```
 
-The matrix authors and checks three independent documents: Grove Dark;
+The matrix authors and checks five independent documents: Grove Dark;
 Grove Light with a 20 px rem base in a narrow viewport with two distinct actions; and Nord
-with nested surfaces; the Grove Light case also exercises an iconless rest action. Each goes through `check` and
-`ready`. The mutation gate renders six actual native defects (inset, font,
+with nested surfaces; a textless surface/icon reference; and an iconless rest action beside icon-bearing disabled/loading actions. The Grove Light case puts its distinct iconless rest action first. Each goes through `check` and
+`ready`. Stable-slot observations include every authored control and compare exact geometry within matching icon treatments; hover and focus remain checked against their actual rest control. The mutation gate renders six actual native defects (inset, font,
 radius, icon, incorrect text and flat fill), requires their rejection, restores
 and certifies the valid candidate, and proves frozen artifact bytes unchanged.
 It retains per-case capture/verification logs and available native/comparison
