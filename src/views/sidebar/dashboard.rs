@@ -3,6 +3,8 @@ use super::*;
 use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 
+const DASHBOARD_RECENT_MAX_W: f32 = CHAT_MAX_W * 0.7;
+
 /// Preferences for a fresh dashboard draft after adopting the previous one.
 struct DashboardDefaults {
     project: usize,
@@ -784,7 +786,11 @@ impl Sidebar {
             .id("dashboard-recent")
             .debug_selector(|| "dashboard-recent".into())
             .w_full()
-            .max_w(rpx(CHAT_MAX_W))
+            .max_w(rpx(DASHBOARD_RECENT_MAX_W))
+            .border_1()
+            .border_color(c::BORDER_SOFT())
+            .rounded(rpx(RADIUS_PANEL))
+            .p(rpx(SPACE_2XL))
             .flex()
             .flex_col()
             .child(
