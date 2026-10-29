@@ -2521,6 +2521,7 @@ mod tests {
                 draft_reference: None,
                 config_args: Vec::new(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
             let mut state = grove_core::codex::Snapshot::new(saved);
             state.status = grove_core::codex::Status::Idle;
@@ -2651,6 +2652,7 @@ mod tests {
                 draft_reference: None,
                 config_args: Vec::new(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
             let mut state = grove_core::codex::Snapshot::new(saved);
             state.status = grove_core::codex::Status::Working;

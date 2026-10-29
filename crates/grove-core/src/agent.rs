@@ -291,6 +291,18 @@ impl Agent {
     }
 }
 
+/// Resolve app-owned CLI tools with the same GUI-launch recovery as agents.
+pub(crate) fn resolve_executable(name: &str) -> Option<std::path::PathBuf> {
+    #[cfg(not(windows))]
+    {
+        resolve_unix_agent(name)
+    }
+    #[cfg(windows)]
+    {
+        resolve_on_path(name)
+    }
+}
+
 /// Startup already captures the login shell environment. Also search standard user
 /// install locations when Finder's inherited PATH or a shell initialization failure
 /// omitted them. This same resolver serves availability and actual process launch.

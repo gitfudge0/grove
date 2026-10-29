@@ -549,6 +549,7 @@ mod dashboard_tests {
             draft_reference: None,
             config_args: Vec::new(),
             native_config_version: 1,
+            activity_reporting: false,
             composer: codex::ComposerSettings::default(),
             context: None,
         }

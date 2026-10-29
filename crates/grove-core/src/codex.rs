@@ -348,6 +348,8 @@ pub struct SavedSession {
     /// Missing/zero predates CLI/native isolation and requires reconnect migration.
     #[serde(default)]
     pub native_config_version: u8,
+    #[serde(default)]
+    pub activity_reporting: bool,
     #[serde(default = "legacy_composer_settings")]
     pub composer: ComposerSettings,
     /// Last known context-window occupancy, so a reopened session shows its meter.
@@ -2350,7 +2352,11 @@ impl Snapshot {
                         .map(AsRef::as_ref),
                 );
                 if let Some(old) = self.saved.items.iter().find(|old| old["id"] == item["id"]) {
-                    for marker in ["groveQuestionResolved", "groveQuestionPending"] {
+                    for marker in [
+                        "groveQuestionResolved",
+                        "groveQuestionPending",
+                        "groveTaskOwnershipUnavailable",
+                    ] {
                         if old[marker] == true {
                             item[marker] = json!(true);
                         }
@@ -2425,7 +2431,17 @@ impl Snapshot {
                     "grove-plan-{}",
                     p["turnId"].as_str().unwrap_or_default()
                 ));
+                // Every update is an immutable chronological snapshot. Replacing the
+                // turn's first plan retroactively moves progress prose to the wrong task.
+                let base_id = id.as_str().unwrap_or_default().to_owned();
+                let mut id = id;
+                let mut sequence = self.saved.items.len();
+                while self.saved.items.iter().any(|item| item["id"] == id) {
+                    id = json!(format!("{base_id}-{sequence}"));
+                    sequence += 1;
+                }
                 let at = self.item_index(&id, "plan");
+                self.saved.items[at]["taskSnapshot"] = json!(true);
                 let explanation = p["explanation"].as_str().unwrap_or_default();
                 let mut text = explanation.to_owned();
                 // The structured checklist read by `crate::tasks`; `text` stays
@@ -2599,6 +2615,76 @@ fn first_prompt_title<T: Borrow<Value>>(items: &[T]) -> Option<String> {
         .filter(|item| item["type"] == "userMessage")
         .find_map(|item| prompt_title(&item_text(item)))
 }
+/// Provider history omits Grove's checklist notifications. Reinsert retained
+/// snapshots between surviving message IDs so resume cannot erase attribution.
+fn restore_task_snapshots<T: std::borrow::Borrow<Value>>(
+    saved: &[T],
+    items: Vec<Value>,
+) -> Vec<Value> {
+    // Newly discovered history has no observed checklist boundary: task
+    // notifications may have happened while Grove was disconnected. Persist
+    // that provenance so a later resume cannot turn it into a known owner.
+    let items: Vec<_> = items
+        .into_iter()
+        .map(|mut item| {
+            if item["type"] == "agentMessage" {
+                let known = saved
+                    .iter()
+                    .map(|saved| -> &Value { saved.borrow() })
+                    .find(|old| old["id"] == item["id"]);
+                if known.is_none_or(|old| old["groveTaskOwnershipUnavailable"] == true) {
+                    item["groveTaskOwnershipUnavailable"] = json!(true);
+                }
+            }
+            item
+        })
+        .collect();
+    let positions: std::collections::HashMap<_, _> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| Some((item["id"].as_str()?.to_owned(), index)))
+        .collect();
+    let mut slots: Vec<Vec<Value>> = vec![Vec::new(); items.len() + 1];
+    let mut last_slot = 0;
+    for (index, item) in saved.iter().enumerate() {
+        let item = item.borrow();
+        if !crate::tasks::is_checklist(item)
+            || !item["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("grove-plan-"))
+            || positions.contains_key(item["id"].as_str().unwrap_or_default())
+        {
+            continue;
+        }
+        let next = saved[index + 1..]
+            .iter()
+            .find_map(|item| positions.get(item.borrow()["id"].as_str()?).copied());
+        let previous = saved[..index].iter().rev().find_map(|item| {
+            positions
+                .get(item.borrow()["id"].as_str()?)
+                .map(|index| index + 1)
+        });
+        let mut snapshot = item.clone();
+        let slot = next.or(previous).unwrap_or(items.len());
+        // A rewritten or unanchored history cannot establish old ownership.
+        if slot < last_slot || (next.is_none() && previous.is_none()) {
+            snapshot["taskSnapshot"] = json!(false);
+        }
+        let slot = slot.max(last_slot);
+        slots[slot].push(snapshot);
+        last_slot = slot;
+    }
+    let mut merged = Vec::with_capacity(items.len() + saved.len());
+    for (index, item) in items.into_iter().enumerate() {
+        merged.append(&mut slots[index]);
+        merged.push(item);
+    }
+    if let Some(last) = slots.last_mut() {
+        merged.append(last);
+    }
+    merged
+}
+
 /// Local receipt time, recorded only at the live provider boundary, never on history load.
 pub(crate) fn stamp_message_received(item: &mut Value, previous: Option<&Value>) {
     if !matches!(item["type"].as_str(), Some("userMessage" | "agentMessage")) {
@@ -2619,6 +2705,9 @@ pub(crate) fn stamp_message_received(item: &mut Value, previous: Option<&Value>)
 }
 
 pub fn item_text(item: &Value) -> String {
+    if crate::activity::is_internal(item) {
+        return String::new();
+    }
     match item["type"].as_str().unwrap_or_default() {
         "userMessage" => item["content"]
             .as_array()
@@ -3135,6 +3224,7 @@ pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
     }
 }
 struct Process {
+    activity: crate::activity_mcp::Server,
     child: Child,
     input: ChildStdin,
     lines: mpsc::Receiver<Result<Value, String>>,
@@ -3150,6 +3240,7 @@ impl Drop for Process {
     }
 }
 fn spawn(args: &[String], cwd: &str) -> Result<Process, String> {
+    let activity = crate::activity_mcp::Server::start()?;
     let mut argv = vec!["app-server".into(), "--stdio".into()];
     argv.extend_from_slice(args);
     let (program, argv) = crate::agent::Agent::Codex.session_invocation(&argv);
@@ -3224,6 +3315,7 @@ fn spawn(args: &[String], cwd: &str) -> Result<Process, String> {
         )));
     });
     Ok(Process {
+        activity,
         child,
         input,
         lines,
@@ -3381,6 +3473,11 @@ impl Actor {
         self.needs_save = false;
     }
     fn emit(&mut self) {
+        if let Some(process) = &self.process {
+            process
+                .activity
+                .set_context_items(&self.state.saved.items, self.state.turn_id.clone());
+        }
         self.needs_save = true;
         let _ = self.updates.send(self.state.clone());
         self.dirty = false;
@@ -3437,6 +3534,7 @@ impl Actor {
         self.state.status = Status::Starting;
         self.state.clear_error();
         self.process = Some(spawn(&args, &self.state.saved.cwd)?);
+        self.state.saved.activity_reporting = true;
         if let Some(process) = &self.process {
             self.pid.store(process.child.id(), Ordering::SeqCst);
         }
@@ -3453,8 +3551,17 @@ impl Actor {
         let mut params = json!({"cwd": self.state.saved.cwd, "config": {
             "tools.update_plan.enabled": true
         }});
+        if let Some(process) = &self.process {
+            params["config"]["mcp_servers.grove_activity"] = json!({
+                "url": process.activity.url(),
+                "http_headers": {"Authorization": format!("Bearer {}", process.activity.token())},
+                "enabled_tools": ["report_activity"],
+                "startup_timeout_sec": 10,
+                "tool_timeout_sec": 10
+            });
+        }
         params["developerInstructions"] = json!(format!(
-            "{}{}{}\n\n{}\n\n{}\n\n{}",
+            "{}{}{}\n\n{}\n\n{}\n\n{}\n\n{}",
             self.developer_instructions,
             if self.developer_instructions.is_empty() {
                 ""
@@ -3464,6 +3571,7 @@ impl Actor {
             crate::agent_guidance::WORKFLOW_GUIDANCE,
             crate::tasks::CODEX_GUIDANCE,
             crate::reports::REPORT_GUIDANCE,
+            crate::activity::GUIDANCE,
             crate::rich_plan::GUIDANCE
         ));
         if let Some(roots) = writable_roots {
@@ -5462,7 +5570,8 @@ impl Actor {
                             .collect();
                         // Transcript offsets remain valid only when restored items keep
                         // the saved prefix. A provider rewrite must not misattribute timing.
-                        let items: Vec<Value> = items;
+                        let items: Vec<Value> =
+                            restore_task_snapshots(&self.state.saved.items, items);
                         if self.state.saved.items.len() > items.len()
                             || self
                                 .state
@@ -6005,6 +6114,7 @@ mod tests {
             draft_reference: None,
             config_args: Vec::new(),
             native_config_version: 1,
+            activity_reporting: false,
             composer: ComposerSettings::default(),
             context: None,
         }
@@ -6322,6 +6432,7 @@ mod tests {
         let input = child.stdin.take().unwrap();
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
+            activity: crate::activity_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -8115,6 +8226,7 @@ mod tests {
         let input = child.stdin.take().unwrap();
         let (_, lines) = mpsc::channel();
         Process {
+            activity: crate::activity_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -8584,7 +8696,7 @@ mod tests {
             .saved
             .items
             .iter()
-            .find(|item| item["id"] == "grove-plan-turn-1")
+            .rfind(|item| crate::tasks::is_checklist(item))
             .unwrap();
         assert!(item["explanation"].is_null());
         assert_eq!(item["plan"][1]["status"], "inProgress");
@@ -8592,6 +8704,118 @@ mod tests {
         assert_eq!(list.done(), 1);
         assert_eq!(list.now_label(), Some("Implement"));
     }
+    #[test]
+    fn resumed_provider_history_preserves_checklist_chronology() {
+        let a = json!({"id":"progress-a","type":"agentMessage","text":"Inspecting"});
+        let b = json!({"id":"progress-b","type":"agentMessage","text":"Verifying"});
+        let snapshot = |id, first, second| json!({"id":id,"type":"plan","taskSnapshot":true,"plan":[{"step":"Inspect","status":first},{"step":"Verify","status":second}]});
+        let saved = vec![
+            snapshot("grove-plan-t", "inProgress", "pending"),
+            a.clone(),
+            snapshot("grove-plan-t-2", "completed", "inProgress"),
+            b.clone(),
+            snapshot("grove-plan-t-4", "completed", "completed"),
+        ];
+        let restored = restore_task_snapshots(&saved, vec![a, b]);
+        assert_eq!(restored, saved);
+        assert_eq!(
+            crate::tasks::activity_owner(&restored, 1).unwrap().step,
+            "Inspect"
+        );
+        assert_eq!(
+            crate::tasks::activity_owner(&restored, 3).unwrap().step,
+            "Verify"
+        );
+        assert!(crate::tasks::current(&restored).unwrap().all_done());
+    }
+
+    #[test]
+    fn resumed_unseen_prose_remains_unassigned_across_reconnect_and_completion() {
+        let known = json!({"id":"known","type":"agentMessage","text":"Observed progress"});
+        let unseen = json!({"id":"unseen","type":"agentMessage","phase":"commentary","text":"Progress while disconnected"});
+        let saved = vec![
+            json!({"id":"grove-plan-t","type":"plan","taskSnapshot":true,"plan":[{"step":"Inspect","status":"inProgress"}]}),
+            known.clone(),
+        ];
+        let first = restore_task_snapshots(&saved, vec![known.clone(), unseen.clone()]);
+        assert_eq!(
+            crate::tasks::activity_owner(&first, 1).unwrap().step,
+            "Inspect"
+        );
+        assert!(crate::tasks::activity_owner(&first, 2).is_none());
+        assert_eq!(first[2]["groveTaskOwnershipUnavailable"], true);
+        let second = restore_task_snapshots(&first, vec![known, unseen]);
+        assert!(crate::tasks::activity_owner(&second, 2).is_none());
+        assert_eq!(second[2]["groveTaskOwnershipUnavailable"], true);
+        let mut state = state();
+        state.saved.items = second.into();
+        state.apply(&json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"unseen","type":"agentMessage","phase":"commentary","text":"Completed old stream"}}}));
+        assert!(crate::tasks::activity_owner(&state.saved.items, 2).is_none());
+        state.apply(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"new-live","delta":"New observed progress"}}));
+        assert_eq!(
+            crate::tasks::activity_owner(&state.saved.items, 3)
+                .unwrap()
+                .step,
+            "Inspect"
+        );
+    }
+
+    #[test]
+    fn immutable_plan_ids_do_not_collide_after_history_shortens() {
+        let mut state = state();
+        state.saved.items = vec![
+            json!({"id":"grove-plan-turn-1","type":"plan","plan":[{"step":"First","status":"completed"}]}),
+            json!({"id":"grove-plan-turn-1-2","type":"plan","plan":[{"step":"Second","status":"inProgress"}]}),
+        ].into();
+        state.apply(&json!({"method":"turn/plan/updated","params":{"threadId":"thread-1","turnId":"turn-1","plan":[{"step":"Third","status":"inProgress"}]}}));
+        assert_eq!(state.saved.items.len(), 3);
+        assert_eq!(state.saved.items[1]["plan"][0]["step"], "Second");
+        assert_eq!(state.saved.items[2]["plan"][0]["step"], "Third");
+        let unique: std::collections::HashSet<_> = state
+            .saved
+            .items
+            .iter()
+            .filter_map(|item| item["id"].as_str())
+            .collect();
+        assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn plan_updates_retain_task_ownership_within_one_turn() {
+        let mut state = state();
+        let update = |a, b| json!({"method":"turn/plan/updated","params":{"threadId":"thread-1","turnId":"turn-1","plan":[{"step":"Inspect","status":a},{"step":"Verify","status":b}]}});
+        state.apply(&update("inProgress", "pending"));
+        state.apply(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"progress-first","delta":"Inspecting repository"}}));
+        state.apply(&update("completed", "inProgress"));
+        state.apply(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"progress-second","delta":"Running checks"}}));
+        state.apply(&update("completed", "completed"));
+        let items = &state.saved.items;
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| crate::tasks::is_checklist(*item))
+                .count(),
+            3
+        );
+        let first = items
+            .iter()
+            .position(|item| item["id"] == "progress-first")
+            .unwrap();
+        let second = items
+            .iter()
+            .position(|item| item["id"] == "progress-second")
+            .unwrap();
+        assert_eq!(
+            crate::tasks::activity_owner(items, first).unwrap().step,
+            "Inspect"
+        );
+        assert_eq!(
+            crate::tasks::activity_owner(items, second).unwrap().step,
+            "Verify"
+        );
+        assert!(crate::tasks::current(items).unwrap().all_done());
+    }
+
     #[test]
     fn settled_background_commands_keep_streaming_during_next_turn() {
         let mut state = state();
@@ -8812,6 +9036,7 @@ mod tests {
         let input = child.stdin.take().unwrap();
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
+            activity: crate::activity_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -8950,6 +9175,7 @@ mod tests {
         let input = child.stdin.take().unwrap();
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
+            activity: crate::activity_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -9343,6 +9569,7 @@ mod tests {
         let input = child.stdin.take().unwrap();
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
+            activity: crate::activity_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -9468,6 +9695,7 @@ mod tests {
         let input = child.stdin.take().unwrap();
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
+            activity: crate::activity_mcp::Server::start().unwrap(),
             child,
             input,
             lines,
@@ -9600,6 +9828,7 @@ mod tests {
         let input = child.stdin.take().unwrap();
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
+            activity: crate::activity_mcp::Server::start().unwrap(),
             child,
             input,
             lines,

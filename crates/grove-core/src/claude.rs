@@ -151,6 +151,7 @@ pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
 }
 
 struct Process {
+    activity: crate::activity_mcp::Server,
     child: Child,
     input: ChildStdin,
     lines: mpsc::Receiver<Result<Value, String>>,
@@ -229,6 +230,8 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
     guidance.push_str(crate::tasks::CLAUDE_GUIDANCE);
     guidance.push_str("\n\n");
     guidance.push_str(crate::reports::REPORT_GUIDANCE);
+    guidance.push_str("\n\n");
+    guidance.push_str(crate::activity::GUIDANCE);
     guidance.push_str("\n\n");
     guidance.push_str(crate::rich_plan::GUIDANCE);
     args.extend(["--append-system-prompt".into(), guidance]);
@@ -317,7 +320,37 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
     Ok(command)
 }
 fn spawn(args: &[String], saved: &SavedSession) -> Result<Process, String> {
-    let mut command = launch_command(args, saved)?;
+    let activity = crate::activity_mcp::Server::start()?;
+    // CLI variadic options keep their last occurrence. Preserve every caller MCP
+    // source while adding the private, process-lifetime reporting endpoint.
+    let mut merged = Vec::new();
+    let mut configs = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--mcp-config" {
+            index += 1;
+            while index < args.len() && !args[index].starts_with("--") {
+                configs.push(args[index].clone());
+                index += 1;
+            }
+        } else if let Some(value) = args[index].strip_prefix("--mcp-config=") {
+            configs.push(value.to_owned());
+            index += 1;
+        } else {
+            merged.push(args[index].clone());
+            index += 1;
+        }
+    }
+    configs.push(
+        json!({"mcpServers":{"grove_activity":{
+            "type":"http", "url":activity.url(),
+            "headers":{"Authorization":format!("Bearer {}",activity.token())}
+        }}})
+        .to_string(),
+    );
+    merged.push("--mcp-config".into());
+    merged.extend(configs);
+    let mut command = launch_command(&merged, saved)?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -369,6 +402,7 @@ fn spawn(args: &[String], saved: &SavedSession) -> Result<Process, String> {
         }));
     });
     Ok(Process {
+        activity,
         child,
         input,
         lines,
@@ -1094,6 +1128,11 @@ impl Actor {
         received
     }
     fn publish(&self) {
+        if let Some(process) = &self.process {
+            process
+                .activity
+                .set_context_items(&self.state.saved.items, self.state.turn_id.clone());
+        }
         let mut snapshot = self.state.clone();
         snapshot.can_redirect = self.initialized
             && self.process.is_some()
@@ -1172,6 +1211,7 @@ impl Actor {
         self.write(json!({"type":"control_request","request_id":id,"request":request}))
     }
     fn start(&mut self) -> Result<(), String> {
+        self.state.saved.activity_reporting = true;
         self.started = Instant::now();
         self.first_output = false;
         self.initialized = false;
@@ -2874,6 +2914,17 @@ impl Actor {
                     return self.respond(
                         id,
                         json!({"behavior":"deny","message":"This request has expired."}),
+                    );
+                }
+                // This exact private tool only records UI metadata and cannot
+                // access files, commands or permissions. Other tools retain the
+                // user's existing permission decisions.
+                if request["tool_name"] == "mcp__grove_activity__report_activity"
+                    && crate::activity::validate_report(&request["input"]).is_ok()
+                {
+                    return self.respond(
+                        id,
+                        json!({"behavior":"allow","updatedInput":request["input"]}),
                     );
                 }
                 if request["tool_name"] == "AskUserQuestion" {
@@ -5385,6 +5436,7 @@ mod tests {
         let output = BufReader::new(child.stdout.take().unwrap());
         let (_, lines) = mpsc::channel();
         actor.process = Some(Process {
+            activity: crate::activity_mcp::Server::start().unwrap(),
             child,
             input,
             lines,

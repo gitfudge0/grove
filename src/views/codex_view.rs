@@ -4753,7 +4753,7 @@ impl Render for CodexView {
                 );
                 continue;
             }
-            if tasks::is_checklist(item) {
+            if tasks::is_checklist(item) || grove_core::activity::is_internal(item) {
                 // Checklist updates belong in the docked panel, not the transcript.
                 continue;
             }
@@ -5686,6 +5686,12 @@ impl Render for CodexView {
         } else {
             body.into_any_element()
         };
+        let session_notice = self.session_notice(&state, window, cx);
+        let (notice_above, notice_below) = if self.dashboard_tray.is_some() {
+            (None, session_notice)
+        } else {
+            (session_notice, None)
+        };
         let mut surface =
             surface.child(
                 div()
@@ -5711,20 +5717,7 @@ impl Render for CodexView {
                             .flex_col()
                             .gap(rpx(SPACE_MD))
                             .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_intro(&state)))
-                            .when_some(self.session_notice(&state, window, cx), gpui::ParentElement::child)
-                            .when(self.dashboard_tray.is_some(), |rail| {
-                                let session = self.session.read(cx);
-                                if session.catalog_loading {
-                                    rail.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(format!("Loading {} options…", state.saved.provider.label())))
-                                } else if let Some(error) = &session.catalog_error {
-                                    rail.child(div().flex().flex_col().gap(rpx(SPACE_SM))
-                                        .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FORM_ERROR()).child(error.clone()))
-                                        .child(header_control("dashboard-catalog-retry", "Retry provider options").track_focus(&self.dashboard_retry_focus).focus_visible(|s|s.bg(c::BG_HOVER())).w_auto().tab_index(0).gap(rpx(SPACE_SM))
-                                            .child(crate::icons::icon("restart",ICON_SM,c::FG_DIM())).child("Retry")
-                                            .on_click(cx.listener(|this,_,_,cx|this.retry_dashboard_catalog(cx)))
-                                            .on_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,_,cx|{if action_key(event){this.retry_dashboard_catalog(cx);cx.stop_propagation();}}))))
-                                } else {rail}
-                            })
+                            .when_some(notice_above, gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
@@ -5823,6 +5816,20 @@ impl Render for CodexView {
                                         "Enter to send"
                                     })
                             )
+                            .when_some(notice_below, gpui::ParentElement::child)
+                            .when(self.dashboard_tray.is_some(), |rail| {
+                                let session = self.session.read(cx);
+                                if session.catalog_loading {
+                                    rail.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(format!("Loading {} options…", state.saved.provider.label())))
+                                } else if let Some(error) = &session.catalog_error {
+                                    rail.child(div().flex().flex_col().gap(rpx(SPACE_SM))
+                                        .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FORM_ERROR()).child(error.clone()))
+                                        .child(header_control("dashboard-catalog-retry", "Retry provider options").track_focus(&self.dashboard_retry_focus).focus_visible(|s|s.bg(c::BG_HOVER())).w_auto().tab_index(0).gap(rpx(SPACE_SM))
+                                            .child(crate::icons::icon("restart",ICON_SM,c::FG_DIM())).child("Retry")
+                                            .on_click(cx.listener(|this,_,_,cx|this.retry_dashboard_catalog(cx)))
+                                            .on_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,_,cx|{if action_key(event){this.retry_dashboard_catalog(cx);cx.stop_propagation();}}))))
+                                } else {rail}
+                            })
                             .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_starters(provider, cx))),
                     ),
             );
@@ -9088,17 +9095,18 @@ fn tool_is_running(state: &codex::Snapshot, index: usize) -> bool {
 }
 
 fn is_tool_item(item: &serde_json::Value) -> bool {
-    !matches!(
-        item["type"].as_str(),
-        Some(
-            "userMessage"
-                | "agentMessage"
-                | "plan"
-                | "providerNotice"
-                | "subAgentActivity"
-                | codex::COMPACTION_ITEM
+    !grove_core::activity::is_internal(item)
+        && !matches!(
+            item["type"].as_str(),
+            Some(
+                "userMessage"
+                    | "agentMessage"
+                    | "plan"
+                    | "providerNotice"
+                    | "subAgentActivity"
+                    | codex::COMPACTION_ITEM
+            )
         )
-    )
 }
 
 /// The agent's checklist, derived once per checklist change rather than per frame.
@@ -11741,6 +11749,23 @@ impl CodexView {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn internal_activity_reports_do_not_join_tool_groups_or_response_copy() {
+        let internal = json!({"id":"report","type":"mcpToolCall","server":"grove_activity","tool":"report_activity","arguments":{"private":"metadata"},"status":"completed"});
+        assert!(!is_tool_item(&internal));
+        assert_eq!(codex::item_text(&internal), "");
+        let items = vec![
+            json!({"type":"userMessage","content":[{"text":"Review"}]}),
+            json!({"type":"commandExecution","command":"pwd"}),
+            internal,
+            json!({"type":"commandExecution","command":"ls"}),
+            json!({"type":"agentMessage","text":"Reviewed navigation.","phase":"final_answer"}),
+        ];
+        assert_eq!(items.iter().filter(|item| is_tool_item(item)).count(), 2);
+        let groups = response_groups(&items, Some("thread"));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].copy_text, "Reviewed navigation.");
+    }
+    #[test]
     fn composer_markdown_styles_nested_unicode_source_without_overlapping_ranges() {
         let source =
             "🦀 **bold *é*** and ~~gone~~ and `code`\n\n# Heading\n\n[site](https://example.com)";
@@ -12935,6 +12960,7 @@ mod tests {
             draft_reference: None,
             config_args: Vec::new(),
             native_config_version: 1,
+            activity_reporting: false,
         });
         state.status = Status::Idle;
         state
@@ -17435,6 +17461,7 @@ mod tests {
                     active_form: (index == 1).then(|| "Doing step 1".to_owned()),
                     status: *status,
                     started_at: index,
+                    identity_at: index,
                 })
                 .collect(),
             explanation: None,

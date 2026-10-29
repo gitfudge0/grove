@@ -141,6 +141,7 @@ fn svg_for(name: &str) -> String {
         "check" => r#"<path d="M3 8l4 4 6-7"/>"#,
         "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z" fill="currentColor" stroke="none"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
+        "chev-up" => r#"<path d="M4 10l4-4 4 4"/>"#,
         "chev-right" => r#"<path d="M6 4l4 4-4 4"/>"#,
         "stop" => {
             r#"<rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor" stroke="none"/>"#
@@ -343,6 +344,7 @@ mod tests {
             "workspaces",
             "add-terminal",
             "chev-down",
+            "chev-up",
             "chev-right",
             "collapse-all",
             "expand-all",

@@ -20,6 +20,7 @@ macro_rules! task_guidance {
             "Refine the list as scope becomes clearer: split or add substantial work and discovered defects. Keep routine compiler fixes, repeated checks and cache cleanup in progress notes unless they become substantial blockers. Avoid tasks for every file, mechanical task inflation, and vague buckets such as 'implement everything' or 'verify integration'. Preserve small lists for genuinely small requests; skip task tracking for simple single-step requests. ",
             "Mark an outcome completed only when the stated result has appropriate evidence; worker reports alone are not verification. Keep unverified coverage as explicitly unfinished verification work, distinguishable from completed implementation; record blockers or unavailable checks in progress notes rather than claiming they passed. ",
             "Preserve task ownership and existing task state when revising the list. Task tracking does not override user disclosure preferences, permission boundaries or explicit instructions. A prose checklist alone does not update Grove's task list. ",
+            "Grove also displays concise assistant progress updates. Phrase completed work in past tense and work currently in progress in present continuous tense; do not describe unfinished work as complete. ",
             $provider
         )
     };
@@ -73,6 +74,8 @@ pub struct Task {
     /// Index into items of the first checklist snapshot where this task was
     /// InProgress (else where it first appeared); used for jump-to-start.
     pub started_at: usize,
+    /// First snapshot in the continuous lifetime, independent of activation.
+    pub identity_at: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,9 +134,10 @@ pub fn current<T: Borrow<Value>>(items: &[T]) -> Option<TaskList> {
     let tasks = entries
         .into_iter()
         .map(|entry| {
-            let started_at = started_at(items, index, &entry);
+            let (identity_at, started_at) = task_history(items, index, &entry);
             Task {
                 started_at,
+                identity_at,
                 ..entry
             }
         })
@@ -148,6 +152,42 @@ pub fn current<T: Borrow<Value>>(items: &[T]) -> Option<TaskList> {
         explanation,
         item: index,
     })
+}
+
+/// Task owning one assistant progress item at the time it was recorded.
+/// Parallel tasks, final answers and legacy overwritten Codex plans provide no
+/// unambiguous ownership. This deliberately does not infer an owner from prose.
+pub fn activity_owner<T: Borrow<Value>>(items: &[T], index: usize) -> Option<Task> {
+    let item = items.get(index)?.borrow();
+    if item["type"] != "agentMessage"
+        || item["phase"] == "final_answer"
+        || item["groveTaskOwnershipUnavailable"] == true
+    {
+        return None;
+    }
+    let list = current(&items[..index])?;
+    let snapshot = items[list.item].borrow();
+    if snapshot["id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("grove-plan-"))
+        && snapshot["taskSnapshot"] != true
+    {
+        return None;
+    }
+    let mut active = list
+        .tasks
+        .into_iter()
+        .filter(|task| task.status == TaskStatus::InProgress);
+    let owner = active.next()?;
+    active.next().is_none().then_some(owner)
+}
+
+impl Task {
+    /// The same continuous task across checklist revisions. Positional provider
+    /// IDs never move history to a different task after insertion or reordering.
+    pub fn owns_activity(&self, owner: &Self) -> bool {
+        self.identity_at == owner.identity_at && same_task(self, owner)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +274,7 @@ fn entries(item: &Value) -> Vec<Task> {
                     .map(str::to_owned),
                 status: TaskStatus::parse(entry["status"].as_str()),
                 started_at: 0,
+                identity_at: 0,
             })
         })
         .collect()
@@ -243,12 +284,16 @@ fn entries(item: &Value) -> Vec<Task> {
 /// list is rewritten, so only agent-assigned ids identify a task by id alone.
 fn same_task(a: &Task, b: &Task) -> bool {
     let positional = |id: &str| id.starts_with("step-") || id.starts_with("todo-");
-    a.step == b.step || (a.id == b.id && !positional(&a.id))
+    if !positional(&a.id) && !positional(&b.id) {
+        a.id == b.id
+    } else {
+        a.step == b.step
+    }
 }
 
 /// Walks back through contiguous snapshots that still contain `task`, keeping
 /// the earliest one where it was InProgress, else the earliest it appeared.
-fn started_at<T: Borrow<Value>>(items: &[T], index: usize, task: &Task) -> usize {
+fn task_history<T: Borrow<Value>>(items: &[T], index: usize, task: &Task) -> (usize, usize) {
     let mut appeared = index;
     let mut started = (task.status == TaskStatus::InProgress).then_some(index);
     for at in (0..index)
@@ -266,13 +311,114 @@ fn started_at<T: Borrow<Value>>(items: &[T], index: usize, task: &Task) -> usize
             started = Some(at);
         }
     }
-    started.unwrap_or(appeared)
+    (appeared, started.unwrap_or(appeared))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn pending_to_active_keeps_identity_but_removal_recreation_does_not() {
+        let pending = json!({"id":"pending","type":"plan","plan":[{"id":"step-0","step":"Verify","status":"pending"}]});
+        let active = json!({"id":"active","type":"plan","plan":[{"id":"step-0","step":"Verify","status":"inProgress"}]});
+        let before = current(&[pending.clone()]).unwrap().tasks.remove(0);
+        let after = current(&[pending.clone(), active.clone()])
+            .unwrap()
+            .tasks
+            .remove(0);
+        assert_eq!(before.identity_at, after.identity_at);
+        assert_ne!(before.started_at, after.started_at);
+        assert!(after.owns_activity(&before));
+        let recreated = current(&[
+            pending,
+            active.clone(),
+            json!({"type":"plan","plan":[]}),
+            active,
+        ])
+        .unwrap()
+        .tasks
+        .remove(0);
+        assert!(!recreated.owns_activity(&before));
+    }
+    #[test]
+    fn activity_ownership_survives_progression_reordering_and_reload() {
+        for prefix in ["step-", "todo-"] {
+            let items = vec![
+                json!({"type":"plan","plan":[{"id":format!("{prefix}0"),"step":"Inspect","status":"inProgress"},{"id":format!("{prefix}1"),"step":"Verify","status":"pending"}]}),
+                json!({"type":"agentMessage","text":"Inspecting repository"}),
+                json!({"type":"commandExecution","command":"pwd"}),
+                json!({"type":"plan","plan":[{"id":format!("{prefix}0"),"step":"Verify","status":"inProgress"},{"id":format!("{prefix}1"),"step":"Inspect","status":"completed"}]}),
+                json!({"type":"agentMessage","text":"Running checks"}),
+                json!({"type":"plan","plan":[{"id":format!("{prefix}0"),"step":"Verify","status":"completed"},{"id":format!("{prefix}1"),"step":"Inspect","status":"completed"}]}),
+                json!({"type":"agentMessage","text":"Done","phase":"final_answer"}),
+                json!({"type":"userMessage","text":"Follow up"}),
+                json!({"type":"agentMessage","text":"Following up"}),
+            ];
+            let restored: Vec<Value> =
+                serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
+            for history in [&items, &restored] {
+                let list = current(history).unwrap();
+                let first = activity_owner(history, 1).unwrap();
+                let second = activity_owner(history, 4).unwrap();
+                assert_eq!(first.step, "Inspect");
+                assert_eq!(second.step, "Verify");
+                assert!(list.tasks[1].owns_activity(&first));
+                assert!(list.tasks[0].owns_activity(&second));
+                assert!(!list.tasks[0].owns_activity(&first));
+                assert!(activity_owner(history, 2).is_none());
+                assert!(activity_owner(history, 6).is_none());
+                assert!(activity_owner(history, 8).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn activity_ownership_rejects_ambiguous_and_legacy_snapshots() {
+        let progress = json!({"type":"agentMessage","text":"Working"});
+        assert!(activity_owner(&[progress.clone()], 0).is_none());
+        let parallel = json!({"type":"plan","plan":[{"id":"1","step":"A","status":"inProgress"},{"id":"2","step":"B","status":"inProgress"}]});
+        assert!(activity_owner(&[parallel, progress.clone()], 1).is_none());
+        let mut legacy = json!({"id":"grove-plan-turn-1","type":"plan","plan":[{"step":"A","status":"inProgress"}]});
+        assert!(activity_owner(&[legacy.clone(), progress.clone()], 1).is_none());
+        legacy["taskSnapshot"] = json!(true);
+        assert_eq!(activity_owner(&[legacy, progress], 1).unwrap().step, "A");
+    }
+
+    #[test]
+    fn distinct_stable_tasks_with_the_same_title_do_not_share_activity() {
+        let items = vec![
+            json!({"type":"plan","plan":[{"id":"1","step":"Run checks","status":"inProgress"},{"id":"2","step":"Run checks","status":"pending"}]}),
+            json!({"type":"agentMessage","text":"Running first checks"}),
+            json!({"type":"plan","plan":[{"id":"1","step":"Run checks","status":"completed"},{"id":"2","step":"Run checks","status":"inProgress"}]}),
+            json!({"type":"agentMessage","text":"Running second checks"}),
+        ];
+        let list = current(&items).unwrap();
+        let first = activity_owner(&items, 1).unwrap();
+        let second = activity_owner(&items, 3).unwrap();
+        assert!(list.tasks[0].owns_activity(&first));
+        assert!(!list.tasks[1].owns_activity(&first));
+        assert!(list.tasks[1].owns_activity(&second));
+        assert!(!list.tasks[0].owns_activity(&second));
+    }
+
+    #[test]
+    fn stable_claude_task_id_preserves_rename_and_replacement_does_not_inherit_history() {
+        let items = vec![
+            json!({"type":"plan","plan":[{"id":"7","step":"Old title","status":"inProgress"}]}),
+            json!({"type":"agentMessage","text":"Working"}),
+            json!({"type":"plan","plan":[{"id":"7","step":"Renamed title","status":"completed"}]}),
+        ];
+        let owner = activity_owner(&items, 1).unwrap();
+        assert!(current(&items).unwrap().tasks[0].owns_activity(&owner));
+        let mut replaced = items;
+        replaced.push(json!({"type":"plan","plan":[]}));
+        replaced.push(
+            json!({"type":"plan","plan":[{"id":"7","step":"Renamed title","status":"inProgress"}]}),
+        );
+        assert!(!current(&replaced).unwrap().tasks[0].owns_activity(&owner));
+    }
 
     #[test]
     fn provider_guidance_shares_outcome_and_evidence_policy() {
@@ -289,6 +435,7 @@ mod tests {
                 "Keep unverified coverage as explicitly unfinished verification work",
                 "Preserve task ownership and existing task state",
                 "user disclosure preferences, permission boundaries or explicit instructions",
+                "Phrase completed work in past tense and work currently in progress in present continuous tense",
             ] {
                 assert!(guidance.contains(clause), "Missing task policy: {clause}");
             }

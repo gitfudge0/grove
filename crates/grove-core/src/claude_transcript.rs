@@ -267,6 +267,7 @@ impl ClaudeTranscriptState {
             .collect::<Vec<_>>()
             .join("\n"));
         item["plan"] = json!(plan);
+        item["taskSnapshot"] = json!(true);
         item["type"] = json!("plan");
     }
 }

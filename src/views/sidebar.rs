@@ -9743,6 +9743,7 @@ for line in sys.stdin:
                     draft_reference: None,
                     config_args: Vec::new(),
                     native_config_version: 1,
+                    activity_reporting: false,
                 };
                 let (handle, _actions) = grove_core::codex::Handle::channel();
                 let (_updates, receive) = std::sync::mpsc::channel();
@@ -9921,6 +9922,7 @@ for line in sys.stdin:
                 draft_reference: None,
                 config_args: Vec::new(),
             native_config_version: 1,
+            activity_reporting: false,
             };
             let state = grove_core::codex::Snapshot::new(saved);
             let connection = grove_core::codex::Connection {
@@ -10709,6 +10711,7 @@ for line in sys.stdin:
             draft_reference: None,
             config_args: Vec::new(),
             native_config_version: 1,
+            activity_reporting: false,
         };
         let session = cx.new(|cx| {
             crate::entities::codex_session::CodexSession::from_connection(

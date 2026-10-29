@@ -1,13 +1,15 @@
 //! Dashboard progress derived from cached structured-session facts; never provider guesses.
 use super::*;
 use gpui::AnimationExt as _;
-use grove_core::{codex::Status, tasks::TaskList};
+use grove_core::{
+    codex::Status,
+    tasks::{Task, TaskList, TaskStatus},
+};
 use serde_json::Value;
 use std::sync::Arc;
 
 const TIMELINE_TASK_LINE_H: f32 = super::SESSION_TITLE_LINE_H;
 const TIMELINE_SPINE_W: f32 = 1.;
-const ACTIVITY_LIMIT: usize = 3;
 const ACTIVITY_HISTORY_LIMIT: usize = 64;
 const ACTIVITY_TEXT_LIMIT: usize = 120;
 pub(super) struct RowMetadata {
@@ -16,6 +18,8 @@ pub(super) struct RowMetadata {
     pub provider: grove_core::codex::Provider,
     pub effort: Option<String>,
     pub context: String,
+    pub status: Status,
+    pub age: String,
 }
 impl RowMetadata {
     fn provider_label(&self) -> String {
@@ -75,11 +79,14 @@ fn render_metadata(metadata: &RowMetadata) -> AnyElement {
 }
 type Scope = (u64, SessionId);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Activity {
     pub index: usize,
     pub text: String,
     pub observed_active: Option<bool>,
+    pub task: Option<Task>,
+    pub explicit_status: Option<grove_core::activity::StepStatus>,
+    pub turn_id: Option<String>,
 }
 #[derive(Clone, Default, Debug, PartialEq)]
 pub(super) struct TimelineData {
@@ -113,6 +120,26 @@ fn activity_excerpt(text: &str) -> Option<String> {
 }
 /// History is bounded by summaries, so a long tool phase cannot erase its current step.
 pub(super) fn recent_activity<T: std::borrow::Borrow<Value>>(items: &[T]) -> Vec<Activity> {
+    let explicit = grove_core::activity::steps(items);
+    if !explicit.is_empty()
+        || items
+            .iter()
+            .any(|item| grove_core::activity::is_internal(item.borrow()))
+    {
+        return explicit
+            .into_iter()
+            .map(|step| Activity {
+                index: step.index,
+                text: step.label,
+                observed_active: (step.status != grove_core::activity::StepStatus::InProgress
+                    || !step.current_turn)
+                    .then_some(false),
+                task: step.task,
+                explicit_status: Some(step.status),
+                turn_id: step.turn_id,
+            })
+            .collect();
+    }
     let latest_prompt = items
         .iter()
         .rposition(|item| item.borrow()["type"] == "userMessage");
@@ -129,6 +156,9 @@ pub(super) fn recent_activity<T: std::borrow::Borrow<Value>>(items: &[T]) -> Vec
             Some(Activity {
                 index,
                 text,
+                explicit_status: None,
+                turn_id: None,
+                task: grove_core::tasks::activity_owner(items, index),
                 // Finishing a text stream does not finish the work described by it.
                 // A final answer or a later user prompt does end that activity.
                 observed_active: (item["phase"] == "final_answer"
@@ -152,6 +182,10 @@ pub(super) struct DashboardTimelines {
     focus: HashMap<Scope, FocusHandle>,
     open_focus: HashMap<Scope, FocusHandle>,
     reveals: HashMap<Scope, TimelineReveal>,
+    task_opened: HashSet<(Scope, String)>,
+    task_focus: HashMap<(Scope, String), FocusHandle>,
+    task_hovered: HashSet<(Scope, String)>,
+    task_focus_subscriptions: HashMap<(Scope, String), Vec<gpui::Subscription>>,
 }
 impl DashboardTimelines {
     fn invalidate_scope(&mut self) {
@@ -184,7 +218,13 @@ impl DashboardTimelines {
     }
     pub(super) fn toggle(&mut self, key: Scope) {
         if !self.opened.remove(&key) {
+            self.opened.retain(|(workspace, _)| *workspace != key.0);
             self.opened.insert(key);
+        }
+    }
+    fn toggle_task(&mut self, key: (Scope, String)) {
+        if !self.task_opened.remove(&key) {
+            self.task_opened.insert(key);
         }
     }
     pub fn retain(&mut self, sessions: &HashSet<SessionId>, workspaces: &HashSet<u64>) {
@@ -193,6 +233,11 @@ impl DashboardTimelines {
         self.focus.retain(|key, _| keep(key));
         self.open_focus.retain(|key, _| keep(key));
         self.reveals.retain(|key, _| keep(key));
+        self.task_opened.retain(|(key, _)| keep(key));
+        self.task_focus.retain(|(key, _), _| keep(key));
+        self.task_hovered.retain(|(key, _)| keep(key));
+        self.task_focus_subscriptions
+            .retain(|(key, _), _| keep(key));
     }
 }
 #[derive(Default)]
@@ -279,18 +324,24 @@ impl Sidebar {
             let state = &session.read(cx).state;
             let cache = self.task_glances.entry(id).or_default();
             cache.refresh(&state.saved.items);
-            cache.refresh_dashboard(&state.saved.items, state.status);
+            cache.refresh_dashboard_reporting(
+                &state.saved.items,
+                state.status,
+                state.turn_id.as_deref(),
+                state.saved.activity_reporting,
+            );
         }
     }
     pub(super) fn render_dashboard_progress(
         &mut self,
         id: SessionId,
         title: &str,
-        status: Status,
-        age: &str,
         metadata: &RowMetadata,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let status = metadata.status;
+        let age = &metadata.age;
         let key = (self.active_workspace, id);
         let open = self.dashboard_timelines.opened.contains(&key);
         let focus = self
@@ -313,15 +364,11 @@ impl Sidebar {
             .map(super::task_glance::TaskGlanceCache::timeline)
             .unwrap_or_default();
         let accessible = format!("Activity history · {}", metadata.context);
-        let tooltip = accessible.clone();
         let toggle = div()
             .id(("dashboard-progress-toggle", id.raw()))
             .debug_selector(move || format!("dashboard-progress-toggle-{}", id.raw()))
             .role(gpui::Role::Button)
             .aria_label(accessible)
-            .tooltip(move |window, cx| {
-                super::super::components::tooltip(tooltip.clone(), window).build(window, cx)
-            })
             .aria_expanded(open)
             .tab_index(0)
             .tab_stop(true)
@@ -334,7 +381,6 @@ impl Sidebar {
             .gap(rpx(SPACE_LG))
             .line_height(rpx(TIMELINE_TASK_LINE_H))
             .py(rpx(SPACE_SM))
-            .hover(|style| style.bg(c::BG_HOVER()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .on_mouse_down(gpui::MouseButton::Left, {
                 let focus = focus.clone();
@@ -442,8 +488,8 @@ impl Sidebar {
             super::super::components::tooltip("Open session", window).build(window, cx)
         })
         .child(icon("arrow-right", ICON_SM, c::FG_DIM()));
-        let body = render_body(&format!("{}-{}", key.0, id.raw()), &data, status, open, cx);
-        let detail = self.dashboard_progress_reveal(key, true, body, cx);
+        let body = self.render_dashboard_tasks(key, &data, status, window, cx);
+        let detail = self.dashboard_progress_reveal(key, open, body, cx);
         div()
             .id(("dashboard-progress", id.raw()))
             .w_full()
@@ -462,6 +508,215 @@ impl Sidebar {
             )
             .child(detail)
             .into_any_element()
+    }
+    fn render_dashboard_tasks(
+        &mut self,
+        scope: Scope,
+        data: &TimelineData,
+        status: Status,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = format!("{}-{}", scope.0, scope.1.raw());
+        let Some(list) = &data.list else {
+            return render_body(&key, data, status, cx);
+        };
+        let live_keys: HashSet<_> = list.tasks.iter().map(task_key).collect();
+        self.dashboard_timelines
+            .task_opened
+            .retain(|(owner, task)| *owner != scope || live_keys.contains(task));
+        self.dashboard_timelines
+            .task_focus
+            .retain(|(owner, task), _| *owner != scope || live_keys.contains(task));
+        self.dashboard_timelines
+            .task_hovered
+            .retain(|(owner, task)| *owner != scope || live_keys.contains(task));
+        self.dashboard_timelines
+            .task_focus_subscriptions
+            .retain(|(owner, task), _| *owner != scope || live_keys.contains(task));
+        let mut body = div()
+            .w_full()
+            .pl(rpx(SPACE_20))
+            .py(rpx(SPACE_LG))
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_SM));
+        let shimmer = shimmering_activity(&data.activity, status);
+        for task in &list.tasks {
+            let identity = task_key(task);
+            let state_key = (scope, identity.clone());
+            let complete = task.status == TaskStatus::Completed;
+            let open = !complete || self.dashboard_timelines.task_opened.contains(&state_key);
+            let hovered = self.dashboard_timelines.task_hovered.contains(&state_key);
+            let focus = self
+                .dashboard_timelines
+                .task_focus
+                .entry(state_key.clone())
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
+            if complete
+                && !self
+                    .dashboard_timelines
+                    .task_focus_subscriptions
+                    .contains_key(&state_key)
+            {
+                let focused = cx.on_focus(&focus, window, |_, _, cx| cx.notify());
+                let blurred = cx.on_blur(&focus, window, |_, _, cx| cx.notify());
+                self.dashboard_timelines
+                    .task_focus_subscriptions
+                    .insert(state_key.clone(), vec![focused, blurred]);
+            }
+            let focused = focus.is_focused(window);
+            let row_id = format!("dashboard-task-{key}-{identity}");
+            let label_id = format!("dashboard-task-label-{key}-{identity}");
+            let disclosure = complete && (open || hovered || focused);
+            let mark_selector = format!(
+                "dashboard-task-{}-{key}-{identity}",
+                if disclosure { "chevron" } else { "status" }
+            );
+            let mark = div()
+                .debug_selector(move || mark_selector.clone())
+                .w(rpx(ICON_LG))
+                .h(rpx(TIMELINE_TASK_LINE_H))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(if disclosure {
+                    icon(task_disclosure_glyph(open), ICON_SM, c::FG_DIM()).into_any_element()
+                } else if task.status == TaskStatus::InProgress
+                    && matches!(status, Status::Working | Status::Starting)
+                {
+                    super::super::status::mark(
+                        format!("dashboard-task-{key}-{identity}"),
+                        super::super::status::StatusKind::Working,
+                        ICON_SM,
+                        cx,
+                    )
+                } else {
+                    super::super::components::task_mark(
+                        task.status,
+                        super::task_glance::task_phase(status),
+                        0,
+                    )
+                    .into_any_element()
+                });
+            let mut row = div()
+                .id(gpui::SharedString::from(row_id.clone()))
+                .w_full()
+                .min_w_0()
+                .debug_selector(move || row_id.clone())
+                .flex()
+                .items_start()
+                .gap(rpx(SPACE_LG))
+                .line_height(rpx(TIMELINE_TASK_LINE_H))
+                .py(rpx(SPACE_SM))
+                .text_size(rpx(TEXT_BODY))
+                .text_color(c::FG())
+                .child(mark)
+                .child(
+                    div()
+                        .debug_selector(move || label_id.clone())
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_normal()
+                        .child(task.step.clone()),
+                );
+            if complete {
+                let hover_key = state_key.clone();
+                let click_key = state_key.clone();
+                let keyboard_key = state_key.clone();
+                row = row
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Completed task · {}", task.step))
+                    .aria_expanded(open)
+                    .cursor_pointer()
+                    .tab_index(0)
+                    .tab_stop(true)
+                    .track_focus(&focus)
+                    .focus_visible(|style| style.bg(c::BG_HOVER()))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            this.dashboard_timelines
+                                .task_hovered
+                                .insert(hover_key.clone());
+                        } else {
+                            this.dashboard_timelines.task_hovered.remove(&hover_key);
+                        }
+                        cx.notify();
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                        focus.focus(window, cx);
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.dashboard_timelines.toggle_task(click_key.clone());
+                        cx.stop_propagation();
+                        cx.notify();
+                    }))
+                    .capture_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if !event.is_held
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            {
+                                this.dashboard_timelines.toggle_task(keyboard_key.clone());
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        },
+                    ));
+            }
+            body = body.child(row);
+            if open {
+                let items: Vec<_> = data
+                    .activity
+                    .iter()
+                    .filter(|activity| {
+                        activity
+                            .task
+                            .as_ref()
+                            .is_some_and(|owner| task.owns_activity(owner))
+                    })
+                    .cloned()
+                    .collect();
+                if !items.is_empty() {
+                    body = body.child(div().pl(rpx(ICON_LG + SPACE_LG)).child(
+                        render_activity_with_current(
+                            &key,
+                            &format!("{key}-task-{identity}"),
+                            &items,
+                            status,
+                            shimmer,
+                            complete,
+                            cx,
+                        ),
+                    ));
+                }
+            }
+        }
+        let unassigned: Vec<_> =
+            data.activity
+                .iter()
+                .filter(|activity| {
+                    activity.task.as_ref().is_none_or(|owner| {
+                        !list.tasks.iter().any(|task| task.owns_activity(owner))
+                    })
+                })
+                .cloned()
+                .collect();
+        if !unassigned.is_empty() {
+            body = body.child(render_activity_with_current(
+                &key,
+                &format!("{key}-unassigned"),
+                &unassigned,
+                status,
+                shimmer,
+                false,
+                cx,
+            ));
+        }
+        body.into_any_element()
     }
     fn dashboard_progress_reveal(
         &mut self,
@@ -550,25 +805,31 @@ impl Sidebar {
             .into_any_element()
     }
 }
-fn render_body(
-    key: &str,
-    data: &TimelineData,
-    status: Status,
-    expanded: bool,
-    cx: &App,
-) -> AnyElement {
-    let body_selector = format!("dashboard-timeline-body-{key}");
-    let start = if expanded {
-        0
+fn task_disclosure_glyph(open: bool) -> &'static str {
+    if open {
+        "chev-up"
     } else {
-        data.activity.len().saturating_sub(ACTIVITY_LIMIT)
+        "chev-down"
+    }
+}
+
+fn task_key(task: &Task) -> String {
+    let identity = if task.id.starts_with("step-") || task.id.starts_with("todo-") {
+        &task.step
+    } else {
+        &task.id
     };
+    format!("{}-{identity}", task.identity_at)
+}
+
+fn render_body(key: &str, data: &TimelineData, status: Status, cx: &App) -> AnyElement {
+    let body_selector = format!("dashboard-timeline-body-{key}");
     div()
         .debug_selector(move || body_selector.clone())
         .w_full()
         .pl(rpx(SPACE_20))
         .py(rpx(SPACE_LG))
-        .child(render_activity(key, &data.activity[start..], status, cx))
+        .child(render_activity(key, &data.activity, status, cx))
         .into_any_element()
 }
 
@@ -580,12 +841,38 @@ fn timeline_change<E: IntoElement + gpui::Styled + 'static>(
     motion::fast(element, format!("dashboard-change-{key}"), cx)
 }
 fn shimmering_activity(items: &[Activity], status: Status) -> Option<usize> {
-    let latest = items.last()?;
+    let latest = if items.iter().any(|item| item.explicit_status.is_some()) {
+        items.iter().rev().find(|item| {
+            item.explicit_status == Some(grove_core::activity::StepStatus::InProgress)
+                && item.observed_active != Some(false)
+        })?
+    } else {
+        items.last()?
+    };
     (matches!(status, Status::Starting | Status::Working) && latest.observed_active != Some(false))
         .then_some(latest.index)
 }
 fn render_activity(key: &str, items: &[Activity], status: Status, cx: &gpui::App) -> AnyElement {
-    let selector = format!("dashboard-session-activity-{key}");
+    render_activity_with_current(
+        key,
+        key,
+        items,
+        status,
+        shimmering_activity(items, status),
+        false,
+        cx,
+    )
+}
+fn render_activity_with_current(
+    key: &str,
+    group_key: &str,
+    items: &[Activity],
+    status: Status,
+    current: Option<usize>,
+    completed_task: bool,
+    cx: &gpui::App,
+) -> AnyElement {
+    let selector = format!("dashboard-session-activity-{group_key}");
     let mut activity = div()
         .id(gpui::SharedString::from(selector.clone()))
         .debug_selector(move || selector.clone())
@@ -608,16 +895,38 @@ fn render_activity(key: &str, items: &[Activity], status: Status, cx: &gpui::App
                 .child("No activity updates yet."),
         );
     }
-    let shimmer_index = shimmering_activity(items, status);
+    let shimmer_index = (!completed_task).then_some(current).flatten();
     for (position, activity_item) in items.iter().enumerate() {
         let Activity {
             index,
             text: label,
             observed_active,
+            ..
         } = activity_item;
         let identity = format!("{key}-{index}");
         let latest = position + 1 == items.len();
-        let kind = if latest && *observed_active != Some(false) {
+        let kind = if let Some(explicit) = activity_item.explicit_status {
+            match explicit {
+                grove_core::activity::StepStatus::Completed => {
+                    super::super::status::StatusKind::Success
+                }
+                grove_core::activity::StepStatus::Failed => {
+                    super::super::status::StatusKind::Failed
+                }
+                grove_core::activity::StepStatus::InProgress
+                    if current == Some(*index)
+                        && !completed_task
+                        && *observed_active != Some(false) =>
+                {
+                    super::super::status::codex_kind(status)
+                }
+                grove_core::activity::StepStatus::InProgress => {
+                    super::super::status::StatusKind::Stopped
+                }
+            }
+        } else if completed_task {
+            super::super::status::StatusKind::Idle
+        } else if current == Some(*index) && *observed_active != Some(false) {
             super::super::status::codex_kind(status)
         } else {
             super::super::status::StatusKind::Idle
@@ -673,7 +982,21 @@ fn render_activity(key: &str, items: &[Activity], status: Status, cx: &gpui::App
                 .role(gpui::Role::Group)
                 .aria_label(format!(
                     "{} · {label}",
-                    if latest && *observed_active != Some(false) {
+                    if activity_item.explicit_status
+                        == Some(grove_core::activity::StepStatus::Completed)
+                    {
+                        "Completed action"
+                    } else if activity_item.explicit_status
+                        == Some(grove_core::activity::StepStatus::Failed)
+                    {
+                        "Failed action"
+                    } else if activity_item.explicit_status.is_some()
+                        && (completed_task || *observed_active == Some(false))
+                    {
+                        "Stopped before reported completion"
+                    } else if completed_task {
+                        "Completed task activity"
+                    } else if current == Some(*index) && *observed_active != Some(false) {
                         status.label()
                     } else {
                         "Earlier activity"
@@ -709,6 +1032,308 @@ fn render_activity(key: &str, items: &[Activity], status: Status, cx: &gpui::App
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn task_disclosure_states_use_visible_catalog_glyphs() {
+        for open in [false, true] {
+            let glyph = task_disclosure_glyph(open);
+            let svg = crate::icons::svg_for_path(&format!("icons/{glyph}.svg")).unwrap();
+            assert!(
+                svg.contains("<path "),
+                "task disclosure {open} must paint a shape: {glyph}"
+            );
+        }
+        assert_ne!(task_disclosure_glyph(false), task_disclosure_glyph(true));
+    }
+
+    fn task_fixture() -> TimelineData {
+        let report = |id: &str, task: &str, status: &str, label: &str| {
+            let args = json!({"id":id,"task_id":task,"status":status,"label":label});
+            json!({"type":"mcpToolCall","server":"grove_activity","tool":"report_activity","status":"completed","arguments":args,"result":{"structuredContent":{"accepted":true,"report":args,"turn_id":"fixture-turn"}}})
+        };
+        let items = vec![
+            json!({"type":"plan","taskSnapshot":true,"plan":[{"id":"first","step":"Trace session closing and implement dashboard navigation","status":"inProgress"},{"id":"second","step":"Verify the change and commit it","status":"pending"}]}),
+            report(
+                "trace",
+                "first",
+                "completed",
+                "Traced the session-close handler",
+            ),
+            report(
+                "navigate",
+                "first",
+                "completed",
+                "Added navigation back to the dashboard",
+            ),
+            json!({"type":"plan","taskSnapshot":true,"plan":[{"id":"first","step":"Trace session closing and implement dashboard navigation","status":"completed"},{"id":"second","step":"Verify the change and commit it","status":"inProgress"}]}),
+            report(
+                "check",
+                "second",
+                "completed",
+                "Checked session-close navigation",
+            ),
+            report(
+                "run",
+                "second",
+                "in_progress",
+                "Running navigation checks with enough detail to wrap at narrow widths",
+            ),
+            report("failed", "second", "failed", "Narrow layout check failed"),
+        ];
+        let mut activity = recent_activity(&items);
+        activity.push(Activity {
+            index: 7,
+            text: "Inspecting an interrupted check".into(),
+            observed_active: Some(false),
+            task: grove_core::tasks::current(&items)
+                .unwrap()
+                .tasks
+                .get(1)
+                .cloned(),
+            explicit_status: Some(grove_core::activity::StepStatus::InProgress),
+            turn_id: Some("older-turn".into()),
+        });
+        TimelineData {
+            list: Some(Arc::new(grove_core::tasks::current(&items).unwrap())),
+            activity,
+        }
+    }
+    struct TaskProbe {
+        sidebar: gpui::Entity<Sidebar>,
+        data: TimelineData,
+    }
+    impl gpui::Render for TaskProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let scope = (1, SessionId::from_raw(1));
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.render_dashboard_tasks(scope, &self.data, Status::Working, window, cx)
+            })
+        }
+    }
+    fn init_task_fixture(cx: &mut App) {
+        gpui_component::init(cx);
+        cx.set_reduce_motion(true);
+        cx.set_global(crate::zoom::CurrentPtyDims::default());
+        cx.set_global(crate::settings::SettingsState::new(
+            grove_core::storage::Store::default(),
+        ));
+    }
+    #[gpui::test]
+    fn completed_task_hover_keyboard_and_click_preserve_geometry(cx: &mut gpui::TestAppContext) {
+        cx.update(init_task_fixture);
+        let (probe, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+            TaskProbe {
+                sidebar,
+                data: task_fixture(),
+            }
+        });
+        let fixture = task_fixture();
+        let tasks = &fixture.list.as_ref().unwrap().tasks;
+        let completed_key = task_key(&tasks[0]);
+        let active_key = task_key(&tasks[1]);
+        let completed_label: &'static str =
+            Box::leak(format!("dashboard-task-label-1-1-{completed_key}").into_boxed_str());
+        let active_label: &'static str =
+            Box::leak(format!("dashboard-task-label-1-1-{active_key}").into_boxed_str());
+        let completed_row: &'static str =
+            Box::leak(format!("dashboard-task-1-1-{completed_key}").into_boxed_str());
+        let completed_chevron: &'static str =
+            Box::leak(format!("dashboard-task-chevron-1-1-{completed_key}").into_boxed_str());
+        for (width, rem) in [
+            (620., crate::zoom::REM_BASE),
+            (260., crate::zoom::REM_BASE),
+            (320., 20.),
+        ] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.)));
+            cx.update(|window, cx| {
+                window.set_rem_size(gpui::px(rem));
+                let _ = window.draw(cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                cx.debug_bounds("dashboard-activity-label-1-1-1").is_none(),
+                "completed steps start collapsed"
+            );
+            let label = cx.debug_bounds(completed_label).unwrap();
+            let active = cx.debug_bounds(active_label).unwrap();
+            assert_eq!(label.left(), active.left());
+            assert!(label.right() <= gpui::px(width));
+            let before = cx.debug_bounds(completed_row).unwrap();
+            cx.simulate_mouse_move(before.center(), None, gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx.debug_bounds(completed_chevron).is_some());
+            assert_eq!(label, cx.debug_bounds(completed_label).unwrap());
+            cx.simulate_click(before.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx.debug_bounds("dashboard-activity-label-1-1-1").is_some());
+            cx.simulate_keystrokes("space");
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx.debug_bounds("dashboard-activity-label-1-1-1").is_none());
+            cx.simulate_mouse_move(
+                gpui::point(gpui::px(width - 1.), gpui::px(690.)),
+                None,
+                gpui::Modifiers::default(),
+            );
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(
+                cx.debug_bounds(completed_chevron).is_some(),
+                "keyboard focus keeps disclosure visible without hover"
+            );
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx.debug_bounds("dashboard-activity-label-1-1-1").is_some());
+            let child = cx.debug_bounds("dashboard-activity-label-1-1-1").unwrap();
+            assert!(child.left() > label.left());
+            assert!(child.right() <= gpui::px(width));
+            cx.simulate_keystrokes("enter");
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx.debug_bounds("dashboard-activity-label-1-1-1").is_none());
+            // Expose the same data as Claude and Codex; provider boundary coverage
+            // is deliberately owned by native_task_activity_smoke, not this fixture.
+            let state = cx.update(|_, cx| {
+                probe
+                    .read(cx)
+                    .sidebar
+                    .read(cx)
+                    .dashboard_timelines
+                    .task_opened
+                    .len()
+            });
+            assert_eq!(state, 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires macOS Metal renderer; captures actual task component and pointer/key interactions"]
+    fn task_activity_native_snapshots() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            init_task_fixture(cx);
+            crate::fonts::register(cx).unwrap();
+            grove_core::theme::set(grove_core::theme::by_name("grove-dark").unwrap());
+            c::sync_component_theme(cx);
+        });
+        for (name, width, rem) in [
+            ("normal", 620., crate::zoom::REM_BASE),
+            ("narrow", 260., crate::zoom::REM_BASE),
+            ("zoom", 320., 20.),
+            ("reduced-motion", 620., crate::zoom::REM_BASE),
+        ] {
+            cx.update(|cx| cx.set_reduce_motion(name == "reduced-motion"));
+            let mut probe = None;
+            let window = cx
+                .open_window(gpui::size(gpui::px(width), gpui::px(520.)), |window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    let runtime = cx.new(Runtime::new);
+                    let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+                    let view = cx.new(|_| TaskProbe {
+                        sidebar,
+                        data: task_fixture(),
+                    });
+                    probe = Some(view.clone());
+                    cx.new(|cx| {
+                        gpui_component::Root::new(view, window, cx)
+                            .bordered(false)
+                            .bg(c::BG())
+                    })
+                })
+                .unwrap();
+            cx.run_until_parked();
+            let data = task_fixture();
+            let task = &data.list.as_ref().unwrap().tasks[0];
+            for pose in ["rest", "hover", "expanded", "collapsed"] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    let sidebar = probe.as_ref().unwrap().read(cx).sidebar.clone();
+                    if pose == "hover" {
+                        // Real pointer enters the first task row, whose first text
+                        // line occupies this token-derived inset.
+                        let position = gpui::point(
+                            rpx(SPACE_20 + ICON_LG + SPACE_LG + SPACE_LG)
+                                .to_pixels(window.rem_size()),
+                            rpx(SPACE_LG + SPACE_SM + TIMELINE_TASK_LINE_H / 2.)
+                                .to_pixels(window.rem_size()),
+                        );
+                        window.dispatch_event(
+                            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                                position,
+                                pressed_button: None,
+                                modifiers: gpui::Modifiers::default(),
+                            }),
+                            cx,
+                        );
+                    }
+                    if pose == "expanded" || pose == "collapsed" {
+                        sidebar.update(cx, |sidebar, cx| {
+                            let focus = sidebar.dashboard_timelines.task_focus
+                                [&((1, SessionId::from_raw(1)), task_key(task))]
+                                .clone();
+                            focus.focus(window, cx);
+                        });
+                        window.dispatch_event(
+                            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                                keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                                is_held: false,
+                                prefer_character_input: false,
+                            }),
+                            cx,
+                        );
+                    }
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                if pose == "expanded" || pose == "collapsed" {
+                    let opened = cx.update(|cx| {
+                        let sidebar = probe.as_ref().unwrap().read(cx).sidebar.clone();
+                        sidebar
+                            .read(cx)
+                            .dashboard_timelines
+                            .task_opened
+                            .contains(&((1, SessionId::from_raw(1)), task_key(task)))
+                    });
+                    assert_eq!(opened, pose == "expanded");
+                }
+                let output = format!("/tmp/grove-task-activity-{name}-{pose}.png");
+                cx.capture_screenshot(window.into())
+                    .unwrap()
+                    .save(&output)
+                    .unwrap();
+                eprintln!("Native task activity: {output}");
+            }
+        }
+    }
 
     #[test]
     fn recent_activity_groups_tools_under_short_provider_updates() {
@@ -752,9 +1377,14 @@ mod tests {
         state.toggle((1, second));
         state.reveals.insert((1, second), TimelineReveal::default());
         assert!(!state.is_open(3, first));
-        state.toggle((1, first));
+        assert!(
+            !state.is_open(1, first),
+            "opening another session closes the prior session in that workspace"
+        );
+        assert!(state.is_open(1, second));
         assert!(state.is_open(2, first));
-        assert!(!state.is_open(1, first));
+        state.toggle((1, second));
+        assert!(!state.is_open(1, second));
         state.retain(&HashSet::from([first]), &HashSet::from([1, 2]));
         assert!(!state.is_open(1, second));
         assert!(state.reveals.is_empty());
@@ -780,47 +1410,6 @@ mod tests {
         state.target(214.);
         assert_eq!(state.from, 121.28);
         assert_eq!(state.to, 214.);
-    }
-    struct BodyProbe(TimelineData);
-    impl gpui::Render for BodyProbe {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .w(gpui::px(440.))
-                .child(render_body("probe", &self.0, Status::Working, false, cx))
-        }
-    }
-    #[gpui::test]
-    fn compact_activity_shows_three_steps_without_task_checklist(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            cx.set_reduce_motion(true);
-        });
-        let items = vec![
-            json!({"type":"plan","plan":[{"step":"Planned task","status":"inProgress"}]}),
-            json!({"type":"agentMessage","text":"First step"}),
-            json!({"type":"agentMessage","text":"Second step"}),
-            json!({"type":"agentMessage","text":"Third step"}),
-            json!({"type":"agentMessage","text":"Current step"}),
-        ];
-        let data = TimelineData {
-            list: Some(Arc::new(grove_core::tasks::current(&items).unwrap())),
-            activity: recent_activity(&items),
-        };
-        let (_, cx) = cx.add_window_view(|_, _| BodyProbe(data));
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
-        assert!(cx
-            .debug_bounds("dashboard-activity-label-probe-1")
-            .is_none());
-        for selector in [
-            "dashboard-activity-label-probe-2",
-            "dashboard-activity-label-probe-3",
-            "dashboard-activity-label-probe-4",
-        ] {
-            assert!(cx.debug_bounds(selector).is_some());
-        }
     }
     #[test]
     fn activity_scope_warms_only_on_entry_membership_or_workspace_change() {
@@ -931,6 +1520,8 @@ mod tests {
             provider: grove_core::codex::Provider::Codex,
             effort: None,
             context: String::new(),
+            status: Status::Idle,
+            age: String::new(),
         };
         assert_eq!(metadata.worktree, "Main checkout");
         assert_eq!(metadata.provider_label(), "Codex");
@@ -965,7 +1556,7 @@ mod tests {
             fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 div()
                     .w_full()
-                    .child(render_body("history", &self.0, Status::Waiting, true, cx))
+                    .child(render_body("history", &self.0, Status::Waiting, cx))
             }
         }
         cx.update(|cx| {

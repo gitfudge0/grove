@@ -620,6 +620,7 @@ impl Runtime {
             draft_reference: None,
             config_args: Vec::new(),
             native_config_version: 1,
+            activity_reporting: false,
         };
         let id = self.attach_native_codex(saved, args, cx);
         let snap = self.snapshot(cx);
@@ -1839,6 +1840,7 @@ mod tests {
                 draft_reference: None,
                 config_args: Vec::new(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
             let connection = grove_core::codex::Connection {
                 handle: handle.clone(),

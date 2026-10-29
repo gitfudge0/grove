@@ -70,6 +70,7 @@ fn main() -> Result<(), String> {
         draft_images: Vec::new(),
         draft_reference: None,
         native_config_version: 1,
+        activity_reporting: false,
         config_args: if extra_root.is_some() {
             vec!["-c".into(), "sandbox_mode=\"workspace-write\"".into()]
         } else {

@@ -86,18 +86,47 @@ pub(super) struct TaskGlanceCache {
     list: Option<std::sync::Arc<TaskList>>,
     timeline: std::sync::Arc<super::dashboard_timeline::TimelineData>,
     dashboard_status: Option<Status>,
+    lifecycle_status: Option<Status>,
 }
 
 impl TaskGlanceCache {
+    /// Connection and lifecycle controls are visible even with Dashboard closed.
+    fn refresh_lifecycle(&mut self, status: Status) -> bool {
+        let changed = self.lifecycle_status != Some(status);
+        self.lifecycle_status = Some(status);
+        changed
+    }
     pub fn timeline(&self) -> std::sync::Arc<super::dashboard_timeline::TimelineData> {
         self.timeline.clone()
     }
+    #[cfg(test)]
     pub fn refresh_dashboard<T: std::borrow::Borrow<Value>>(
         &mut self,
         items: &[T],
         status: Status,
     ) -> bool {
-        let activity = super::dashboard_timeline::recent_activity(items);
+        self.refresh_dashboard_reporting(items, status, None, false)
+    }
+    pub fn refresh_dashboard_reporting<T: std::borrow::Borrow<Value>>(
+        &mut self,
+        items: &[T],
+        status: Status,
+        turn: Option<&str>,
+        reporting: bool,
+    ) -> bool {
+        let mut activity = super::dashboard_timeline::recent_activity(items);
+        if reporting {
+            activity.retain(|step| step.explicit_status.is_some());
+        }
+        for step in &mut activity {
+            if let Some(status) = step.explicit_status {
+                // Steering can add another user prompt within the same provider
+                // turn. Exact accepted turn identity owns the action lifecycle.
+                step.observed_active = (status != grove_core::activity::StepStatus::InProgress
+                    || step.turn_id.as_deref() != turn)
+                    .then_some(false);
+            }
+        }
         let changed = activity != self.timeline.activity || self.dashboard_status != Some(status);
         if activity != self.timeline.activity {
             self.timeline = std::sync::Arc::new(super::dashboard_timeline::TimelineData {
@@ -134,8 +163,8 @@ impl TaskGlanceCache {
 }
 
 impl Sidebar {
-    /// Keeps one observer per structured session so task progress repaints
-    /// the sidebar only when the summary changes.
+    /// Keeps one observer per structured session so task progress and connection
+    /// controls repaint when their facts change, even for unselected sessions.
     pub(super) fn sync_task_glances(&mut self, cx: &mut Context<Self>) {
         let registry = self.runtime.read(cx).registry.read(cx);
         let sessions: Vec<_> = registry
@@ -169,8 +198,14 @@ impl Sidebar {
             {
                 let state = &session.read(cx).state;
                 cache.refresh(&state.saved.items);
+                cache.refresh_lifecycle(state.status);
                 if self.dashboard_open && self.dashboard_owns_session(id) {
-                    cache.refresh_dashboard(&state.saved.items, state.status);
+                    cache.refresh_dashboard_reporting(
+                        &state.saved.items,
+                        state.status,
+                        state.turn_id.as_deref(),
+                        state.saved.activity_reporting,
+                    );
                 }
             }
             self.task_glances.insert(id, cache);
@@ -179,9 +214,15 @@ impl Sidebar {
                 let state = &session.read(cx).state;
                 let cache = this.task_glances.entry(id).or_default();
                 let changed = cache.refresh(&state.saved.items);
-                let activity_changed =
-                    visible && cache.refresh_dashboard(&state.saved.items, state.status);
-                if changed || activity_changed {
+                let lifecycle_changed = cache.refresh_lifecycle(state.status);
+                let activity_changed = visible
+                    && cache.refresh_dashboard_reporting(
+                        &state.saved.items,
+                        state.status,
+                        state.turn_id.as_deref(),
+                        state.saved.activity_reporting,
+                    );
+                if changed || lifecycle_changed || activity_changed {
                     cx.notify();
                 }
             });
@@ -585,6 +626,117 @@ mod tests {
         })
     }
 
+    #[gpui::test]
+    fn background_provider_lifecycle_notifies_without_transcript_changes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::settings::SettingsState::new(
+                grove_core::storage::Store::default(),
+            ));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        let notifications = Rc::new(Cell::new(0));
+        let seen = notifications.clone();
+        let _observer =
+            cx.update(|_, cx| cx.observe(&sidebar, move |_, _| seen.set(seen.get() + 1)));
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            let session = cx.update(|_, cx| {
+                let saved = serde_json::from_value(json!({
+                    "key":"background-lifecycle", "project":"demo", "cwd":"/tmp",
+                    "label":"Background session", "provider":provider,
+                    "roots":[], "thread_id":null, "items":[]
+                }))
+                .unwrap();
+                let (handle, _actions) = grove_core::codex::Handle::channel();
+                let (_updates, receive) = std::sync::mpsc::channel();
+                let session = cx.new(|cx| {
+                    let mut state = grove_core::codex::Snapshot::new(saved);
+                    state.status = Status::Starting;
+                    crate::entities::codex_session::CodexSession::from_connection(
+                        state,
+                        grove_core::codex::Connection {
+                            handle: handle.clone(),
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                sidebar.update(cx, |sidebar, cx| {
+                    let registry = sidebar.runtime.read(cx).registry.clone();
+                    registry.update(cx, |registry, _| {
+                        let id =
+                            registry.insert_meta("demo".into(), "/tmp".into(), provider.agent());
+                        registry.attach_codex(id, session.clone(), handle);
+                    });
+                    sidebar.dashboard_open = false;
+                    sidebar.sync_task_glances(cx);
+                });
+                session
+            });
+            cx.run_until_parked();
+            for status in [
+                Status::Working,
+                Status::Failed,
+                Status::Disconnected,
+                Status::Idle,
+            ] {
+                let before = notifications.get();
+                cx.update(|_, cx| {
+                    session.update(cx, |session, cx| {
+                        session.state.status = status;
+                        cx.notify();
+                    })
+                });
+                cx.run_until_parked();
+                assert!(
+                    notifications.get() > before,
+                    "{provider:?}: {status:?} must invalidate background status and Retry"
+                );
+            }
+            let before = notifications.get();
+            cx.update(|_, cx| session.update(cx, |_, cx| cx.notify()));
+            cx.run_until_parked();
+            assert_eq!(
+                notifications.get(),
+                before,
+                "unchanged provider updates stay quiet"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_reporting_never_turns_commentary_into_steps_or_reanimates_old_turns() {
+        let args = serde_json::json!({"id":"s","task_id":"","status":"in_progress","label":"Checking navigation"});
+        let items = vec![
+            serde_json::json!({"type":"agentMessage","text":"The changes span several areas."}),
+            serde_json::json!({"type":"mcpToolCall","server":"grove_activity","tool":"report_activity","status":"completed","arguments":args,"result":{"structuredContent":{"accepted":true,"report":args,"turn_id":"old"}}}),
+        ];
+        let mut cache = TaskGlanceCache::default();
+        cache.refresh_dashboard_reporting(&items[..1], Status::Working, Some("new"), true);
+        assert!(cache.timeline().activity.is_empty());
+        cache.refresh_dashboard_reporting(&items, Status::Working, Some("new"), true);
+        assert_eq!(cache.timeline().activity.len(), 1);
+        assert_eq!(cache.timeline().activity[0].observed_active, Some(false));
+        let mut steered = items.clone();
+        steered.push(serde_json::json!({"type":"userMessage","content":[{"text":"Also check the narrow layout"}]}));
+        cache.refresh_dashboard_reporting(&steered, Status::Working, Some("old"), true);
+        assert_eq!(cache.timeline().activity[0].observed_active, None);
+        let mut finished = items.clone();
+        finished[1]["arguments"]["status"] = serde_json::json!("completed");
+        finished[1]["result"]["structuredContent"]["report"]["status"] =
+            serde_json::json!("completed");
+        cache.refresh_dashboard_reporting(&finished, Status::Working, Some("old"), true);
+        assert_eq!(cache.timeline().activity[0].observed_active, Some(false));
+    }
     #[test]
     fn task_glance_labels_progress_and_current_step() {
         let items = vec![plan(&[

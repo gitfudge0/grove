@@ -75,6 +75,7 @@ fn main() -> Result<(), String> {
         draft_reference: None,
         config_args: Vec::new(),
         native_config_version: 1,
+        activity_reporting: false,
     };
     let connection = codex::connect(saved, Vec::new());
     if permissions_only {

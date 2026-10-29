@@ -214,7 +214,12 @@ impl PullRequest {
 fn gh(path: &Path, args: &[&str]) -> Result<String, String> {
     let mut out = tempfile::tempfile().map_err(|_| "Could not prepare GitHub status")?;
     let mut err = tempfile::tempfile().map_err(|_| "Could not prepare GitHub status")?;
-    let mut command = Command::new("gh");
+    let executable = crate::agent::resolve_executable("gh")
+        .ok_or("Install GitHub CLI (gh) to see pull requests")?;
+    let mut command = Command::new(executable);
+    if let Some(environment) = crate::env_path::session_environment() {
+        command.envs(environment.iter().cloned());
+    }
     command
         .current_dir(path)
         .args(args)
@@ -234,9 +239,9 @@ fn gh(path: &Path, args: &[&str]) -> Result<String, String> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|_| "Install GitHub CLI (gh) to see pull requests")?;
+    let mut child = command.spawn().map_err(|_| {
+        "Could not start GitHub CLI. Check the checkout folder and executable permissions"
+    })?;
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -720,6 +725,73 @@ mod tests {
             "Merged"
         );
     }
+    #[cfg(unix)]
+    #[test]
+    fn gh_uses_recovered_gui_environment() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join(".local/bin");
+        fs_err::create_dir_all(&bin).unwrap();
+        let executable = bin.join("gh");
+        fs_err::write(&executable, "#!/bin/sh\nprintf 'fixture github cli'\n").unwrap();
+        fs_err::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shell = root.path().join("shell");
+        fs_err::write(
+            &shell,
+            format!(
+                "#!/bin/sh\nexport PATH='{}:/usr/bin:/bin'\nexec /bin/sh -c \"$2\"\n",
+                bin.display()
+            ),
+        )
+        .unwrap();
+        fs_err::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for captured in [false, true] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "checkout_pr::tests::gh_recovered_environment_child",
+                    "--nocapture",
+                ])
+                .env("GROVE_GH_ENV_FIXTURE", root.path())
+                .env("GROVE_GH_CAPTURE_FIXTURE", if captured { "1" } else { "0" })
+                .env("SHELL", &shell)
+                .env(
+                    "HOME",
+                    if captured {
+                        root.path().join("other-home")
+                    } else {
+                        root.path().to_path_buf()
+                    },
+                )
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gh_recovered_environment_child() {
+        let Some(root) = std::env::var_os("GROVE_GH_ENV_FIXTURE") else {
+            return;
+        };
+        let root = Path::new(&root);
+        if std::env::var("GROVE_GH_CAPTURE_FIXTURE").as_deref() == Ok("1") {
+            crate::env_path::ensure_login_path();
+            // Tool launches use the recovered snapshot even with a thin process PATH.
+            std::env::set_var("PATH", "/usr/bin:/bin");
+        }
+        assert_eq!(gh(root, &["--version"]).unwrap(), "fixture github cli");
+        let error = gh(&root.join("missing-checkout"), &["--version"]).unwrap_err();
+        assert!(!error.contains("Install"), "{error}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn gh_boundary_fixture() {

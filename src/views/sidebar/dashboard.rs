@@ -4,6 +4,7 @@ use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 
 const DASHBOARD_RECENT_MAX_W: f32 = CHAT_MAX_W * 0.7;
+const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.4;
 
 /// Preferences for a fresh dashboard draft after adopting the previous one.
 struct DashboardDefaults {
@@ -17,6 +18,7 @@ pub(super) struct Dashboard {
     pub session: Entity<CodexSession>,
     pub view: Entity<CodexView>,
     pub tray: Entity<DestinationTray>,
+    viewport_height: std::rc::Rc<std::cell::Cell<gpui::Pixels>>,
     _events: Vec<gpui::Subscription>,
 }
 pub(crate) enum DestinationEvent {
@@ -356,6 +358,7 @@ impl Sidebar {
                     .map(|defaults| defaults.config_args.clone())
                     .unwrap_or_default(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
             let session = cx.new(|cx| {
                 CodexSession::draft(
@@ -430,6 +433,7 @@ impl Sidebar {
                 session,
                 view,
                 tray,
+                viewport_height: std::rc::Rc::default(),
                 _events: events,
             });
         }
@@ -686,6 +690,14 @@ impl Sidebar {
                 .into_any_element();
         };
         let dashboard_composer = d.view.clone();
+        let viewport_height = d.viewport_height.clone();
+        let measured_height = viewport_height.get();
+        let composer_top = if measured_height > gpui::px(0.) {
+            measured_height
+        } else {
+            window.viewport_size().height
+        } * DASHBOARD_COMPOSER_TOP_FRACTION;
+        let owner = cx.entity().entity_id();
         // Use the workspace snapshot rather than the current navigation mode: collapsed
         // projects still contribute to the overview.
         let registry = self.runtime.read(cx).registry.read(cx);
@@ -892,15 +904,11 @@ impl Sidebar {
                         provider,
                         effort,
                         context: label,
+                        status: structured_status,
+                        age,
                     };
-                    recent = recent.child(self.render_dashboard_progress(
-                        id,
-                        &title,
-                        structured_status,
-                        &age,
-                        &metadata,
-                        cx,
-                    ));
+                    recent = recent
+                        .child(self.render_dashboard_progress(id, &title, &metadata, window, cx));
                     continue;
                 }
                 recent = recent.child(
@@ -949,38 +957,63 @@ impl Sidebar {
             .id("dashboard-page")
             .debug_selector(|| "dashboard-page".into())
             .size_full()
-            .overflow_y_scroll()
+            .relative()
+            .child(
+                gpui::canvas(
+                    move |bounds, _, cx| {
+                        if viewport_height.replace(bounds.size.height) != bounds.size.height {
+                            cx.notify(owner);
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .child(
                 div()
-                    .w_full()
-                    .min_h_full()
-                    .flex()
-                    .flex_col()
-                    .py(rpx(SPACE_3XL))
-                    .children(self.content_error.as_ref().map(|error| {
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FORM_ERROR())
-                            .p(rpx(SPACE_2XL))
-                            .child(error.clone())
-                    }))
+                    .id("dashboard-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
                     .child(
                         div()
                             .w_full()
+                            .min_h_full()
                             .flex()
-                            .justify_center()
-                            .px(rpx(SPACE_20))
-                            .child(summary),
-                    )
-                    .child(div().w_full().pt(rpx(SPACE_3XL)).child(dashboard_composer))
-                    .child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .justify_center()
-                            .px(rpx(SPACE_20))
-                            .pt(rpx(SPACE_3XL))
-                            .child(recent),
+                            .flex_col()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_h(composer_top)
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_end()
+                                    .px(rpx(SPACE_20))
+                                    .pt(rpx(SPACE_3XL))
+                                    .pb(rpx(SPACE_3XL))
+                                    .children(self.content_error.as_ref().map(|error| {
+                                        div()
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .text_color(c::FORM_ERROR())
+                                            .p(rpx(SPACE_2XL))
+                                            .child(error.clone())
+                                    }))
+                                    .child(summary),
+                            )
+                            .child(div().w_full().flex_shrink_0().child(dashboard_composer))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .justify_center()
+                                    .px(rpx(SPACE_20))
+                                    .pt(rpx(SPACE_3XL))
+                                    .pb(rpx(SPACE_3XL))
+                                    .child(recent),
+                            ),
                     ),
             )
             .into_any_element()
@@ -1004,14 +1037,17 @@ fn seed_activity_fixture(
         .saved
         .clone();
     saved.provider = provider;
-    saved.title = Some("Remove tooltip and background highlight".into());
+    saved.title = Some("Implement dashboard navigation".into());
     saved.items = vec![
-        serde_json::json!({"type":"userMessage","text":"Make recent activity concise"}),
-        serde_json::json!({"type":"agentMessage","text":"Located the recent activity view. Additional details stay in the conversation."}),
+        serde_json::json!({"type":"userMessage","text":"Implement dashboard navigation"}),
+        serde_json::json!({"type":"plan","plan":[{"id":"task-1","step":"Trace session closing and implement dashboard navigation","status":"inProgress"},{"id":"task-2","step":"Verify the change and commit it","status":"pending"}]}),
+        serde_json::json!({"type":"agentMessage","text":"Traced the session-close handler."}),
         serde_json::json!({"type":"commandExecution","command":"cat DESIGN.md"}),
-        serde_json::json!({"type":"agentMessage","text":"Checked the shared status symbols."}),
-        serde_json::json!({"type":"agentMessage","text":"Removed the tooltip and background highlight."}),
-        serde_json::json!({"type":"agentMessage","text":"Checking native behavior across compact and expanded activity histories."}),
+        serde_json::json!({"type":"agentMessage","text":"Added navigation back to the dashboard."}),
+        serde_json::json!({"type":"plan","plan":[{"id":"task-1","step":"Trace session closing and implement dashboard navigation","status":"completed"},{"id":"task-2","step":"Verify the change and commit it","status":"inProgress"}]}),
+        serde_json::json!({"type":"agentMessage","text":"Checked session-close navigation."}),
+        serde_json::json!({"type":"agentMessage","text":"Verified dashboard return behavior."}),
+        serde_json::json!({"type":"agentMessage","text":"Running navigation checks."}),
         serde_json::json!({"type":"commandExecution","command":"cargo test dashboard -- --nocapture","status":"inProgress"}),
     ].into();
     let (handle, _actions) = grove_core::codex::Handle::channel();
@@ -1046,6 +1082,65 @@ fn seed_activity_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct InsetDashboardFixture(Entity<Sidebar>);
+    impl Render for InsetDashboardFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().pt(gpui::px(100.)).child(self.0.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn dashboard_position_uses_its_own_inset_viewport(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let mut store = grove_core::storage::Store::default();
+            let path = "/tmp/grove-dashboard-inset-fixture";
+            store.projects.push(grove_core::storage::Project {
+                name: "Dashboard fixture".into(),
+                path: path.into(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                archived: false,
+                worktree_dir: None,
+            });
+            store.assign_project_to_active_workspace(path);
+            cx.set_global(SettingsState::new(store));
+        });
+        let (fixture, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+            InsetDashboardFixture(sidebar)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(900.)));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            let sidebar = fixture.read(cx).0.clone();
+            let session = sidebar.read(cx).dashboard.as_ref().unwrap().session.clone();
+            session.update(cx, |session, cx| {
+                session.catalog_loading = false;
+                session.catalog_error = Some("Provider options unavailable".into());
+                session.state.error = Some("Launch failed".into());
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let page = cx.debug_bounds("dashboard-page").unwrap();
+        let composer = cx.debug_bounds("codex-composer").unwrap();
+        assert_eq!(page.top(), gpui::px(100.));
+        assert!(
+            (composer.top() - page.top() - page.size.height * DASHBOARD_COMPOSER_TOP_FRACTION)
+                .abs()
+                < gpui::px(2.),
+            "page: {page:?}, composer: {composer:?}"
+        );
+    }
 
     // Exercise the real adoption/fresh-draft owner with mocked connected sessions.
     // Live provider normalization and native submit are verified separately.
@@ -1448,6 +1543,13 @@ mod tests {
         let recent = cx.debug_bounds("dashboard-recent").unwrap();
         let tray = cx.debug_bounds("dashboard-destination").unwrap();
         let hints = cx.debug_bounds("codex-composer-hints").unwrap();
+        let page = cx.debug_bounds("dashboard-page").unwrap();
+        assert!(
+            (composer.top() - page.top() - page.size.height * DASHBOARD_COMPOSER_TOP_FRACTION)
+                .abs()
+                < gpui::px(2.),
+            "page: {page:?}, composer: {composer:?}"
+        );
         assert!(composer.top() >= summary.bottom());
         assert!(composer.top() - summary.bottom() < gpui::px(100.));
         assert_eq!(tray.top(), composer.bottom());
@@ -1467,6 +1569,19 @@ mod tests {
         assert!(composer.top() >= summary.bottom());
         assert!(composer.size.width > gpui::px(100.));
         assert!(composer.top() - summary.bottom() < gpui::px(100.));
+        let page = cx.debug_bounds("dashboard-page").unwrap();
+        let recent_top = cx.debug_bounds("dashboard-recent").unwrap().top();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: page.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-300.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        assert!(cx.debug_bounds("dashboard-recent").unwrap().top() < recent_top);
 
         // A workspace switch lands on the actual Dashboard even from grid mode.
         cx.update(|window, cx| {

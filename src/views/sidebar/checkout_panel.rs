@@ -2948,6 +2948,7 @@ mod tests {
                 draft_reference: None,
                 config_args: Vec::new(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
             let session = cx.new(|cx| {
                 crate::entities::codex_session::CodexSession::from_connection(
@@ -3038,6 +3039,7 @@ mod tests {
                 draft_reference: None,
                 config_args: Vec::new(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
             let mut snapshot = grove_core::codex::Snapshot::new(saved);
             snapshot.status = grove_core::codex::Status::Idle;
@@ -3837,6 +3839,7 @@ mod tests {
                 draft_reference: None,
                 config_args: Vec::new(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
 
                 let mut snapshot = grove_core::codex::Snapshot::new(saved);
@@ -4003,6 +4006,7 @@ mod tests {
                 draft_reference: None,
                 config_args: Vec::new(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
 
             let mut initial = grove_core::codex::Snapshot::new(saved.clone());
@@ -4321,6 +4325,7 @@ mod tests {
                 draft_reference: None,
                 config_args: Vec::new(),
                 native_config_version: 1,
+                activity_reporting: false,
             };
             let session = cx.new(|cx| {
                 crate::entities::codex_session::CodexSession::from_connection(

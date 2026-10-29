@@ -32,6 +32,7 @@ fn draft(provider: Provider, cwd: &str) -> SavedSession {
         draft_reference: None,
         config_args: Vec::new(),
         native_config_version: 1,
+        activity_reporting: false,
         composer: ComposerSettings::default(),
         context: None,
     }
