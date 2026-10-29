@@ -124,7 +124,7 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 # plan 04 Task 5 Step 5).
 base64 = "0.22"
 portable-pty = "0.9"
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 anyhow = "1"
 dirs = "5"
 ureq = { version = "3.4.2", features = ["rustls"], default-features = false }
@@ -196,6 +196,8 @@ ureq.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 rustc-hash = "=2.1.2"
+# Content-address design-system/reference artifacts; already present transitively.
+sha2 = "0.10.9"
 # Vendored, not a git dep: see vendor/gpui-component/README.md for the source,
 # rev, license and the full list of manifest edits.
 # Clipboard screenshots (including macOS TIFF) are validated off-thread and

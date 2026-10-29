@@ -601,7 +601,7 @@ impl Sidebar {
             let context_position = bounds.get().bottom_right();
             let selector = format!("checkout-script-{}", entry.id);
             section = section.child(
-                div()
+                crate::views::components::checkout_register_frame()
                     .id(SharedString::from(selector.clone()))
                     .debug_selector(move || selector.clone())
                     .relative()
@@ -610,13 +610,6 @@ impl Sidebar {
                             .absolute()
                             .inset_0(),
                     )
-                    .w_full()
-                    .min_w_0()
-                    .h(rpx(CONTROL_H + SPACE_SM))
-                    .px(rpx(SPACE_2XL))
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_SM))
                     .on_key_down({
                         let scroll = context_scroll.clone();
                         move |event: &gpui::KeyDownEvent, window, cx| {
@@ -634,13 +627,15 @@ impl Sidebar {
                             }
                         }
                     })
-                    .child(div().w(rpx(ICON_LG)).flex_shrink_0().child(icon(
-                        if prompt { "reply" } else { "terminal" },
-                        ICON_SM,
-                        c::FG_DIM(),
-                    )))
                     .child(
-                        div()
+                        crate::views::components::checkout_register_leading().child(icon(
+                            if prompt { "reply" } else { "terminal" },
+                            ICON_SM,
+                            c::FG_DIM(),
+                        )),
+                    )
+                    .child(
+                        crate::views::components::checkout_register_label()
                             .id(SharedString::from(format!(
                                 "checkout-script-name-{}",
                                 entry.id
@@ -649,10 +644,6 @@ impl Sidebar {
                                 let id = entry.id.clone();
                                 move || format!("checkout-script-name-{id}")
                             })
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rpx(TEXT_BODY))
                             .child(entry.name.clone())
                             .tooltip({
                                 let context = context.clone();

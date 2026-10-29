@@ -280,6 +280,97 @@ pub fn transcript_action(
     dense_action_with_colors(id, label, fill, foreground, hover, window, cx)
 }
 
+/// Existing checkout script register geometry, shared without changing its owner.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct CheckoutRegisterRecipe {
+    pub height: f32,
+    pub padding_x: f32,
+    pub gap: f32,
+    pub icon_slot: f32,
+    pub icon_size: f32,
+    pub text_size: f32,
+    pub padding_token: &'static str,
+    pub gap_token: &'static str,
+    pub text_token: &'static str,
+    pub line_height_policy: &'static str,
+}
+pub const CHECKOUT_REGISTER_RECIPE: CheckoutRegisterRecipe = CheckoutRegisterRecipe {
+    height: CONTROL_H + SPACE_SM,
+    padding_x: SPACE_2XL,
+    gap: SPACE_SM,
+    icon_slot: ICON_LG,
+    icon_size: ICON_SM,
+    text_size: TEXT_BODY,
+    padding_token: "space_2xl",
+    gap_token: "space_sm",
+    text_token: "text_body",
+    line_height_policy: "inherit-native-context",
+};
+pub fn checkout_register_frame() -> Div {
+    let r = CHECKOUT_REGISTER_RECIPE;
+    div()
+        .w_full()
+        .min_w_0()
+        .h(rpx(r.height))
+        .px(rpx(r.padding_x))
+        .flex()
+        .items_center()
+        .gap(rpx(r.gap))
+}
+pub fn checkout_register_leading() -> Div {
+    div()
+        .w(rpx(CHECKOUT_REGISTER_RECIPE.icon_slot))
+        .flex_shrink_0()
+}
+pub fn checkout_register_label() -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .text_size(rpx(CHECKOUT_REGISTER_RECIPE.text_size))
+}
+
+/// Authoritative geometry shared by the native builder and reference exporter.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct DenseActionRecipe {
+    pub height: f32,
+    pub padding_x: f32,
+    pub text_size: f32,
+    pub radius: f32,
+    pub gap: f32,
+    pub icon_size: f32,
+    pub vendor_size: DenseActionSize,
+    pub disabled_opacity: f32,
+    pub loading_opacity: f32,
+    pub loading_icon: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DenseActionSize {
+    XSmall,
+}
+impl DenseActionSize {
+    fn native(self) -> gpui_component::Size {
+        match self {
+            Self::XSmall => gpui_component::Size::XSmall,
+        }
+    }
+}
+
+pub const DENSE_ACTION_RECIPE: DenseActionRecipe = DenseActionRecipe {
+    height: CONTROL_H,
+    padding_x: SPACE_LG,
+    text_size: TEXT_SMALL,
+    radius: RADIUS_CONTROL,
+    gap: SPACE_SM,
+    icon_size: ICON_SM,
+    vendor_size: DenseActionSize::XSmall,
+    disabled_opacity: gpui_component::button::Button::CUSTOM_DISABLED_OPACITY,
+    loading_opacity: gpui_component::button::Button::LOADING_OPACITY,
+    loading_icon: "status-working",
+};
+
 /// Full dense action recipe, including the vendor's inner label/icon/gap tier.
 /// Custom semantic colors do not create a new geometry variant.
 pub fn dense_action_with_colors(
@@ -293,14 +384,18 @@ pub fn dense_action_with_colors(
 ) -> gpui_component::button::Button {
     use gpui_component::{
         button::{Button, ButtonCustomVariant, ButtonVariants},
-        Sizable, Size,
+        Sizable,
     };
+    let recipe = DENSE_ACTION_RECIPE;
     Button::new(id)
         .label(label)
-        .with_size(Size::XSmall)
-        .h(rpx(CONTROL_H))
-        .px(rpx(SPACE_LG))
-        .text_size(rpx(TEXT_SMALL))
+        .loading_icon(
+            gpui_component::Icon::default().path(format!("icons/{}.svg", recipe.loading_icon)),
+        )
+        .with_size(recipe.vendor_size.native())
+        .h(rpx(recipe.height))
+        .px(rpx(recipe.padding_x))
+        .text_size(rpx(recipe.text_size))
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(fill)
@@ -309,7 +404,7 @@ pub fn dense_action_with_colors(
                 .active(hover)
                 .shadow(false),
         )
-        .rounded(rpx(RADIUS_CONTROL).to_pixels(window.rem_size()))
+        .rounded(rpx(recipe.radius).to_pixels(window.rem_size()))
 }
 
 /// Neutral selectable row for native question forms. The owner supplies interaction.

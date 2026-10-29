@@ -1,6 +1,6 @@
 # AGENTS.md
 
-- For Grove UI changes, screenshot/mock implementation, and visual review, load
+- For Grove UI changes, HTML reference/mock authoring, screenshot/mock implementation, and visual review, load
   [grove-ui](.agents/skills/grove-ui/SKILL.md) before editing. It defines the
   native inspection and interaction-state checks that prevent layout drift.
 - By default, run `./install.sh` once after the final code changes at the

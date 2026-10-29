@@ -87,7 +87,6 @@ impl Icon {
         self
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     pub(crate) fn path_ref(&self) -> &SharedString {
         &self.path
     }

@@ -292,11 +292,7 @@ fn icon_guards_detect_conditional_glyphs_and_missing_assets() {
 #[test]
 fn r8_dense_controls_share_geometry() {
     let components = source("src/views/components.rs");
-    for name in [
-        "header_control_frame",
-        "settings_control",
-        "dense_action_with_colors",
-    ] {
+    for name in ["header_control_frame", "settings_control"] {
         let body = components
             .split(&format!("fn {name}("))
             .nth(1)
@@ -317,13 +313,22 @@ fn r8_dense_controls_share_geometry() {
         .next()
         .unwrap();
     for required in [
-        ".with_size(Size::XSmall)",
-        ".px(rpx(SPACE_LG))",
-        ".text_size(rpx(TEXT_SMALL))",
-        ".rounded(rpx(RADIUS_CONTROL)",
+        ".with_size(recipe.vendor_size.native())",
+        ".h(rpx(recipe.height))",
+        ".px(rpx(recipe.padding_x))",
+        ".text_size(rpx(recipe.text_size))",
+        ".rounded(rpx(recipe.radius)",
     ] {
         assert!(dense.contains(required), "dense recipe missing {required}");
     }
+    let recipe = crate::views::components::DENSE_ACTION_RECIPE;
+    assert_eq!(recipe.height, crate::views::tokens::CONTROL_H);
+    assert_eq!(recipe.padding_x, crate::views::tokens::SPACE_LG);
+    assert_eq!(recipe.text_size, crate::views::tokens::TEXT_SMALL);
+    assert_eq!(recipe.radius, crate::views::tokens::RADIUS_CONTROL);
+    assert_eq!(recipe.gap, crate::views::tokens::SPACE_SM);
+    assert_eq!(recipe.icon_size, crate::views::tokens::ICON_SM);
+    assert_eq!(serde_json::to_value(recipe.vendor_size).unwrap(), "x_small");
     let transcript = components
         .split("pub fn transcript_action(")
         .nth(1)

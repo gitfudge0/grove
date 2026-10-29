@@ -18,6 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify strict reference comparator mutation cases
+        run: node scripts/test-ui-reference-verifier.mjs
+
       # No `toolchain` input: actions-rust-lang reads the pinned channel out
       # of rust-toolchain.toml, so the file is the single source of truth for
       # both local and CI builds. (dtolnay/rust-toolchain can't do this — it
@@ -90,6 +97,9 @@ jobs:
       # aren't compiled here) — the Cargo.toml unwrap/expect denies apply.
       - name: Clippy (production code)
         run: cargo clippy --workspace -- -D warnings
+
+      - name: Reject stale authored reference and generated recipe
+        run: node scripts/ui-reference.mjs validate ui-references/fixtures/pilot.json "$RUNNER_TEMP/ui-reference-validation"
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
