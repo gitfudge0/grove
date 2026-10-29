@@ -3893,6 +3893,16 @@ impl Sidebar {
                         && *branch != name
                         && *branch != meta.project
                 });
+            let branch_label = branch.unwrap_or(&name);
+            let mut branch_run = window.text_style().to_run(branch_label.len());
+            branch_run.font.family = crate::fonts::UI_FAMILY.into();
+            branch_run.font.weight = gpui::FontWeight::NORMAL;
+            let branch_width = crate::views::components::truncation_safe_label_width(
+                branch_label,
+                rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                &branch_run,
+                window.text_system(),
+            );
             let context = if name == meta.project {
                 name.clone()
             } else {
@@ -4046,14 +4056,16 @@ impl Sidebar {
                             )))
                             .child(
                                 div()
+                                    .w(branch_width)
                                     .flex_shrink_1()
                                     .min_w_0()
                                     .truncate()
+                                    .font_family(crate::fonts::UI_FAMILY)
                                     .id(("session-list-branch", id.raw()))
                                     .debug_selector(move || {
                                         format!("session-list-branch-{}", id.raw())
                                     })
-                                    .child(branch.unwrap_or(&name).to_string()),
+                                    .child(branch_label.to_string()),
                             )
                             .when(diff.1, |line| {
                                 line.child(
@@ -8509,6 +8521,123 @@ mod tests {
                 Some(Selection::Session(SessionId::from_raw(2)))
             );
         }
+        // GPUI's per-glyph truncation can need more width than shaped text.
+        // This branch must fit in full when the card has room for it.
+        cx.update(|_, cx| {
+            // Match the wider card in the reported screenshot. The earlier loop
+            // already covers the default and narrow rail widths.
+            cx.global_mut::<SettingsState>().store.sidebar_width = Some(340.0);
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.snapshot.projects[0].worktrees[0].branch = "feat/dashboard-updates".into();
+                sidebar.runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                    tree.set_active_worktrees(
+                        0,
+                        vec![grove_core::git::Worktree {
+                            path: path.clone(),
+                            branch: "feat/dashboard-updates".into(),
+                            mtime: None,
+                            is_main: true,
+                        }],
+                    );
+                    tree.apply_git_poll(
+                        HashMap::from([(
+                            path.clone(),
+                            grove_core::git::WorktreeGitState::default(),
+                        )]),
+                        &[],
+                    );
+                });
+                cx.notify();
+            });
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(700.0)));
+        draw(cx);
+        let actual = cx.debug_bounds("session-list-branch-1").unwrap().size.width;
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.snapshot.projects[0].worktrees[0]
+                .branch
+                .clone()),
+            "feat/dashboard-updates"
+        );
+        let needed = cx.update(|window, _| {
+            let text = "feat/dashboard-updates";
+            let mut run = window.text_style().to_run(text.len());
+            run.font.family = crate::fonts::UI_FAMILY.into();
+            run.font.weight = gpui::FontWeight::NORMAL;
+            crate::views::components::truncation_safe_label_width(
+                text,
+                rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                &run,
+                window.text_system(),
+            )
+        });
+        assert!(actual >= needed, "branch has {actual:?}, needs {needed:?}");
+
+        // A long clean branch should use the entire footer up to the reserved close slot.
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.snapshot.projects[0].worktrees[0].branch =
+                    "feature/a-branch-name-long-enough-to-fill-the-entire-footer".into();
+                sidebar.runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                    tree.set_active_worktrees(
+                        0,
+                        vec![grove_core::git::Worktree {
+                            path: path.clone(),
+                            branch: "feature/a-branch-name-long-enough-to-fill-the-entire-footer"
+                                .into(),
+                            mtime: None,
+                            is_main: true,
+                        }],
+                    );
+                    tree.apply_git_poll(
+                        HashMap::from([(
+                            path.clone(),
+                            grove_core::git::WorktreeGitState::default(),
+                        )]),
+                        &[],
+                    );
+                });
+                cx.notify();
+            });
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(700.0)));
+        draw(cx);
+        let branch = cx.debug_bounds("session-list-branch-1").unwrap();
+        let close = cx.debug_bounds("close-session-1").unwrap();
+        assert!(
+            branch.right() >= close.left() - gpui::px(SPACE_XS + 1.0),
+            "long clean branch should use available width: branch {branch:?}, close {close:?}"
+        );
+        cx.update(|_, cx| {
+            cx.global_mut::<SettingsState>().store.sidebar_width = None;
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                    tree.set_active_worktrees(
+                        0,
+                        vec![grove_core::git::Worktree {
+                            path: path.clone(),
+                            branch: "feature/session-cards".into(),
+                            mtime: None,
+                            is_main: true,
+                        }],
+                    );
+                    tree.apply_git_poll(
+                        HashMap::from([(
+                            path.clone(),
+                            grove_core::git::WorktreeGitState {
+                                dirty: true,
+                                added: 3,
+                                removed: 2,
+                                ..Default::default()
+                            },
+                        )]),
+                        &[],
+                    );
+                });
+                cx.notify();
+            });
+        });
+        draw(cx);
         if list_only {
             sidebar.read_with(cx, |sidebar, cx| {
                 assert_eq!(
