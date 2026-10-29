@@ -705,17 +705,30 @@ mod tests {
         assert!(!no_plan.timeline().activity.is_empty());
     }
     #[test]
-    fn dashboard_tool_completion_refreshes_shimmer_fact_without_text_change() {
+    fn dashboard_tool_completion_keeps_current_summary_and_identity() {
         let mut cache = TaskGlanceCache::default();
         let mut items = vec![
+            json!({"type":"agentMessage","text":"Checking native behavior. More details stay in the conversation."}),
             json!({"type":"commandExecution","command":"observe progress","status":"inProgress"}),
         ];
         assert!(cache.refresh_dashboard(&items, Status::Working));
-        assert_eq!(cache.timeline().activity[0].observed_active, Some(true));
-        items[0]["status"] = json!("completed");
+        let current = cache.timeline();
+        assert_eq!(current.activity[0].observed_active, None);
+        assert_eq!(current.activity[0].text, "Checking native behavior.");
+        items[1]["status"] = json!("completed");
         assert!(!cache.refresh(&items));
+        assert!(!cache.refresh_dashboard(&items, Status::Working));
+        assert!(std::sync::Arc::ptr_eq(&current, &cache.timeline()));
+        items.push(json!({"type":"agentMessage","text":"Installing the updated app."}));
         assert!(cache.refresh_dashboard(&items, Status::Working));
-        assert_eq!(cache.timeline().activity[0].observed_active, Some(false));
-        assert_eq!(cache.timeline().activity[0].text, "observe progress");
+        assert_eq!(cache.timeline().activity.len(), 2);
+        assert_eq!(
+            cache.timeline().activity[0].index,
+            current.activity[0].index
+        );
+        assert_eq!(
+            cache.timeline().activity[1].text,
+            "Installing the updated app."
+        );
     }
 }

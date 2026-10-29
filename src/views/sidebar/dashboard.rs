@@ -956,7 +956,6 @@ impl Sidebar {
                     .min_h_full()
                     .flex()
                     .flex_col()
-                    .justify_center()
                     .py(rpx(SPACE_3XL))
                     .children(self.content_error.as_ref().map(|error| {
                         div()
@@ -986,6 +985,62 @@ impl Sidebar {
             )
             .into_any_element()
     }
+}
+
+#[cfg(test)]
+fn seed_activity_fixture(
+    sidebar: &mut Sidebar,
+    provider: grove_core::codex::Provider,
+    window: &mut Window,
+    cx: &mut Context<Sidebar>,
+) -> SessionId {
+    let mut saved = sidebar
+        .dashboard
+        .as_ref()
+        .unwrap()
+        .session
+        .read(cx)
+        .state
+        .saved
+        .clone();
+    saved.provider = provider;
+    saved.title = Some("Remove tooltip and background highlight".into());
+    saved.items = vec![
+        serde_json::json!({"type":"userMessage","text":"Make recent activity concise"}),
+        serde_json::json!({"type":"agentMessage","text":"Located the recent activity view. Additional details stay in the conversation."}),
+        serde_json::json!({"type":"commandExecution","command":"cat DESIGN.md"}),
+        serde_json::json!({"type":"agentMessage","text":"Checked the shared status symbols."}),
+        serde_json::json!({"type":"agentMessage","text":"Removed the tooltip and background highlight."}),
+        serde_json::json!({"type":"agentMessage","text":"Checking native behavior across compact and expanded activity histories."}),
+        serde_json::json!({"type":"commandExecution","command":"cargo test dashboard -- --nocapture","status":"inProgress"}),
+    ].into();
+    let (handle, _actions) = grove_core::codex::Handle::channel();
+    let (_updates, receive) = std::sync::mpsc::channel();
+    let mut snapshot = grove_core::codex::Snapshot::new(saved);
+    snapshot.status = grove_core::codex::Status::Working;
+    let session = cx.new(|cx| {
+        CodexSession::from_connection(
+            snapshot,
+            grove_core::codex::Connection {
+                handle: handle.clone(),
+                updates: receive.into(),
+            },
+            cx,
+        )
+    });
+    let registry = sidebar.runtime.read(cx).registry.clone();
+    let cwd = session.read(cx).state.saved.cwd.clone();
+    let id = registry.update(cx, |registry, _| {
+        let id = registry.insert_meta("Dashboard visual fixture".into(), cwd, provider.agent());
+        registry.attach_codex(id, session.clone(), handle);
+        id
+    });
+    sidebar.sync(window, cx);
+    let items = &session.read(cx).state.saved.items;
+    let cache = sidebar.task_glances.entry(id).or_default();
+    cache.refresh(items);
+    cache.refresh_dashboard(items, grove_core::codex::Status::Working);
+    id
 }
 
 #[cfg(test)]
@@ -1278,6 +1333,85 @@ mod tests {
     }
 
     #[gpui::test]
+    fn activity_growth_keeps_overview_and_composer_anchored(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let mut store = grove_core::storage::Store::default();
+            let path = "/tmp/grove-dashboard-anchor-fixture";
+            store.projects.push(grove_core::storage::Project {
+                name: "Dashboard visual fixture".into(),
+                path: path.into(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                archived: false,
+                worktree_dir: None,
+            });
+            store.assign_project_to_active_workspace(path);
+            cx.set_global(SettingsState::new(store));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        for (width, height) in [(1100., 900.), (560., 500.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let summary = cx.debug_bounds("dashboard-summary").unwrap().top();
+            let composer = cx.debug_bounds("codex-composer").unwrap().top();
+            let id = cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.open_dashboard(window, cx);
+                    seed_activity_fixture(sidebar, grove_core::codex::Provider::Codex, window, cx)
+                })
+            });
+            for expanded in [false, true, false] {
+                cx.update(|_, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        if sidebar
+                            .dashboard_timelines
+                            .is_open(sidebar.active_workspace, id)
+                            != expanded
+                        {
+                            sidebar
+                                .dashboard_timelines
+                                .toggle((sidebar.active_workspace, id));
+                        }
+                        cx.notify();
+                    });
+                });
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                assert_eq!(summary, cx.debug_bounds("dashboard-summary").unwrap().top());
+                assert_eq!(composer, cx.debug_bounds("codex-composer").unwrap().top());
+            }
+            cx.update(|_,cx| {
+                let session=sidebar.read(cx).runtime.read(cx).registry.read(cx).codex(id).unwrap().clone();
+                session.update(cx,|session,cx| {
+                    session.state.saved.items.push(serde_json::json!({"type":"agentMessage","text":"A new observed activity step with enough text to wrap at narrow window widths."}));
+                    cx.notify();
+                });
+                sidebar.update(cx,|sidebar,cx| {
+                    let items=&session.read(cx).state.saved.items;
+                    sidebar.task_glances.get_mut(&id).unwrap().refresh_dashboard(items,grove_core::codex::Status::Working);
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert_eq!(summary, cx.debug_bounds("dashboard-summary").unwrap().top());
+            assert_eq!(composer, cx.debug_bounds("codex-composer").unwrap().top());
+        }
+    }
+
+    #[gpui::test]
     fn dashboard_opens_at_startup_and_groups_content(cx: &mut gpui::TestAppContext) {
         let repo = tempfile::tempdir().unwrap();
         let path = repo.path().to_string_lossy().into_owned();
@@ -1490,6 +1624,10 @@ mod native_snapshots {
             c::sync_component_theme(cx);
         });
         for (state, width) in [
+            ("activity-codex", 1100.),
+            ("activity-claude-narrow", 760.),
+            ("activity-codex-history", 1100.),
+            ("activity-claude-narrow-history", 760.),
             ("normal", 1100.),
             ("narrow", 560.),
             ("worktree-menu", 1100.),
@@ -1529,6 +1667,19 @@ mod native_snapshots {
                     sidebar.open_dashboard(window, cx);
                     assert!(sidebar.dashboard_open);
                     assert!(sidebar.dashboard.is_some());
+                    if state.starts_with("activity-") {
+                        let provider = if state.contains("claude") {
+                            grove_core::codex::Provider::Claude
+                        } else {
+                            grove_core::codex::Provider::Codex
+                        };
+                        let id = seed_activity_fixture(sidebar, provider, window, cx);
+                        if state.ends_with("history") {
+                            sidebar
+                                .dashboard_timelines
+                                .toggle((sidebar.active_workspace, id));
+                        }
+                    }
                 });
                 let _ = window.draw(cx);
             })
