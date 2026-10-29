@@ -810,7 +810,7 @@ impl Sidebar {
                     .pb(rpx(SPACE_SM))
                     .text_size(rpx(TEXT_TITLE))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("Recent activity"),
+                    .child("Activity"),
             );
         if sessions.is_empty() {
             recent = recent.child(
@@ -820,18 +820,7 @@ impl Sidebar {
                     .child("Your sessions will appear here."),
             );
         } else {
-            let mut quiet = 0;
             for (meta, status, title, since) in sessions {
-                let expanded = self
-                    .dashboard_timelines
-                    .is_open(self.active_workspace, meta.id);
-                if !matches!(status, "Working" | "Starting") && !expanded {
-                    if quiet >= 3 {
-                        continue;
-                    }
-                    quiet += 1;
-                }
-
                 let id = meta.id;
                 let age = session_age_label(since, Instant::now());
                 let label = format!(

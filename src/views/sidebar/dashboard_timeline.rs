@@ -213,6 +213,7 @@ impl DashboardTimelines {
         self.activity_scope = Some((workspace, sessions));
         true
     }
+    #[cfg(test)]
     pub fn is_open(&self, workspace: u64, id: SessionId) -> bool {
         self.opened.contains(&(workspace, id))
     }
