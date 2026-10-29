@@ -7354,30 +7354,34 @@ impl CodexView {
                             .child(crate::icons::icon("lightning", ICON_MD, c::FG_MUTE())),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_size(rpx(TEXT_TITLE))
-                                    .text_color(c::FG())
-                                    .child(effort),
-                            )
-                            .child(
-                                header_control_frame(
-                                    "codex-card-model",
-                                    format!("Choose model: {}", composer_model_name(state)),
-                                    c::BG_HOVER(),
-                                )
-                                .track_focus(&self.card_model_focus)
-                                .tab_index(0)
-                                .w_full()
+                        header_control_frame(
+                            "codex-card-model",
+                            format!("Choose model: {}", composer_model_name(state)),
+                            c::BG_HOVER(),
+                        )
+                        .track_focus(&self.card_model_focus)
+                        .tab_index(0)
+                        .flex_1()
+                        .min_w_0()
+                        .h_auto()
+                        .flex_col()
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(
+                            div()
+                                .id("codex-card-effort-label")
+                                .debug_selector(|| "codex-card-effort-label".into())
+                                .text_size(rpx(TEXT_TITLE))
+                                .text_color(c::FG())
+                                .child(effort),
+                        )
+                        .child(
+                            div()
                                 .min_w_0()
+                                .h(rpx(CHROME_CONTROL_H))
+                                .flex()
+                                .items_center()
+                                .justify_center()
                                 .gap(rpx(SPACE_XS))
-                                .focus_visible(|style| style.bg(c::BG_HOVER()))
                                 .child(
                                     div()
                                         .id("codex-card-model-label")
@@ -7387,23 +7391,23 @@ impl CodexView {
                                         .truncate()
                                         .child(model_name),
                                 )
-                                .child(crate::icons::icon("chev-right", ICON_XS, c::FG_MUTE()))
-                                .on_click(cx.listener(|this, _, window, cx| {
+                                .child(crate::icons::icon("chev-right", ICON_XS, c::FG_MUTE())),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.model_from_card = true;
+                            this.effort_pending = None;
+                            this.open_menu(ComposerMenu::Model, window, cx);
+                        }))
+                        .on_key_down(cx.listener(
+                            |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if action_key(event) {
                                     this.model_from_card = true;
                                     this.effort_pending = None;
                                     this.open_menu(ComposerMenu::Model, window, cx);
-                                }))
-                                .on_key_down(cx.listener(
-                                    |this, event: &gpui::KeyDownEvent, window, cx| {
-                                        if action_key(event) {
-                                            this.model_from_card = true;
-                                            this.effort_pending = None;
-                                            this.open_menu(ComposerMenu::Model, window, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                )),
-                            ),
+                                    cx.stop_propagation();
+                                }
+                            },
+                        )),
                     )
                     .child(
                         header_control(
@@ -16150,7 +16154,7 @@ mod tests {
             });
         });
         draw(cx);
-        let model = cx.debug_bounds("codex-card-model-label").unwrap().center();
+        let model = cx.debug_bounds("codex-card-effort-label").unwrap().center();
         cx.simulate_click(model, gpui::Modifiers::default());
         draw(cx);
         cx.update(|_, cx| {
