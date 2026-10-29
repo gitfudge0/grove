@@ -273,4 +273,3 @@ Dashboard activity content displays only provider-supplied text, command, tool n
 Dashboard session titles lead a fixed first-line status and Open action. Under each title, aligned after its chevron, muted wrapping metadata groups show the catalog project icon with the actual project name, checkout icon with the existing Main checkout or named-worktree display, and brand-colored provider mark with provider name and actual human-formatted effort when available. Groups have no pills or enclosing borders; missing effort is omitted, and model names are not included. Metadata yields and wraps without displacing fixed first-line controls.
 
 Dashboard activity text shares the task-label left edge. Current-task activity inherits that task’s content column; activity after a completed/no-current checklist uses the same leading icon-slot-and-gap offset. With no plan, activity aligns with the no-plan text. It adds no independent indentation or competing spine.
-

@@ -51,6 +51,9 @@ pub struct TextViewState {
     pub(super) list_state: ListState,
 
     bounds: Bounds<Pixels>,
+    pub(super) measured_layout: Option<super::measured_body::BodyMeasurement>,
+    pub(super) layout_correction_pending: bool,
+    document_code_blocks: super::measured_body::DocumentCodeBlocks,
 
     pub(super) selectable: bool,
     pub(super) scrollable: bool,
@@ -68,6 +71,7 @@ pub struct TextViewState {
     format: TextViewFormat,
     text: String,
     revision: usize,
+    parsed_revision: usize,
     parsed_error: Option<SharedString>,
     tx: Sender<UpdateOptions>,
     _parse_task: Task<()>,
@@ -107,7 +111,8 @@ impl TextViewState {
                                     .document
                                     .source
                                     .starts_with(state.parsed_content.document.source.as_str());
-                                state.parsed_content = content;
+                                state.parsed_revision = parsed_update.revision;
+                                state.accept_parsed_content(content);
                                 state.parsed_error = None;
                             }
                             Err(err) => {
@@ -130,6 +135,9 @@ impl TextViewState {
             focus_handle,
             entity_id,
             bounds: Bounds::default(),
+            measured_layout: None,
+            layout_correction_pending: false,
+            document_code_blocks: Default::default(),
             multi_click_selection: None,
             selected_text_override: None,
             select_all: false,
@@ -147,12 +155,39 @@ impl TextViewState {
             parsed_error: None,
             text: text.to_string(),
             revision: 0,
+            parsed_revision: 0,
             tx,
             _parse_task,
             _receive_task,
         };
         this.increment_update(&text, false, cx);
         this
+    }
+
+    /// Generation of the accepted document, rather than a queued parse request.
+    pub fn layout_generation(&self) -> usize {
+        self.parsed_revision
+    }
+
+    /// Whether an outer transcript may reuse this static body's measured extent.
+    pub fn supports_layout_projection(&self) -> bool {
+        self.measured_layout.as_ref().is_some_and(|layout| {
+            layout.projectable_for(
+                &self.parsed_content.document.blocks,
+                self.markdown_extensions.revision(),
+            )
+        }) && self.body_measurement_supported()
+            && !self.layout_correction_pending
+            && !self.has_view_selection()
+            && !self.is_selecting
+    }
+
+    pub fn layout_projection_focused(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle.contains_focused(window, cx)
+    }
+
+    pub fn layout_bounds(&self) -> Bounds<Pixels> {
+        self.bounds
     }
 
     pub fn source(&self) -> SharedString {
@@ -257,7 +292,8 @@ impl TextViewState {
         if !append {
             match parse_content(self.format, ParsedContent::default(), &update_options) {
                 Ok(content) => {
-                    self.parsed_content = content;
+                    self.parsed_revision = self.revision;
+                    self.accept_parsed_content(content);
                     self.parsed_error = None;
                     if !self.is_selecting {
                         self.reset_selection();
@@ -275,6 +311,19 @@ impl TextViewState {
         }
 
         _ = self.tx.try_send(update_options);
+    }
+
+    fn accept_parsed_content(&mut self, content: ParsedContent) {
+        self.document_code_blocks.accept(&content.document.blocks);
+        self.parsed_content = content;
+    }
+
+    pub(super) fn has_code_block_actions(&self) -> bool {
+        self.code_block_actions.is_some() && self.document_code_blocks.contains_code()
+    }
+
+    pub(super) fn body_measurement_supported(&self) -> bool {
+        !self.scrollable && self.parsed_error.is_none() && !self.has_code_block_actions()
     }
 
     pub(super) fn update_bounds(&mut self, bounds: Bounds<Pixels>) {
@@ -422,7 +471,16 @@ pub(crate) enum TextViewMultiClickKind {
 impl Render for TextViewState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = cx.entity();
-        let document = self.parsed_content.document.clone();
+        // Culling is suspended during selection so every offscreen paragraph
+        // contributes its literal selected text, including a long single view.
+        let window_selection = super::measured_body::window_selection_active(window, cx);
+        let measured_text_style = window.text_style();
+        let virtualize = (!self.has_view_selection()
+            && !window_selection
+            && !window.is_inspector_picking(cx)
+            && !window.is_a11y_active())
+        .then(|| cx.entity().downgrade());
+        let document = &self.parsed_content.document;
         let mut node_cx = self.parsed_content.node_cx.clone();
 
         node_cx.code_block_actions = self.code_block_actions.clone();
@@ -439,6 +497,7 @@ impl Render for TextViewState {
                         None
                     },
                     &node_cx,
+                    virtualize,
                     window,
                     cx,
                 )),
@@ -454,6 +513,12 @@ impl Render for TextViewState {
                 let id = state.entity_id();
                 state.update(cx, |state, _| {
                     state.update_bounds(bounds);
+                    super::measured_body::record_layout(
+                        state,
+                        bounds,
+                        measured_text_style.clone(),
+                        window,
+                    );
                 });
                 if size_changed {
                     if let Some(root) = window.root::<crate::Root>().flatten() {
@@ -587,7 +652,7 @@ fn parse_content(
 
     let mut source = String::new();
     if options.append
-        && let Some(last_block) = content.document.blocks.pop()
+        && let Some(last_block) = Arc::make_mut(&mut content.document.blocks).pop()
         && let Some(span) = last_block.span()
     {
         node_cx.offset = span.start;
@@ -606,7 +671,8 @@ fn parse_content(
     if options.append {
         content.document.source =
             format!("{}{}", content.document.source, options.pending_text).into();
-        content.document.blocks.extend(new_document.blocks);
+        Arc::make_mut(&mut content.document.blocks)
+            .extend(Arc::unwrap_or_clone(new_document.blocks));
     } else {
         content.document = new_document;
     }
@@ -646,6 +712,40 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert_eq!(state.text.as_str(), "");
             assert_eq!(state.source().as_str(), "");
+        });
+    }
+
+    #[gpui::test]
+    fn code_action_projection_guard_tracks_accepted_not_queued_document(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown("Plain prose.", cx)));
+        state.update(cx, |state, cx| {
+            state.code_block_actions = Some(Arc::new(|_, _, _| gpui::div().into_any_element()));
+            assert!(state.body_measurement_supported());
+            state.push_str("\n\n```sh\nprintf guarded\n```", cx);
+            assert_eq!(state.source().as_str(), "Plain prose.");
+            assert!(
+                state.body_measurement_supported(),
+                "queued source is not the accepted document"
+            );
+        });
+        cx.run_until_parked();
+        state.update(cx, |state, cx| {
+            assert!(
+                !state.body_measurement_supported(),
+                "accepted streamed code keeps its controls eager"
+            );
+            state.code_block_actions = None;
+            assert!(
+                state.body_measurement_supported(),
+                "code without actions stays supported"
+            );
+            state.code_block_actions = Some(Arc::new(|_, _, _| gpui::div().into_any_element()));
+            state.set_text("Restored plain prose.", cx);
+            assert!(
+                state.body_measurement_supported(),
+                "synchronous replacement refreshes cached features"
+            );
         });
     }
 

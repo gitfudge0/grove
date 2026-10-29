@@ -38,6 +38,7 @@ use std::{
     sync::Arc,
 };
 
+mod measured_slot;
 #[path = "model_picker.rs"]
 mod model_picker;
 
@@ -229,19 +230,13 @@ fn session_has_yolo_access(state: &codex::Snapshot) -> bool {
     }
 }
 
-/// Fixed-size content comparison without serializing or retaining the transcript.
-/// Hash full values, including equal-length streaming edits and optimistic items.
-fn transcript_content_signature(items: &[serde_json::Value], thread: Option<&str>) -> [u64; 2] {
-    std::array::from_fn(|domain| {
-        let mut hasher = rustc_hash::FxHasher::default();
-        domain.hash(&mut hasher);
-        thread.hash(&mut hasher);
-        items.len().hash(&mut hasher);
-        for item in items {
-            hash_transcript_value(item, &mut hasher);
-        }
-        hasher.finish()
-    })
+/// Process-local change identity. TranscriptItems invalidates its revision before
+/// every mutable borrow, including equal-length edits to opaque image payloads.
+/// No provider payload is traversed to decide whether bottom-follow should run.
+fn transcript_content_signature(items: &codex::TranscriptItems, thread: Option<&str>) -> [u64; 2] {
+    let mut hasher = rustc_hash::FxHasher::default();
+    thread.hash(&mut hasher);
+    [items.revision(), hasher.finish()]
 }
 
 /// Value's Hash implementation canonicalizes objects using an allocated sorted
@@ -277,6 +272,12 @@ struct TranscriptRenderCache {
     source: Rc<codex::Snapshot>,
     optimistic: Vec<serde_json::Value>,
     state: Rc<codex::Snapshot>,
+    prepared: Rc<PreparedTranscript>,
+}
+
+/// Derived solely from transcript items and thread identity; metadata-only
+/// provider updates can share this without keeping their old snapshot visible.
+struct PreparedTranscript {
     content: [u64; 2],
     task_key: u64,
     stream_keys: HashSet<String>,
@@ -287,12 +288,36 @@ struct TranscriptRenderCache {
     minimap_entries: Vec<MessageMinimapEntry>,
 }
 
+impl std::ops::Deref for TranscriptRenderCache {
+    type Target = PreparedTranscript;
+
+    fn deref(&self) -> &Self::Target {
+        &self.prepared
+    }
+}
+
 impl TranscriptRenderCache {
     fn matches(&self, source: &Rc<codex::Snapshot>, optimistic: &[serde_json::Value]) -> bool {
         Rc::ptr_eq(&self.source, source) && self.optimistic == optimistic
     }
 
+    #[cfg(test)]
     fn new(source: Rc<codex::Snapshot>, optimistic: Vec<serde_json::Value>) -> Self {
+        Self::refreshed(source, optimistic, None)
+    }
+
+    fn refreshed(
+        source: Rc<codex::Snapshot>,
+        optimistic: Vec<serde_json::Value>,
+        previous: Option<&Self>,
+    ) -> Self {
+        let prepared = previous
+            .filter(|previous| {
+                previous.source.saved.items.revision() == source.saved.items.revision()
+                    && previous.source.saved.thread_id == source.saved.thread_id
+                    && previous.optimistic == optimistic
+            })
+            .map(|previous| previous.prepared.clone());
         let mut state = source.clone();
         if !optimistic.is_empty() {
             Rc::make_mut(&mut state)
@@ -300,8 +325,33 @@ impl TranscriptRenderCache {
                 .items
                 .extend(optimistic.iter().cloned());
         }
+        let prepared = prepared.unwrap_or_else(|| {
+            let mut content = transcript_content_signature(
+                &source.saved.items,
+                source.saved.thread_id.as_deref(),
+            );
+            // Pending bubbles are usually tiny and are the only payloads that
+            // need hashing; persisted transcript bytes are never revisited.
+            if !optimistic.is_empty() {
+                let mut hasher = rustc_hash::FxHasher::default();
+                content[1].hash(&mut hasher);
+                for item in &optimistic {
+                    hash_transcript_value(item, &mut hasher);
+                }
+                content[1] = hasher.finish();
+            }
+            Rc::new(Self::prepare(&state, content))
+        });
+        Self {
+            source,
+            optimistic,
+            state,
+            prepared,
+        }
+    }
+
+    fn prepare(state: &codex::Snapshot, content: [u64; 2]) -> PreparedTranscript {
         let items = &state.saved.items;
-        let content = transcript_content_signature(items, state.saved.thread_id.as_deref());
         let task_key = task_cache_key(items);
         let stream_keys = items
             .iter()
@@ -323,10 +373,7 @@ impl TranscriptRenderCache {
             }
         }
         let minimap_entries = message_minimap_entries(items);
-        Self {
-            source,
-            optimistic,
-            state,
+        PreparedTranscript {
             content,
             task_key,
             stream_keys,
@@ -388,11 +435,13 @@ struct MessageMinimapEntry {
     response: String,
 }
 
-fn message_minimap_entries(items: &[serde_json::Value]) -> Vec<MessageMinimapEntry> {
+fn message_minimap_entries<T: std::borrow::Borrow<serde_json::Value>>(
+    items: &[T],
+) -> Vec<MessageMinimapEntry> {
     let inputs: Vec<_> = items
         .iter()
         .enumerate()
-        .filter(|(_, item)| item["type"] == "userMessage")
+        .filter(|(_, item)| item.borrow()["type"] == "userMessage")
         .map(|(index, _)| index)
         .collect();
     inputs
@@ -402,16 +451,19 @@ fn message_minimap_entries(items: &[serde_json::Value]) -> Vec<MessageMinimapEnt
             let end = inputs.get(turn + 1).copied().unwrap_or(items.len());
             let replies: Vec<_> = items[index + 1..end]
                 .iter()
-                .filter(|item| item["type"] == "agentMessage")
-                .filter(|item| !codex::item_text(item).trim().is_empty())
+                .filter(|item| item.borrow()["type"] == "agentMessage")
+                .filter(|item| !codex::item_text(item.borrow()).trim().is_empty())
                 .collect();
             let response = replies
                 .iter()
                 .rev()
-                .find(|item| item["phase"] == "final_answer")
+                .find(|item| item.borrow()["phase"] == "final_answer")
                 .or_else(|| replies.last())
-                .map_or_else(|| "No response yet".into(), |item| codex::item_text(item));
-            let prompt = codex::item_text(&items[index]);
+                .map_or_else(
+                    || "No response yet".into(),
+                    |item| codex::item_text(item.borrow()),
+                );
+            let prompt = codex::item_text(items[index].borrow());
             MessageMinimapEntry {
                 item_index: index,
                 prompt: if prompt.trim().is_empty() {
@@ -985,6 +1037,8 @@ pub struct CodexView {
     reference_disclosure_focus: FocusHandle,
     reference_remove_focus: FocusHandle,
     selection_views: HashMap<String, Entity<TextViewState>>,
+    message_slots: HashMap<String, Rc<std::cell::RefCell<measured_slot::Measurement>>>,
+    work_header_slots: HashMap<String, Rc<std::cell::RefCell<measured_slot::HeaderMeasurement>>>,
     selection_dismissed: Option<TextSelectionSnapshot>,
     selection_root_observed: bool,
     selection_reply_focus: FocusHandle,
@@ -1251,6 +1305,8 @@ impl CodexView {
             reference_disclosure_focus: cx.focus_handle(),
             reference_remove_focus: cx.focus_handle(),
             selection_views: HashMap::new(),
+            message_slots: HashMap::new(),
+            work_header_slots: HashMap::new(),
             selection_dismissed: None,
             selection_root_observed: false,
             selection_reply_focus: cx.focus_handle(),
@@ -1633,7 +1689,7 @@ impl CodexView {
                     let mut echo = item.clone();
                     echo["localSteering"] = true.into();
                     echo["localQueuedSteering"] = queued_steering.into();
-                    pending.optimistic = Some(echo);
+                    pending.optimistic = Some(echo.into_value());
                     true
                 } else {
                     false
@@ -2869,6 +2925,872 @@ impl CodexView {
             .into_any_element()
     }
 
+    fn render_work_header(
+        &mut self,
+        index: usize,
+        key: &str,
+        label: &str,
+        expanded: bool,
+        focus: &FocusHandle,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        #[cfg(test)]
+        let _phase = measured_slot::phases::Section::header();
+        let key = key.to_owned();
+        let keyboard_key = key.clone();
+        let label = label.to_owned();
+        div()
+            .w_full()
+            .max_w(rpx(CHAT_MAX_W))
+            .pb(rpx(SPACE_XS))
+            .border_b_1()
+            .border_color(c::BORDER_SOFT())
+            .child(
+                header_control("codex-work-header", "Show work activity")
+                    .id(("codex-work-header", index))
+                    .track_focus(focus)
+                    .aria_expanded(expanded)
+                    .debug_selector(move || format!("codex-work-header-{index}"))
+                    .w_full()
+                    .h_auto()
+                    .min_h(rpx(CHROME_CONTROL_H))
+                    .flex_wrap()
+                    .justify_start()
+                    .gap(rpx(SPACE_SM))
+                    .tab_index(0)
+                    .focus_visible(|style| style.bg(c::BG_HOVER()))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .aria_label(label.clone())
+                    .child(shimmer_label(
+                        ("codex-work-shimmer", index).into(),
+                        label,
+                        false,
+                        cx,
+                    ))
+                    .child(crate::icons::icon(
+                        if expanded { "chev-down" } else { "chev-right" },
+                        ICON_SM,
+                        c::FG_DIM(),
+                    ))
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        if action_key(event) {
+                            this.toggle_expansion(&keyboard_key, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_expansion(&key, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_message_row(
+        &mut self,
+        index: usize,
+        frame: &measured_slot::MessageFrame,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let state = &frame.state;
+        let item = state.saved.items[index].as_ref();
+        let kind = item["type"].as_str().unwrap_or("tool");
+        let tool = is_tool_item(item);
+        let provider = state.saved.provider.label();
+        let initial_transcript = frame.initial_transcript;
+        let near_bottom = frame.near_bottom;
+        let elapsed = frame.elapsed;
+        let response_prose = &frame.prepared.response_prose;
+        let response_groups = &frame.prepared.response_groups;
+        let id = item["id"]
+            .as_str()
+            .map_or_else(|| index.to_string(), str::to_owned);
+        let expanded = self.expanded.contains(&id);
+        let plan_details = kind == "plan"
+            && state.saved.provider == codex::Provider::Claude
+            && item["tool"].is_string();
+        let text = codex::item_text(item);
+        let approval = (kind == "userMessage")
+            .then(|| state.saved.rich_plans.approval_for_payload(&text))
+            .flatten();
+        let role = match kind {
+            "userMessage" => "You",
+            "agentMessage" => provider,
+            "plan" => "Plan",
+            "commandExecution" => "Command",
+            "fileChange" => "File changes",
+            "reasoning" => "Reasoning",
+            _ => "Tool",
+        };
+        let mut row = div()
+            .id(("codex-item", index))
+            .debug_selector(move || format!("codex-message-row-{index}"))
+            .flex()
+            .flex_col()
+            .w_full()
+            .max_w(rpx(if kind == "userMessage" {
+                USER_BUBBLE_MAX_W
+            } else {
+                CHAT_MAX_W
+            }))
+            .gap(rpx(SPACE_LG))
+            .when(kind == "userMessage", |row| {
+                row.p(rpx(SPACE_2XL))
+                    .rounded(rpx(RADIUS_PANEL))
+                    .bg(c::BG_RAIL())
+            });
+        let text = if tool { tool_detail(item) } else { text };
+        let copy = if kind == "userMessage" {
+            reference_prompt_copy(&text)
+        } else {
+            text.clone()
+        };
+        let text = if kind == "userMessage" {
+            reference_prompt_markdown(&text)
+        } else {
+            text
+        };
+        let text = if kind == "agentMessage" && !cx.reduce_motion() {
+            let key = item["id"]
+                .as_str()
+                .map_or_else(|| format!("message-{index}"), str::to_owned);
+            let entry = self.stream_text.entry(key).or_insert_with(|| {
+                let shown = if state.status.busy()
+                    && !initial_transcript
+                    && index + 1 == state.saved.items.len()
+                {
+                    0
+                } else {
+                    text.len()
+                };
+                (text.clone(), shown)
+            });
+            if !text.starts_with(&entry.0[..entry.1.min(entry.0.len())]) {
+                entry.1 = text.len();
+            }
+            entry.0.clone_from(&text);
+            if !state.status.busy() {
+                entry.1 = text.len();
+            }
+            if entry.1 < text.len() {
+                self.smooth_follow |= near_bottom && !self.composer_collapsed;
+                // Catch up over a short interval without replaying the existing prefix.
+                let remaining = text[entry.1..].chars().count();
+                let advance = ((remaining as f32
+                    * (elapsed.min(1.0 / 30.0) / (MOTION_FAST_MS as f32 / 1000.0)).min(1.0))
+                .ceil() as usize)
+                    .max(1);
+                entry.1 = text[entry.1..]
+                    .char_indices()
+                    .nth(advance)
+                    .map_or(text.len(), |(offset, _)| entry.1 + offset);
+                let owner = cx.entity().downgrade();
+                let pending = self.motion_frame_pending.clone();
+                if !pending.replace(true) {
+                    window.on_next_frame(move |_, cx| {
+                        pending.set(false);
+                        let _ = owner.update(cx, |_, cx| cx.notify());
+                    });
+                }
+            }
+            text[..entry.1].to_owned()
+        } else {
+            if kind == "agentMessage" {
+                let key = item["id"]
+                    .as_str()
+                    .map_or_else(|| format!("message-{index}"), str::to_owned);
+                self.stream_text.insert(key, (text.clone(), text.len()));
+            }
+            text
+        };
+        let toggle = id.clone();
+        if kind != "agentMessage" {
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(
+                                if kind == "userMessage"
+                                    && self.bubble_entrances.iter().any(|pending| {
+                                        pending.optimistic.as_ref().is_some_and(|bubble| {
+                                            bubble["id"] == item["id"]
+                                                && bubble["localSteering"] == true
+                                        })
+                                    })
+                                {
+                                    "You · Steering…".to_owned()
+                                } else if tool {
+                                    tool_summary(item)
+                                } else {
+                                    role.to_owned()
+                                },
+                            ),
+                    )
+                    .when(tool || plan_details, |row| {
+                        let keyboard_toggle = toggle.clone();
+                        row.child(
+                            header_control(
+                                "codex-expand",
+                                if expanded {
+                                    "Collapse tool call"
+                                } else {
+                                    "Expand tool call"
+                                },
+                            )
+                            .child(crate::icons::icon(
+                                if expanded { "chev-down" } else { "chev-right" },
+                                ICON_MD,
+                                c::FG_DIM(),
+                            ))
+                            .debug_selector(move || format!("codex-toggle-details-{index}"))
+                            .aria_expanded(expanded)
+                            .tab_index(0)
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if action_key(event) {
+                                        this.toggle_expansion(&keyboard_toggle, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if !this.expanded.remove(&toggle) {
+                                        this.expanded.insert(toggle.clone());
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                    })
+                    .when(kind != "userMessage", |row| {
+                        row.child(copy_control("codex-copy", "Copy message", copy.clone()))
+                    }),
+            );
+        }
+        if !tool {
+            let html_message = item["id"]
+                .as_str()
+                .map_or_else(|| format!("message-{index}"), str::to_owned);
+            let html_extensions = self
+                .html
+                .update(cx, |html, cx| html.extensions(&html_message, cx));
+            if let Some(approval) = approval {
+                let plan_key = (
+                    approval.document.plan_id.clone(),
+                    approval.document.revision_id.clone(),
+                );
+                let mut receipt = div()
+                    .debug_selector(move || format!("plan-approval-receipt-{index}"))
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_LG))
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(format!(
+                                "Plan approved · Revision {}",
+                                approval.document.revision_id
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_TITLE))
+                            .child(approval.document.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(rpx(TEXT_BODY))
+                            .child("Implementation authorized with your selected decisions."),
+                    );
+                let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_LG));
+                if let Some(plan) = self.native_plans.get(&plan_key) {
+                    let plan = plan.clone();
+                    actions = actions.child(
+                        transcript_action(
+                            "approval-view-plan",
+                            "View approved plan",
+                            false,
+                            window,
+                            cx,
+                        )
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/zen.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .debug_selector(move || format!("plan-approval-open-{index}"))
+                        .on_click(move |_, window, cx| {
+                            plan.update(cx, |plan, cx| plan.reveal(window, cx));
+                        }),
+                    );
+                }
+                let detail_id = format!("approval-details-{id}");
+                let details_open = self.expanded.contains(&detail_id);
+                actions = actions.child(
+                    transcript_action(
+                        "approval-view-details",
+                        if details_open {
+                            "Hide approval details"
+                        } else {
+                            "View approval details"
+                        },
+                        false,
+                        window,
+                        cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path(if details_open {
+                                "icons/chev-down.svg"
+                            } else {
+                                "icons/chev-right.svg"
+                            })
+                            .size(rpx(ICON_SM)),
+                    )
+                    .debug_selector(move || format!("plan-approval-details-toggle-{index}"))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.toggle_expansion(&detail_id, cx)),
+                    ),
+                );
+                receipt = receipt.child(actions);
+                if details_open {
+                    receipt = receipt.child(
+                        div()
+                            .debug_selector(move || format!("plan-approval-details-{index}"))
+                            .child(
+                                TextView::markdown(("approval-payload", index), text.clone())
+                                    .style(markdown_style(window))
+                                    .selectable(true),
+                            ),
+                    );
+                }
+                row = row.child(receipt);
+            } else if let Some(editor) = self.message_editor.as_ref().filter(|editor| {
+                editor.index == index && editor.message_id == item["id"].as_str().unwrap_or("")
+            }) {
+                row = row.child(self.render_inline_editor(editor, window, cx));
+            } else {
+                row = row.child(
+                div()
+                    .id(format!("codex-message-body-{index}"))
+                    .debug_selector(move || format!("codex-message-body-{index}"))
+                    .child({
+                        let owner_key = format!(
+                            "{}:{}",
+                            state.saved.thread_id.as_deref().unwrap_or(""),
+                            html_message
+                        );
+                        let owner = if let Some(owner) =
+                            self.selection_views.get(&owner_key).filter(|owner| {
+                                let old = owner.read(cx);
+                                let prefix = text.starts_with(old.source().as_ref());
+                                // Keep paragraph measurement identities on an unselected
+                                // static replacement; selected/focused/dynamic bodies
+                                // retain the original new-owner invalidation path.
+                                let reusable = old.supports_layout_projection()
+                                    && !old.layout_projection_focused(window, cx)
+                                    && !window.is_a11y_active()
+                                    && !window.is_inspector_picking(cx);
+                                prefix || (reusable
+                                    && !gpui_component::text::has_active_text_selection(window, cx)
+                                    && window.text_selection_snapshot(cx).is_none())
+                            }) {
+                            owner.clone()
+                        } else {
+                            let owner = cx.new(|cx| TextViewState::markdown(&text, cx));
+                            self.subscriptions
+                                .push(cx.observe(&owner, |_, _, cx| cx.notify()));
+                            self.selection_views.insert(owner_key.clone(), owner.clone());
+                            owner
+                        };
+                        owner.update(cx, |owner, cx| owner.set_text_incremental(&text, cx));
+                        let view = TextView::new(&owner)
+                            .markdown_extensions(html_extensions)
+                            .style(markdown_style(window))
+                            .selectable(true);
+                        if kind == "agentMessage" {
+                            let owner = cx.entity().downgrade();
+                            let source = text.clone();
+                            let runtime = self.script_runtime.clone();
+                            let cwd = state.saved.cwd.clone();
+                            let finalized = (item["groveCompleted"] == true || item["status"] == "completed") && item["status"] != "inProgress" && self.preview_child.is_none();
+                            view.code_block_actions(move |block, window, cx| {
+                                let code = block.code().to_string();
+                                let key = format!("{owner_key}:code:{}", block.span.as_ref().map_or(0, |span| span.start));
+                                let focus = owner.update(cx, |this, cx| this.message_focus.entry(key.clone()).or_insert_with(|| cx.focus_handle()).clone()).ok();
+                                let copied = owner.upgrade().is_some_and(|owner| owner.read(cx).copied_code_blocks.contains_key(&key));
+                                let label = if copied { "Copied" } else { "Copy code" };
+                                let keyboard_owner = owner.clone();
+                                let keyboard_key = key.clone();
+                                let keyboard_code = code.clone();
+                                let click_owner = owner.clone();
+                                let click_code = code.clone();
+                                let copy = header_control("codex-copy-code", label)
+                                    .when_some(focus, |this, focus| this.track_focus(&focus))
+                                    .debug_selector(move || if copied { "codex-code-copied".into() } else { "codex-copy-code".into() })
+                                    .tab_index(0)
+                                    .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                    .child(crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM()))
+                                    .on_key_down(move |event, _, cx| {
+                                        if action_key(event) {
+                                            let _ = keyboard_owner.update(cx, |this, cx| this.copy_code_block(keyboard_key.clone(), keyboard_code.clone(), cx));
+                                            cx.stop_propagation();
+                                        }
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        let _ = click_owner.update(cx, |this, cx| this.copy_code_block(key.clone(), click_code.clone(), cx));
+                                    });
+                                let mut actions = div().flex().gap(rpx(SPACE_SM)).child(copy);
+                                let language = block.lang().map(|s| s.to_string()).unwrap_or_default();
+                                let closed = block.span.as_ref().and_then(|span| source.get(span.start..span.end)).is_some_and(closed_shell_fence);
+                                if finalized && closed && !code.trim().is_empty() && snippet_shell_supported(&language) {
+                                    if let Some(runtime) = runtime.clone() {
+                                        let event_owner = owner.clone();
+                                        let cwd = cwd.clone();
+                                        let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
+                                        let available = owner.is_ok();
+                                        actions = actions.child(crate::ui_reference::runtime::dense_action(crate::ui_reference::runtime::DenseActionBindings {
+                                            id: "codex-run-code".into(),
+                                            label: if available { "Run" } else { "Checkout unavailable" }.into(),
+                                            icon: Some(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))),
+                                            disabled: !available,
+                                            loading: false,
+                                            on_activate: std::rc::Rc::new(move |_, _, cx| {
+                                                let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
+                                                if let Ok(project) = owner {
+                                                    let launched = runtime.update(cx, |runtime, cx| runtime.spawn_checkout_command(&project, &cwd, &code, cx));
+                                                    if launched { let _ = event_owner.update(cx, |_,cx| cx.emit(CodexViewEvent::ScriptLaunched)); }
+                                                }
+                                            }),
+                                        }, window, cx).debug_selector(|| "codex-run-code".into()));
+                                    } else {
+                                        actions = actions.child(transcript_action("codex-run-code", "Checkout unavailable", false, window, cx).disabled(true).debug_selector(|| "codex-run-code".into()).icon(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))));
+                                    }
+                                }
+                                actions
+                            })
+                        } else {
+                            view
+                        }
+                    }),
+            );
+            }
+            let html_entity = self.html.clone();
+            let linked = html_entity.update(cx, |html, cx| html.linked(&html_message, window, cx));
+            row = row.children(linked);
+            if kind == "agentMessage" {
+                let plans: Vec<_> = self
+                    .session
+                    .read(cx)
+                    .state
+                    .saved
+                    .rich_plans
+                    .revisions
+                    .iter()
+                    .filter(|plan| plan.message_id == html_message)
+                    .map(|plan| {
+                        (
+                            plan.document.plan_id.clone(),
+                            plan.document.revision_id.clone(),
+                        )
+                    })
+                    .collect();
+                for (plan_id, revision_id) in plans {
+                    let key = (plan_id, revision_id);
+                    row = row.child(super::native_plan::inline(&self.native_plans[&key], cx));
+                }
+                let errors = state.saved.rich_plans.errors.clone();
+                for error in errors
+                    .into_iter()
+                    .filter(|error| error.message_id == html_message)
+                {
+                    if let Some(limit) = &error.size_limit {
+                        let recovery_roots: Vec<std::path::PathBuf> = state
+                            .saved
+                            .roots
+                            .iter()
+                            .map(|root| root.wt_path.clone().into())
+                            .collect();
+                        let path = super::inline_html::recovery_path(
+                            &limit.path,
+                            std::path::Path::new(&state.saved.cwd),
+                            &recovery_roots,
+                        );
+                        let recovery_cwd = std::path::PathBuf::from(&state.saved.cwd);
+                        let actions = path
+                            .into_iter()
+                            .map(|path| {
+                                let recovery_cwd = recovery_cwd.clone();
+                                let recovery_roots = recovery_roots.clone();
+                                transcript_action(
+                                    format!("reveal-oversized-plan-{}", error.message_id),
+                                    "Reveal file",
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path("icons/folder.svg")
+                                        .size(rpx(ICON_SM)),
+                                )
+                                .on_click(move |_, _, cx| {
+                                    if let Some(path) = super::inline_html::recovery_path(
+                                        &path,
+                                        &recovery_cwd,
+                                        &recovery_roots,
+                                    ) {
+                                        cx.reveal_path(&path);
+                                    }
+                                })
+                                .into_any_element()
+                            })
+                            .collect();
+                        let is_plan = super::inline_html::recovery_path(
+                            std::path::Path::new(&error.source),
+                            std::path::Path::new(&state.saved.cwd),
+                            &recovery_roots,
+                        )
+                        .as_ref()
+                            == Some(&limit.path);
+                        row = row.child(super::inline_html::oversized_card(
+                        if is_plan { "Plan too large" } else { "Plan asset too large" },
+                        limit,
+                        if is_plan { "Move embedded images into separate assets and reference their paths." } else { "Reduce this asset’s size, then link a new plan revision." },
+                        actions, cx,
+                    ));
+                        continue;
+                    }
+                    let message_id = error.message_id.clone();
+                    let source = error.source.clone();
+                    row = row.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(rpx(SPACE_LG))
+                            .p(rpx(SPACE_2XL))
+                            .child(
+                                div()
+                                    .text_color(c::FORM_ERROR())
+                                    .child(format!("Couldn’t open native plan: {}", error.error)),
+                            )
+                            .child(div().text_color(c::FG_DIM()).child(error.source))
+                            .child(
+                                transcript_action(
+                                    format!("retry-native-plan-{message_id}"),
+                                    "Retry plan import",
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path("icons/restart.svg")
+                                        .size(rpx(ICON_SM)),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.session.update(cx, |session, cx| {
+                                            session.send(
+                                                Action::RetryPlanImport {
+                                                    message_id: message_id.clone(),
+                                                    source: source.clone(),
+                                                },
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                )),
+                            ),
+                    );
+                }
+            }
+
+            if kind == "userMessage" {
+                if let Some(content) = item["content"].as_array() {
+                    let images: Vec<_> = content
+                        .iter()
+                        .filter_map(|part| {
+                            part["url"].as_str().or_else(|| part["image_url"].as_str())
+                        })
+                        .collect();
+                    if !images.is_empty() {
+                        let count = images.len();
+                        let label =
+                            format!("{count} attachment{}", if count == 1 { "" } else { "s" });
+                        let mut thumbnails = div()
+                            .id(("codex-message-images", index))
+                            .debug_selector(move || format!("codex-message-images-{index}"))
+                            .flex()
+                            .flex_wrap()
+                            .gap(rpx(SPACE_LG));
+                        for (image_index, image) in images.into_iter().enumerate() {
+                            if let Some(image) = self.previews.get(image).cloned().or_else(|| {
+                                let preview = image_from_url(image)?;
+                                self.previews.insert(image.to_owned(), preview.clone());
+                                Some(preview)
+                            }) {
+                                thumbnails = thumbnails.child(
+                                    attachment_preview(image)
+                                        .id(format!("codex-message-image-{index}-{image_index}"))
+                                        .debug_selector(move || {
+                                            format!("codex-message-image-{index}-{image_index}")
+                                        }),
+                                );
+                            }
+                        }
+                        row = row.child(
+                            div()
+                                .id(("codex-message-attachments", index))
+                                .debug_selector(move || {
+                                    format!("codex-message-attachments-{index}")
+                                })
+                                .flex()
+                                .flex_col()
+                                .gap(rpx(SPACE_LG))
+                                .child(
+                                    div()
+                                        .id(("codex-message-attachment-count", index))
+                                        .debug_selector(move || {
+                                            format!("codex-message-attachment-count-{index}")
+                                        })
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM())
+                                        .child(label),
+                                )
+                                .child(thumbnails),
+                        );
+                    }
+                }
+            }
+        } else if expanded {
+            row = row.child(
+                div()
+                    .id(("codex-tool-detail", index))
+                    .debug_selector(move || format!("codex-tool-detail-{index}"))
+                    .child(
+                        TextView::markdown(
+                            ("codex-tool-text", index),
+                            format!("```text\n{}\n```", text.replace("```", "` ` `")),
+                        )
+                        .style(markdown_style(window))
+                        .selectable(true),
+                    ),
+            );
+        }
+        if plan_details && expanded {
+            row = row.child(
+                div()
+                    .id(("codex-plan-detail", index))
+                    .debug_selector(move || format!("codex-plan-detail-{index}"))
+                    .child(
+                        TextView::markdown(
+                            ("codex-plan-tool-text", index),
+                            format!(
+                                "```text\n{}\n```",
+                                tool_detail(item).replace("```", "` ` `")
+                            ),
+                        )
+                        .style(markdown_style(window))
+                        .selectable(true),
+                    ),
+            );
+        }
+        if kind == "agentMessage" {
+            if let Some(group_index) = response_prose[index] {
+                let group = &response_groups[group_index];
+                let key = group.key.clone();
+                let source_key = format!("{}:source:{id}", group.key);
+                if !self.message_focus.contains_key(&source_key) {
+                    let focus = cx.focus_handle();
+                    self.subscriptions
+                        .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
+                    self.subscriptions
+                        .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+                    self.message_focus.insert(source_key.clone(), focus);
+                }
+                let focus = self.message_focus[&source_key].clone();
+                row = row.track_focus(&focus).tab_index(0).on_hover(cx.listener(
+                    move |this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            this.message_hover.insert(key.clone());
+                        } else {
+                            this.message_hover.remove(&key);
+                        }
+                        cx.notify();
+                    },
+                ));
+            }
+        }
+        if kind == "userMessage" {
+            row = div()
+                .id(("codex-message-block", index))
+                .flex()
+                .flex_col()
+                .w_full()
+                .max_w(rpx(USER_BUBBLE_MAX_W))
+                .gap(rpx(SPACE_SM))
+                .child(row);
+            let key = format!(
+                "{}:{id}",
+                state.saved.thread_id.as_deref().unwrap_or_default()
+            );
+            if !self.message_focus.contains_key(&key) {
+                let focus = cx.focus_handle();
+                self.subscriptions
+                    .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
+                self.subscriptions
+                    .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+                self.message_focus.insert(key.clone(), focus);
+            }
+            let focus = self.message_focus[&key].clone();
+            let visible = self.message_hover.contains(&key) || focus.contains_focused(window, cx);
+            let copied = self
+                .copied_message
+                .as_ref()
+                .is_some_and(|(message, _)| message == &key);
+            let hover_key = key.clone();
+            row = row.track_focus(&focus).tab_index(0).on_hover(cx.listener(
+                move |this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        this.message_hover.insert(hover_key.clone());
+                    } else {
+                        this.message_hover.remove(&hover_key);
+                    }
+                    cx.notify();
+                },
+            ));
+            let mut actions = div()
+                .id(("message-actions", index))
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_MD))
+                .h(rpx(CHROME_CONTROL_H))
+                .justify_end();
+            if let Some(timestamp) = item["groveReceivedAt"].as_u64() {
+                actions = actions.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_MUTE())
+                        .child(relative_message_time(timestamp)),
+                );
+            }
+            let unavailable = state.editable_message(index).err();
+            if self.preview_child.is_none() && approval.is_none() {
+                let edit_focus = self.ensure_control_focus(&format!("{key}:edit"), window, cx);
+                actions = actions.child(
+                    header_control("codex-edit-message", "Edit sent message")
+                        .track_focus(&edit_focus)
+                        .aria_description(
+                            unavailable
+                                .unwrap_or_else(|| "Edit message and restore workspace".into()),
+                        )
+                        .debug_selector(move || format!("codex-edit-message-{index}"))
+                        .tab_index(0)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if action_key(event) {
+                                    this.request_edit(index, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.request_edit(index, window, cx);
+                        })),
+                );
+            }
+            let copy_focus = self.ensure_control_focus(&format!("{key}:copy"), window, cx);
+            let keyboard_key = key.clone();
+            let keyboard_text = copy.clone();
+            let icon =
+                crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM());
+            let mut copy_button = if copied {
+                header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
+            } else {
+                header_control("codex-message-copy", "Copy message")
+            }
+            .track_focus(&copy_focus)
+            .relative()
+            .debug_selector(|| "codex-copy".into())
+            .tab_index(0)
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
+            .child(if copied {
+                super::motion::fast(icon, ("message-copy-check", index), cx)
+            } else {
+                icon.into_any_element()
+            })
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                if action_key(event) {
+                    this.copy_message(keyboard_key.clone(), keyboard_text.clone(), cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.copy_message(key.clone(), copy.clone(), cx);
+            }));
+            if copied {
+                copy_button = copy_button.child(
+                    div()
+                        .absolute()
+                        .bottom(rpx(CHROME_CONTROL_H + SPACE_SM))
+                        .right_0()
+                        .child(tooltip("Copied", window).build(window, cx)),
+                );
+            }
+            actions = actions.child(copy_button);
+            // Keep the footer geometry and keyboard targets mounted while hidden.
+            row = row.child(if visible || copied {
+                super::motion::fast(actions, ("message-actions-show", index), cx)
+            } else {
+                actions.opacity(0.0).into_any_element()
+            });
+        }
+        let row = if let Some((started, finished)) = self.animating_bubbles.get(&id) {
+            let started = *started;
+            let executor = cx.background_executor().clone();
+            let finished = finished.clone();
+            row.relative()
+                .with_animation(
+                    gpui::SharedString::from(format!("codex-send-{id}")),
+                    gpui::Animation::new(std::time::Duration::from_millis(MOTION_SLOW_MS))
+                        .with_easing(super::motion::ease_standard),
+                    move |row, _progress| {
+                        // One executor clock preserves progress across temporary unmounts
+                        // and keeps virtual-time tests independent of wall-clock delays.
+                        let elapsed = executor.now().duration_since(started).as_secs_f32()
+                            / std::time::Duration::from_millis(MOTION_SLOW_MS).as_secs_f32();
+                        let progress = super::motion::ease_standard(elapsed.min(1.0));
+                        finished.set(elapsed >= 1.0);
+                        // Rise from the composer, then settle with a small overshoot.
+                        let remaining = 1.0 - progress;
+                        row.top(rpx(SPACE_3XL
+                            * remaining
+                            * remaining
+                            * (1.0 - 2.0 * progress)))
+                    },
+                )
+                .into_any_element()
+        } else {
+            row.into_any_element()
+        };
+        row
+    }
+
     fn render_message_minimap(
         &self,
         entries: &[MessageMinimapEntry],
@@ -2876,6 +3798,8 @@ impl CodexView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        #[cfg(test)]
+        let _phase = measured_slot::phases::Section::minimap();
         if entries.is_empty() {
             return div().into_any_element();
         }
@@ -3201,6 +4125,12 @@ impl Focusable for CodexView {
 }
 impl Render for CodexView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        let _phase = measured_slot::phases::Frame::start();
+        #[cfg(test)]
+        measured_slot::RENDERED_FOOTERS.with(|keys| keys.borrow_mut().clear());
+        #[cfg(test)]
+        measured_slot::reset_tool_detail_counts();
         if !self.selection_root_observed {
             if let Some(root) = window.root::<gpui_component::Root>().flatten() {
                 self.subscriptions
@@ -3425,7 +4355,11 @@ impl Render for CodexView {
         let transcript = match &self.transcript_cache {
             Some(cache) if cache.matches(&state, &optimistic_items) => cache.clone(),
             _ => {
-                let cache = Rc::new(TranscriptRenderCache::new(state, optimistic_items));
+                let cache = Rc::new(TranscriptRenderCache::refreshed(
+                    state,
+                    optimistic_items,
+                    self.transcript_cache.as_deref(),
+                ));
                 self.transcript_cache = Some(cache.clone());
                 cache
             }
@@ -3476,6 +4410,8 @@ impl Render for CodexView {
         }
         let changed_thread = self.stream_thread != state.saved.thread_id;
         if changed_thread {
+            self.message_slots.clear();
+            self.work_header_slots.clear();
             self.selection_views.clear();
             self.selection_dismissed = None;
             if self
@@ -3571,6 +4507,8 @@ impl Render for CodexView {
             && state.elicitations.is_empty()
             && state.error.is_none()
         {
+            self.message_slots.clear();
+            self.work_header_slots.clear();
             return div()
                 .id("codex-conversation")
                 .size_full()
@@ -3597,13 +4535,21 @@ impl Render for CodexView {
         }
         let response_groups = &transcript.response_groups;
         let response_ends = &transcript.response_ends;
-        let response_prose = &transcript.response_prose;
         let minimap_entries = &transcript.minimap_entries;
         let mut minimap_anchors = Vec::new();
         // The first rendered child at or after each item, for jump-to-start.
         let mut item_children = Vec::with_capacity(state.saved.items.len());
         let mut message_child = 0;
         let mut rendered_selection_keys = HashSet::new();
+        let mut rendered_slot_keys = HashSet::new();
+        let mut rendered_header_keys = HashSet::new();
+        let message_frame = Rc::new(measured_slot::MessageFrame {
+            state: state.clone(),
+            prepared: transcript.prepared.clone(),
+            initial_transcript,
+            near_bottom,
+            elapsed,
+        });
         let mut messages = div()
             .id("codex-messages")
             .debug_selector(|| "codex-messages".into())
@@ -3639,14 +4585,34 @@ impl Render for CodexView {
             .saved
             .items
             .iter()
+            .map(AsRef::as_ref)
             .chain(std::iter::once(&serde_json::Value::Null))
             .enumerate()
         {
             // Flush before inspecting the next source item: the previous final item
             // may be hidden commentary, a checklist, or a collapsed tool.
             if let Some(group_index) = response_ends[index] {
-                messages =
-                    messages.child(self.response_footer(&response_groups[group_index], window, cx));
+                let group = &response_groups[group_index];
+                let footer = if self.preview_child.is_some()
+                    || window.is_a11y_active()
+                    || measured_slot::force_eager()
+                    || measured_slot::force_footer_eager()
+                {
+                    self.response_footer(group, true, window, cx)
+                } else {
+                    let focus = self.ensure_message_focus(&group.key, window, cx);
+                    let copy_focus =
+                        self.ensure_control_focus(&format!("{}:copy", group.key), window, cx);
+                    measured_slot::MeasuredResponseFooter::new(
+                        cx.entity().downgrade(),
+                        message_frame.clone(),
+                        group_index,
+                        focus,
+                        copy_focus,
+                    )
+                    .into_any_element()
+                };
+                messages = messages.child(footer);
                 message_child += 1;
             }
             if index < state.saved.items.len() {
@@ -3658,54 +4624,39 @@ impl Render for CodexView {
             if let Some((key, label, active)) = work_header_at(&state, index) {
                 message_child += 1;
                 let expanded = self.expanded.contains(&key);
-                let keyboard_key = key.clone();
-                messages = messages.child(
-                    div()
-                        .w_full()
-                        .max_w(rpx(CHAT_MAX_W))
-                        .pb(rpx(SPACE_XS))
-                        .border_b_1()
-                        .border_color(c::BORDER_SOFT())
-                        .child(
-                            header_control("codex-work-header", "Show work activity")
-                                .id(("codex-work-header", index))
-                                .aria_expanded(expanded)
-                                .debug_selector(move || format!("codex-work-header-{index}"))
-                                .w_full()
-                                .h_auto()
-                                .min_h(rpx(CHROME_CONTROL_H))
-                                .flex_wrap()
-                                .justify_start()
-                                .gap(rpx(SPACE_SM))
-                                .tab_index(0)
-                                .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .aria_label(label.clone())
-                                .child(shimmer_label(
-                                    ("codex-work-shimmer", index).into(),
-                                    label,
-                                    false,
-                                    cx,
-                                ))
-                                .child(crate::icons::icon(
-                                    if expanded { "chev-down" } else { "chev-right" },
-                                    ICON_SM,
-                                    c::FG_DIM(),
-                                ))
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if action_key(event) {
-                                            this.toggle_expansion(&keyboard_key, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.toggle_expansion(&key, cx);
-                                })),
-                        ),
+                let focus_key = format!(
+                    "work-header:{}:{index}:{key}",
+                    state.saved.thread_id.as_deref().unwrap_or_default()
                 );
+                // The original button used an implicit tabbable handle. An
+                // explicit tracked handle must preserve that metadata itself.
+                let focus = self
+                    .ensure_message_focus(&focus_key, window, cx)
+                    .tab_stop(true)
+                    .tab_index(0);
+                self.message_focus.insert(focus_key.clone(), focus.clone());
+                let header = if !active
+                    && !expanded
+                    && self.preview_child.is_none()
+                    && !window.is_a11y_active()
+                    && !measured_slot::force_eager()
+                    && !measured_slot::force_header_eager()
+                {
+                    rendered_header_keys.insert(focus_key.clone());
+                    let cache = self.work_header_slots.entry(focus_key).or_default().clone();
+                    measured_slot::MeasuredWorkHeader::new(
+                        cx.entity().downgrade(),
+                        index,
+                        key.clone(),
+                        label.clone(),
+                        focus,
+                        cache,
+                    )
+                    .into_any_element()
+                } else {
+                    self.render_work_header(index, &key, &label, expanded, &focus, cx)
+                };
+                messages = messages.child(header);
                 if expanded && !work_has_parent_activity(&state, index) {
                     message_child += 1;
                     messages = messages.child(
@@ -3901,7 +4852,11 @@ impl Render for CodexView {
                     // Adjacent activity groups share the compact rhythm of their rows;
                     // prose keeps the transcript's normal paragraph separation.
                     .when(
-                        state.saved.items.get(end).is_some_and(is_tool_item)
+                        state
+                            .saved
+                            .items
+                            .get(end)
+                            .is_some_and(|item| is_tool_item(item))
                             && tool_visible(&state, end)
                             && (work_is_active_at(&state, end)
                                 || self.expanded.contains(&work_key_at(&state, end))),
@@ -3955,6 +4910,12 @@ impl Render for CodexView {
                 }
                 if expanded || tools.len() == 1 {
                     for (detail_index, tool) in tools {
+                        #[cfg(test)]
+                        let _phase = measured_slot::phases::Section::tool();
+                        #[cfg(test)]
+                        measured_slot::observe_tool_detail(
+                            detail_index >= active_work_start(&state),
+                        );
                         let tool_key = tool_expansion_key(tool, detail_index);
                         let tool_expanded = self.expanded.contains(&tool_key);
                         let keyboard_key = tool_key.clone();
@@ -4097,783 +5058,59 @@ impl Render for CodexView {
                 messages = messages.child(group);
                 continue;
             }
-            let id = item["id"]
+            let message_id = item["id"]
                 .as_str()
-                .map_or_else(|| index.to_string(), str::to_owned);
-            let expanded = self.expanded.contains(&id);
-            let plan_details = kind == "plan"
-                && state.saved.provider == codex::Provider::Claude
-                && item["tool"].is_string();
-            let text = codex::item_text(item);
-            let approval = (kind == "userMessage")
-                .then(|| state.saved.rich_plans.approval_for_payload(&text))
-                .flatten();
-            let role = match kind {
-                "userMessage" => "You",
-                "agentMessage" => provider,
-                "plan" => "Plan",
-                "commandExecution" => "Command",
-                "fileChange" => "File changes",
-                "reasoning" => "Reasoning",
-                _ => "Tool",
-            };
-            let mut row = div()
-                .id(("codex-item", index))
-                .debug_selector(move || format!("codex-message-row-{index}"))
-                .flex()
-                .flex_col()
-                .w_full()
-                .max_w(rpx(if kind == "userMessage" {
-                    USER_BUBBLE_MAX_W
-                } else {
-                    CHAT_MAX_W
-                }))
-                .gap(rpx(SPACE_LG))
-                .when(kind == "userMessage", |row| {
-                    row.p(rpx(SPACE_2XL))
-                        .rounded(rpx(RADIUS_PANEL))
-                        .bg(c::BG_RAIL())
+                .map_or_else(|| format!("message-{index}"), str::to_owned);
+            let owner_key = format!(
+                "{}:{}",
+                state.saved.thread_id.as_deref().unwrap_or(""),
+                message_id
+            );
+            let receipt = kind == "userMessage"
+                && state
+                    .saved
+                    .rich_plans
+                    .approval_for_payload(&codex::item_text(item))
+                    .is_some();
+            let editing = self.message_editor.as_ref().is_some_and(|editor| {
+                editor.index == index && editor.message_id == item["id"].as_str().unwrap_or("")
+            });
+            if !tool && !receipt && !editing {
+                rendered_selection_keys.insert(owner_key.clone());
+            }
+            let slot_key = format!("{owner_key}:{index}");
+            // Streaming and entrance animations update follow state during Render;
+            // keep those effects before the parent's scroll-follow decisions.
+            let tail_stream = state.status.busy() && index + 1 == state.saved.items.len();
+            let entrance = self
+                .animating_bubbles
+                .contains_key(item["id"].as_str().unwrap_or(""))
+                || self.bubble_entrances.iter().any(|pending| {
+                    pending
+                        .optimistic
+                        .as_ref()
+                        .is_some_and(|bubble| bubble["id"] == item["id"])
                 });
-            let text = if tool { tool_detail(item) } else { text };
-            let copy = if kind == "userMessage" {
-                reference_prompt_copy(&text)
+            let row = if matches!(kind, "userMessage" | "agentMessage")
+                && !receipt
+                && !editing
+                && !tail_stream
+                && !entrance
+                && self.preview_child.is_none()
+                && !window.is_a11y_active()
+            {
+                rendered_slot_keys.insert(slot_key.clone());
+                let cache = self.message_slots.entry(slot_key).or_default().clone();
+                measured_slot::MeasuredTranscriptSlot::new(
+                    cx.entity().downgrade(),
+                    index,
+                    message_frame.clone(),
+                    owner_key,
+                    cache,
+                )
+                .into_any_element()
             } else {
-                text.clone()
-            };
-            let text = if kind == "userMessage" {
-                reference_prompt_markdown(&text)
-            } else {
-                text
-            };
-            let text = if kind == "agentMessage" && !cx.reduce_motion() {
-                let key = item["id"]
-                    .as_str()
-                    .map_or_else(|| format!("message-{index}"), str::to_owned);
-                let entry = self.stream_text.entry(key).or_insert_with(|| {
-                    let shown = if state.status.busy()
-                        && !initial_transcript
-                        && index + 1 == state.saved.items.len()
-                    {
-                        0
-                    } else {
-                        text.len()
-                    };
-                    (text.clone(), shown)
-                });
-                if !text.starts_with(&entry.0[..entry.1.min(entry.0.len())]) {
-                    entry.1 = text.len();
-                }
-                entry.0.clone_from(&text);
-                if !state.status.busy() {
-                    entry.1 = text.len();
-                }
-                if entry.1 < text.len() {
-                    self.smooth_follow |= near_bottom && !self.composer_collapsed;
-                    // Catch up over a short interval without replaying the existing prefix.
-                    let remaining = text[entry.1..].chars().count();
-                    let advance = ((remaining as f32
-                        * (elapsed.min(1.0 / 30.0) / (MOTION_FAST_MS as f32 / 1000.0)).min(1.0))
-                    .ceil() as usize)
-                        .max(1);
-                    entry.1 = text[entry.1..]
-                        .char_indices()
-                        .nth(advance)
-                        .map_or(text.len(), |(offset, _)| entry.1 + offset);
-                    let owner = cx.entity().downgrade();
-                    let pending = self.motion_frame_pending.clone();
-                    if !pending.replace(true) {
-                        window.on_next_frame(move |_, cx| {
-                            pending.set(false);
-                            let _ = owner.update(cx, |_, cx| cx.notify());
-                        });
-                    }
-                }
-                text[..entry.1].to_owned()
-            } else {
-                if kind == "agentMessage" {
-                    let key = item["id"]
-                        .as_str()
-                        .map_or_else(|| format!("message-{index}"), str::to_owned);
-                    self.stream_text.insert(key, (text.clone(), text.len()));
-                }
-                text
-            };
-            let toggle = id.clone();
-            if kind != "agentMessage" {
-                row = row.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_LG))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .child(
-                                    if kind == "userMessage"
-                                        && self.bubble_entrances.iter().any(|pending| {
-                                            pending.optimistic.as_ref().is_some_and(|bubble| {
-                                                bubble["id"] == item["id"]
-                                                    && bubble["localSteering"] == true
-                                            })
-                                        })
-                                    {
-                                        "You · Steering…".to_owned()
-                                    } else if tool {
-                                        tool_summary(item)
-                                    } else {
-                                        role.to_owned()
-                                    },
-                                ),
-                        )
-                        .when(tool || plan_details, |row| {
-                            let keyboard_toggle = toggle.clone();
-                            row.child(
-                                header_control(
-                                    "codex-expand",
-                                    if expanded {
-                                        "Collapse tool call"
-                                    } else {
-                                        "Expand tool call"
-                                    },
-                                )
-                                .child(crate::icons::icon(
-                                    if expanded { "chev-down" } else { "chev-right" },
-                                    ICON_MD,
-                                    c::FG_DIM(),
-                                ))
-                                .debug_selector(move || format!("codex-toggle-details-{index}"))
-                                .aria_expanded(expanded)
-                                .tab_index(0)
-                                .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if action_key(event) {
-                                            this.toggle_expansion(&keyboard_toggle, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        if !this.expanded.remove(&toggle) {
-                                            this.expanded.insert(toggle.clone());
-                                        }
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                        })
-                        .when(kind != "userMessage", |row| {
-                            row.child(copy_control("codex-copy", "Copy message", copy.clone()))
-                        }),
-                );
-            }
-            if !tool {
-                let html_message = item["id"]
-                    .as_str()
-                    .map_or_else(|| format!("message-{index}"), str::to_owned);
-                let html_extensions = self
-                    .html
-                    .update(cx, |html, cx| html.extensions(&html_message, cx));
-                if let Some(approval) = approval {
-                    let plan_key = (
-                        approval.document.plan_id.clone(),
-                        approval.document.revision_id.clone(),
-                    );
-                    let mut receipt = div()
-                        .debug_selector(move || format!("plan-approval-receipt-{index}"))
-                        .flex()
-                        .flex_col()
-                        .gap(rpx(SPACE_LG))
-                        .child(
-                            div()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .child(format!(
-                                    "Plan approved · Revision {}",
-                                    approval.document.revision_id
-                                )),
-                        )
-                        .child(
-                            div()
-                                .text_size(rpx(TEXT_TITLE))
-                                .child(approval.document.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_size(rpx(TEXT_BODY))
-                                .child("Implementation authorized with your selected decisions."),
-                        );
-                    let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_LG));
-                    if let Some(plan) = self.native_plans.get(&plan_key) {
-                        let plan = plan.clone();
-                        actions = actions.child(
-                            transcript_action(
-                                "approval-view-plan",
-                                "View approved plan",
-                                false,
-                                window,
-                                cx,
-                            )
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path("icons/zen.svg")
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .debug_selector(move || format!("plan-approval-open-{index}"))
-                            .on_click(move |_, window, cx| {
-                                plan.update(cx, |plan, cx| plan.reveal(window, cx));
-                            }),
-                        );
-                    }
-                    let detail_id = format!("approval-details-{id}");
-                    let details_open = self.expanded.contains(&detail_id);
-                    actions =
-                        actions.child(
-                            transcript_action(
-                                "approval-view-details",
-                                if details_open {
-                                    "Hide approval details"
-                                } else {
-                                    "View approval details"
-                                },
-                                false,
-                                window,
-                                cx,
-                            )
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path(if details_open {
-                                        "icons/chev-down.svg"
-                                    } else {
-                                        "icons/chev-right.svg"
-                                    })
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .debug_selector(move || format!("plan-approval-details-toggle-{index}"))
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.toggle_expansion(&detail_id, cx),
-                            )),
-                        );
-                    receipt = receipt.child(actions);
-                    if details_open {
-                        receipt = receipt.child(
-                            div()
-                                .debug_selector(move || format!("plan-approval-details-{index}"))
-                                .child(
-                                    TextView::markdown(("approval-payload", index), text.clone())
-                                        .style(markdown_style(window))
-                                        .selectable(true),
-                                ),
-                        );
-                    }
-                    row = row.child(receipt);
-                } else if let Some(editor) = self.message_editor.as_ref().filter(|editor| {
-                    editor.index == index && editor.message_id == item["id"].as_str().unwrap_or("")
-                }) {
-                    row = row.child(self.render_inline_editor(editor, window, cx));
-                } else {
-                    row = row.child(
-                        div()
-                            .id(format!("codex-message-body-{index}"))
-                            .debug_selector(move || format!("codex-message-body-{index}"))
-                            .child({
-                                let owner_key = format!(
-                                    "{}:{}",
-                                    state.saved.thread_id.as_deref().unwrap_or(""),
-                                    html_message
-                                );
-                                rendered_selection_keys.insert(owner_key.clone());
-                                let owner = if let Some(owner) =
-                                    self.selection_views.get(&owner_key).filter(|owner| {
-                                        text.starts_with(owner.read(cx).source().as_ref())
-                                    }) {
-                                    owner.clone()
-                                } else {
-                                    let owner = cx.new(|cx| TextViewState::markdown(&text, cx));
-                                    self.subscriptions
-                                        .push(cx.observe(&owner, |_, _, cx| cx.notify()));
-                                    self.selection_views.insert(owner_key.clone(), owner.clone());
-                                    owner
-                                };
-                                owner.update(cx, |owner, cx| owner.set_text_incremental(&text, cx));
-                                let view = TextView::new(&owner)
-                                    .markdown_extensions(html_extensions)
-                                    .style(markdown_style(window))
-                                    .selectable(true);
-                                if kind == "agentMessage" {
-                                    let owner = cx.entity().downgrade();
-                                    let source = text.clone();
-                                    let runtime = self.script_runtime.clone();
-                                    let cwd = state.saved.cwd.clone();
-                                    let finalized = (item["groveCompleted"] == true || item["status"] == "completed") && item["status"] != "inProgress" && self.preview_child.is_none();
-                                    view.code_block_actions(move |block, window, cx| {
-                                        let code = block.code().to_string();
-                                        let key = format!("{owner_key}:code:{}", block.span.as_ref().map_or(0, |span| span.start));
-                                        let focus = owner.update(cx, |this, cx| this.message_focus.entry(key.clone()).or_insert_with(|| cx.focus_handle()).clone()).ok();
-                                        let copied = owner.upgrade().is_some_and(|owner| owner.read(cx).copied_code_blocks.contains_key(&key));
-                                        let label = if copied { "Copied" } else { "Copy code" };
-                                        let keyboard_owner = owner.clone();
-                                        let keyboard_key = key.clone();
-                                        let keyboard_code = code.clone();
-                                        let click_owner = owner.clone();
-                                        let click_code = code.clone();
-                                        let copy = header_control("codex-copy-code", label)
-                                            .when_some(focus, |this, focus| this.track_focus(&focus))
-                                            .debug_selector(move || if copied { "codex-code-copied".into() } else { "codex-copy-code".into() })
-                                            .tab_index(0)
-                                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                            .child(crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM()))
-                                            .on_key_down(move |event, _, cx| {
-                                                if action_key(event) {
-                                                    let _ = keyboard_owner.update(cx, |this, cx| this.copy_code_block(keyboard_key.clone(), keyboard_code.clone(), cx));
-                                                    cx.stop_propagation();
-                                                }
-                                            })
-                                            .on_click(move |_, _, cx| {
-                                                let _ = click_owner.update(cx, |this, cx| this.copy_code_block(key.clone(), click_code.clone(), cx));
-                                            });
-                                        let mut actions = div().flex().gap(rpx(SPACE_SM)).child(copy);
-                                        let language = block.lang().map(|s| s.to_string()).unwrap_or_default();
-                                        let closed = block.span.as_ref().and_then(|span| source.get(span.start..span.end)).is_some_and(closed_shell_fence);
-                                        if finalized && closed && !code.trim().is_empty() && snippet_shell_supported(&language) {
-                                            if let Some(runtime) = runtime.clone() {
-                                                let event_owner = owner.clone();
-                                                let cwd = cwd.clone();
-                                                let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
-                                                let available = owner.is_ok();
-                                                actions = actions.child(crate::ui_reference::runtime::dense_action(crate::ui_reference::runtime::DenseActionBindings {
-                                                    id: "codex-run-code".into(),
-                                                    label: if available { "Run" } else { "Checkout unavailable" }.into(),
-                                                    icon: Some(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))),
-                                                    disabled: !available,
-                                                    loading: false,
-                                                    on_activate: std::rc::Rc::new(move |_, _, cx| {
-                                                        let owner = grove_core::session_meta::project_owner(&cx.global::<crate::settings::SettingsState>().store.projects, &cwd).map(|p| p.path.clone());
-                                                        if let Ok(project) = owner {
-                                                            let launched = runtime.update(cx, |runtime, cx| runtime.spawn_checkout_command(&project, &cwd, &code, cx));
-                                                            if launched { let _ = event_owner.update(cx, |_,cx| cx.emit(CodexViewEvent::ScriptLaunched)); }
-                                                        }
-                                                    }),
-                                                }, window, cx).debug_selector(|| "codex-run-code".into()));
-                                            } else {
-                                                actions = actions.child(transcript_action("codex-run-code", "Checkout unavailable", false, window, cx).disabled(true).debug_selector(|| "codex-run-code".into()).icon(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM))));
-                                            }
-                                        }
-                                        actions
-                                    })
-                                } else {
-                                    view
-                                }
-                            }),
-                    );
-                }
-                let html_entity = self.html.clone();
-                let linked =
-                    html_entity.update(cx, |html, cx| html.linked(&html_message, window, cx));
-                row = row.children(linked);
-                if kind == "agentMessage" {
-                    let plans: Vec<_> = self
-                        .session
-                        .read(cx)
-                        .state
-                        .saved
-                        .rich_plans
-                        .revisions
-                        .iter()
-                        .filter(|plan| plan.message_id == html_message)
-                        .map(|plan| {
-                            (
-                                plan.document.plan_id.clone(),
-                                plan.document.revision_id.clone(),
-                            )
-                        })
-                        .collect();
-                    for (plan_id, revision_id) in plans {
-                        let key = (plan_id, revision_id);
-                        row = row.child(super::native_plan::inline(&self.native_plans[&key], cx));
-                    }
-                    let errors = state.saved.rich_plans.errors.clone();
-                    for error in errors
-                        .into_iter()
-                        .filter(|error| error.message_id == html_message)
-                    {
-                        if let Some(limit) = &error.size_limit {
-                            let recovery_roots: Vec<std::path::PathBuf> = state
-                                .saved
-                                .roots
-                                .iter()
-                                .map(|root| root.wt_path.clone().into())
-                                .collect();
-                            let path = super::inline_html::recovery_path(
-                                &limit.path,
-                                std::path::Path::new(&state.saved.cwd),
-                                &recovery_roots,
-                            );
-                            let recovery_cwd = std::path::PathBuf::from(&state.saved.cwd);
-                            let actions = path
-                                .into_iter()
-                                .map(|path| {
-                                    let recovery_cwd = recovery_cwd.clone();
-                                    let recovery_roots = recovery_roots.clone();
-                                    transcript_action(
-                                        format!("reveal-oversized-plan-{}", error.message_id),
-                                        "Reveal file",
-                                        false,
-                                        window,
-                                        cx,
-                                    )
-                                    .icon(
-                                        gpui_component::Icon::default()
-                                            .path("icons/folder.svg")
-                                            .size(rpx(ICON_SM)),
-                                    )
-                                    .on_click(move |_, _, cx| {
-                                        if let Some(path) = super::inline_html::recovery_path(
-                                            &path,
-                                            &recovery_cwd,
-                                            &recovery_roots,
-                                        ) {
-                                            cx.reveal_path(&path);
-                                        }
-                                    })
-                                    .into_any_element()
-                                })
-                                .collect();
-                            let is_plan = super::inline_html::recovery_path(
-                                std::path::Path::new(&error.source),
-                                std::path::Path::new(&state.saved.cwd),
-                                &recovery_roots,
-                            )
-                            .as_ref()
-                                == Some(&limit.path);
-                            row = row.child(super::inline_html::oversized_card(
-                                if is_plan { "Plan too large" } else { "Plan asset too large" },
-                                limit,
-                                if is_plan { "Move embedded images into separate assets and reference their paths." } else { "Reduce this asset’s size, then link a new plan revision." },
-                                actions, cx,
-                            ));
-                            continue;
-                        }
-                        let message_id = error.message_id.clone();
-                        let source = error.source.clone();
-                        row =
-                            row.child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(rpx(SPACE_LG))
-                                    .p(rpx(SPACE_2XL))
-                                    .child(div().text_color(c::FORM_ERROR()).child(format!(
-                                        "Couldn’t open native plan: {}",
-                                        error.error
-                                    )))
-                                    .child(div().text_color(c::FG_DIM()).child(error.source))
-                                    .child(
-                                        transcript_action(
-                                            format!("retry-native-plan-{message_id}"),
-                                            "Retry plan import",
-                                            false,
-                                            window,
-                                            cx,
-                                        )
-                                        .icon(
-                                            gpui_component::Icon::default()
-                                                .path("icons/restart.svg")
-                                                .size(rpx(ICON_SM)),
-                                        )
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.session.update(cx, |session, cx| {
-                                                    session.send(
-                                                        Action::RetryPlanImport {
-                                                            message_id: message_id.clone(),
-                                                            source: source.clone(),
-                                                        },
-                                                        cx,
-                                                    );
-                                                });
-                                            }),
-                                        ),
-                                    ),
-                            );
-                    }
-                }
-
-                if kind == "userMessage" {
-                    if let Some(content) = item["content"].as_array() {
-                        let images: Vec<_> = content
-                            .iter()
-                            .filter_map(|part| {
-                                part["url"].as_str().or_else(|| part["image_url"].as_str())
-                            })
-                            .collect();
-                        if !images.is_empty() {
-                            let count = images.len();
-                            let label =
-                                format!("{count} attachment{}", if count == 1 { "" } else { "s" });
-                            let mut thumbnails = div()
-                                .id(("codex-message-images", index))
-                                .debug_selector(move || format!("codex-message-images-{index}"))
-                                .flex()
-                                .flex_wrap()
-                                .gap(rpx(SPACE_LG));
-                            for (image_index, image) in images.into_iter().enumerate() {
-                                if let Some(image) =
-                                    self.previews.get(image).cloned().or_else(|| {
-                                        let preview = image_from_url(image)?;
-                                        self.previews.insert(image.to_owned(), preview.clone());
-                                        Some(preview)
-                                    })
-                                {
-                                    thumbnails = thumbnails.child(
-                                        attachment_preview(image)
-                                            .id(format!(
-                                                "codex-message-image-{index}-{image_index}"
-                                            ))
-                                            .debug_selector(move || {
-                                                format!("codex-message-image-{index}-{image_index}")
-                                            }),
-                                    );
-                                }
-                            }
-                            row = row.child(
-                                div()
-                                    .id(("codex-message-attachments", index))
-                                    .debug_selector(move || {
-                                        format!("codex-message-attachments-{index}")
-                                    })
-                                    .flex()
-                                    .flex_col()
-                                    .gap(rpx(SPACE_LG))
-                                    .child(
-                                        div()
-                                            .id(("codex-message-attachment-count", index))
-                                            .debug_selector(move || {
-                                                format!("codex-message-attachment-count-{index}")
-                                            })
-                                            .text_size(rpx(TEXT_SMALL))
-                                            .text_color(c::FG_DIM())
-                                            .child(label),
-                                    )
-                                    .child(thumbnails),
-                            );
-                        }
-                    }
-                }
-            } else if expanded {
-                row = row.child(
-                    div()
-                        .id(("codex-tool-detail", index))
-                        .debug_selector(move || format!("codex-tool-detail-{index}"))
-                        .child(
-                            TextView::markdown(
-                                ("codex-tool-text", index),
-                                format!("```text\n{}\n```", text.replace("```", "` ` `")),
-                            )
-                            .style(markdown_style(window))
-                            .selectable(true),
-                        ),
-                );
-            }
-            if plan_details && expanded {
-                row = row.child(
-                    div()
-                        .id(("codex-plan-detail", index))
-                        .debug_selector(move || format!("codex-plan-detail-{index}"))
-                        .child(
-                            TextView::markdown(
-                                ("codex-plan-tool-text", index),
-                                format!(
-                                    "```text\n{}\n```",
-                                    tool_detail(item).replace("```", "` ` `")
-                                ),
-                            )
-                            .style(markdown_style(window))
-                            .selectable(true),
-                        ),
-                );
-            }
-            if kind == "agentMessage" {
-                if let Some(group_index) = response_prose[index] {
-                    let group = &response_groups[group_index];
-                    let key = group.key.clone();
-                    let source_key = format!("{}:source:{id}", group.key);
-                    if !self.message_focus.contains_key(&source_key) {
-                        let focus = cx.focus_handle();
-                        self.subscriptions
-                            .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
-                        self.subscriptions
-                            .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
-                        self.message_focus.insert(source_key.clone(), focus);
-                    }
-                    let focus = self.message_focus[&source_key].clone();
-                    row = row.track_focus(&focus).tab_index(0).on_hover(cx.listener(
-                        move |this, hovered: &bool, _, cx| {
-                            if *hovered {
-                                this.message_hover.insert(key.clone());
-                            } else {
-                                this.message_hover.remove(&key);
-                            }
-                            cx.notify();
-                        },
-                    ));
-                }
-            }
-            if kind == "userMessage" {
-                row = div()
-                    .id(("codex-message-block", index))
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .max_w(rpx(USER_BUBBLE_MAX_W))
-                    .gap(rpx(SPACE_SM))
-                    .child(row);
-                let key = format!(
-                    "{}:{id}",
-                    state.saved.thread_id.as_deref().unwrap_or_default()
-                );
-                if !self.message_focus.contains_key(&key) {
-                    let focus = cx.focus_handle();
-                    self.subscriptions
-                        .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
-                    self.subscriptions
-                        .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
-                    self.message_focus.insert(key.clone(), focus);
-                }
-                let focus = self.message_focus[&key].clone();
-                let visible =
-                    self.message_hover.contains(&key) || focus.contains_focused(window, cx);
-                let copied = self
-                    .copied_message
-                    .as_ref()
-                    .is_some_and(|(message, _)| message == &key);
-                let hover_key = key.clone();
-                row = row.track_focus(&focus).tab_index(0).on_hover(cx.listener(
-                    move |this, hovered: &bool, _, cx| {
-                        if *hovered {
-                            this.message_hover.insert(hover_key.clone());
-                        } else {
-                            this.message_hover.remove(&hover_key);
-                        }
-                        cx.notify();
-                    },
-                ));
-                let mut actions = div()
-                    .id(("message-actions", index))
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_MD))
-                    .h(rpx(CHROME_CONTROL_H))
-                    .justify_end();
-                if let Some(timestamp) = item["groveReceivedAt"].as_u64() {
-                    actions = actions.child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_MUTE())
-                            .child(relative_message_time(timestamp)),
-                    );
-                }
-                let unavailable = state.editable_message(index).err();
-                if self.preview_child.is_none() && approval.is_none() {
-                    actions = actions.child(
-                        header_control("codex-edit-message", "Edit sent message")
-                            .aria_description(
-                                unavailable
-                                    .unwrap_or_else(|| "Edit message and restore workspace".into()),
-                            )
-                            .debug_selector(move || format!("codex-edit-message-{index}"))
-                            .tab_index(0)
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                    if action_key(event) {
-                                        this.request_edit(index, window, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.request_edit(index, window, cx);
-                            })),
-                    );
-                }
-                let keyboard_key = key.clone();
-                let keyboard_text = copy.clone();
-                let icon =
-                    crate::icons::icon(if copied { "check" } else { "copy" }, ICON_MD, c::FG_DIM());
-                let mut copy_button = if copied {
-                    header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
-                } else {
-                    header_control("codex-message-copy", "Copy message")
-                }
-                .relative()
-                .debug_selector(|| "codex-copy".into())
-                .tab_index(0)
-                .focus_visible(|style| style.bg(c::BG_HOVER()))
-                .child(if copied {
-                    super::motion::fast(icon, ("message-copy-check", index), cx)
-                } else {
-                    icon.into_any_element()
-                })
-                .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                    if action_key(event) {
-                        this.copy_message(keyboard_key.clone(), keyboard_text.clone(), cx);
-                        cx.stop_propagation();
-                    }
-                }))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.copy_message(key.clone(), copy.clone(), cx);
-                }));
-                if copied {
-                    copy_button = copy_button.child(
-                        div()
-                            .absolute()
-                            .bottom(rpx(CHROME_CONTROL_H + SPACE_SM))
-                            .right_0()
-                            .child(tooltip("Copied", window).build(window, cx)),
-                    );
-                }
-                actions = actions.child(copy_button);
-                // Keep the footer geometry and keyboard targets mounted while hidden.
-                row = row.child(if visible || copied {
-                    super::motion::fast(actions, ("message-actions-show", index), cx)
-                } else {
-                    actions.opacity(0.0).into_any_element()
-                });
-            }
-            let row = if let Some((started, finished)) = self.animating_bubbles.get(&id) {
-                let started = *started;
-                let executor = cx.background_executor().clone();
-                let finished = finished.clone();
-                row.relative()
-                    .with_animation(
-                        gpui::SharedString::from(format!("codex-send-{id}")),
-                        gpui::Animation::new(std::time::Duration::from_millis(MOTION_SLOW_MS))
-                            .with_easing(super::motion::ease_standard),
-                        move |row, _progress| {
-                            // One executor clock preserves progress across temporary unmounts
-                            // and keeps virtual-time tests independent of wall-clock delays.
-                            let elapsed = executor.now().duration_since(started).as_secs_f32()
-                                / std::time::Duration::from_millis(MOTION_SLOW_MS).as_secs_f32();
-                            let progress = super::motion::ease_standard(elapsed.min(1.0));
-                            finished.set(elapsed >= 1.0);
-                            // Rise from the composer, then settle with a small overshoot.
-                            let remaining = 1.0 - progress;
-                            row.top(rpx(SPACE_3XL
-                                * remaining
-                                * remaining
-                                * (1.0 - 2.0 * progress)))
-                        },
-                    )
-                    .into_any_element()
-            } else {
-                row.into_any_element()
+                self.render_message_row(index, &message_frame, window, cx)
             };
             if kind == "userMessage" {
                 minimap_anchors.push((index, message_child));
@@ -4894,6 +5131,8 @@ impl Render for CodexView {
             );
         }
         if self.preview_child.is_some() {
+            self.message_slots.clear();
+            self.work_header_slots.clear();
             // Stay pinned through layout growth until a wheel gesture starts browsing.
             // Returning to the bottom resumes following without affecting the composer.
             if self.preview_follow_latest {
@@ -4928,6 +5167,10 @@ impl Render for CodexView {
         // native selection controller cannot copy their last painted text.
         self.selection_views
             .retain(|key, _| rendered_selection_keys.contains(key));
+        self.message_slots
+            .retain(|key, _| rendered_slot_keys.contains(key));
+        self.work_header_slots
+            .retain(|key, _| rendered_header_keys.contains(key));
         let minimap = self.render_message_minimap(minimap_entries, &minimap_anchors, window, cx);
         let selection_overlay = self.render_selection_reply(&state, window, cx);
         let transcript_bounds = self.transcript_bounds.clone();
@@ -6064,12 +6307,51 @@ impl CodexView {
         .into_any_element()
     }
 
+    fn ensure_control_focus(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        let focus = self
+            .ensure_message_focus(key, window, cx)
+            .tab_stop(true)
+            .tab_index(0);
+        self.message_focus.insert(key.to_owned(), focus.clone());
+        focus
+    }
+
+    fn ensure_message_focus(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        if let Some(focus) = self.message_focus.get(key) {
+            return focus.clone();
+        }
+        let focus = cx.focus_handle();
+        self.subscriptions
+            .push(cx.on_focus_in(&focus, window, |_, _, cx| cx.notify()));
+        self.subscriptions
+            .push(cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify()));
+        self.message_focus.insert(key.to_owned(), focus.clone());
+        focus
+    }
+
     fn response_footer(
         &mut self,
         group: &ResponseGroup,
+        flow_margin: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        #[cfg(test)]
+        let _phase = measured_slot::phases::Section::footer();
+        #[cfg(test)]
+        measured_slot::RENDERED_FOOTERS.with(|keys| {
+            keys.borrow_mut().insert(group.key.clone());
+        });
         let key = group.key.clone();
         if !self.message_focus.contains_key(&key) {
             let focus = cx.focus_handle();
@@ -6106,6 +6388,7 @@ impl CodexView {
                     .child(relative_message_time(timestamp)),
             );
         }
+        let copy_focus = self.ensure_control_focus(&format!("{key}:copy"), window, cx);
         let keyboard_key = key.clone();
         let text = group.copy_text.clone();
         let keyboard_text = text.clone();
@@ -6114,6 +6397,7 @@ impl CodexView {
         } else {
             header_control("codex-message-copy", "Copy entire response")
         }
+        .track_focus(&copy_focus)
         .relative()
         .debug_selector(|| "codex-copy-response".into())
         .tab_index(0)
@@ -6147,7 +6431,7 @@ impl CodexView {
             .id(gpui::SharedString::from(group.key.clone()))
             .w_full()
             .max_w(rpx(CHAT_MAX_W))
-            .mt(rpx(-SPACE_LG))
+            .when(flow_margin, |footer| footer.mt(rpx(-SPACE_LG)))
             .track_focus(&focus)
             .tab_index(0)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -8609,24 +8893,27 @@ struct ResponseGroup {
     received_at: Option<u64>,
 }
 
-fn response_groups(items: &[serde_json::Value], thread_id: Option<&str>) -> Vec<ResponseGroup> {
+fn response_groups<T: std::borrow::Borrow<serde_json::Value>>(
+    items: &[T],
+    thread_id: Option<&str>,
+) -> Vec<ResponseGroup> {
     let mut groups = Vec::new();
     let mut start = 0;
     for end in (0..=items.len())
-        .filter(|index| *index == items.len() || items[*index]["type"] == "userMessage")
+        .filter(|index| *index == items.len() || items[*index].borrow()["type"] == "userMessage")
     {
         let prose = (start..end)
             .filter(|index| {
-                items[*index]["type"] == "agentMessage"
-                    && !codex::item_text(&items[*index]).trim().is_empty()
+                items[*index].borrow()["type"] == "agentMessage"
+                    && !codex::item_text(items[*index].borrow()).trim().is_empty()
             })
             .collect::<Vec<_>>();
         if let Some(last) = prose.last() {
             let first = (start..end)
-                .find(|index| items[*index]["type"] == "agentMessage")
+                .find(|index| items[*index].borrow()["type"] == "agentMessage")
                 .unwrap_or(*last);
             let source_id = |index: usize| {
-                items[index]["id"]
+                items[index].borrow()["id"]
                     .as_str()
                     .map_or_else(|| index.to_string(), str::to_owned)
             };
@@ -8642,10 +8929,10 @@ fn response_groups(items: &[serde_json::Value], thread_id: Option<&str>) -> Vec<
                     .collect(),
                 copy_text: prose
                     .iter()
-                    .map(|index| codex::item_text(&items[*index]))
+                    .map(|index| codex::item_text(items[*index].borrow()))
                     .collect::<Vec<_>>()
                     .join("\n\n"),
-                received_at: items[*last]["groveReceivedAt"].as_u64(),
+                received_at: items[*last].borrow()["groveReceivedAt"].as_u64(),
                 key,
                 end,
                 prose,
@@ -8822,10 +9109,11 @@ struct TaskCache {
 
 /// Changes when a checklist snapshot changes or transcript indices change, so
 /// streaming text reuses the cache.
-fn task_cache_key(items: &[serde_json::Value]) -> u64 {
+fn task_cache_key<T: std::borrow::Borrow<serde_json::Value>>(items: &[T]) -> u64 {
     let mut hasher = rustc_hash::FxHasher::default();
     items.len().hash(&mut hasher);
     for (index, item) in items.iter().enumerate() {
+        let item = item.borrow();
         if tasks::is_checklist(item) {
             index.hash(&mut hasher);
             hash_transcript_value(item, &mut hasher);
@@ -8834,7 +9122,7 @@ fn task_cache_key(items: &[serde_json::Value]) -> u64 {
     hasher.finish()
 }
 
-fn task_cache(items: &[serde_json::Value], key: u64) -> TaskCache {
+fn task_cache<T: std::borrow::Borrow<serde_json::Value>>(items: &[T], key: u64) -> TaskCache {
     TaskCache {
         key,
         list: tasks::current(items),
@@ -8982,7 +9270,11 @@ fn live_activity(state: &codex::Snapshot) -> Option<String> {
         return Some("Compacting context…".into());
     }
     if !state.status.busy()
-        || (state.saved.items.last().is_some_and(is_tool_item)
+        || (state
+            .saved
+            .items
+            .last()
+            .is_some_and(|item| is_tool_item(item))
             && state.questions.is_empty()
             && state.elicitations.is_empty()
             && state.approvals.is_empty())
@@ -11810,7 +12102,7 @@ mod tests {
                     json!({"id":"second-reply", "type":"agentMessage", "text":"Second response.\n\n".repeat(40)}),
                     json!({"id":"third", "type":"userMessage", "content":[{"text":"Third input"}]}),
                     json!({"id":"third-reply", "type":"agentMessage", "text":"Streaming.\n\n".repeat(40)}),
-                ];
+                ].into();
                 cx.notify();
             });
         }));
@@ -11882,9 +12174,9 @@ mod tests {
                                 vec![
                                     json!({"id":"align-user", "type":"userMessage", "content":[{"text":"Check alignment"}]}),
                                     json!({"id":"align-agent", "type":"agentMessage", "text":"Aligned response"}),
-                                ]
+                                ].into()
                             } else {
-                                vec![json!({"id":"align-agent", "type":"agentMessage", "text":"Aligned response"})]
+                                vec![json!({"id":"align-agent", "type":"agentMessage", "text":"Aligned response"})].into()
                             };
                             cx.notify();
                         });
@@ -11932,7 +12224,7 @@ mod tests {
                             {"step":"Inspect", "status":"completed"},
                             {"step":"Implement", "status":"pending"},
                             {"step":"Verify", "status":"pending"}]}),
-                    ];
+                    ].into();
                     cx.notify();
                 });
             });
@@ -12061,7 +12353,7 @@ mod tests {
         let mut state = snapshot();
         state.status = Status::Working;
         state.saved.provider = codex::Provider::Claude;
-        state.saved.items = vec![json!({"type":"reasoning"})];
+        state.saved.items = vec![json!({"type":"reasoning"})].into();
         assert!(tool_is_running(&state, 0));
         state
             .saved
@@ -12267,7 +12559,7 @@ mod tests {
                             json!({"id":"saved-commentary", "type":"agentMessage", "phase":"commentary", "text":"Inspecting the saved retry path."}),
                             json!({"id":"saved-tool", "type":"commandExecution", "command":"cargo test retry", "status":"inProgress", "aggregatedOutput":"running tests before disconnect"}),
                             json!({"id":"saved-answer", "type":"agentMessage", "phase":"final_answer", "text":"The saved result remains available."}),
-                        ];
+                        ].into();
                         session.state.subagent_activity.insert("saved-child".into(), activity);
                         cx.notify();
                     });
@@ -12637,7 +12929,7 @@ mod tests {
             title_generation: None,
             roots: Vec::new(),
             thread_id: Some("thread-ui".into()),
-            items: Vec::new(),
+            items: Vec::new().into(),
             draft: String::new(),
             draft_images: Vec::new(),
             draft_reference: None,
@@ -13161,7 +13453,7 @@ mod tests {
                 state.saved.provider = provider;
                 state.saved.items = vec![
                     json!({"type":"agentMessage", "id":"snippet", "text":"Copy this code:\n\n```sh\n  cargo test --workspace\n```", "groveCompleted":true}),
-                ];
+                ].into();
                 state.saved.draft = "## Heading 2\n- This is a **bold** list item\n- Second item with `code` and [link](https://example.com)\n1. Ordered 🦀 é item\nNormal paragraph after heading and lists, with enough additional Unicode text é🦀 to wrap at narrow widths.".into();
                 let (handle, _actions) = Handle::channel();
                 let (_updates, receive) = mpsc::channel();
@@ -13287,7 +13579,7 @@ mod tests {
                     state.saved.cwd = cwd.clone();
                     state.saved.items = vec![
                         json!({"type":"agentMessage", "id":"snippet", "text":"Copy this code:\n\n```sh\n  cargo test --workspace\n```", "groveCompleted":true}),
-                    ];
+                    ].into();
                     let thread = state.saved.thread_id.clone().unwrap_or_default();
                     let (handle, _actions) = Handle::channel();
                     let (_updates, receive) = mpsc::channel();
@@ -13507,7 +13799,7 @@ mod tests {
                 state.saved.items = vec![
                     json!({"id":"intro","type":"agentMessage","text":"I’ll inspect the launcher’s current layout."}),
                     json!({"id":"plan","type":"plan","plan":[{"step":"Inspect launcher","status":"completed"},{"step":"Verify interaction states","status":"inProgress"}]}),
-                ];
+                ].into();
                 if kind == "computer" {
                     state.elicitations.push(ElicitationRequest::parse_codex(json!("computer"), &json!({
                         "serverName":"cua_repl", "message":"Allow Computer Use to use \"Grove Launcher QA\"?",
@@ -13594,7 +13886,7 @@ mod tests {
         state.saved.rich_plans.confirm_delivery(id);
         state.saved.items = vec![
             json!({"id":"approval-message","type":"userMessage","content":[{"type":"text","text":payload}]}),
-        ];
+        ].into();
         // Exercise the persisted journal rather than relying on ephemeral UI state.
         state.saved = serde_json::from_slice(&serde_json::to_vec(&state.saved).unwrap()).unwrap();
         state
@@ -13756,7 +14048,7 @@ mod tests {
                     json!({"id":"done","type":"commandExecution","command":"pwd","status":"completed","aggregatedOutput":"/workspace"}),
                     json!({"id":"failed","type":"commandExecution","command":"git fetch","status":"failed","exitCode":1}),
                     json!({"id":"active","type":"commandExecution","command":"git status --short","status":"inProgress"}),
-                ];
+                ].into();
                 let (handle, _actions) = Handle::channel();
                 let (_updates, receive) = mpsc::channel();
                 let connection = Connection {
@@ -13862,7 +14154,7 @@ mod tests {
                 state.saved.items = vec![
                     json!({"id":"question", "type":"userMessage", "content":[{"type":"text", "text":"What happens if the agent disconnects while I’m writing?"}]}),
                     json!({"id":"answer", "type":"agentMessage", "text":"Your conversation stays open while Grove reconnects to the agent.\n\nYour message and attached images stay in the composer. Drafts survive reconnection.\n\nYou can continue editing your message while you wait."}),
-                ];
+                ].into();
                 let (handle, _actions) = Handle::channel();
                 let (_updates, receive) = mpsc::channel();
                 let connection = Connection {
@@ -13931,12 +14223,859 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn optimistic_acknowledgment_preserves_browsing_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(850.)));
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.saved.thread_id = Some(format!("ack-{provider:?}"));
+                        session.state.saved.items = (0..30).map(|index| json!({
+                            "id":format!("history-{index}"), "type":"agentMessage",
+                            "phase":"final_answer", "text":format!("Response {index}.\n\nMore completed history to browse.\n\n")
+                        })).collect();
+                        session.state.status = Status::Idle;
+                        cx.notify();
+                    });
+                    view.record_submission_bubble(777, "Pending local message".into(), Vec::new(), false, false, cx);
+                    cx.notify();
+                });
+            });
+            draw(cx);
+            let pane = cx.debug_bounds("codex-messages").unwrap();
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: pane.center(),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(500.))),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            draw(cx);
+            let browsing = view.read_with(cx, |view, _| {
+                assert!(view.scroll.offset().y > -view.scroll.max_offset().y + gpui::px(100.));
+                view.scroll.offset().y
+            });
+            cx.update(|_, cx| view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.items.push(json!({"id":"acknowledged-message", "type":"userMessage", "content":[{"type":"text", "text":"Pending local message"}]}));
+                    session.state.accepted_submission = Some(777);
+                    cx.notify();
+                });
+            }));
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert!(
+                    view.bubble_entrances.is_empty(),
+                    "{provider:?}: provider echo acknowledges the local bubble"
+                );
+                assert_eq!(
+                    view.scroll.offset().y,
+                    browsing,
+                    "{provider:?}: unchanged acknowledgement must not pull a browsing reader down"
+                );
+                assert_eq!(
+                    view.transcript_cache
+                        .as_ref()
+                        .unwrap()
+                        .state
+                        .saved
+                        .items
+                        .len(),
+                    31
+                );
+            });
+        }
+    }
+
+    include!("codex_view/performance.rs");
+    include!("codex_view/native_hit_geometry.rs");
+
     fn draw(cx: &mut gpui::VisualTestContext) {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
     }
+    #[gpui::test]
+    fn measured_message_slots_preserve_geometry_owners_and_focus_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        fn slot_draw(cx: &mut gpui::VisualTestContext) {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
+        struct ResetEager;
+        impl Drop for ResetEager {
+            fn drop(&mut self) {
+                measured_slot::FORCE_EAGER.with(|flag| flag.set(false));
+            }
+        }
+        let _reset = ResetEager;
+        let (view, cx, _, _) = fixture_with_navigation(cx, true);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = provider;
+                    session.state.saved.thread_id = Some(format!("slot-{provider:?}"));
+                    session.state.saved.items = (0..80).map(|i| json!({
+                        "id":format!("slot-{i}"), "type":if i%4 == 0 { "userMessage" } else { "agentMessage" },
+                        "content":[{"type":"text","text":format!("Input {i}")}],
+                        "text":format!("## Heading {i}\n\nComplete **Markdown** source with [remote link](https://example.com) and enough text to wrap at narrow widths.\n\nSecond paragraph."),
+                        "phase":"final_answer", "groveCompleted":true,
+                    })).collect();
+                    session.state.status = Status::Idle;
+                    cx.notify();
+                });
+                cx.notify();
+            }));
+            for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+                cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
+                measured_slot::FORCE_EAGER.with(|flag| flag.set(true));
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                for _ in 0..4 {
+                    slot_draw(cx);
+                }
+                let expected_max = view.read_with(cx, |view, _| view.scroll.max_offset());
+                let expected_first = cx.debug_bounds("codex-message-anchor-0").unwrap();
+                let expected_last = cx.debug_bounds("codex-message-anchor-79").unwrap();
+                let expected_owner = view.read_with(cx, |view, cx| {
+                    let key = format!("slot-{provider:?}:slot-0");
+                    view.selection_views[&key].read(cx).layout_bounds()
+                });
+                measured_slot::FORCE_EAGER.with(|flag| flag.set(false));
+                for _ in 0..4 {
+                    cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                    slot_draw(cx);
+                }
+                measured_slot::MATERIALIZED.with(|count| count.set(0));
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                slot_draw(cx);
+                assert!(
+                    measured_slot::MATERIALIZED.with(Cell::get) < 20,
+                    "warm frame should only materialize viewport rows"
+                );
+                assert_eq!(
+                    view.read_with(cx, |view, _| view.scroll.max_offset()),
+                    expected_max
+                );
+                assert_eq!(
+                    cx.debug_bounds("codex-message-anchor-0").unwrap(),
+                    expected_first
+                );
+                assert_eq!(
+                    cx.debug_bounds("codex-message-anchor-79").unwrap(),
+                    expected_last
+                );
+                view.read_with(cx, |view, cx| {
+                    let key = format!("slot-{provider:?}:slot-0");
+                    assert_eq!(view.selection_views.len(), 80);
+                    assert_eq!(
+                        view.selection_views[&key].read(cx).layout_bounds(),
+                        expected_owner
+                    );
+                });
+                // The original work button remains the sole header Tab stop.
+                // Reifying its offscreen proxy preserves Enter/Space disclosure.
+                let header_focus_key = format!("work-header:slot-{provider:?}:1:work-0");
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.message_focus[&format!("slot-{provider:?}:slot-0")].focus(window, cx);
+                    });
+                });
+                slot_draw(cx);
+                // Existing order is source -> Edit -> Copy -> Worked button;
+                // no extra header-container stop may be introduced.
+                for _ in 0..3 {
+                    cx.simulate_keystrokes("tab");
+                    slot_draw(cx);
+                }
+                cx.update(|window, cx| {
+                    view.read_with(cx, |view, _| {
+                        assert!(
+                            view.message_focus[&header_focus_key].is_focused(window),
+                            "Tab must enter the offscreen work button in its original position"
+                        );
+                    });
+                });
+                assert!(cx.debug_bounds("codex-work-header-1").is_some());
+                cx.simulate_keystrokes("enter");
+                slot_draw(cx);
+                view.read_with(cx, |view, _| assert!(view.expanded.contains("work-0")));
+                assert!(cx.debug_bounds("codex-work-empty-1").is_some());
+                cx.simulate_keystrokes("space");
+                slot_draw(cx);
+                view.read_with(cx, |view, _| assert!(!view.expanded.contains("work-0")));
+                assert_eq!(
+                    view.read_with(cx, |view, _| view.scroll.max_offset()),
+                    expected_max,
+                    "expanding and collapsing a reified header restores exact flow geometry"
+                );
+                // Only the original footer Copy control is a Tab stop. Its
+                // proxy reifies the actual action before keyboard activation.
+                let (footer_key, response_text) = view.read_with(cx, |view, _| {
+                    let group = &view
+                        .transcript_cache
+                        .as_ref()
+                        .unwrap()
+                        .prepared
+                        .response_groups[0];
+                    (group.key.clone(), group.copy_text.clone())
+                });
+                assert!(
+                    !measured_slot::RENDERED_FOOTERS
+                        .with(|keys| keys.borrow().contains(&footer_key)),
+                    "target footer must still be offscreen and unmaterialized before Tab entry"
+                );
+                cx.simulate_keystrokes("tab");
+                slot_draw(cx);
+                cx.update(|window, cx| view.read_with(cx, |view, _| {
+                    assert!(view.message_focus[&format!("{footer_key}:copy")].is_focused(window),
+                        "Tab from Worked skips non-stop prose containers and reaches the original footer Copy button directly");
+                }));
+                cx.simulate_keystrokes("space");
+                slot_draw(cx);
+                assert_eq!(
+                    cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                    Some(response_text)
+                );
+                view.read_with(cx, |view, _| {
+                    assert_eq!(view.copied_message.as_ref().unwrap().0, footer_key);
+                });
+                assert_eq!(
+                    view.read_with(cx, |view, _| view.scroll.max_offset()),
+                    expected_max,
+                    "footer focus and copy feedback must preserve its fixed extent"
+                );
+                measured_slot::MATERIALIZED.with(|count| count.set(0));
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                slot_draw(cx);
+                assert!(
+                    measured_slot::MATERIALIZED.with(Cell::get) < 20,
+                    "one response's copy feedback must not reify the entire transcript"
+                );
+                // The following offscreen user row exposes the same Edit and
+                // Copy destinations, without an extra source-container stop.
+                assert!(
+                    cx.debug_bounds("codex-edit-message-4").is_none(),
+                    "target user row must stay culled until Tab reaches its real Edit destination"
+                );
+                for suffix in ["edit", "copy"] {
+                    cx.simulate_keystrokes("tab");
+                    slot_draw(cx);
+                    cx.update(|window, cx| {
+                        view.read_with(cx, |view, _| {
+                            assert!(
+                                view.message_focus[&format!("slot-{provider:?}:slot-4:{suffix}")]
+                                    .is_focused(window),
+                                "offscreen user controls must preserve forward Tab order: {suffix}"
+                            );
+                        });
+                    });
+                }
+                cx.simulate_keystrokes("space");
+                slot_draw(cx);
+                assert_eq!(
+                    cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                    Some("Input 4".into())
+                );
+                for key in [
+                    format!("slot-{provider:?}:slot-4:edit"),
+                    format!("{footer_key}:copy"),
+                    header_focus_key.clone(),
+                ] {
+                    cx.simulate_keystrokes("shift-tab");
+                    slot_draw(cx);
+                    cx.update(|window, cx| {
+                        view.read_with(cx, |view, _| {
+                            assert!(
+                                view.message_focus[&key].is_focused(window),
+                                "offscreen controls must preserve reverse Tab order: {key}"
+                            );
+                        });
+                    });
+                }
+                cx.update(|_, cx| view.update(cx, |view, _| view.copied_message = None));
+                // A source focus target stays registered while its row is culled.
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        let key = format!("slot-{provider:?}:slot-0");
+                        view.message_focus[&key].focus(window, cx);
+                    });
+                });
+                slot_draw(cx);
+                assert!(
+                    cx.debug_bounds("codex-edit-message-0").is_some(),
+                    "focusing an offscreen source must reify its keyboard actions"
+                );
+                cx.update(|window, _| window.blur());
+            }
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.items.clear();
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+            });
+            slot_draw(cx);
+            view.read_with(cx, |view, _| {
+                assert!(
+                    view.selection_views.is_empty(),
+                    "removed sources must lose selection ownership"
+                );
+                assert!(
+                    view.message_slots.is_empty(),
+                    "removed rows must lose cached extents"
+                );
+                assert!(
+                    view.work_header_slots.is_empty(),
+                    "removed work headers must lose cached extents"
+                );
+            });
+        }
+        measured_slot::FORCE_EAGER.with(|flag| flag.set(false));
+    }
+
+    #[gpui::test]
+    fn transcript_slot_measurements_release_before_early_return_and_scope_changes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        fn frame(cx: &mut gpui::VisualTestContext) {
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
+        let (view, cx, _, _) = fixture(cx);
+        for scenario in ["thread-change", "none-bootstrap", "preview"] {
+            let thread = match scenario {
+                "none-bootstrap" => None,
+                "preview" => Some("child".to_owned()),
+                _ => Some("old-thread".to_owned()),
+            };
+            cx.update(|window, cx| view.update(cx, |view, cx| {
+                cx.set_reduce_motion(true);
+                view.preview_child = None;
+                view.expanded.clear();
+                view.input.update(cx, |input,cx| input.set_value("Preserved lifecycle draft",window,cx));
+                view.session.update(cx, |session,cx| {
+                    let mut state=snapshot();
+                    state.saved.thread_id=thread;
+                    state.saved.draft="Preserved lifecycle draft".into();
+                    state.saved.items=(0..24).map(|i| if i%2==0 { json!({"id":format!("life-{i}"),"type":"userMessage","content":[{"type":"text","text":"Complete retained source"}]}) } else { json!({"id":format!("life-{i}"),"type":"agentMessage","text":"## Original source\n\nComplete original paragraph.","phase":"final_answer","groveCompleted":true}) }).collect();
+                    session.state=state.into();
+                    cx.notify();
+                });
+                cx.notify();
+            }));
+            for _ in 0..5 {
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                frame(cx);
+            }
+            let (message, header) = view.read_with(cx, |view, _| {
+                let message = view
+                    .message_slots
+                    .values()
+                    .find(|cache| cache.borrow().retains_source_for_test())
+                    .expect("warm cache must retain an actual item, not an empty slot");
+                let header = view
+                    .work_header_slots
+                    .values()
+                    .find(|cache| cache.borrow().measured_for_test())
+                    .expect("warm header cache must retain a measured extent");
+                (Rc::downgrade(message), Rc::downgrade(header))
+            });
+            cx.update(|_,cx|view.update(cx,|view,cx| {
+                if scenario=="preview" {
+                    view.preview_child=Some("child".into());
+                    view.session.update(cx,|session,cx| {
+                        let mut activity = codex::SubagentActivity::default();
+                        activity.items = vec![json!({"id":"child-answer","type":"agentMessage","text":"Child transcript"})].into();
+                        session.state.subagent_activity.insert("child".into(), activity);
+                        cx.notify();
+                    });
+                } else {
+                    view.session.update(cx,|session,cx| {
+                        if scenario=="thread-change" { session.state.saved.thread_id=Some("new-thread".into()); }
+                        session.state.saved.items.clear();
+                        session.state.status=Status::Starting;
+                        cx.notify();
+                    });
+                }
+                cx.notify();
+            }));
+            for _ in 0..4 {
+                frame(cx);
+            }
+            assert!(
+                message.upgrade().is_none(),
+                "{scenario}: old item measurement must release its strong item reference"
+            );
+            assert!(
+                header.upgrade().is_none(),
+                "{scenario}: old header measurement must release its entry"
+            );
+            view.read_with(cx, |view, cx| {
+                assert!(view.message_slots.is_empty(), "{scenario}");
+                assert!(view.work_header_slots.is_empty(), "{scenario}");
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    "Preserved lifecycle draft"
+                );
+                assert_eq!(
+                    view.session.read(cx).state.saved.draft,
+                    "Preserved lifecycle draft"
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn completed_tool_details_preserve_keyboard_pointer_and_zoom_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                measured_slot::FORCE_EAGER.with(|flag| flag.set(false));
+            }
+        }
+        fn frame(cx: &mut gpui::VisualTestContext) {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
+        let _reset = Reset;
+        let (view, cx, _, _) = fixture_with_navigation(cx, true);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.expanded.clear();
+                    view.expanded.insert("work-0".into());
+                    view.session.update(cx, |session, cx| {
+                        let mut state = snapshot();
+                        state.saved.provider = provider;
+                        state.saved.thread_id = Some(format!("tool-test-{provider:?}"));
+                        state.saved.items = vec![
+                            json!({"id":"request", "type":"userMessage", "content":[{"type":"text","text":"Inspect the original tool output"}]}),
+                            json!({"id":"cmd-1", "type":"commandExecution", "command":"printf 'complete original output with a long activity label for narrow truncation'", "status":"completed", "aggregatedOutput":"original first output"}),
+                            json!({"id":"cmd-2", "type":"commandExecution", "command":"git status --short", "status":"completed", "aggregatedOutput":"original second output"}),
+                            json!({"id":"reason", "type":"reasoning", "text":"Retained completed reasoning", "status":"completed"}),
+                            json!({"id":"answer", "type":"agentMessage", "text":"Complete original answer", "phase":"final_answer", "groveCompleted":true}),
+                        ].into();
+                        for index in 0..40 {
+                            state.saved.items.push(json!({"id":format!("later-user-{index}"),"type":"userMessage","content":[{"type":"text","text":format!("Later prompt {index}")}]}));
+                            state.saved.items.push(json!({"id":format!("later-answer-{index}"),"type":"agentMessage","text":format!("Later complete answer {index}\n\nA second paragraph retained in full."),"phase":"final_answer","groveCompleted":true}));
+                        }
+                        session.state = state.into();
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+            });
+            for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+                cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.smooth_follow = false;
+                        view.follow_after_submit = false;
+                        view.scroll.scroll_to_bottom();
+                        cx.notify();
+                    });
+                });
+                measured_slot::FORCE_EAGER.with(|flag| flag.set(true));
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                for _ in 0..4 {
+                    frame(cx);
+                }
+                let expected_max = view.read_with(cx, |view, _| view.scroll.max_offset());
+                let command_group = cx.debug_bounds("codex-tool-group-1").unwrap();
+                let reasoning_group = cx.debug_bounds("codex-tool-group-3").unwrap();
+                measured_slot::FORCE_EAGER.with(|flag| flag.set(false));
+                for _ in 0..4 {
+                    cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                    frame(cx);
+                }
+                assert_eq!(
+                    view.read_with(cx, |view, _| view.scroll.max_offset()),
+                    expected_max
+                );
+                assert_eq!(
+                    cx.debug_bounds("codex-tool-group-1").unwrap(),
+                    command_group
+                );
+                assert_eq!(
+                    cx.debug_bounds("codex-tool-group-3").unwrap(),
+                    reasoning_group
+                );
+                assert!(
+                    cx.debug_bounds("codex-toggle-tool-1").is_some(),
+                    "tool controls retain their original eager rendering"
+                );
+                let work_key = format!("work-header:tool-test-{provider:?}:1:work-0");
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.message_focus[&work_key].focus(window, cx);
+                    });
+                });
+                frame(cx);
+                // Worked -> existing group summary -> original first tool button.
+                cx.simulate_keystrokes("tab");
+                frame(cx);
+                let summary_focus = cx.update(|window, cx| window.focused(cx)).unwrap();
+                cx.simulate_keystrokes("tab");
+                frame(cx);
+                let first_focus = cx.update(|window, cx| window.focused(cx)).unwrap();
+                assert!(cx.debug_bounds("codex-toggle-tool-1").is_some());
+                cx.simulate_event(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse("space").unwrap(),
+                    is_held: true,
+                    prefer_character_input: false,
+                });
+                frame(cx);
+                view.read_with(cx, |view, _| {
+                    assert!(
+                        !view.expanded.contains("tool-cmd-1"),
+                        "held Space must not toggle details"
+                    );
+                });
+                cx.simulate_keystrokes("enter");
+                frame(cx);
+                assert!(cx.debug_bounds("codex-tool-detail-1").is_some());
+                cx.simulate_keystrokes("space");
+                frame(cx);
+                assert!(cx.debug_bounds("codex-tool-detail-1").is_none());
+                assert_eq!(
+                    view.read_with(cx, |view, _| view.scroll.max_offset()),
+                    expected_max
+                );
+                let mut later_focus = Vec::new();
+                for (index, selector) in [(2, "codex-tool-detail-2"), (3, "codex-tool-detail-3")] {
+                    cx.simulate_keystrokes("tab");
+                    frame(cx);
+                    later_focus.push(cx.update(|window, cx| window.focused(cx)).unwrap());
+                    cx.simulate_keystrokes("enter");
+                    frame(cx);
+                    assert!(
+                        cx.debug_bounds(selector).is_some(),
+                        "Tab must reach the original tool toggle {index}"
+                    );
+                    cx.simulate_keystrokes("space");
+                    frame(cx);
+                    assert!(cx.debug_bounds(selector).is_none());
+                }
+                for target in [&later_focus[0], &first_focus] {
+                    cx.simulate_keystrokes("shift-tab");
+                    frame(cx);
+                    cx.update(|window, _| {
+                        assert!(target.is_focused(window), "reverse tool Tab order");
+                    });
+                }
+                cx.simulate_keystrokes("shift-tab");
+                frame(cx);
+                cx.update(|window, _| {
+                    assert!(
+                        summary_focus.is_focused(window),
+                        "group summary stays the preceding stop"
+                    );
+                });
+                cx.simulate_keystrokes("space");
+                frame(cx);
+                view.read_with(cx, |view, _| {
+                    assert!(
+                        view.expanded.contains("tools-cmd-1"),
+                        "group summary collapse keeps original inverse expansion state"
+                    );
+                });
+                cx.simulate_keystrokes("space");
+                frame(cx);
+                view.read_with(cx, |view, _| {
+                    assert!(!view.expanded.contains("tools-cmd-1"));
+                });
+                assert_eq!(
+                    view.read_with(cx, |view, _| view.scroll.max_offset()),
+                    expected_max
+                );
+                // Actual navigation reveals the same button for pointer toggles.
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| view.jump_to_message(2, window, cx));
+                });
+                for _ in 0..4 {
+                    frame(cx);
+                }
+                let before_click = view.read_with(cx, |view, _| view.scroll.max_offset());
+                let button = cx.debug_bounds("codex-toggle-tool-1").unwrap();
+                let viewport = view.read_with(cx, |view, _| view.scroll.bounds());
+                assert!(viewport.contains(&button.center()),
+                    "pointer target must be truly visible: provider={provider:?}, width={width}, rem={rem}, button={button:?}, viewport={viewport:?}");
+                cx.simulate_click(button.center(), gpui::Modifiers::default());
+                frame(cx);
+                view.read_with(cx, |view, _| assert!(view.expanded.contains("tool-cmd-1"),
+                    "actual pointer callback must toggle the original key: provider={provider:?}, width={width}, rem={rem}, button={button:?}, viewport={viewport:?}"));
+                assert!(cx.debug_bounds("codex-tool-detail-1").is_some());
+                let button = cx.debug_bounds("codex-toggle-tool-1").unwrap();
+                cx.simulate_click(button.center(), gpui::Modifiers::default());
+                frame(cx);
+                assert!(cx.debug_bounds("codex-tool-detail-1").is_none());
+                assert_eq!(
+                    view.read_with(cx, |view, _| view.scroll.max_offset()),
+                    before_click
+                );
+                cx.update(|window, _| window.blur());
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn static_replacements_retain_measurements_without_retaining_selection_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        fn frame(cx: &mut gpui::VisualTestContext) {
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
+        fn replace(view: &Entity<CodexView>, cx: &mut gpui::VisualTestContext, text: &str) {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.items[0]["text"] = json!(text);
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+            });
+            for _ in 0..4 {
+                frame(cx);
+            }
+        }
+        fn owner(
+            view: &Entity<CodexView>,
+            cx: &mut gpui::VisualTestContext,
+        ) -> Entity<TextViewState> {
+            view.read_with(cx, |view, cx| {
+                let key = format!(
+                    "{}:answer",
+                    view.session
+                        .read(cx)
+                        .state
+                        .saved
+                        .thread_id
+                        .as_deref()
+                        .unwrap_or_default()
+                );
+                view.selection_views[&key].clone()
+            })
+        }
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let prefix =
+                "Complete paragraph with **Markdown** and literal copy text.\n\n".repeat(40);
+            let first = format!("{prefix}Alpha");
+            let second = format!("{prefix}Bravo");
+            cx.update(|window, cx| {
+                window.clear_text_selection(cx);
+                window.blur();
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        let mut state = snapshot();
+                        state.saved.provider = provider;
+                        state.saved.thread_id = Some(format!("replacement-{provider:?}"));
+                        state.saved.items = vec![json!({"id":"answer","type":"agentMessage","text":first,"phase":"final_answer","groveCompleted":true})].into();
+                        session.state = state.into();
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+            });
+            for _ in 0..5 {
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                frame(cx);
+            }
+            let original_id = owner(&view, cx).entity_id();
+            let original_extent = view.read_with(cx, |view, _| view.scroll.max_offset());
+            replace(&view, cx, &second);
+            assert_eq!(
+                owner(&view, cx).entity_id(),
+                original_id,
+                "unselected static replacement keeps paragraph measurement IDs"
+            );
+            assert_eq!(
+                owner(&view, cx).read_with(cx, |owner, _| owner.source().to_string()),
+                second
+            );
+            assert_eq!(
+                view.read_with(cx, |view, _| view.scroll.max_offset()),
+                original_extent,
+                "same-size replacement preserves exact geometry"
+            );
+            let copy = cx.debug_bounds("codex-copy-response").unwrap();
+            cx.simulate_click(copy.center(), gpui::Modifiers::default());
+            frame(cx);
+            assert_eq!(
+                cx.update(|_, cx| cx.read_from_clipboard().and_then(|clip| clip.text())),
+                Some(second.clone())
+            );
+
+            let selected_id = owner(&view, cx).entity_id();
+            owner(&view, cx).update(cx, gpui_component::text::TextViewState::select_all);
+            frame(cx);
+            assert!(cx
+                .update(gpui_component::WindowExt::text_selection_snapshot)
+                .is_some());
+            replace(&view, cx, &format!("{prefix}Gamma"));
+            assert_ne!(
+                owner(&view, cx).entity_id(),
+                selected_id,
+                "selected same-size replacement invalidates old owner"
+            );
+            assert!(
+                cx.update(gpui_component::WindowExt::selected_text)
+                    .is_empty(),
+                "old selection must not attach to new source"
+            );
+
+            // A different selected owner must also preserve the original
+            // replacement identity behavior without clearing its selection.
+            cx.update(|_,cx|view.update(cx,|view,cx| {
+                view.session.update(cx,|session,cx| {
+                    session.state.saved.items.push(json!({"id":"other","type":"userMessage","content":[{"type":"text","text":"Other selection"}]}));
+                    cx.notify();
+                });
+                cx.notify();
+            }));
+            for _ in 0..4 {
+                frame(cx);
+            }
+            let previous_id = owner(&view, cx).entity_id();
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    let key = format!(
+                        "{}:other",
+                        view.session
+                            .read(cx)
+                            .state
+                            .saved
+                            .thread_id
+                            .as_deref()
+                            .unwrap_or_default()
+                    );
+                    view.selection_views[&key]
+                        .update(cx, gpui_component::text::TextViewState::select_all);
+                });
+            });
+            frame(cx);
+            replace(&view, cx, &format!("{prefix}Omega"));
+            assert_ne!(
+                owner(&view, cx).entity_id(),
+                previous_id,
+                "another window selection keeps conservative replacement invalidation"
+            );
+            assert_eq!(
+                cx.update(gpui_component::WindowExt::selected_text),
+                "Other selection\n"
+            );
+            cx.update(|window, cx| {
+                window.clear_text_selection(cx);
+                window.blur();
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.items.pop();
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+            });
+            for _ in 0..4 {
+                frame(cx);
+            }
+
+            // A zero-length actual text hit focuses the owner even without a
+            // nonempty selection; preserve the original focus invalidation.
+            let body = cx.debug_bounds("codex-message-body-0").unwrap();
+            let viewport = view.read_with(cx, |view, _| view.scroll.bounds());
+            let hit = gpui::point(body.left() + gpui::px(12.), viewport.top() + gpui::px(30.));
+            cx.simulate_mouse_down(hit, gpui::MouseButton::Left, gpui::Modifiers::default());
+            cx.simulate_mouse_up(hit, gpui::MouseButton::Left, gpui::Modifiers::default());
+            frame(cx);
+            let focused_owner = owner(&view, cx);
+            cx.update(|window, cx| {
+                assert!(focused_owner.read(cx).layout_projection_focused(window, cx));
+            });
+            drop(focused_owner);
+            let focused_id = owner(&view, cx).entity_id();
+            replace(&view, cx, &format!("{prefix}Delta"));
+            assert_ne!(
+                owner(&view, cx).entity_id(),
+                focused_id,
+                "focused replacement invalidates old owner"
+            );
+            cx.update(|window, cx| {
+                window.clear_text_selection(cx);
+                window.blur();
+            });
+
+            replace(&view, cx, "```rust\nlet value = 1;\n```");
+            assert!(
+                !owner(&view, cx).read_with(cx, |owner, _| owner.supports_layout_projection()),
+                "new accepted interactive code cannot inherit static extent"
+            );
+            let dynamic_id = owner(&view, cx).entity_id();
+            replace(&view, cx, "```rust\nlet value = 2;\n```");
+            assert_ne!(
+                owner(&view, cx).entity_id(),
+                dynamic_id,
+                "dynamic controls keep original new-owner behavior"
+            );
+            cx.update(|window, cx| {
+                window.clear_text_selection(cx);
+                window.blur();
+            });
+
+            replace(&view, cx, "AAAAAAAAAAAAAAAAAAAA");
+            let plain_id = owner(&view, cx).entity_id();
+            replace(&view, cx, "Z");
+            assert_eq!(owner(&view, cx).entity_id(), plain_id);
+            let body = cx.debug_bounds("codex-message-body-0").unwrap();
+            let old_glyph_area = body.origin + gpui::point(gpui::px(100.), gpui::px(8.));
+            cx.simulate_mouse_down(
+                old_glyph_area,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            cx.simulate_mouse_up(
+                old_glyph_area,
+                gpui::MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            frame(cx);
+            assert!(
+                cx.update(gpui_component::WindowExt::text_selection_snapshot)
+                    .is_none(),
+                "old inline glyph bounds must not select replacement blank space"
+            );
+            assert_eq!(
+                owner(&view, cx).read_with(cx, |owner, _| owner.source().to_string()),
+                "Z"
+            );
+            cx.update(|window, cx| {
+                window.clear_text_selection(cx);
+                window.blur();
+            });
+        }
+    }
+
     #[gpui::test]
     fn transcript_cache_reuses_frames_and_refreshes_notified_session_edits(
         cx: &mut gpui::TestAppContext,
@@ -13948,7 +15087,8 @@ mod tests {
                     view.session.update(cx, |session, cx| {
                         session.state.saved.provider = provider;
                         session.state.saved.items =
-                            vec![json!({"id":"answer", "type":"agentMessage", "text":"one"})];
+                            vec![json!({"id":"answer", "type":"agentMessage", "text":"one"})]
+                                .into();
                         cx.notify();
                     });
                 });
@@ -14024,7 +15164,7 @@ mod tests {
                 view.session.update(cx, |session, cx| {
                     session.state.status = Status::Working;
                     session.state.saved.items =
-                        vec![json!({"id":"answer", "type":"agentMessage", "text":"old"})];
+                        vec![json!({"id":"answer", "type":"agentMessage", "text":"old"})].into();
                     cx.notify();
                 });
             });
@@ -14095,16 +15235,53 @@ mod tests {
         assert!(source.saved.items.is_empty());
         assert_eq!(cache.state.saved.items.len(), 1);
         let mut acknowledged = source.as_ref().clone();
-        acknowledged.saved.items = optimistic.clone();
+        acknowledged.saved.items = optimistic.clone().into();
         let acknowledged = Rc::new(acknowledged);
         assert!(!cache.matches(&acknowledged, &optimistic));
         let acknowledged_cache = TranscriptRenderCache::new(acknowledged.clone(), vec![]);
         assert_eq!(acknowledged_cache.state.saved.items.len(), 1);
-        assert_eq!(cache.content, acknowledged_cache.content);
+        assert_eq!(
+            cache.state.saved.items,
+            acknowledged_cache.state.saved.items
+        );
+        // Acknowledgement has a distinct storage revision even when it replaces
+        // identical optimistic content; all message bytes remain unchanged.
+        assert_ne!(cache.content, acknowledged_cache.content);
         let mut changed_thread = acknowledged.as_ref().clone();
         changed_thread.saved.thread_id = Some("other-thread".into());
         let changed_thread = TranscriptRenderCache::new(Rc::new(changed_thread), vec![]);
         assert_ne!(acknowledged_cache.content, changed_thread.content);
+    }
+
+    #[test]
+    fn transcript_metadata_refresh_reuses_preparation_without_stale_state() {
+        let mut initial = snapshot();
+        initial.saved.items = vec![json!({
+            "id":"answer", "type":"agentMessage", "text":"one",
+            "result":{"opaque":"retained tool bytes"},
+        })]
+        .into();
+        let initial = Rc::new(initial);
+        let before = TranscriptRenderCache::new(initial.clone(), vec![]);
+        let mut updated = initial.as_ref().clone();
+        updated.error = Some("new provider error".into());
+        updated.model = Some("new model".into());
+        let after = TranscriptRenderCache::refreshed(Rc::new(updated), vec![], Some(&before));
+        assert!(Rc::ptr_eq(&before.prepared, &after.prepared));
+        assert_eq!(after.state.error.as_deref(), Some("new provider error"));
+        assert_eq!(after.state.model.as_deref(), Some("new model"));
+        assert_eq!(after.response_groups[0].copy_text, "one");
+        let mut edited = after.state.as_ref().clone();
+        edited.saved.items[0]["text"] = json!("two");
+        let edited = TranscriptRenderCache::refreshed(Rc::new(edited), vec![], Some(&after));
+        assert!(!Rc::ptr_eq(&after.prepared, &edited.prepared));
+        assert_ne!(after.content, edited.content);
+        assert_eq!(edited.response_groups[0].copy_text, "two");
+        assert_eq!(
+            edited.state.saved.items[0]["result"]["opaque"],
+            "retained tool bytes"
+        );
+        assert_eq!(before.state.saved.items[0]["text"], "one");
     }
 
     /// Measures preparation only, excluding GPUI element construction/layout/paint.
@@ -14181,7 +15358,7 @@ mod tests {
                     session.state.saved.items = vec![
                         json!({"id":"original-user", "type":"userMessage", "content":[{"type":"text", "text":"Original sent request"}]}),
                         json!({"id":"original-answer", "type":"agentMessage", "text":"Original answer"}),
-                    ];
+                    ].into();
                     session.state.saved.edit_checkpoints.push(codex::EditCheckpoint {
                         start_item: 0,
                         turn_id: Some("original-turn".into()),
@@ -14337,7 +15514,32 @@ mod tests {
         cx.simulate_keystrokes("escape");
         draw(cx);
         assert!(cx.debug_bounds("codex-inline-editor").is_none());
-        assert!(cx.debug_bounds("codex-message-body-0").is_some());
+        let source = cx.debug_bounds("codex-message-anchor-0").unwrap();
+        let viewport = view.read_with(cx, |view, _| view.scroll.bounds());
+        let owner_bounds = view.read_with(cx, |view, cx| {
+            view.selection_views
+                .values()
+                .find(|owner| owner.read(cx).source().as_ref() == "Original sent request")
+                .expect("canceling edit must restore the complete original selectable source")
+                .read(cx)
+                .layout_bounds()
+        });
+        if cx.debug_bounds("codex-message-body-0").is_none() {
+            assert!(!owner_bounds.intersects(&viewport),
+                "a visible restored source must materialize: anchor={source:?}, owner={owner_bounds:?}, viewport={viewport:?}");
+            eprintln!("restored source is correctly culled outside viewport: anchor={source:?}, owner={owner_bounds:?}, viewport={viewport:?}");
+        }
+        // Exercise the actual transcript navigation path, rather than requiring
+        // the editor's old offscreen body subtree to remain materialized.
+        cx.update(|window, cx| view.update(cx, |view, cx| view.jump_to_message(0, window, cx)));
+        for _ in 0..4 {
+            cx.update(gpui::Window::simulate_next_frame);
+            draw(cx);
+        }
+        let body = cx
+            .debug_bounds("codex-message-body-0")
+            .expect("navigating to the restored source reifies its body");
+        assert!(body.intersects(&view.read_with(cx, |view, _| view.scroll.bounds())));
         view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.input.read(cx).value().as_ref(),
@@ -15020,7 +16222,8 @@ mod tests {
             view.update(cx, |view, cx| {
                 let mut state = snapshot();
                 state.saved.items =
-                    vec![json!({"id":"history","type":"userMessage","content":[{"text":"hello"}]})];
+                    vec![json!({"id":"history","type":"userMessage","content":[{"text":"hello"}]})]
+                        .into();
                 view.sync_bubble_entrances(&state, false, cx.background_executor().now());
                 assert!(view.animating_bubbles.is_empty());
                 view.bubble_entrances.push(BubbleEntrance {
@@ -15271,7 +16474,7 @@ mod tests {
         state.saved.items = vec![
             json!({"id":"user","type":"userMessage","content":[{"type":"text","text":"Please inspect this worktree."}]}),
             json!({"id":"agent","type":"agentMessage","text":"I can inspect this worktree."}),
-        ];
+        ].into();
         updates.send(state).unwrap();
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(40));
@@ -15333,7 +16536,7 @@ mod tests {
         state.saved.items = vec![
             json!({"id":"a","type":"commandExecution","command":"pwd","status":"completed"}),
             json!({"id":"c","type":codex::COMPACTION_ITEM,"status":"inProgress","trigger":"auto","preTokens":182_000,"postTokens":null}),
-        ];
+        ].into();
         updates.send(state.clone()).unwrap();
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(40));
@@ -15375,7 +16578,7 @@ mod tests {
         state.saved.items = vec![
             json!({"id":"prompt","type":"userMessage","content":[{"text":"Check this"}]}),
             json!({"id":"reply","type":"agentMessage","phase":"commentary","text":"Checking this."}),
-        ];
+        ].into();
         assert!(work_header_at(&state, 1).unwrap().2);
         assert_eq!(live_activity(&state), None);
         updates.send(state.clone()).unwrap();
@@ -15423,7 +16626,7 @@ mod tests {
             json!({"id":"reason","type":"reasoning","text":"Inspect the checkout"}),
             json!({"id":"command","type":"commandExecution","command":"pwd","status":"completed"}),
             json!({"id":"answer","type":"agentMessage","phase":"final_answer","text":"Done"}),
-        ];
+        ].into();
         // Imported history has no recorded work periods. A new compaction turn
         // must not make that completed history part of the live turn.
         assert!(state.saved.work_periods.is_empty());
@@ -15482,7 +16685,8 @@ mod tests {
         state.status = Status::Working;
         state.turn_id = Some("turn".into());
         state.saved.items =
-            vec![json!({"id":"a","type":"commandExecution","command":"pwd","status":"completed"})];
+            vec![json!({"id":"a","type":"commandExecution","command":"pwd","status":"completed"})]
+                .into();
         assert_eq!(live_activity(&state), None);
         state
             .saved
@@ -15769,7 +16973,7 @@ mod tests {
         view.update(cx, |view, cx| {
             view.session.update(cx, |session, _| {
                 session.state.saved.items =
-                    vec![json!({"id":"a","type":"agentMessage","text":"Done"})];
+                    vec![json!({"id":"a","type":"agentMessage","text":"Done"})].into();
                 session.state.status = Status::Working;
                 session.state.turn_id = Some("turn".into());
             });
@@ -15827,7 +17031,7 @@ mod tests {
                     json!({"id":"comment", "type":"agentMessage", "phase":"commentary", "text":"Checking the repository."}),
                     json!({"id":"command", "type":"commandExecution", "command":"git status", "status":"completed", "aggregatedOutput":"output\n".repeat(100)}),
                     json!({"id":"answer", "type":"agentMessage", "phase":"final_answer", "text":"The working tree is clean."}),
-                ];
+                ].into();
                 cx.notify();
             });
         }));
@@ -15876,7 +17080,8 @@ mod tests {
             json!({"type":"agentMessage", "phase":"commentary", "text":"Late progress"}),
             json!({"type":"userMessage"}),
             json!({"type":"agentMessage", "text":"Legacy final"}),
-        ];
+        ]
+        .into();
         assert!(work_commentary(&state, 1));
         assert!(!work_commentary(&state, 3));
         assert!(work_commentary(&state, 4));
@@ -15901,7 +17106,7 @@ mod tests {
                         json!({"id":"new-user","type":"userMessage"}),
                         json!({"id":"new-a","type":"commandExecution","command":"git fetch","status":"completed"}),
                         json!({"id":"new-b","type":"commandExecution","command":"git status","status":"inProgress"}),
-                    ];
+                    ].into();
                     cx.notify();
                 });
             });
@@ -15967,7 +17172,8 @@ mod tests {
                         json!({"id":"c","type":"agentMessage","text":"Results"}),
                         json!({"id":"d","type":"commandExecution","command":"ls"}),
                         json!({"id":"e","type":"reasoning","text":"Reviewing"}),
-                    ];
+                    ]
+                    .into();
                     cx.notify();
                 });
             });
@@ -16181,7 +17387,8 @@ mod tests {
                             "text":"- [x] Verify parity", "status":"completed",
                             "plan":[{"id":"todo-0","step":"Verify parity","status":"completed"}]
                         }),
-                    ];
+                    ]
+                    .into();
                     cx.notify();
                 });
             });
@@ -16338,7 +17545,8 @@ mod tests {
                         // Identical snapshot: nothing changed, so nothing renders.
                         json!({"id":"grove-plan-t2", "type":"plan", "text":"- [ ] A", "plan":[
                             {"step":"A","status":"inProgress"},{"step":"B","status":"pending"}]}),
-                    ];
+                    ]
+                    .into();
                     cx.notify();
                 });
             });
@@ -16372,7 +17580,8 @@ mod tests {
                             {"step":"Implement", "status":"inProgress"},
                             {"step":"Verify", "status":"pending"}]}),
                         json!({"id":"q1", "type":"agentMessage", "text":"Which option?"}),
-                    ];
+                    ]
+                    .into();
                     cx.notify();
                 });
             });
@@ -16423,7 +17632,7 @@ mod tests {
                         session.state.saved.items = vec![
                             json!({"id":"u1","type":"userMessage","content":[{"text":"Go"}]}),
                             json!({"id":"plan","type":"plan","plan":[{"step":"Inspect","status":"completed"},{"step":"Build","status":"inProgress"}]}),
-                        ];
+                        ].into();
                         cx.notify();
                     }));
                 });
@@ -16508,7 +17717,7 @@ mod tests {
                         json!({"id":"reply","type":"agentMessage","text":"The configured instructions file could not be loaded. ".repeat(8)}),
                         json!({"id":"warning","type":"providerNotice","title":"Configuration warning","text":"The configured instructions file could not be loaded. ".repeat(8),"severity":"warning"}),
                         json!({"id":"compact","type":codex::COMPACTION_ITEM,"status":"completed","trigger":"auto"}),
-                    ];
+                    ].into();
                     cx.notify();
                 })));
                 draw(cx);
@@ -16570,7 +17779,7 @@ mod tests {
                             {"step":"Implement","status":"inProgress"},
                             {"step":"Test","status":"pending"}]}),
                         json!({"id":"a1", "type":"agentMessage", "text":"More work.\n\n".repeat(60)}),
-                    ];
+                    ].into();
                     cx.notify();
                 });
             });
@@ -17136,7 +18345,7 @@ mod tests {
             cx.set_reduce_motion(true);
             view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
-                    session.state.saved.items = vec![json!({"id":"long","type":"agentMessage","text":"Earlier response.\n\n".repeat(80)})];
+                    session.state.saved.items = vec![json!({"id":"long","type":"agentMessage","text":"Earlier response.\n\n".repeat(80)})].into();
                     cx.notify();
                 });
             });
@@ -17218,7 +18427,8 @@ mod tests {
                 view.session.update(cx, |session, cx| {
                     session.state.status = Status::Working;
                     session.state.saved.items =
-                        vec![json!({"id":"history","type":"agentMessage","text":"Saved history"})];
+                        vec![json!({"id":"history","type":"agentMessage","text":"Saved history"})]
+                            .into();
                     cx.notify();
                 });
             });
@@ -17268,7 +18478,7 @@ mod tests {
             cx.update(|_, cx| view.update(cx, |view, cx| {
                 view.session.update(cx, |session, cx| {
                     session.state.status = Status::Working;
-                    session.state.saved.items = vec![json!({"id":"stream","type":"agentMessage","text":"A streaming paragraph.\n\n".repeat(lines)})];
+                    session.state.saved.items = vec![json!({"id":"stream","type":"agentMessage","text":"A streaming paragraph.\n\n".repeat(lines)})].into();
                     cx.notify();
                 });
             }));
@@ -18440,7 +19650,7 @@ mod tests {
                         {"step":"Align task text and stable status slots","status":"inProgress"},
                         {"step":"Verify narrow widths and larger text","status":"pending"}
                     ]}),
-                ];
+                ].into();
                 let (handle, _actions) = Handle::channel();
                 let (_updates, receive) = mpsc::channel();
                 let connection = Connection {
@@ -19285,7 +20495,8 @@ mod tests {
             json!({"type":"userMessage","id":"prompt"}),
             json!({"type":"reasoning","id":"thought"}),
             json!({"type":"agentMessage","id":"answer","text":"Done"}),
-        ];
+        ]
+        .into();
         assert!(work_header_at(&state, 0).is_none());
         assert_eq!(work_header_at(&state, 1).unwrap().1, "Worked");
         assert!(work_header_at(&state, 2).is_none());
@@ -19338,7 +20549,7 @@ mod tests {
             state.saved.items = vec![
                 json!({"id":"prompt","type":"userMessage","content":[{"text":"Work"}]}),
                 json!({"id":"child","type":"subAgentActivity","kind":"started","agentThreadId":"child-1"}),
-            ];
+            ].into();
             assert!(!work_has_parent_activity(&state, 1));
             updates.send(state.clone()).unwrap();
             cx.executor()
@@ -19368,7 +20579,8 @@ mod tests {
             serde_json::json!({"type":"userMessage"}),
             serde_json::json!({"type":"commandExecution","status":"completed"}),
             serde_json::json!({"type":"commandExecution","status":"inProgress"}),
-        ];
+        ]
+        .into();
         state.status = Status::Working;
         assert!(!tool_visible(&state, 1));
         assert!(tool_visible(&state, 2));
@@ -19883,7 +21095,8 @@ mod tests {
                     session.state.saved.items = vec![
                         json!({"id":"a","type":"commandExecution","command":"pwd"}),
                         json!({"id":"b","type":"agentMessage","text":"Ready"}),
-                    ];
+                    ]
+                    .into();
                     cx.notify();
                 });
                 cx.notify();
@@ -19947,7 +21160,8 @@ mod tests {
                 }
                 view.session.update(cx, |session, cx| {
                     session.state.saved.items =
-                        vec![json!({"id":"screenshots", "type":"userMessage", "content":content})];
+                        vec![json!({"id":"screenshots", "type":"userMessage", "content":content})]
+                            .into();
                     cx.notify();
                 });
                 cx.notify();
@@ -20559,7 +21773,7 @@ mod tests {
         response.saved.items = vec![
             serde_json::json!({"type":"userMessage", "id":"user-source", "content":[{"type":"text","text":"user passage"}]}),
             serde_json::json!({"type":"agentMessage", "id":"assistant-source", "text":"assistant passage"}),
-        ];
+        ].into();
         updates.send(response).unwrap();
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(40));
@@ -20764,7 +21978,7 @@ mod tests {
             serde_json::json!({"type":"agentMessage", "id":"first", "phase":"commentary", "text":"Hidden commentary"}),
             serde_json::json!({"type":"agentMessage", "id":"answer", "phase":"final_answer", "text":"Visible answer"}),
             serde_json::json!({"type":"commandExecution", "id":"tail", "status":"completed", "command":"true"}),
-        ];
+        ].into();
         updates.send(state.clone()).unwrap();
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(40));
@@ -21177,7 +22391,8 @@ mod transcript_signature_tests {
 
     #[test]
     fn content_signature_tracks_equal_length_edits_optimistic_items_images_and_threads() {
-        let mut items = vec![json!({"id":"answer", "type":"agentMessage", "text":"one"})];
+        let mut items: grove_core::codex::TranscriptItems =
+            vec![json!({"id":"answer", "type":"agentMessage", "text":"one"})].into();
         let original = transcript_content_signature(&items, Some("thread-a"));
         assert_eq!(
             original,

@@ -87,13 +87,14 @@ pub(super) struct TimelineData {
     pub activity: Vec<Activity>,
 }
 /// Bounded excerpts retain transcript item identity without cloning transcript payloads.
-pub(super) fn recent_activity(items: &[Value]) -> Vec<Activity> {
+pub(super) fn recent_activity<T: std::borrow::Borrow<Value>>(items: &[T]) -> Vec<Activity> {
     items
         .iter()
         .enumerate()
         .rev()
         .take(ACTIVITY_LOOKBACK)
         .filter_map(|(index, item)| {
+            let item = item.borrow();
             let text = match item["type"].as_str()? {
                 "agentMessage" => item["text"].as_str()?,
                 "commandExecution" => item["command"].as_str()?,

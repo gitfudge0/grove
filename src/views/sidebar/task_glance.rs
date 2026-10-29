@@ -92,7 +92,11 @@ impl TaskGlanceCache {
     pub fn timeline(&self) -> std::sync::Arc<super::dashboard_timeline::TimelineData> {
         self.timeline.clone()
     }
-    pub fn refresh_dashboard(&mut self, items: &[Value], status: Status) -> bool {
+    pub fn refresh_dashboard<T: std::borrow::Borrow<Value>>(
+        &mut self,
+        items: &[T],
+        status: Status,
+    ) -> bool {
         let activity = super::dashboard_timeline::recent_activity(items);
         let changed = activity != self.timeline.activity || self.dashboard_status != Some(status);
         if activity != self.timeline.activity {
@@ -109,11 +113,14 @@ impl TaskGlanceCache {
     }
 
     /// Refreshes from `items`; returns whether checklist content or its summary changed.
-    pub fn refresh(&mut self, items: &[Value]) -> bool {
-        let index = items.iter().rposition(tasks::is_checklist);
-        let changed = self.index != index || index.is_some_and(|at| self.item != items[at]);
+    pub fn refresh<T: std::borrow::Borrow<Value>>(&mut self, items: &[T]) -> bool {
+        let index = items
+            .iter()
+            .rposition(|item| tasks::is_checklist(item.borrow()));
+        let changed =
+            self.index != index || index.is_some_and(|at| self.item != *items[at].borrow());
         if changed {
-            self.item = index.map_or(Value::Null, |at| items[at].clone());
+            self.item = index.map_or(Value::Null, |at| items[at].borrow().clone());
             self.list = tasks::current(items).map(std::sync::Arc::new);
             self.glance = self.list.as_deref().map(TaskGlance::from_list);
             self.timeline = std::sync::Arc::new(super::dashboard_timeline::TimelineData {
@@ -669,10 +676,10 @@ mod tests {
     #[test]
     fn dashboard_activity_and_lifecycle_refresh_without_checklist_change() {
         let mut cache = TaskGlanceCache::default();
-        let mut items = vec![
+        let mut items = grove_core::codex::TranscriptItems::from(vec![
             plan(&[("A", "completed")]),
             json!({"type":"agentMessage","text":"First observed activity"}),
-        ];
+        ]);
         assert!(cache.refresh(&items));
         assert!(cache.refresh_dashboard(&items, Status::Working));
         let first = cache.timeline();

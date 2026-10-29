@@ -1,5 +1,6 @@
 //! Lossless projection of Claude tools onto Grove's shared transcript rows.
 use serde_json::{json, Value};
+use std::borrow::BorrowMut;
 
 #[derive(Default)]
 pub(crate) struct ClaudeTranscriptState {
@@ -16,9 +17,10 @@ struct TaskEntry {
 }
 
 impl ClaudeTranscriptState {
-    pub(crate) fn restore(&mut self, items: &mut [Value]) {
+    pub(crate) fn restore<T: BorrowMut<Value>>(&mut self, items: &mut [T]) {
         self.tasks.clear();
         for item in items {
+            let item = item.borrow_mut();
             self.normalize_tool_item(item);
             if item["status"] == "completed" {
                 self.update_tasks(item);

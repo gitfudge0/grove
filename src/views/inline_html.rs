@@ -650,7 +650,7 @@ impl HtmlSession {
             .iter()
             .rev()
             .find(|item| item["type"] == "agentMessage");
-        let final_text = final_message.map(grove_core::codex::item_text);
+        let final_text = final_message.map(|item| grove_core::codex::item_text(item));
         let final_item = final_message
             .and_then(|item| item["id"].as_str())
             .zip(final_text.as_deref());
@@ -868,6 +868,12 @@ impl HtmlSession {
                     })
                     .ok()
                     .flatten()
+            })
+            .link_renderer_filter(|target| {
+                // Remote HTTP links never become local HTML controls. Native
+                // plan links retain their existing suffix-based treatment.
+                target.ends_with(".grove-plan.json")
+                    || !(target.starts_with("http://") || target.starts_with("https://"))
             });
         self.extensions
             .insert(message.to_owned(), extensions.clone());
@@ -967,6 +973,13 @@ impl HtmlSession {
         })
         .detach();
     }
+    pub(super) fn has_linked(&self, message: &str) -> bool {
+        self.opened
+            .get(message)
+            .is_some_and(|cards| !cards.is_empty())
+            || self.browser_errors.contains_key(message)
+    }
+
     pub(super) fn linked(
         &self,
         message: &str,

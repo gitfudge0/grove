@@ -2261,6 +2261,11 @@ mod tests {
                 }
             });
             let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.sync(window, cx);
+            sidebar.select(
+                Selection::Session(crate::entities::session_registry::SessionId::from_raw(1)),
+                cx,
+            );
             sidebar.mode = ViewMode::Grid;
             sidebar
         });
@@ -2509,7 +2514,7 @@ mod tests {
                 title_generation: None,
                 roots: Vec::new(),
                 thread_id: Some("fixture-thread".into()),
-                items: Vec::new(),
+                items: Vec::new().into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
@@ -2528,7 +2533,8 @@ mod tests {
             });
             registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
             let mut sidebar = Sidebar::new(runtime, window, cx);
-            sidebar.selection = Some(Selection::Session(id));
+            sidebar.sync(window, cx);
+            sidebar.select(Selection::Session(id), cx);
             sidebar
         });
         draw(cx);
@@ -2638,7 +2644,7 @@ mod tests {
                 title_generation: None,
                 roots: Vec::new(),
                 thread_id: Some("fixture-thread".into()),
-                items: vec![first],
+                items: vec![first].into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
@@ -2657,7 +2663,8 @@ mod tests {
             });
             registry.update(cx, |registry, _| registry.attach_codex(id, session, handle));
             let mut sidebar = Sidebar::new(runtime, window, cx);
-            sidebar.selection = Some(Selection::Session(id));
+            sidebar.sync(window, cx);
+            sidebar.select(Selection::Session(id), cx);
             sidebar
         });
         let id = crate::entities::session_registry::SessionId::from_raw(1);
@@ -2732,7 +2739,7 @@ mod tests {
                 .cloned()
                 .unwrap();
             session.update(cx, |session, cx| {
-                session.state.saved.items = vec![plan(["completed", "completed"])];
+                session.state.saved.items = vec![plan(["completed", "completed"])].into();
                 cx.notify();
             });
         });
@@ -2793,7 +2800,8 @@ mod tests {
                 registry.insert_meta("demo".into(), "/grove-canvas-fixture".into(), Agent::Codex)
             });
             let mut sidebar = Sidebar::new(runtime, window, cx);
-            sidebar.selection = Some(Selection::Session(id));
+            sidebar.sync(window, cx);
+            sidebar.select(Selection::Session(id), cx);
             sidebar
         });
         draw(cx);
@@ -2885,7 +2893,11 @@ mod tests {
         });
         let (_, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(crate::runtime::Runtime::new);
-            Sidebar::new(runtime, window, cx)
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.sync(window, cx);
+            // This fixture exercises the canvas overview rather than Dashboard.
+            sidebar.dashboard_open = false;
+            sidebar
         });
         cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
         draw(cx);
@@ -2937,7 +2949,7 @@ mod tests {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.available = [true; 4];
                 sidebar.mode = ViewMode::Project;
-                sidebar.selection = Some(Selection::Project(0));
+                sidebar.select(Selection::Project(0), cx);
                 sidebar.worktree_readiness.insert(
                     path.clone(),
                     (std::time::Instant::now(), Some(WorktreeReadiness::Ready)),

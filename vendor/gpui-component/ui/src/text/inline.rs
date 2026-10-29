@@ -484,16 +484,23 @@ fn text_line_bounds(
     let mut line_bounds = Vec::new();
     let mut current_line_y = None;
     let mut current_bounds: Option<Bounds<Pixels>> = None;
-    let mut positions = PositionCursor::new(text_layout);
-    let mut offset = 0;
+    let Some((mut positions, mut offset)) = PositionCursor::visible_start(text_layout, mask_bounds)
+    else {
+        return line_bounds;
+    };
 
-    for c in text.chars() {
+    for c in text[offset..].chars() {
         let next_offset = offset + c.len_utf8();
         let Some(pos) = positions.position(offset) else {
             offset = next_offset;
             continue;
         };
 
+        // Positions are monotonic vertically; text below the clip cannot
+        // contribute a hit rectangle. Do not revisit the rest of a huge log.
+        if pos.y >= mask_bounds.bottom() {
+            break;
+        }
         let mut char_width = line_height.half();
         if let Some(next_pos) = positions.position(next_offset) {
             if next_pos.y == pos.y {
@@ -527,6 +534,60 @@ fn text_line_bounds(
     line_bounds
 }
 
+/// Test-support oracle for a real platform TextLayout. The reference uses
+/// GPUI's native caret lookup for every character, without the clipping seek.
+#[cfg(feature = "grove-test-support")]
+pub fn verify_text_hit_bounds_against_reference(
+    text: &str,
+    layout: &TextLayout,
+    mask: Bounds<Pixels>,
+) -> Result<(), String> {
+    let line_height = layout.line_height();
+    let mut expected = Vec::new();
+    let mut current_y = None;
+    let mut current: Option<Bounds<Pixels>> = None;
+    let mut offset = 0;
+    for ch in text.chars() {
+        let next = offset + ch.len_utf8();
+        if let Some(position) = layout.position_for_index(offset) {
+            let width = layout
+                .position_for_index(next)
+                .filter(|next| next.y == position.y)
+                .map_or(line_height.half(), |next| next.x - position.x);
+            let bounds = Bounds::from_corners(
+                position,
+                point(position.x + width, position.y + line_height),
+            )
+            .intersect(&mask);
+            if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+                if current_y == Some(position.y) {
+                    if let Some(current) = current.as_mut() {
+                        *current = current.union(&bounds);
+                    }
+                } else {
+                    if let Some(current) = current.take() {
+                        expected.push(current);
+                    }
+                    current_y = Some(position.y);
+                    current = Some(bounds);
+                }
+            }
+        }
+        offset = next;
+    }
+    if let Some(current) = current {
+        expected.push(current);
+    }
+    let actual = text_line_bounds(text, layout, line_height, mask);
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "native hit geometry mismatch: actual={actual:?}; expected={expected:?}"
+        ))
+    }
+}
+
 /// `TextLayout::position_for_index` for non-decreasing indices in amortized O(1).
 ///
 /// The layout's lookup rescans every line and glyph before the index, so calling it per char
@@ -555,6 +616,60 @@ impl PositionCursor {
             row_start_x: None,
             glyph: (0, 0),
         }
+    }
+
+    /// Start immediately before the first visible wrapped row. Wrap-boundary
+    /// glyphs provide a byte/glyph cursor without scanning the hidden prefix.
+    /// Keep a preceding row because caret positions at an exact wrap boundary
+    /// belong to the previous row in GPUI's inclusive index convention.
+    fn visible_start(text_layout: &TextLayout, mask: Bounds<Pixels>) -> Option<(Self, usize)> {
+        let line_height = text_layout.line_height();
+        if line_height <= px(0.) || mask.size.width <= px(0.) || mask.size.height <= px(0.) {
+            return None;
+        }
+        let lines = text_layout.line_layouts();
+        let mut line_origin = text_layout.bounds().origin;
+        let mut line_start = 0;
+        for (line_index, line) in lines.iter().enumerate() {
+            let line_bottom = line_origin.y + line.size(line_height).height;
+            if line_origin.y < mask.bottom() && line_bottom > mask.top() {
+                let visible_row =
+                    ((mask.top() - line_origin.y).max(px(0.)) / line_height).floor() as usize;
+                let start_row = visible_row
+                    .saturating_sub(1)
+                    .min(line.wrap_boundaries.len());
+                let start_boundary = start_row
+                    .checked_sub(1)
+                    .map(|row| &line.wrap_boundaries[row]);
+                let start_byte = start_boundary.map_or(0, |boundary| {
+                    line.unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index
+                });
+                let row = start_row.saturating_sub(1);
+                let glyph = row.checked_sub(1).map_or((0, 0), |row| {
+                    let boundary = &line.wrap_boundaries[row];
+                    (boundary.run_ix, boundary.glyph_ix)
+                });
+                return Some((
+                    Self {
+                        lines: lines.clone(),
+                        line_height,
+                        line: line_index,
+                        line_start,
+                        line_origin,
+                        row,
+                        row_start_x: None,
+                        glyph,
+                    },
+                    line_start + start_byte,
+                ));
+            }
+            if line_origin.y >= mask.bottom() {
+                return None;
+            }
+            line_origin.y = line_bottom;
+            line_start += line.len() + 1;
+        }
+        None
     }
 
     fn position(&mut self, index: usize) -> Option<Point<Pixels>> {
@@ -776,6 +891,30 @@ mod tests {
                 text_line_bounds(text, &layout, line_height, mask),
                 reference_line_bounds(text, &layout, line_height, mask)
             );
+        }
+    }
+
+    #[gpui::test]
+    fn clipped_bounds_match_reference_after_skipping_wrapped_unicode_prefix(
+        cx: &mut TestAppContext,
+    ) {
+        let text = "naïve café 界🙂 e\u{301} 👩‍👩‍👧‍👦 office ffi\tשלום مرحبا words wrap safely here "
+            .repeat(10)
+            + "\n\nlast naïve line\n\t    indentation\n";
+        let layout = laid_out(&text, px(170.), cx);
+        let line_height = layout.line_height();
+        for row in [0., 1., 2.5, 7., 12.5, 20., 35., 60., 200.] {
+            for x in [0., 25.] {
+                let mask = Bounds::new(
+                    point(px(x), line_height * row),
+                    size(px(110.), line_height * 2.25),
+                );
+                assert_eq!(
+                    text_line_bounds(&text, &layout, line_height, mask),
+                    reference_line_bounds(&text, &layout, line_height, mask),
+                    "visible rows beginning at {row}, horizontal clip {x}"
+                );
+            }
         }
     }
 

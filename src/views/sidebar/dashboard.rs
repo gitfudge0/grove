@@ -346,7 +346,7 @@ impl Sidebar {
                 title_generation: None,
                 roots: Vec::new(),
                 thread_id: None,
-                items: Vec::new(),
+                items: Vec::new().into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),

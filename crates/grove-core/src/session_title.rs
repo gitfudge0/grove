@@ -67,7 +67,7 @@ fn context(saved: &SavedSession, assistant: bool) -> Option<(String, Value)> {
             .skip(1)
             .take_while(|item| item["type"] != "userMessage")
             .filter(|item| item["type"] == "agentMessage" && item["phase"] != "commentary")
-            .map(item_text)
+            .map(|item| item_text(item))
             .collect::<Vec<_>>()
             .join("\n")
     } else {

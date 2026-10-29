@@ -1,9 +1,11 @@
 //! Grove-owned Codex app-server sessions. All process and disk I/O runs on an actor thread.
+pub use crate::transcript_items::{TranscriptItem, TranscriptItems};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::{
+    borrow::Borrow,
     collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
     path::PathBuf,
@@ -135,7 +137,7 @@ pub struct SubagentActivityEvent {
 #[derive(Clone, Debug, Default)]
 pub struct SubagentActivity {
     /// Full provider-visible transcript items, in chronological order.
-    pub items: Vec<Value>,
+    pub items: TranscriptItems,
     pub events: Vec<SubagentActivityEvent>,
     pub observed_at: Option<Instant>,
     pub refreshing: bool,
@@ -155,7 +157,7 @@ pub enum SubagentTranscriptAvailability {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SavedClaudeSubagent {
     #[serde(default)]
-    pub items: Vec<Value>,
+    pub items: TranscriptItems,
     #[serde(default)]
     pub task_ids: Vec<String>,
     #[serde(default)]
@@ -331,7 +333,7 @@ pub struct SavedSession {
     pub title_generation: Option<crate::session_title::Generation>,
     pub roots: Vec<crate::session_meta::ContextRoot>,
     pub thread_id: Option<String>,
-    pub items: Vec<Value>,
+    pub items: TranscriptItems,
     #[serde(default)]
     pub work_periods: Vec<WorkPeriod>,
     #[serde(default)]
@@ -1518,7 +1520,8 @@ impl Snapshot {
             .truncated |= evicted;
         self.enforce_subagent_activity_budget();
     }
-    pub(crate) fn upsert_subagent_item(&mut self, id: &str, item: Value) {
+    pub(crate) fn upsert_subagent_item(&mut self, id: &str, item: impl Into<TranscriptItem>) {
+        let item = item.into();
         if matches!(
             item["type"].as_str(),
             Some("reasoning" | "reasoningMessage")
@@ -1935,7 +1938,7 @@ impl Snapshot {
                             chronological.push(item);
                         }
                     }
-                    activity.items = chronological;
+                    activity.items = chronological.into();
                 }
             }
         }
@@ -2081,7 +2084,7 @@ impl Snapshot {
         self.saved
             .items
             .iter()
-            .map(item_text)
+            .map(|item| item_text(item))
             .collect::<Vec<_>>()
             .join("\n\n")
     }
@@ -2343,7 +2346,8 @@ impl Snapshot {
                     self.saved
                         .items
                         .iter()
-                        .find(|old| old["id"] == p["item"]["id"]),
+                        .find(|old| old["id"] == p["item"]["id"])
+                        .map(AsRef::as_ref),
                 );
                 if let Some(old) = self.saved.items.iter().find(|old| old["id"] == item["id"]) {
                     for marker in ["groveQuestionResolved", "groveQuestionPending"] {
@@ -2373,7 +2377,7 @@ impl Snapshot {
                     .iter()
                     .position(|old| old["id"] == item["id"])
                 {
-                    self.saved.items[at] = item;
+                    self.saved.items[at] = item.into();
                 } else {
                     self.saved.items.push(item);
                 }
@@ -2546,7 +2550,7 @@ impl Snapshot {
             "postTokens": after,
         });
         match at {
-            Some(at) => self.saved.items[at] = item,
+            Some(at) => self.saved.items[at] = item.into(),
             None => self.saved.items.push(item),
         }
     }
@@ -2583,14 +2587,15 @@ fn prompt_title(text: &str) -> Option<String> {
         .map(|line| line.chars().take(80).collect())
 }
 /// Whether a transcript holds any conversation that compaction could shorten.
-pub fn has_conversation(items: &[Value]) -> bool {
-    items
-        .iter()
-        .any(|item| item["type"] == "userMessage" || item["type"] == "agentMessage")
+pub fn has_conversation<T: Borrow<Value>>(items: &[T]) -> bool {
+    items.iter().any(|item| {
+        item.borrow()["type"] == "userMessage" || item.borrow()["type"] == "agentMessage"
+    })
 }
-fn first_prompt_title(items: &[Value]) -> Option<String> {
+fn first_prompt_title<T: Borrow<Value>>(items: &[T]) -> Option<String> {
     items
         .iter()
+        .map(Borrow::<Value>::borrow)
         .filter(|item| item["type"] == "userMessage")
         .find_map(|item| prompt_title(&item_text(item)))
 }
@@ -3010,7 +3015,14 @@ fn persist_in_dir(saved: &SavedSession, dir: &std::path::Path) -> Result<(), Str
             .set_permissions(std::fs::Permissions::from_mode(0o600))
             .map_err(|e| e.to_string())?;
     }
-    serde_json::to_writer(&mut file, saved).map_err(|e| e.to_string())?;
+    {
+        // JSON emits many small writes for keys and escaped tool output. Buffer
+        // those writes, then propagate flush errors before syncing or replacing
+        // the recovery file so atomicity and durability stay unchanged.
+        let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file.as_file_mut());
+        serde_json::to_writer(&mut writer, saved).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
+    }
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     file.persist(path).map_err(|e| e.to_string())?;
     #[cfg(unix)]
@@ -5442,7 +5454,7 @@ impl Actor {
                                     .items
                                     .iter()
                                     .find(|old| old["id"] == item["id"])
-                                    .cloned()
+                                    .map(|old| old.as_ref().clone())
                                     .unwrap_or(item);
                                 known["status"] = json!("completed");
                                 known
@@ -5464,7 +5476,7 @@ impl Actor {
                             self.state.saved.edit_checkpoints.clear();
                             self.state.work_started = None;
                         }
-                        self.state.saved.items = items;
+                        self.state.saved.items = items.into();
                     }
                 }
                 self.state
@@ -5986,7 +5998,7 @@ mod tests {
             title_generation: None,
             roots: Vec::new(),
             thread_id: Some("thread-1".into()),
-            items: Vec::new(),
+            items: Vec::new().into(),
             work_periods: Vec::new(),
             draft: String::new(),
             draft_images: Vec::new(),
@@ -5997,6 +6009,134 @@ mod tests {
             context: None,
         }
     }
+    /// Real-session clone/update CPU timings; excludes rendering, I/O and provider latency.
+    #[test]
+    #[ignore = "manual snapshot payload benchmark; GROVE_PERF_SESSION selects a private fixture"]
+    fn snapshot_payload_benchmark() {
+        use std::hint::black_box;
+        let path = std::env::var("GROVE_PERF_SESSION").expect("GROVE_PERF_SESSION");
+        let bytes = fs_err::read(path).unwrap();
+        let saved: SavedSession = serde_json::from_slice(&bytes).unwrap();
+        let state = Snapshot::new(saved);
+        let expected = state.saved.items.len();
+        let serialized = serde_json::to_value(&state.saved).unwrap();
+        assert_eq!(serialized["items"].as_array().unwrap().len(), expected);
+        let sample = |mutate: bool| {
+            let started = Instant::now();
+            for _ in 0..50 {
+                let mut cloned = black_box(&state).clone();
+                if mutate {
+                    cloned.saved.items.push(json!({"id":"perf-append", "type":"agentMessage", "text":"Completed append."}));
+                    assert_eq!(cloned.saved.items.len(), expected + 1);
+                    assert_eq!(
+                        cloned.saved.items.last().unwrap()["text"],
+                        "Completed append."
+                    );
+                } else {
+                    assert_eq!(cloned.saved.items.len(), expected);
+                }
+                black_box(cloned);
+            }
+            started.elapsed().as_secs_f64() * 1000.0 / 50.0
+        };
+        for _ in 0..3 {
+            black_box(sample(false));
+            black_box(sample(true));
+        }
+        for index in 0..15 {
+            let (clone_ms, append_ms) = if index % 2 == 0 {
+                (sample(false), sample(true))
+            } else {
+                let append = sample(true);
+                (sample(false), append)
+            };
+            println!("snapshot_sample={{\"sample\":{index},\"items\":{expected},\"clone_ms\":{clone_ms:.6},\"clone_append_ms\":{append_ms:.6}}}");
+        }
+        assert_eq!(state.saved.items.len(), expected);
+        assert_eq!(serde_json::to_value(&state.saved).unwrap(), serialized);
+    }
+
+    /// Compares the previous deep-Vec item copy with an existing prose-row edit.
+    /// Measures transcript item storage only, excluding other Snapshot metadata.
+    #[test]
+    #[ignore = "manual transcript existing-row mutation benchmark"]
+    fn transcript_existing_row_edit_benchmark() {
+        use std::hint::black_box;
+        let path = std::env::var("GROVE_PERF_SESSION").expect("GROVE_PERF_SESSION");
+        let saved: SavedSession = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
+        let shared = saved.items;
+        let legacy: Vec<Value> = shared.iter().map(|item| item.as_ref().clone()).collect();
+        let index = legacy
+            .iter()
+            .rposition(|item| item["type"] == "agentMessage")
+            .unwrap();
+        let original = legacy[index]["text"].as_str().unwrap_or_default();
+        let replacement = format!("{original} streamed continuation");
+        let sample = |old: bool| {
+            let start = Instant::now();
+            for _ in 0..50 {
+                if old {
+                    let mut next = black_box(&legacy).clone();
+                    next[index]["text"] = json!(replacement);
+                    assert_eq!(next[index]["text"], replacement);
+                    assert_eq!(next.len(), legacy.len());
+                    black_box(next);
+                } else {
+                    let mut next = black_box(&shared).clone();
+                    next[index]["text"] = json!(replacement);
+                    assert_eq!(next[index]["text"], replacement);
+                    assert_eq!(next.len(), legacy.len());
+                    black_box(next);
+                }
+            }
+            start.elapsed().as_secs_f64() * 1000.0 / 50.0
+        };
+        for _ in 0..3 {
+            black_box(sample(true));
+            black_box(sample(false));
+        }
+        for index in 0..15 {
+            let (legacy_ms, shared_ms) = if index % 2 == 0 {
+                (sample(true), sample(false))
+            } else {
+                let shared = sample(false);
+                (sample(true), shared)
+            };
+            println!("existing_edit_sample={{\"sample\":{index},\"legacy_ms\":{legacy_ms:.6},\"shared_ms\":{shared_ms:.6}}}");
+        }
+        assert_eq!(shared[index]["text"], original);
+        assert_eq!(
+            serde_json::to_value(&shared).unwrap(),
+            serde_json::to_value(&legacy).unwrap()
+        );
+    }
+
+    /// Includes full recovery-file serialization, atomic replacement and durability syncs.
+    #[test]
+    #[ignore = "manual private recovery persistence benchmark"]
+    fn snapshot_persistence_benchmark() {
+        let path = std::env::var("GROVE_PERF_SESSION").expect("GROVE_PERF_SESSION");
+        let saved: SavedSession = serde_json::from_slice(&fs_err::read(path).unwrap()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let expected = serde_json::to_value(&saved).unwrap();
+        for sample in 0..11 {
+            let start = Instant::now();
+            persist_in_dir(&saved, directory.path()).unwrap();
+            let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+            let actual: Value = serde_json::from_slice(
+                &fs_err::read(directory.path().join(format!("{}.json", saved.key))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(actual, expected);
+            if sample >= 2 {
+                println!(
+                    "persistence_sample={{\"sample\":{},\"persist_ms\":{elapsed:.6}}}",
+                    sample - 2
+                );
+            }
+        }
+    }
+
     #[test]
     fn composer_discovery_reads_configuration_without_starting_a_thread() {
         let (_handle, actions) = Handle::channel();
@@ -6036,7 +6176,7 @@ mod tests {
                 json!({"id":"agent","type":"mcpToolCall","tool":"Agent"}),
                 json!({"id":"task","type":"mcpToolCall","tool":"Task"}),
                 json!({"id":"legacy","type":"subAgentActivity","kind":"started","agentThreadId":"shell"}),
-            ];
+            ].into();
             let mut period = WorkPeriod {
                 start_item: 0,
                 end_item: Some(5),
@@ -6079,7 +6219,7 @@ mod tests {
             saved.claude_subagents.insert(
                 id.into(),
                 SavedClaudeSubagent {
-                    items: vec![json!({"id":"message","type":"agentMessage","text":id})],
+                    items: vec![json!({"id":"message","type":"agentMessage","text":id})].into(),
                     ..Default::default()
                 },
             );
@@ -9097,7 +9237,7 @@ mod tests {
     fn resumed_history_retains_known_receipt_time_and_leaves_unknown_time_absent() {
         let mut actor = actor();
         actor.state.saved.items =
-            vec![json!({"id":"known", "type":"userMessage", "groveReceivedAt":123})];
+            vec![json!({"id":"known", "type":"userMessage", "groveReceivedAt":123})].into();
         actor.pending.insert(
             1,
             Request {
@@ -9316,7 +9456,8 @@ mod tests {
         actor.state.status = Status::Done;
         actor.state.turn_id = None;
         actor.state.saved.items =
-            vec![json!({"id":"u1","type":"userMessage","content":[{"type":"text","text":"hi"}]})];
+            vec![json!({"id":"u1","type":"userMessage","content":[{"type":"text","text":"hi"}]})]
+                .into();
         let mut child = Command::new("cat")
             .process_group(0)
             .stdin(Stdio::piped())
@@ -9656,7 +9797,8 @@ mod tests {
             NOTHING_TO_COMPACT
         );
         actor.state.saved.thread_id = Some("thread-1".into());
-        actor.state.saved.items = vec![json!({"id":"a","type":"agentMessage","text":"hello"})];
+        actor.state.saved.items =
+            vec![json!({"id":"a","type":"agentMessage","text":"hello"})].into();
         actor.action(Action::Compact).unwrap();
         let sent = read_line(&mut reader);
         actor
@@ -9730,7 +9872,7 @@ mod tests {
             json!({"id":"target","type":"userMessage","content":[{"type":"text","text":"target prompt"},{"type":"image","url":"data:image/png;base64,aGVsbG8="}]}),
             json!({"id":"target-answer","type":"agentMessage","text":"target answer"}),
             json!({"id":"later","type":"userMessage","content":[{"type":"text","text":"later prompt"}]}),
-        ];
+        ].into();
         EditFixture {
             actor,
             repo,
@@ -10001,7 +10143,7 @@ mod tests {
         actor.state.turn_id = None;
         actor.state.saved.items = vec![
             json!({"id":"sent","type":"userMessage","content":[{"type":"text","text":"sent prompt"}]}),
-        ];
+        ].into();
         for (id, history_mode, supported) in [
             (901, None, false),
             (902, Some("paginated"), true),

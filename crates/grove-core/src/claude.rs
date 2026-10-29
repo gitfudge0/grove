@@ -538,7 +538,7 @@ fn user_content(text: &str, images: &[String]) -> Vec<Value> {
 #[derive(Default)]
 struct ChildTranscript {
     transcript: crate::claude_transcript::ClaudeTranscriptState,
-    items: Vec<Value>,
+    items: codex::TranscriptItems,
     message_id: String,
     blocks: HashMap<u64, String>,
 }
@@ -608,7 +608,7 @@ impl ChildTranscript {
     }
     fn upsert(&mut self, item: Value) {
         if let Some(old) = self.items.iter_mut().find(|old| old["id"] == item["id"]) {
-            *old = item;
+            *old = item.into();
         } else {
             self.items.push(item);
         }
@@ -2151,7 +2151,7 @@ impl Actor {
             .items
             .iter()
             .find(|old| old["id"] == item["id"]);
-        codex::stamp_message_received(&mut item, previous);
+        codex::stamp_message_received(&mut item, previous.map(AsRef::as_ref));
         if let Some(existing) = self
             .state
             .saved
@@ -2159,7 +2159,7 @@ impl Actor {
             .iter_mut()
             .find(|old| old["id"] == item["id"])
         {
-            *existing = item;
+            *existing = item.into();
         } else {
             self.state.saved.items.push(item);
         }
@@ -4665,7 +4665,7 @@ mod tests {
             json!({"id":"target","type":"userMessage","content":[{"type":"text","text":"original prompt"}],"claudeHumanUuid":"human","claudePreviousAssistantUuid":"assistant"}),
             json!({"id":"later","type":"agentMessage","text":"later"}),
             json!({"id":"next-human","type":"userMessage","content":[{"type":"text","text":"a subsequent turn"}],"claudeHumanUuid":"next-human","claudePreviousAssistantUuid":"later-assistant"}),
-        ];
+        ].into();
         actor.state.saved.pending_edit = Some(PendingEdit {
             target: 1,
             turn_id: "human".into(),

@@ -1970,6 +1970,11 @@ mod tests {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
+        cx.update(|_, cx| {
+            let sidebar = shell.read(cx).sidebar.clone();
+            sidebar.update(cx, |sidebar, cx| sidebar.select_project_canvas_for_test(cx));
+        });
+        draw(cx);
         cx.update(|window, cx| {
             let focus = shell.read(cx).focus.clone();
             focus.focus(window, cx);
@@ -2062,6 +2067,11 @@ mod tests {
     fn empty_grid_zen_shows_one_overview_and_returns_to_grid(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        cx.update(|_, cx| {
+            let sidebar = shell.read(cx).sidebar.clone();
+            sidebar.update(cx, |sidebar, cx| sidebar.select_project_canvas_for_test(cx));
+        });
         draw(cx);
         cx.update(|window, cx| {
             let focus = shell.read(cx).focus.clone();

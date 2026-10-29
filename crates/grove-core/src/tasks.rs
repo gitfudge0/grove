@@ -7,6 +7,7 @@
 //! (plan-mode text streamed by `item/plan/delta`) have no array and remain
 //! ordinary transcript content.
 use serde_json::Value;
+use std::borrow::Borrow;
 
 // Keep the outcome/evidence policy identical across providers while respecting
 // their different task APIs. This is agent guidance, not inferred task state.
@@ -118,9 +119,12 @@ pub fn is_checklist(item: &Value) -> bool {
 
 /// Latest session checklist snapshot, retained across turns until explicitly
 /// updated or replaced. None if none or if the latest snapshot is empty.
-pub fn current(items: &[Value]) -> Option<TaskList> {
-    let index = items.iter().rposition(is_checklist)?;
-    let entries = entries(&items[index]);
+pub fn current<T: Borrow<Value>>(items: &[T]) -> Option<TaskList> {
+    let index = items
+        .iter()
+        .map(Borrow::<Value>::borrow)
+        .rposition(is_checklist)?;
+    let entries = entries(items[index].borrow());
     if entries.is_empty() {
         return None;
     }
@@ -134,7 +138,7 @@ pub fn current(items: &[Value]) -> Option<TaskList> {
             }
         })
         .collect();
-    let explanation = items[index]["explanation"]
+    let explanation = items[index].borrow()["explanation"]
         .as_str()
         .map(str::trim)
         .filter(|text| !text.is_empty())
@@ -158,15 +162,20 @@ pub enum Change {
 /// at `index` (first snapshot => every task as Added, except in-progress
 /// tasks, which are Started instead). Order: Completed, Started, Added, Removed. Empty when
 /// `items[index]` is not a checklist.
-pub fn changes_at(items: &[Value], index: usize) -> Vec<Change> {
-    let Some(item) = items.get(index).filter(|item| is_checklist(item)) else {
+pub fn changes_at<T: Borrow<Value>>(items: &[T], index: usize) -> Vec<Change> {
+    let Some(item) = items
+        .get(index)
+        .map(Borrow::<Value>::borrow)
+        .filter(|item| is_checklist(item))
+    else {
         return Vec::new();
     };
     let now = entries(item);
     let before = items[..index]
         .iter()
+        .map(Borrow::<Value>::borrow)
         .rposition(is_checklist)
-        .map(|at| entries(&items[at]))
+        .map(|at| entries(items[at].borrow()))
         .unwrap_or_default();
     let (mut completed, mut started, mut added, mut removed) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -239,11 +248,14 @@ fn same_task(a: &Task, b: &Task) -> bool {
 
 /// Walks back through contiguous snapshots that still contain `task`, keeping
 /// the earliest one where it was InProgress, else the earliest it appeared.
-fn started_at(items: &[Value], index: usize, task: &Task) -> usize {
+fn started_at<T: Borrow<Value>>(items: &[T], index: usize, task: &Task) -> usize {
     let mut appeared = index;
     let mut started = (task.status == TaskStatus::InProgress).then_some(index);
-    for at in (0..index).rev().filter(|&at| is_checklist(&items[at])) {
-        let Some(old) = entries(&items[at])
+    for at in (0..index)
+        .rev()
+        .filter(|&at| is_checklist(items[at].borrow()))
+    {
+        let Some(old) = entries(items[at].borrow())
             .into_iter()
             .find(|old| same_task(old, task))
         else {
@@ -401,7 +413,7 @@ mod tests {
 
     #[test]
     fn empty_latest_snapshot_and_missing_lists_yield_none() {
-        assert!(current(&[]).is_none());
+        assert!(current::<Value>(&[]).is_none());
         assert!(current(&[user()]).is_none());
         let items = vec![
             codex("t1", json!([{"id":"step-0","step":"A","status":"pending"}])),

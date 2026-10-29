@@ -208,9 +208,6 @@ impl Root {
         let hitbox = hitbox.clone();
         let scope = GlobalState::global(cx).current_selection_scope();
         root.update(cx, |root, _| {
-            // O(N) per call, O(N²) per frame; revisit if a window ever hosts hundreds of selectable views.
-            root.selectable_text_views
-                .retain(|_, (view, _, _)| view.upgrade().is_some());
             root.selectable_text_views.insert(id, (weak, hitbox, scope));
             root.selectable_text_inlines.remove(&id);
         });

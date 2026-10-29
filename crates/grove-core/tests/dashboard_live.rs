@@ -25,7 +25,7 @@ fn draft(provider: Provider, cwd: &str) -> SavedSession {
         title_generation: None,
         roots: Vec::new(),
         thread_id: None,
-        items: Vec::new(),
+        items: Vec::new().into(),
         work_periods: Vec::new(),
         draft: String::new(),
         draft_images: Vec::new(),
@@ -132,7 +132,7 @@ fn dashboard_live_provider_catalog_and_selected_checkout() {
                 .items
                 .iter()
                 .filter(|item| item["type"] == "agentMessage")
-                .map(codex::item_text)
+                .map(|item| codex::item_text(item))
                 .collect::<Vec<_>>()
                 .join("\n");
             if completed.saved.cwd != cwd || !response.contains(&cwd) {

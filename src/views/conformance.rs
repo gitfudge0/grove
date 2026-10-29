@@ -736,7 +736,20 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(preview_return.contains(".child(messages.px("));
     assert!(!preview_return.contains("session.send("));
     assert!(transcript.contains("if this.preview_child.is_some() {\n                    return;"));
-    assert!(transcript.contains(
-        "if self.preview_child.is_none() && approval.is_none() {\n                    actions = actions.child(\n                        header_control(\"codex-edit-message\", \"Edit sent message\")"
-    ));
+    let message_row = transcript
+        .split("fn render_message_row(")
+        .nth(1)
+        .expect("message rows own their read-only preview guard")
+        .split("fn render_message_minimap(")
+        .next()
+        .unwrap();
+    let message_row = message_row.split_whitespace().collect::<Vec<_>>().join(" ");
+    let guarded_edit = message_row
+        .split("if self.preview_child.is_none() && approval.is_none() {")
+        .nth(1)
+        .expect("editing requires a main conversation without an approval receipt")
+        .split("let keyboard_key = key.clone();")
+        .next()
+        .unwrap();
+    assert!(guarded_edit.contains("header_control(\"codex-edit-message\", \"Edit sent message\")"));
 }

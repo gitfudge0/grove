@@ -2118,6 +2118,11 @@ impl Sidebar {
                 d.bg(c::alpha(c::FG(), 0.14)).text_color(c::FG())
             })
     }
+    #[cfg(test)]
+    pub(crate) fn select_project_canvas_for_test(&mut self, cx: &mut Context<Self>) {
+        self.select(Selection::Project(0), cx);
+    }
+
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         self.dashboard_open = false;
         if self
@@ -9737,7 +9742,7 @@ for line in sys.stdin:
                     title_generation: None,
                     roots: Vec::new(),
                     thread_id: None,
-                    items: Vec::new(),
+                    items: Vec::new().into(),
                     work_periods: Vec::new(),
                     draft: String::new(),
                     draft_images: Vec::new(),
@@ -9915,7 +9920,7 @@ for line in sys.stdin:
                         {"step": "Implement", "status": "completed"},
                         {"step": "Verify", "status": "in_progress"}
                     ]
-                })],
+                })].into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
@@ -10700,7 +10705,8 @@ for line in sys.stdin:
             thread_id: None,
             items: vec![
                 serde_json::json!({"type":"userMessage", "text":"Keep this conversation in place"}),
-            ],
+            ]
+            .into(),
             work_periods: Vec::new(),
             draft: "Preserved draft".into(),
             draft_images: Vec::new(),
@@ -12678,7 +12684,12 @@ for line in sys.stdin:
                 sidebar.sync(window, cx);
                 assert!(sidebar.project_panel.is_none());
                 assert!(sidebar.project_return_focus.is_none());
-                assert_eq!(window.focused(cx), Some(sidebar.focus.clone()));
+                assert!(sidebar.dashboard_open);
+                let dashboard = sidebar
+                    .dashboard
+                    .as_ref()
+                    .expect("Dashboard after workspace switch");
+                assert_eq!(window.focused(cx), Some(dashboard.view.focus_handle(cx)));
                 sidebar.act(Action::EditProject(one_path.clone()), window, cx);
                 assert!(
                     sidebar.project_panel.is_none(),

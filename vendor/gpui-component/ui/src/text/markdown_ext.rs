@@ -158,6 +158,7 @@ pub struct MarkdownExtensions {
     block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
     revision: u64,
     link_renderer: Option<Arc<MarkdownLinkRendererFn>>,
+    link_renderer_filter: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 impl MarkdownExtensions {
@@ -167,12 +168,29 @@ impl MarkdownExtensions {
         render: impl Fn(&str, &str, &mut Window, &mut App) -> Option<AnyElement> + Send + Sync + 'static,
     ) -> Self {
         self.link_renderer = Some(Arc::new(render));
+        self.link_renderer_filter = None;
         self.bump_revision();
         self
     }
 
-    pub(crate) fn has_link_renderer(&self) -> bool {
+    /// Restrict an installed renderer to URLs it can replace. Ordinary links
+    /// then retain native text layout without constructing custom inline flow.
+    /// Install this after `link_renderer`; the default accepts every URL.
+    pub fn link_renderer_filter(
+        mut self,
+        filter: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.link_renderer_filter = Some(Arc::new(filter));
+        self.bump_revision();
+        self
+    }
+
+    pub(crate) fn may_render_link(&self, url: &str) -> bool {
         self.link_renderer.is_some()
+            && self
+                .link_renderer_filter
+                .as_ref()
+                .is_none_or(|filter| filter(url))
     }
     pub(crate) fn render_link(
         &self,
@@ -181,6 +199,9 @@ impl MarkdownExtensions {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
+        if !self.may_render_link(url) {
+            return None;
+        }
         self.link_renderer.as_ref()?(url, label, window, cx)
     }
 
@@ -297,5 +318,47 @@ impl MarkdownExtensions {
 
     fn bump_revision(&mut self) {
         self.revision = MARKDOWN_EXTENSIONS_REVISION.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[gpui::test]
+    fn link_filter_skips_only_excluded_renderer_calls(cx: &mut gpui::TestAppContext) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let extensions = MarkdownExtensions::default().link_renderer(move |_, _, _, _| {
+            observed.fetch_add(1, Ordering::Relaxed);
+            Some(gpui::div().into_any_element())
+        });
+        let cx = cx.add_empty_window();
+        cx.update(|window, cx| {
+            assert!(
+                extensions
+                    .render_link("https://example.com", "ordinary", window, cx)
+                    .is_some()
+            );
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        let revision = extensions.revision();
+        let extensions = extensions.link_renderer_filter(|url| url.ends_with(".html"));
+        assert_ne!(revision, extensions.revision());
+        cx.update(|window, cx| {
+            assert!(
+                extensions
+                    .render_link("https://example.com", "ordinary", window, cx)
+                    .is_none()
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            assert!(
+                extensions
+                    .render_link("report.html", "report", window, cx)
+                    .is_some()
+            );
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 }

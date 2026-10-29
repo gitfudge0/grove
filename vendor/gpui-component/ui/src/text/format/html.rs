@@ -71,7 +71,7 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
 
     Ok(ParsedDocument {
         source: source.to_string().into(),
-        blocks: vec![node],
+        blocks: vec![node].into(),
     })
 }
 
@@ -754,6 +754,7 @@ mod tests {
                     })],
                     ..Default::default()
                 })]
+                .into()
             }
         );
 
@@ -775,6 +776,7 @@ mod tests {
                     })],
                     ..Default::default()
                 })]
+                .into()
             }
         );
     }

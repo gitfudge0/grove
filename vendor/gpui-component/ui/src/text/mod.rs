@@ -3,6 +3,10 @@ mod format;
 mod inline;
 mod inline_flow;
 mod markdown_ext;
+mod measured_block;
+mod measured_body;
+mod projection;
+pub use projection::TextViewProjection;
 mod node;
 pub(crate) mod selection;
 mod state;
@@ -12,6 +16,8 @@ mod utils;
 mod window_selection;
 
 use gpui::{App, ElementId, IntoElement, RenderOnce, SharedString, Window};
+#[cfg(feature = "grove-test-support")]
+pub use inline::verify_text_hit_bounds_against_reference;
 pub use markdown_ext::*;
 pub use state::*;
 pub use style::*;
@@ -97,4 +103,9 @@ impl RenderOnce for Text {
             Self::TextView(e) => e.into_any_element(),
         }
     }
+}
+
+/// A live window selection requires every transcript text owner to reify.
+pub fn has_active_text_selection(window: &Window, cx: &App) -> bool {
+    measured_body::window_selection_active(window, cx)
 }

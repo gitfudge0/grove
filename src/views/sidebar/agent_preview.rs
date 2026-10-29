@@ -627,7 +627,8 @@ mod tests {
             let mut activity = SubagentActivity::default();
             activity.items = vec![
                 serde_json::json!({"id":"reply", "type":"agentMessage", "text":"Found the issue"}),
-            ];
+            ]
+            .into();
             live.subagent_activity.insert("child".into(), activity);
             let (freshness, empty) = child_transcript_labels(&live, "child");
             assert_eq!(empty, None);

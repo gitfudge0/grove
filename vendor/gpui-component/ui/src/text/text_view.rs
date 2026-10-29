@@ -274,7 +274,13 @@ impl Element for TextView {
                 selection_state.update(cx, |state, cx| state.clear_selection(cx));
             })
             .on_action(window.listener_for(&state, TextViewState::on_action_select_all))
-            .child(state.clone())
+            .map(|this| {
+                if self.scrollable {
+                    this.child(state.clone())
+                } else {
+                    this.child(super::measured_body::MeasuredBody::new(state.clone()))
+                }
+            })
             .refine_style(&self.style)
             .into_any_element();
         let layout_id = el.request_layout(window, cx);

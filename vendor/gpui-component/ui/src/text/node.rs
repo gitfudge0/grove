@@ -807,12 +807,14 @@ impl Paragraph {
         let span = self.span;
         let children = &self.children;
 
-        let has_link = children
-            .iter()
-            .any(|child| child.marks.iter().any(|(_, mark)| mark.link.is_some()));
-        if self.should_render_inline_flow()
-            || (has_link && node_cx.markdown_extensions.has_link_renderer())
-        {
+        let custom_link = children.iter().any(|child| {
+            child.marks.iter().any(|(_, mark)| {
+                mark.link
+                    .as_ref()
+                    .is_some_and(|link| node_cx.markdown_extensions.may_render_link(&link.url))
+            })
+        });
+        if self.should_render_inline_flow() || custom_link {
             let items = InlineFlow::render_links(
                 self.inline_flow_items(node_cx, cx),
                 &node_cx.markdown_extensions,

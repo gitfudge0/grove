@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use gpui::{
     App, InteractiveElement as _, IntoElement, ListState, ParentElement as _, SharedString,
     Styled as _, Window, div,
@@ -8,7 +10,7 @@ use crate::text::node::{BlockNode, NodeContext};
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ParsedDocument {
     pub(crate) source: SharedString,
-    pub(crate) blocks: Vec<BlockNode>,
+    pub(crate) blocks: Arc<Vec<BlockNode>>,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -66,25 +68,35 @@ impl ParsedDocument {
         &self,
         list_state: Option<ListState>,
         node_cx: &NodeContext,
+        virtualize: Option<gpui::WeakEntity<super::TextViewState>>,
         window: &mut Window,
         cx: &mut App,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         let Some(list_state) = list_state else {
             let blocks_len = self.blocks.len();
+            let node_cx = Arc::new(node_cx.clone());
             return div()
                 .id("document")
                 .children(self.blocks.iter().enumerate().map(move |(ix, node)| {
-                    let is_last = ix + 1 == blocks_len;
-                    node.render_block(
-                        NodeRenderOptions {
-                            ix,
-                            is_last,
-                            ..Default::default()
-                        },
-                        node_cx,
-                        window,
-                        cx,
-                    )
+                    let options = NodeRenderOptions {
+                        ix,
+                        is_last: ix + 1 == blocks_len,
+                        ..Default::default()
+                    };
+                    if let Some(owner) = virtualize
+                        .as_ref()
+                        .filter(|_| super::measured_block::MeasuredBlock::eligible(node, &node_cx))
+                    {
+                        super::measured_block::MeasuredBlock::new(
+                            self.blocks.clone(),
+                            node_cx.clone(),
+                            options,
+                            owner.clone(),
+                        )
+                        .into_any_element()
+                    } else {
+                        node.render_block(options, &node_cx, window, cx)
+                    }
                 }));
         };
 

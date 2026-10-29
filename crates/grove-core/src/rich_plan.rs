@@ -1074,15 +1074,17 @@ impl PlanStore {
             }
         }
     }
-    pub fn retain_messages(&mut self, items: &[serde_json::Value]) {
+    pub fn retain_messages<T: std::borrow::Borrow<serde_json::Value>>(&mut self, items: &[T]) {
         self.references.retain(|r| {
             items
                 .iter()
+                .map(std::borrow::Borrow::<serde_json::Value>::borrow)
                 .any(|item| item["id"].as_str() == Some(&r.message_id))
         });
         self.revisions.retain(|r| {
             items
                 .iter()
+                .map(std::borrow::Borrow::<serde_json::Value>::borrow)
                 .any(|item| item["id"].as_str() == Some(&r.message_id))
                 || self.references.iter().any(|reference| {
                     reference.plan_id == r.document.plan_id
@@ -1092,6 +1094,7 @@ impl PlanStore {
         self.errors.retain(|e| {
             items
                 .iter()
+                .map(std::borrow::Borrow::<serde_json::Value>::borrow)
                 .any(|item| item["id"].as_str() == Some(&e.message_id))
         });
     }

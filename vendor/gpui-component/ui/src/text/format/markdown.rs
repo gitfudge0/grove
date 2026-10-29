@@ -226,7 +226,9 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
         }
         Node::Html(val) => match super::html::parse(&val.value, cx) {
             Ok(el) => {
-                if let Some(inline_text) = append_inline_html_blocks(paragraph, el.blocks) {
+                if let Some(inline_text) =
+                    append_inline_html_blocks(paragraph, std::sync::Arc::unwrap_or_clone(el.blocks))
+                {
                     text = inline_text;
                 } else {
                     if cfg!(debug_assertions) {
@@ -289,7 +291,8 @@ fn ast_to_document(source: &str, root: mdast::Node, cx: &mut NodeContext) -> Par
         .children
         .into_iter()
         .map(|c| ast_to_node(source, c, cx))
-        .collect();
+        .collect::<Vec<_>>()
+        .into();
     ParsedDocument {
         source: source.to_string().into(),
         blocks,
@@ -387,7 +390,7 @@ fn ast_to_node(source: &str, value: mdast::Node, cx: &mut NodeContext) -> BlockN
         )),
         Node::Html(val) => match super::html::parse(&val.value, cx) {
             Ok(el) => BlockNode::Root {
-                children: el.blocks,
+                children: std::sync::Arc::unwrap_or_clone(el.blocks),
                 span: new_span(val.position, cx),
             },
             Err(err) => {

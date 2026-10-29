@@ -68,7 +68,7 @@ fn main() -> Result<(), String> {
             })
             .collect(),
         thread_id: None,
-        items: Vec::new(),
+        items: Vec::new().into(),
         work_periods: Vec::new(),
         draft: String::new(),
         draft_images: Vec::new(),
@@ -137,7 +137,7 @@ fn main() -> Result<(), String> {
             .items
             .iter()
             .filter(|item| item["type"] == "userMessage")
-            .map(codex::item_text)
+            .map(|item| codex::item_text(item))
             .collect::<Vec<_>>();
         if requests.len() != 2
             || !requests[0].contains("STARTUP_FIRST")
@@ -176,7 +176,7 @@ fn main() -> Result<(), String> {
         .iter()
         .rev()
         .find(|item| item["type"] == "agentMessage")
-        .map(codex::item_text)
+        .map(|item| codex::item_text(item))
         .unwrap_or_default();
     if !reply.contains("MARIGOLD") {
         return Err("Missing streamed agent response".into());
@@ -214,7 +214,7 @@ fn main() -> Result<(), String> {
         .iter()
         .rev()
         .find(|item| item["type"] == "agentMessage")
-        .map(codex::item_text)
+        .map(|item| codex::item_text(item))
         .unwrap_or_default();
     if !last.contains("MARIGOLD") {
         return Err(format!("Resumed thread did not remember context: {last}"));
@@ -232,7 +232,7 @@ fn main() -> Result<(), String> {
             .iter()
             .rev()
             .find(|item| item["type"] == "agentMessage")
-            .map(codex::item_text)
+            .map(|item| codex::item_text(item))
             .unwrap_or_default();
         if !reply.to_lowercase().contains("red") {
             return Err(format!("Image attachment was not understood: {reply}"));

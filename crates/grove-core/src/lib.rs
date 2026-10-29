@@ -38,3 +38,5 @@ pub mod theme;
 pub mod theme_file;
 pub mod tmux;
 pub mod upgrade;
+
+mod transcript_items;

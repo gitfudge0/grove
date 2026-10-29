@@ -2941,7 +2941,7 @@ mod tests {
                 title_generation: None,
                 roots: Vec::new(),
                 thread_id: None,
-                items: Vec::new(),
+                items: Vec::new().into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
@@ -3031,7 +3031,7 @@ mod tests {
                 title_generation: None,
                 roots: Vec::new(),
                 thread_id: Some("fixture-thread".into()),
-                items: Vec::new(),
+                items: Vec::new().into(),
                 work_periods: Vec::new(),
                 draft: "Keep my draft".into(),
                 draft_images: vec!["data:image/png;base64,aGVsbG8=".into()],
@@ -3830,7 +3830,7 @@ mod tests {
                 title_generation: None,
                 roots: Vec::new(),
                 thread_id: None,
-                items: Vec::new(),
+                items: Vec::new().into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
@@ -3840,7 +3840,7 @@ mod tests {
             };
 
                 let mut snapshot = grove_core::codex::Snapshot::new(saved);
-                snapshot.saved.items = vec![serde_json::json!({"type":"userMessage", "text":"Investigate authentication retries"}), serde_json::json!({"type":"reasoning", "text":"Thinking"})];
+                snapshot.saved.items = vec![serde_json::json!({"type":"userMessage", "text":"Investigate authentication retries"}), serde_json::json!({"type":"reasoning", "text":"Thinking"})].into();
                 snapshot.saved.work_periods = vec![grove_core::codex::WorkPeriod { start_item: 0, end_item: None, duration_ms: None, subagents: vec![grove_core::codex::Subagent { id: "explorer".into(), name: "Explorer".into(), role: Some("Investigation".into()), task: Some("Investigate authentication retry failures and report the owning layer".into()), activity: "Reading authentication tests".into(), status: grove_core::codex::SubagentStatus::Working }] }];
                 for (id, name, status) in [
                     ("interrupted", "Interrupted agent", grove_core::codex::SubagentStatus::Interrupted),
@@ -3921,7 +3921,7 @@ mod tests {
                                 session.state = grove_core::codex::Snapshot::new(session.state.saved.clone()).into();
                             } else {
                                 let mut activity = grove_core::codex::SubagentActivity::default();
-                                activity.items = vec![serde_json::json!({"id":"saved-reply", "type":"agentMessage", "text":"## Saved investigation\n\nThe authentication owner preserves the original request identifier."})];
+                                activity.items = vec![serde_json::json!({"id":"saved-reply", "type":"agentMessage", "text":"## Saved investigation\n\nThe authentication owner preserves the original request identifier."})].into();
                                 session.state.subagent_activity.insert("explorer".into(), activity);
                             }
                             let (freshness, empty) = super::agent_preview::child_transcript_labels(&session.state, "explorer");
@@ -3996,7 +3996,7 @@ mod tests {
                 title_generation: None,
                 roots: Vec::new(),
                 thread_id: None,
-                items: Vec::new(),
+                items: Vec::new().into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
@@ -4314,7 +4314,7 @@ mod tests {
                 title_generation: None,
                 roots: Vec::new(),
                 thread_id: None,
-                items: Vec::new(),
+                items: Vec::new().into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
@@ -4367,7 +4367,7 @@ mod tests {
                         serde_json::json!({"type":"reasoning", "text":"Inspecting"}),
                         serde_json::json!({"type":"userMessage", "text":"Continue checkout"}),
                         serde_json::json!({"type":"reasoning", "text":"Continuing"}),
-                    ];
+                    ].into();
                     session.state.saved.work_periods = vec![
                         WorkPeriod {
                             start_item: 0,

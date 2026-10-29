@@ -530,6 +530,14 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(cx.theme().font_size);
 
+        // Prune once for the window, rather than scanning the registry for
+        // every selectable message painted below it. Interaction paths still
+        // resolve weak owners synchronously before reading selected text.
+        self.selectable_text_views
+            .retain(|_, (view, _, _)| view.upgrade().is_some());
+        self.selectable_text_inlines
+            .retain(|id, _| self.selectable_text_views.contains_key(id));
+
         let inner = div()
             .id("root")
             .key_context(CONTEXT)
