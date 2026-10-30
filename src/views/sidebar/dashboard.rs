@@ -279,6 +279,7 @@ impl Render for DestinationTray {
 }
 impl Sidebar {
     pub(crate) fn open_dashboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dashboard_timelines.clear_entrances();
         self.open_dashboard_with_defaults(None, window, cx);
     }
     fn open_dashboard_with_defaults(
@@ -550,6 +551,8 @@ impl Sidebar {
         self.codex_views.insert(id, view);
         self.dashboard = None;
         self.open_dashboard_with_defaults(Some(defaults), window, cx);
+        self.dashboard_timelines
+            .adopt_session(self.active_workspace, id, cx.reduce_motion());
     }
     pub(super) fn refresh_dashboard_catalog(&mut self, cx: &mut Context<Self>) {
         let Some(d) = &self.dashboard else {
@@ -1138,6 +1141,7 @@ mod tests {
     fn sequential_dashboard_adoption(
         cx: &mut gpui::TestAppContext,
         provider: grove_core::codex::Provider,
+        reduced_motion: bool,
     ) {
         let repo = tempfile::tempdir().unwrap();
         let first = repo.path().join("first");
@@ -1148,6 +1152,7 @@ mod tests {
         }
         let checkout = checkout.to_string_lossy().into_owned();
         cx.update(|cx| {
+            cx.set_reduce_motion(reduced_motion);
             gpui_component::init(cx);
             cx.set_global(crate::zoom::CurrentPtyDims::default());
             let mut store = grove_core::storage::Store::default();
@@ -1249,11 +1254,24 @@ mod tests {
                     assert_eq!(registry.all().len(), turn);
                     adopted_ids.push(registry.all().last().unwrap().id);
                     assert_eq!(
+                        sidebar
+                            .dashboard_timelines
+                            .is_entering(sidebar.active_workspace, *adopted_ids.last().unwrap()),
+                        !reduced_motion,
+                        "only adopted sessions receive entrance state; reduced motion skips it"
+                    );
+                    assert_eq!(
                         session.read(cx).state.saved.draft,
                         format!("Independent prompt {turn}")
                     );
                 }
                 assert_ne!(adopted_ids[0], adopted_ids[1]);
+                sidebar.open_dashboard(window, cx);
+                for id in adopted_ids {
+                    assert!(!sidebar
+                        .dashboard_timelines
+                        .is_entering(sidebar.active_workspace, id));
+                }
             });
         });
     }
@@ -1261,13 +1279,21 @@ mod tests {
     fn dashboard_sequential_codex_submits_keep_fresh_composer_and_destination(
         cx: &mut gpui::TestAppContext,
     ) {
-        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Codex);
+        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Codex, false);
     }
     #[gpui::test]
     fn dashboard_sequential_claude_submits_keep_fresh_composer_and_destination(
         cx: &mut gpui::TestAppContext,
     ) {
-        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Claude);
+        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Claude, false);
+    }
+    #[gpui::test]
+    fn dashboard_codex_reduced_motion_skips_entrance(cx: &mut gpui::TestAppContext) {
+        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Codex, true);
+    }
+    #[gpui::test]
+    fn dashboard_claude_reduced_motion_skips_entrance(cx: &mut gpui::TestAppContext) {
+        sequential_dashboard_adoption(cx, grove_core::codex::Provider::Claude, true);
     }
     fn worktree_round_trip(cx: &mut gpui::TestAppContext, provider: grove_core::codex::Provider) {
         let fixture = tempfile::tempdir().unwrap();

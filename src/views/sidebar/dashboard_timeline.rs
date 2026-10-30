@@ -12,6 +12,9 @@ const TIMELINE_TASK_LINE_H: f32 = super::SESSION_TITLE_LINE_H;
 const TIMELINE_SPINE_W: f32 = 1.;
 const ACTIVITY_HISTORY_LIMIT: usize = 64;
 const ACTIVITY_TEXT_LIMIT: usize = 120;
+// The approved Make room entrance plays the shared slow motion at half speed.
+const SESSION_ENTRANCE_MS: u64 = MOTION_SLOW_MS * 2;
+const SESSION_ENTRANCE_OPACITY: f32 = 0.35;
 pub(super) struct RowMetadata {
     pub project: String,
     pub worktree: String,
@@ -205,11 +208,24 @@ pub(super) struct DashboardTimelines {
     focus: HashMap<Scope, FocusHandle>,
     open_focus: HashMap<Scope, FocusHandle>,
     reveals: HashMap<Scope, TimelineReveal>,
+    entrances: HashMap<Scope, SessionEntrance>,
     task_opened: HashSet<(Scope, String)>,
     task_focus: HashMap<(Scope, String), FocusHandle>,
     task_hovered: HashSet<(Scope, String)>,
 }
 impl DashboardTimelines {
+    pub(super) fn clear_entrances(&mut self) {
+        self.entrances.clear();
+    }
+    pub(super) fn adopt_session(&mut self, workspace: u64, id: SessionId, reduced: bool) {
+        if !reduced {
+            self.entrances.entry((workspace, id)).or_default();
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn is_entering(&self, workspace: u64, id: SessionId) -> bool {
+        self.entrances.contains_key(&(workspace, id))
+    }
     fn invalidate_scope(&mut self) {
         self.activity_scope = None;
     }
@@ -221,6 +237,7 @@ impl DashboardTimelines {
     ) -> bool {
         if !open {
             self.invalidate_scope();
+            self.clear_entrances();
             return false;
         }
         sessions.sort_unstable();
@@ -255,10 +272,16 @@ impl DashboardTimelines {
         self.focus.retain(|key, _| keep(key));
         self.open_focus.retain(|key, _| keep(key));
         self.reveals.retain(|key, _| keep(key));
+        self.entrances.retain(|key, _| keep(key));
         self.task_opened.retain(|(key, _)| keep(key));
         self.task_focus.retain(|(key, _), _| keep(key));
         self.task_hovered.retain(|(key, _)| keep(key));
     }
+}
+#[derive(Default)]
+struct SessionEntrance {
+    measured: f32,
+    completion: Option<gpui::Task<()>>,
 }
 #[derive(Default)]
 struct TimelineReveal {
@@ -515,7 +538,7 @@ impl Sidebar {
         .child(icon("arrow-right", ICON_SM, c::FG_DIM()));
         let body = self.render_dashboard_tasks(key, &data, status, window, cx);
         let detail = self.dashboard_progress_reveal(key, open, body, cx);
-        div()
+        let row = div()
             .id(("dashboard-progress", id.raw()))
             .w_full()
             .flex()
@@ -532,6 +555,80 @@ impl Sidebar {
                     .child(open_button),
             )
             .child(detail)
+            .into_any_element();
+        self.dashboard_session_entrance(key, row, cx)
+    }
+    fn dashboard_session_entrance(
+        &mut self,
+        key: Scope,
+        row: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if cx.reduce_motion() {
+            self.dashboard_timelines.clear_entrances();
+            return row;
+        }
+        let Some(state) = self.dashboard_timelines.entrances.get(&key) else {
+            return row;
+        };
+        let measured = state.measured;
+        let owner = cx.entity().downgrade();
+        let content =
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .child(row)
+                .on_prepaint(move |bounds, _, cx| {
+                    let height = f32::from(bounds.size.height);
+                    let _ = owner.update(cx, |this, cx| {
+                        let Some(state) = this.dashboard_timelines.entrances.get_mut(&key) else {
+                            return;
+                        };
+                        if height <= 0. || (state.measured - height).abs() <= 0.5 {
+                            return;
+                        }
+                        state.measured = height;
+                        if state.completion.is_none() {
+                            state.completion = Some(cx.spawn(async move |this, cx| {
+                                cx.background_executor()
+                                    .timer(std::time::Duration::from_millis(SESSION_ENTRANCE_MS))
+                                    .await;
+                                let _ = this.update(cx, |this, cx| {
+                                    this.dashboard_timelines.entrances.remove(&key);
+                                    cx.notify();
+                                });
+                            }));
+                        }
+                        cx.notify();
+                    });
+                });
+        let frame = div()
+            .id(gpui::SharedString::from(format!(
+                "session-entrance-{key:?}"
+            )))
+            .debug_selector(move || format!("dashboard-session-entrance-{}", key.1.raw()))
+            .w_full()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(content);
+        if measured <= 0. {
+            return frame.max_h(gpui::px(0.)).into_any_element();
+        }
+        frame
+            .with_animation(
+                format!("session-entrance-{key:?}"),
+                gpui::Animation::new(std::time::Duration::from_millis(SESSION_ENTRANCE_MS))
+                    .with_easing(motion::ease_standard),
+                move |element, t| {
+                    element
+                        .max_h(gpui::px(measured * t))
+                        .opacity(SESSION_ENTRANCE_OPACITY + (1. - SESSION_ENTRANCE_OPACITY) * t)
+                        .relative()
+                        .top(rpx(-SPACE_MD * (1. - t)))
+                },
+            )
             .into_any_element()
     }
     fn render_dashboard_tasks(
@@ -1041,6 +1138,117 @@ fn render_activity_with_current(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    struct EntranceProbe(Entity<Sidebar>);
+    impl Render for EntranceProbe {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let entrance = self.0.update(cx, |sidebar, cx| {
+                let row = div().w_full().h(gpui::px(90.)).into_any_element();
+                sidebar.dashboard_session_entrance((1, SessionId::from_raw(1)), row, cx)
+            });
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .debug_selector(|| "entrance-composer".into())
+                        .h(gpui::px(40.)),
+                )
+                .child(entrance)
+                .child(
+                    div()
+                        .debug_selector(|| "entrance-following".into())
+                        .h(gpui::px(30.)),
+                )
+        }
+    }
+    #[gpui::test]
+    fn dashboard_session_entrance_measures_once_and_finishes_without_replay(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            init_task_fixture(cx);
+            cx.set_reduce_motion(false);
+        });
+        let (probe, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar = cx.new(|cx| {
+                let mut sidebar = Sidebar::new(runtime, window, cx);
+                sidebar
+                    .dashboard_timelines
+                    .adopt_session(1, SessionId::from_raw(1), false);
+                sidebar
+            });
+            cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
+            EntranceProbe(sidebar)
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let composer = cx.debug_bounds("entrance-composer").unwrap();
+        let initial_following = cx.debug_bounds("entrance-following").unwrap();
+        assert!(initial_following.top() >= composer.bottom());
+        assert!(initial_following.top() < composer.bottom() + gpui::px(90.));
+        cx.run_until_parked();
+        let key = (1, SessionId::from_raw(1));
+        cx.update(|window, cx| {
+            let sidebar = probe.read(cx).0.clone();
+            sidebar.update(cx, |sidebar, cx| {
+                let state = &sidebar.dashboard_timelines.entrances[&key];
+                assert_eq!(state.measured, 90.);
+                assert!(state.completion.is_some());
+                cx.notify();
+            });
+            let _ = window.draw(cx);
+        });
+        let before_motion = cx.debug_bounds("entrance-following").unwrap().top();
+        // GPUI Animation uses wall-clock Instant, independently of executor timers.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        cx.update(|window, cx| {
+            probe.update(cx, |_, cx| cx.notify());
+            let _ = window.draw(cx);
+        });
+        let during_motion = cx.debug_bounds("entrance-following").unwrap().top();
+        assert!(during_motion > before_motion);
+        assert!(during_motion < composer.bottom() + gpui::px(90.));
+        assert_eq!(cx.debug_bounds("entrance-composer").unwrap(), composer);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(SESSION_ENTRANCE_MS - 1));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert!(probe
+                .read(cx)
+                .0
+                .read(cx)
+                .dashboard_timelines
+                .is_entering(key.0, key.1));
+        });
+        assert_eq!(cx.debug_bounds("entrance-composer").unwrap(), composer);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert!(!probe
+                .read(cx)
+                .0
+                .read(cx)
+                .dashboard_timelines
+                .is_entering(key.0, key.1));
+            let _ = window.draw(cx);
+            assert!(!probe
+                .read(cx)
+                .0
+                .read(cx)
+                .dashboard_timelines
+                .is_entering(key.0, key.1));
+        });
+        assert_eq!(cx.debug_bounds("entrance-composer").unwrap(), composer);
+        assert_eq!(
+            cx.debug_bounds("entrance-following").unwrap().top(),
+            composer.bottom() + gpui::px(90.)
+        );
+    }
 
     #[test]
     fn task_disclosure_states_use_visible_catalog_glyphs() {
