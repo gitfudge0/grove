@@ -13,6 +13,8 @@ struct DashboardDefaults {
     provider: grove_core::codex::Provider,
     composer: grove_core::codex::ComposerSettings,
     config_args: Vec<String>,
+    worktrees: Option<Vec<(String, String)>>,
+    viewport_height: gpui::Pixels,
 }
 pub(super) struct Dashboard {
     pub session: Entity<CodexSession>,
@@ -32,6 +34,7 @@ pub(crate) struct DestinationTray {
     loading: bool,
     generation: u64,
     error: Option<String>,
+    preserve_on_refresh: bool,
     project: usize,
     pub(super) path: String,
     popup: Option<Entity<gpui_component::menu::PopupMenu>>,
@@ -56,6 +59,7 @@ impl DestinationTray {
             loading: false,
             generation: 0,
             error: None,
+            preserve_on_refresh: false,
             popup: None,
             popup_events: None,
             hovered: [false; 2],
@@ -375,7 +379,18 @@ impl Sidebar {
                     cx,
                 )
             });
-            let tray = cx.new(|_| DestinationTray::new(projects, idx, checkout));
+            let tray = cx.new(|_| {
+                let mut tray = DestinationTray::new(projects, idx, checkout);
+                if let Some(worktrees) = defaults
+                    .as_ref()
+                    .filter(|d| d.project == idx && d.path == tray.path)
+                    .and_then(|d| d.worktrees.clone())
+                {
+                    tray.worktrees = worktrees;
+                    tray.preserve_on_refresh = true;
+                }
+                tray
+            });
             let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
             view.update(cx, |view, cx| view.attach_dashboard_tray(tray.clone(), cx));
             let events = vec![
@@ -434,7 +449,11 @@ impl Sidebar {
                 session,
                 view,
                 tray,
-                viewport_height: std::rc::Rc::default(),
+                viewport_height: std::rc::Rc::new(std::cell::Cell::new(
+                    defaults
+                        .as_ref()
+                        .map_or(gpui::px(0.), |d| d.viewport_height),
+                )),
                 _events: events,
             });
         }
@@ -536,12 +555,26 @@ impl Sidebar {
     ) {
         let defaults = {
             let saved = &session.read(cx).state.saved;
+            let worktrees = self.dashboard.as_ref().and_then(|dashboard| {
+                let tray = dashboard.tray.read(cx);
+                (tray.project == project
+                    && tray.path == saved.cwd
+                    && !tray.loading
+                    && tray.error.is_none()
+                    && tray.worktrees.iter().any(|(path, _)| path == &tray.path))
+                .then(|| tray.worktrees.clone())
+            });
             DashboardDefaults {
                 project,
                 path: saved.cwd.clone(),
                 provider: saved.provider,
                 composer: saved.composer.clone(),
                 config_args: saved.config_args.clone(),
+                worktrees,
+                viewport_height: self
+                    .dashboard
+                    .as_ref()
+                    .map_or(gpui::px(0.), |d| d.viewport_height.get()),
             }
         };
         let id = self.runtime.update(cx, |runtime, cx| {
@@ -601,9 +634,12 @@ impl Sidebar {
         let root = project.path;
         let generation = tray.update(cx, |t, cx| {
             t.generation = t.generation.wrapping_add(1);
-            t.loading = true;
+            let preserve = std::mem::take(&mut t.preserve_on_refresh);
+            t.loading = !preserve;
             t.error = None;
-            t.worktrees = vec![(root.clone(), "Main worktree".into())];
+            if !preserve {
+                t.worktrees = vec![(root.clone(), "Main worktree".into())];
+            }
             cx.notify();
             t.generation
         });
@@ -1136,6 +1172,99 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn dashboard_adoption_keeps_composer_anchored_on_first_frame(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let mut store = grove_core::storage::Store::default();
+            let path = "/tmp/grove-dashboard-inset-adoption";
+            store.projects.push(grove_core::storage::Project {
+                name: "Dashboard fixture".into(),
+                path: path.into(),
+                scripts: grove_core::storage::ProjectScripts::default(),
+                archived: false,
+                worktree_dir: None,
+            });
+            store.assign_project_to_active_workspace(path);
+            cx.set_global(SettingsState::new(store));
+        });
+        let (fixture, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+            InsetDashboardFixture(sidebar)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(900.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let before = cx.debug_bounds("codex-composer").unwrap().top();
+        let (_updates, receive) = std::sync::mpsc::channel();
+        let (handle, _actions) = grove_core::codex::Handle::channel();
+        cx.update(|window, cx| {
+            let sidebar = fixture.read(cx).0.clone();
+            sidebar.update(cx, |sidebar, cx| {
+                let saved = sidebar
+                    .dashboard
+                    .as_ref()
+                    .unwrap()
+                    .session
+                    .read(cx)
+                    .state
+                    .saved
+                    .clone();
+                let session = cx.new(|cx| {
+                    CodexSession::from_connection(
+                        grove_core::codex::Snapshot::new(saved),
+                        grove_core::codex::Connection {
+                            handle,
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
+                let measured = sidebar.dashboard.as_ref().unwrap().viewport_height.get();
+                assert_eq!(measured, gpui::px(800.));
+                assert_eq!(window.viewport_size().height, gpui::px(900.));
+                sidebar.adopt_dashboard_launch(0, session, view, window, cx);
+                assert_eq!(
+                    sidebar.dashboard.as_ref().unwrap().viewport_height.get(),
+                    measured,
+                    "the replacement must have the measured height before its first layout"
+                );
+            });
+            let _ = window.draw(cx);
+        });
+        assert_eq!(
+            cx.debug_bounds("codex-composer").unwrap().top(),
+            before,
+            "the first replacement frame must use the measured dashboard height"
+        );
+        cx.run_until_parked();
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(1000.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let page = cx.debug_bounds("dashboard-page").unwrap();
+        let composer = cx.debug_bounds("codex-composer").unwrap();
+        assert!(
+            (composer.top() - page.top() - page.size.height * DASHBOARD_COMPOSER_TOP_FRACTION)
+                .abs()
+                < gpui::px(2.)
+        );
+    }
+
     // Exercise the real adoption/fresh-draft owner with mocked connected sessions.
     // Live provider normalization and native submit are verified separately.
     fn sequential_dashboard_adoption(
@@ -1210,6 +1339,18 @@ mod tests {
                     saved.composer.access = Some("fixture-permission".into());
                     saved.composer.speed = Some(grove_core::codex::Speed::Fast);
                     saved.config_args = vec!["fixture-configuration".into()];
+                    sidebar
+                        .dashboard
+                        .as_ref()
+                        .unwrap()
+                        .tray
+                        .update(cx, |tray, _| {
+                            tray.project = 1;
+                            tray.path = checkout.clone();
+                            tray.worktrees = vec![(checkout.clone(), "feature-branch".into())];
+                            tray.loading = false;
+                            tray.error = None;
+                        });
                     let (handle, actions) = grove_core::codex::Handle::channel();
                     receivers.push(actions);
                     let (_updates, receive) = std::sync::mpsc::channel();
@@ -1238,6 +1379,14 @@ mod tests {
                     assert_eq!(next.cwd, checkout);
                     assert_eq!(d.tray.read(cx).project, 1);
                     assert_eq!(d.tray.read(cx).path, checkout);
+                    assert_eq!(
+                        d.tray.read(cx).worktrees,
+                        [(checkout.clone(), "feature-branch".into())]
+                    );
+                    assert!(
+                        !d.tray.read(cx).loading,
+                        "cached destination remains visible during refresh"
+                    );
                     assert_eq!(next.composer.model.as_deref(), Some("fixture-model"));
                     assert_eq!(next.composer.effort.as_deref(), Some("high"));
                     assert_eq!(next.composer.access.as_deref(), Some("fixture-permission"));
