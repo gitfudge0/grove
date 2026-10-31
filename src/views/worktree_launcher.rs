@@ -51,12 +51,14 @@ pub struct WorktreeLauncher {
     input: Entity<InputState>,
     _input_subscription: Subscription,
     focus: FocusHandle,
+    back_focus: FocusHandle,
     return_focus: Option<FocusHandle>,
     open: bool,
     closing: bool,
     presence: motion::Presence,
     close_task: Option<gpui::Task<()>>,
     mode: PaletteMode,
+    selected_project: Option<usize>,
     query: String,
     selected: usize,
     anchor: Option<RowIdentity>,
@@ -95,12 +97,14 @@ impl WorktreeLauncher {
             input,
             _input_subscription: subscription,
             focus: cx.focus_handle(),
+            back_focus: cx.focus_handle(),
             return_focus: None,
             open: false,
             closing: false,
             presence: motion::Presence::default(),
             close_task: None,
             mode: PaletteMode::Root,
+            selected_project: None,
             query: String::new(),
             selected: 0,
             anchor: None,
@@ -133,8 +137,11 @@ impl WorktreeLauncher {
     fn update_query(&mut self, query: String, cx: &mut Context<Self>) {
         self.query = query;
         let rows = self.rows(cx);
-        self.selected =
-            launcher::resolve_row_by_identity(&rows, self.anchor.as_ref(), 0).unwrap_or(0);
+        self.selected = if self.mode == PaletteMode::Single && self.selected_project.is_none() {
+            0
+        } else {
+            launcher::resolve_row_by_identity(&rows, self.anchor.as_ref(), 0).unwrap_or(0)
+        };
         self.anchor = rows.get(self.selected).map(launcher::row_identity);
         self.sync_agent_to_row(&rows);
         self.error = None;
@@ -162,6 +169,7 @@ impl WorktreeLauncher {
         self.close_task = None;
         self.presence.set(true, cx);
         self.mode = PaletteMode::Root;
+        self.selected_project = None;
         self.loading_worktrees = false;
         self.query.clear();
         self.selected = 0;
@@ -176,6 +184,7 @@ impl WorktreeLauncher {
         self.error = None;
         self.scroll.set_offset(gpui::Point::default());
         self.input.update(cx, |input, cx| {
+            input.set_placeholder("Search projects and worktrees", window, cx);
             input.set_value("", window, cx);
             input.focus(window, cx);
         });
@@ -310,7 +319,10 @@ impl WorktreeLauncher {
             let tree = tree.read(cx);
             let targets = projects
                 .iter()
-                .filter(|(proj, _)| tree.worktrees_for_project(*proj, active_proj).is_empty())
+                .filter(|(proj, _)| {
+                    (self.mode != PaletteMode::Single || self.selected_project == Some(*proj))
+                        && tree.worktrees_for_project(*proj, active_proj).is_empty()
+                })
                 .cloned()
                 .collect::<Vec<_>>();
             (tree.generation(), targets)
@@ -415,7 +427,38 @@ impl WorktreeLauncher {
             return Vec::new();
         }
         let store = &cx.global::<SettingsState>().store;
-        let combos = self.combos(cx);
+        let mut combos = self.combos(cx);
+        if self.mode == PaletteMode::Single {
+            if let Some(project) = self.selected_project {
+                combos.retain(|(idx, _, _, _)| *idx == project);
+                for (_, name, _, _) in &mut combos {
+                    name.clear();
+                }
+            } else {
+                let mut projects = store
+                    .workspace_projects(store.workspaces.active)
+                    .filter_map(|(proj, project)| {
+                        let score = launcher::fuzzy_score(&self.query, &project.name, "", "")
+                            .map(|score| score.saturating_add(1000))
+                            .or_else(|| {
+                                launcher::fuzzy_score(&self.query, "", &project.path, "")
+                            })?;
+                        Some((
+                            score,
+                            PaletteRow::Combo {
+                                proj,
+                                wt_path: project.path.clone(),
+                                agent: preferred_agent(store.default_agent),
+                            },
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                if !self.query.trim().is_empty() {
+                    projects.sort_by(|a, b| b.0.cmp(&a.0));
+                }
+                return projects.into_iter().map(|(_, row)| row).collect();
+            }
+        }
         if self.mode != PaletteMode::Root {
             return launcher::typed_rows(
                 &self.query,
@@ -658,6 +701,14 @@ impl WorktreeLauncher {
             return;
         }
         let row = self.selected_row(cx);
+        if self.mode == PaletteMode::Single && self.selected_project.is_none() {
+            if let Some(PaletteRow::Combo { proj, .. }) = row {
+                self.selected_project = Some(proj);
+                self.load_workspace_worktrees(cx);
+                self.reset_picker_search(window, cx);
+            }
+            return;
+        }
         let Some(row) = row else {
             return;
         };
@@ -675,7 +726,10 @@ impl WorktreeLauncher {
                     } else {
                         PaletteMode::Multi
                     };
-                    self.load_workspace_worktrees(cx);
+                    self.selected_project = None;
+                    if self.mode == PaletteMode::Multi {
+                        self.load_workspace_worktrees(cx);
+                    }
                     self.selected_worktrees.clear();
                     self.query.clear();
                     self.selected = 0;
@@ -683,11 +737,7 @@ impl WorktreeLauncher {
                     self.agent_focus = false;
                     self.error = None;
                     self.scroll.set_offset(gpui::Point::default());
-                    self.input.update(cx, |input, cx| {
-                        input.set_value("", window, cx);
-                        input.focus(window, cx);
-                    });
-                    cx.notify();
+                    self.reset_picker_search(window, cx);
                 }
             }
             command => {
@@ -695,6 +745,46 @@ impl WorktreeLauncher {
                 cx.emit(WorktreeLauncherEvent::Command(command));
             }
         }
+    }
+
+    fn reset_picker_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.query.clear();
+        self.selected = 0;
+        self.anchor = None;
+        self.agent_focus = false;
+        self.error = None;
+        self.scroll.set_offset(gpui::Point::default());
+        let placeholder = if self.mode == PaletteMode::Single && self.selected_project.is_none() {
+            "Search projects"
+        } else if self.mode == PaletteMode::Root {
+            "Search projects and worktrees"
+        } else {
+            "Search worktrees"
+        };
+        self.input.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx);
+            input.set_value("", window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == PaletteMode::Root {
+            self.close(window, cx);
+            return;
+        }
+        if self.mode == PaletteMode::Single && self.selected_project.is_some() {
+            self.selected_project = None;
+        } else {
+            self.mode = PaletteMode::Root;
+        }
+        self.loading_worktrees = false;
+        self.load_seq = self.load_seq.wrapping_add(1);
+        self.selected_worktrees.clear();
+        self.reset_picker_search(window, cx);
+        let rows = self.rows(cx);
+        self.sync_agent_to_row(&rows);
     }
 
     fn toggle_selected_row(&mut self, cx: &mut Context<Self>) {
@@ -805,30 +895,16 @@ impl WorktreeLauncher {
             return;
         }
         let key = &event.keystroke;
-        match key.key.as_str() {
-            "escape" => {
-                if self.mode == PaletteMode::Root {
-                    self.close(window, cx);
-                } else {
-                    self.mode = PaletteMode::Root;
-                    self.loading_worktrees = false;
-                    self.load_seq = self.load_seq.wrapping_add(1);
-                    self.selected_worktrees.clear();
-                    self.query.clear();
-                    self.selected = 0;
-                    self.anchor = None;
-                    self.agent_focus = false;
-                    self.error = None;
-                    self.scroll.set_offset(gpui::Point::default());
-                    self.input.update(cx, |input, cx| {
-                        input.set_value("", window, cx);
-                        input.focus(window, cx);
-                    });
-                    let rows = self.rows(cx);
-                    self.sync_agent_to_row(&rows);
-                    cx.notify();
-                }
+        if self.back_focus.is_focused(window) && matches!(key.key.as_str(), "enter" | "space") {
+            if !event.is_held {
+                self.back(window, cx);
             }
+            window.prevent_default();
+            cx.stop_propagation();
+            return;
+        }
+        match key.key.as_str() {
+            "escape" => self.back(window, cx),
             "down" | "up" => {
                 self.selected = launcher::cycle(
                     self.selected,
@@ -841,12 +917,22 @@ impl WorktreeLauncher {
                 self.scroll.scroll_to_item(self.selected);
                 cx.notify();
             }
-            "tab" => {
-                self.agent_focus = !self.agent_focus;
-                if self.agent_focus {
-                    self.focus.focus(window, cx);
-                } else {
+            "tab" if !(self.mode == PaletteMode::Single && self.selected_project.is_none()) => {
+                let has_back = self.mode == PaletteMode::Single && self.selected_project.is_some();
+                let back_focused = self.back_focus.is_focused(window);
+                let search_focused = self.input.read(cx).focus_handle(cx).is_focused(window);
+                if has_back
+                    && ((key.modifiers.shift && search_focused)
+                        || (!key.modifiers.shift && self.agent_focus))
+                {
+                    self.agent_focus = false;
+                    self.back_focus.focus(window, cx);
+                } else if back_focused && !key.modifiers.shift || !has_back && self.agent_focus {
+                    self.agent_focus = false;
                     self.input.update(cx, |input, cx| input.focus(window, cx));
+                } else {
+                    self.agent_focus = true;
+                    self.focus.focus(window, cx);
                 }
                 cx.notify();
             }
@@ -901,6 +987,11 @@ impl Render for WorktreeLauncher {
             .map(|project| project.name.clone())
             .collect::<Vec<_>>();
         let rows = self.rows(cx);
+        let project_step = self.mode == PaletteMode::Single && self.selected_project.is_none();
+        let selected_project_name = self
+            .selected_project
+            .and_then(|idx| project_names.get(idx))
+            .cloned();
         let selected_count = self.selected_worktrees.count();
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let viewport_w = f32::from(window.viewport_size().width) / scale;
@@ -947,7 +1038,12 @@ impl Render for WorktreeLauncher {
                             .flex()
                             .flex_col()
                             .gap(rpx(if compact { SPACE_SM } else { SPACE_2XL }))
-                            .when(!compact, |header| header.child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(self.title())))
+                            .when(!compact, |header| header.child(div().flex().items_center().gap(rpx(SPACE_SM))
+                                .when(selected_project_name.is_some(), |header| header.child(
+                                    div().id("launcher-back").role(gpui::Role::Button).aria_label("Back to projects").track_focus(&self.back_focus).tab_index(0).focus_visible(|button| button.border_1().border_color(c::FG()))
+                                        .cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))
+                                        .child(icon("arrow-left", ICON_MD, c::FG_DIM()))))
+                                .child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(selected_project_name.clone().unwrap_or_else(|| self.title().to_string())))))
                             .child(
                                 div()
                                     .id("worktree-launcher-search")
@@ -962,9 +1058,13 @@ impl Render for WorktreeLauncher {
                                     .bg(if self.input.read(cx).focus_handle(cx).is_focused(window) { c::BG_HOVER() } else { c::FIELD_FILL() })
                                     .flex()
                                     .items_center()
+                                    .when(compact && selected_project_name.is_some(), |search| search.child(
+                                        div().id("launcher-back-compact").role(gpui::Role::Button).aria_label("Back to projects").track_focus(&self.back_focus).tab_index(0).focus_visible(|button| button.border_1().border_color(c::FG()))
+                                            .cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))
+                                            .child(icon("arrow-left", ICON_MD, c::FG_DIM()))))
                                     .child(
                                         Input::new(&self.input).disabled(!self.open).tab_index(if self.open { 0 } else { -1 })
-                                            .aria_label("Search commands and worktrees")
+                                            .aria_label(if project_step { "Search projects" } else if self.mode == PaletteMode::Single { "Search worktrees" } else { "Search commands and worktrees" })
                                             .appearance(false)
                                             .bordered(false)
                                             .focus_bordered(false)
@@ -988,14 +1088,14 @@ impl Render for WorktreeLauncher {
                                 div().p(rpx(SPACE_3XL)).text_color(c::FG_DIM()).text_size(rpx(TEXT_BODY)).child(
                                     if self.mode != PaletteMode::Root && self.loading_worktrees {
                                         status::label("launcher-loading-status", StatusKind::Working, "Loading worktrees…", ICON_SM, cx).into_any_element()
-                                    } else { div().child(if self.mode == PaletteMode::Root { "No matching commands" } else { "No matching worktrees" }).into_any_element() }
+                                    } else { div().child(if self.mode == PaletteMode::Root { "No matching commands" } else if project_step { "No matching projects" } else { "No matching worktrees" }).into_any_element() }
                                 )
                             ))
                             .children(rows.into_iter().enumerate().map(|(index, row)| {
                                 let (label, detail, icon_name, suffix) = match &row {
                                     PaletteRow::Recent { proj, wt_path, agent } | PaletteRow::Combo { proj, wt_path, agent } => {
                                         let project = project_names.get(*proj).map_or("", |name| name.as_str());
-                                        (format!("{} / {}", project, worktree_name(wt_path)), wt_path.clone(), "git-branch", agent.label().to_string())
+                                        (if project_step { project.to_string() } else if self.mode == PaletteMode::Single { worktree_name(wt_path).to_string() } else { format!("{} / {}", project, worktree_name(wt_path)) }, wt_path.clone(), "git-branch", if project_step { "›".to_string() } else { agent.label().to_string() })
                                     }
                                     PaletteRow::NewSession => ("New session".into(), "Choose a worktree".into(), "plus", String::new()),
                                     PaletteRow::NewMultiProjectSession => ("New cross-project session".into(), "Select multiple worktrees".into(), "plus", String::new()),
@@ -1009,7 +1109,7 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::Setting(setting) => (setting.label().into(), setting.section().into(), setting.icon_name(), String::new()),
                                 };
                                 let identity = launcher::row_identity(&row);
-                                let show_agent_selector = self.mode != PaletteMode::Multi
+                                let show_agent_selector = !project_step && self.mode != PaletteMode::Multi
                                     && self.agent_focus
                                     && index == self.selected;
                                 let is_worktree_row = matches!(
@@ -1044,12 +1144,13 @@ impl Render for WorktreeLauncher {
                                         div().flex().flex_1().items_start().gap(rpx(SPACE_2XL)).min_w_0()
                                             .child(
                                                 div()
-                                                    .size(rpx(CONTROL_H))
+                                                    .size(rpx(if project_step { 28.0 } else { CONTROL_H }))
                                                     .flex_shrink_0()
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
-                                                    .child(icon(icon_name, ICON_20, c::FG_DIM())),
+                                                    .when(project_step, |glyph| glyph.rounded_full().border_1().border_color(c::BORDER_STRONG()).text_size(rpx(TEXT_SMALL)).text_color(c::FG()).child(label.split_whitespace().take(2).filter_map(|word| word.chars().next()).flat_map(char::to_uppercase).collect::<String>()))
+                                                    .when(!project_step, |glyph| glyph.child(icon(icon_name, ICON_20, c::FG_DIM()))),
                                             )
                                             .child(div().flex().flex_1().flex_col().min_w_0().gap(rpx(SPACE_XS))
                                                 .child(div().line_height(rpx(SPACE_3XL)).text_size(rpx(TEXT_BODY)).text_color(c::FG()).truncate().child(label))
@@ -1176,6 +1277,7 @@ impl Render for WorktreeLauncher {
                                 PaletteMode::Root if compact => "↑↓ · Tab tools · Enter · Esc",
                                 _ if self.loading_worktrees && compact => "Loading worktrees… · Esc back",
                                 _ if self.loading_worktrees => "Loading worktrees… · Search is ready · Esc back",
+                                PaletteMode::Single if project_step => "↑↓ projects · Enter choose · Esc back",
                                 PaletteMode::Single if compact => "↑↓ · Tab tools · Enter start · Esc",
                                 PaletteMode::Multi if compact => "⇧Space select · Tab tools · Enter · Esc",
                                 PaletteMode::Root => "↑↓ rows · Tab tools · Enter activate · Esc close",
@@ -1407,11 +1509,17 @@ mod tests {
                 view.launch_probe = Some(Vec::new());
                 view.open(window, cx);
                 enter_picker(view, PaletteRow::NewSession, window, cx);
+                view.update_query("API".into(), cx);
+                assert!(matches!(
+                    view.selected_row(cx),
+                    Some(PaletteRow::Combo { proj: 1, .. })
+                ));
+                view.activate(window, cx);
                 assert!(view.loading_worktrees);
                 assert!(view.input.focus_handle(cx).is_focused(window));
                 assert!(view.rows(cx).is_empty());
                 assert!(view.selected_row(cx).is_none());
-                view.update_query("API feature-auth".into(), cx);
+                view.update_query("feature-auth".into(), cx);
                 assert!(view.rows(cx).is_empty());
                 view.activate(window, cx);
                 assert!(view.is_open());
@@ -1499,7 +1607,28 @@ mod tests {
             assert_eq!(view.mode, PaletteMode::Single);
             assert!(view.input.focus_handle(cx).is_focused(window));
         });
-        cx.simulate_input("API feature-auth");
+        cx.simulate_input("API");
+        draw(cx);
+        let project_row = cx.debug_bounds("launcher-row-0").expect("project row");
+        cx.simulate_click(project_row.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| assert!(launcher.read(cx).selected_project.is_some()));
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        cx.update(|window, cx| assert!(launcher.read(cx).back_focus.is_focused(window)));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            let view = launcher.read(cx);
+            assert_eq!(view.mode, PaletteMode::Single);
+            assert!(view.selected_project.is_none());
+            assert!(view.query.is_empty());
+        });
+        cx.simulate_input("API");
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.simulate_input("feature-auth");
         draw(cx);
         cx.update(|window, cx| {
             let view = launcher.read(cx);
@@ -1553,6 +1682,7 @@ mod tests {
                 enter_picker(view, PaletteRow::NewSession, window, cx);
                 assert_eq!(view.mode, PaletteMode::Single);
                 assert_eq!(view.selected_worktrees.count(), 0);
+                view.activate(window, cx);
                 let RowIdentity::Session { wt_path, .. } =
                     launcher::row_identity(&view.selected_row(cx).expect("highlighted worktree"))
                 else {
