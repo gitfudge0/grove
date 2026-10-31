@@ -289,6 +289,12 @@ impl Sidebar {
                 )
             })
             .collect();
+        let selected_native = records
+            .iter()
+            .find(|s| matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key));
+        let selected_cli = cli_records
+            .iter()
+            .find(|s| matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key));
         let project_label = self
             .history_project_filter
             .as_ref()
@@ -302,39 +308,35 @@ impl Sidebar {
             .min_h_0()
             .flex()
             .flex_col();
-        page = page.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_LG))
-                .p(rpx(SPACE_3XL))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().text_size(rpx(TEXT_DISPLAY)).child("History"))
-                        .child(
-                            div()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .child("Closed sessions in this workspace"),
-                        ),
-                )
-                .child(
-                    self.control(
-                        "refresh-session-history",
-                        "Refresh history",
-                        Action::RefreshSessionHistory,
-                        cx,
+        if selected_native.is_none() && selected_cli.is_none() {
+            page = page.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .p(rpx(SPACE_3XL))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_size(rpx(TEXT_DISPLAY)).child("History")),
                     )
-                    .w_auto()
-                    .px(rpx(SPACE_LG))
-                    .child(icon("reset", ICON_SM, c::FG_DIM()))
-                    .child("Refresh"),
-                ),
-        );
+                    .child(
+                        self.control(
+                            "refresh-session-history",
+                            "Refresh history",
+                            Action::RefreshSessionHistory,
+                            cx,
+                        )
+                        .w_auto()
+                        .px(rpx(SPACE_LG))
+                        .child(icon("reset", ICON_SM, c::FG_DIM()))
+                        .child("Refresh"),
+                    ),
+            );
+        }
         if let Some(error) = &self.session_history_error {
             page = page.child(
                 div()
@@ -351,12 +353,6 @@ impl Sidebar {
                     .child("Loading history…"),
             );
         }
-        let selected_native = records
-            .iter()
-            .find(|s| matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key));
-        let selected_cli = cli_records
-            .iter()
-            .find(|s| matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key));
         let provider_label = self
             .history_provider_filter
             .map_or("All providers", |a| match a {
@@ -552,68 +548,48 @@ impl Sidebar {
             .min_w_0()
             .min_h_0()
             .flex()
-            .flex_col()
-            .gap(rpx(SPACE_LG))
-            .p(rpx(SPACE_2XL))
-            .border_t_1()
-            .border_color(c::BORDER_SOFT());
+            .flex_col();
         if let Some(s) = selected_native {
-            detail = detail
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_LG))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(rpx(TEXT_TITLE))
-                                .child(s.title.as_deref().unwrap_or(&s.label).to_string()),
-                        )
-                        .child(
-                            self.control(
-                                "reopen-history-session",
-                                "Reopen session",
-                                Action::ReopenSessionHistory(s.key.clone()),
-                                cx,
-                            )
-                            .debug_selector(|| "reopen-history-session".into())
-                            .w_auto()
-                            .px(rpx(SPACE_LG))
-                            .child(icon("reset", ICON_SM, c::FG_DIM()))
-                            .child("Reopen session"),
-                        ),
+            let header = history_detail_header(
+                s.title.as_deref().unwrap_or(&s.label),
+                &s.project,
+                &checkout_names[&s.cwd],
+            )
+            .child(
+                self.control(
+                    "reopen-history-session",
+                    "Reopen session",
+                    Action::ReopenSessionHistory(s.key.clone()),
+                    cx,
                 )
-                .child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child(format!(
-                            "{} / {} / {}",
-                            s.project,
-                            s.cwd,
-                            s.provider.label()
-                        )),
-                )
-                .child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Closed session · read only"),
-                );
+                .debug_selector(|| "reopen-history-session".into())
+                .w_auto()
+                .flex_shrink_0()
+                .px(rpx(SPACE_LG))
+                .gap(rpx(SPACE_SM))
+                .child(icon("reset", ICON_SM, c::FG_DIM()))
+                .child("Reopen session"),
+            );
+            detail = detail.child(history_header_container(header));
             if let Some(view) = &self.session_history_view {
                 detail = detail.child(div().flex_1().min_h_0().child(view.clone()));
             }
         } else if let Some(s) = selected_cli {
-            detail = detail.child(div().text_size(rpx(TEXT_TITLE)).child(s.title.as_deref().unwrap_or(&s.label).to_string()))
-                .child(div().text_color(c::FG_DIM()).child(format!("{} / {} / {} CLI", s.project, s.cwd, s.agent.label())))
-                .child(div().child("Transcript unavailable"))
-                .child(div().text_color(c::FG_DIM()).child("This closed CLI session retains its identity and checkout, but its terminal transcript was not saved. Start a new session from Projects to continue working."));
+            let header = history_detail_header(
+                s.title.as_deref().unwrap_or(&s.label),
+                &s.project,
+                &checkout_names[&s.cwd],
+            );
+            detail = detail.child(history_header_container(header))
+                .child(div().px(rpx(SPACE_20)).py(rpx(SPACE_3XL)).flex().flex_col().items_center().child(
+                    div().w_full().max_w(rpx(super::super::codex_view::CHAT_MAX_W))
+                        .child(div().child("Transcript unavailable"))
+                        .child(div().text_color(c::FG_DIM()).child("This CLI session retains its identity and checkout, but its terminal transcript was not saved. Start a new session from Projects to continue working.")),
+                ));
         } else {
             detail = detail.child(
                 div()
+                    .p(rpx(SPACE_2XL))
                     .text_color(c::FG_DIM())
                     .child("Select a closed session to inspect it."),
             );
@@ -744,6 +720,69 @@ impl Sidebar {
         }
         page.into_any_element()
     }
+}
+
+// The transcript uses this same horizontal inset and maximum width.
+fn history_header_container(header: Div) -> Div {
+    div()
+        .w_full()
+        .px(rpx(SPACE_20))
+        .pt(rpx(SPACE_3XL))
+        .flex()
+        .justify_center()
+        .child(header)
+}
+
+fn history_detail_header(title: &str, project: &str, checkout: &str) -> Div {
+    div()
+        .w_full()
+        .max_w(rpx(super::super::codex_view::CHAT_MAX_W))
+        .flex()
+        .items_start()
+        .gap(rpx(SPACE_LG))
+        .pb(rpx(SPACE_2XL))
+        .border_b_1()
+        .border_color(c::BORDER_SOFT())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(rpx(TEXT_TITLE))
+                        .child(title.to_string()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(icon("folder", ICON_SM, c::FG_DIM()))
+                                .child(div().min_w_0().truncate().child(project.to_string())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(icon("git-branch", ICON_SM, c::FG_DIM()))
+                                .child(div().min_w_0().truncate().child(checkout.to_string())),
+                        ),
+                ),
+        )
 }
 
 fn history_checkout_name(cwd: &str, project_path: Option<&str>) -> String {
