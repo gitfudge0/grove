@@ -1,10 +1,6 @@
 //! Read-only saved-session browsing; provider attachment requires explicit Reopen.
 use super::*;
 
-const HISTORY_NARROW_CANVAS: f32 = 700.0;
-const HISTORY_LIST_WIDTH: f32 = 320.0;
-const HISTORY_NARROW_LIST_HEIGHT: f32 = 260.0;
-
 #[derive(PartialEq, Eq)]
 pub(super) enum HistorySelection {
     Native(String),
@@ -183,6 +179,25 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.render_closed_history(window, cx, false, false)
+    }
+
+    pub(super) fn render_history_sidebar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+        collapsed: bool,
+    ) -> AnyElement {
+        self.render_closed_history(window, cx, true, collapsed)
+    }
+
+    fn render_closed_history(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+        sidebar: bool,
+        collapsed: bool,
+    ) -> AnyElement {
         use gpui_component::input::Input;
         let store = &cx.global::<SettingsState>().store;
         let query = self.history_search.read(cx).value().trim().to_lowercase();
@@ -357,79 +372,90 @@ impl Sidebar {
             .is_focused(window);
         let mut list = div()
             .id("history-list")
+            .debug_selector(|| "history-list".into())
             .min_w_0()
+            .min_h_0()
+            .flex_1()
             .flex()
             .flex_col()
-            .border_t_1()
-            .border_color(c::BORDER_SOFT())
-            .child(
-                div()
-                    .p(rpx(SPACE_2XL))
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_LG))
-                    .child(
-                        crate::views::components::project_field_well(focused, false)
-                            .w_full()
-                            .child(
-                                Input::new(&self.history_search)
-                                    .aria_label("Search history")
-                                    .appearance(false)
-                                    .bordered(false)
-                                    .focus_bordered(false)
-                                    .p_0(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(rpx(SPACE_SM))
-                            .child(
-                                self.control(
-                                    "history-project-filter",
-                                    format!("Filter by project: {project_label}"),
-                                    Action::HistoryFilterMenu(true),
-                                    cx,
+            .when(!collapsed, |list| {
+                list.child(
+                    div()
+                        .p(rpx(SPACE_2XL))
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_LG))
+                        .child(
+                            crate::views::components::project_field_well(focused, false)
+                                .w_full()
+                                .child(
+                                    Input::new(&self.history_search)
+                                        .aria_label("Search history")
+                                        .appearance(false)
+                                        .bordered(false)
+                                        .focus_bordered(false)
+                                        .p_0(),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(rpx(SPACE_SM))
+                                .child(
+                                    self.control(
+                                        "history-project-filter",
+                                        format!("Filter by project: {project_label}"),
+                                        Action::HistoryFilterMenu(true),
+                                        cx,
+                                    )
+                                    .w_auto()
+                                    .px(rpx(SPACE_LG))
+                                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                                    .child(project_label),
                                 )
-                                .w_auto()
-                                .px(rpx(SPACE_LG))
-                                .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                                .child(project_label),
-                            )
-                            .child(
-                                self.control(
-                                    "history-provider-filter",
-                                    format!("Filter by provider: {provider_label}"),
-                                    Action::HistoryFilterMenu(false),
-                                    cx,
-                                )
-                                .w_auto()
-                                .px(rpx(SPACE_LG))
-                                .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                                .child(provider_label),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .px(rpx(SPACE_2XL))
-                    .py(rpx(SPACE_MD))
-                    .flex()
-                    .justify_between()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Closed sessions")
-                    .child(format!("{} sessions", records.len() + cli_records.len())),
-            );
+                                .child(
+                                    self.control(
+                                        "history-provider-filter",
+                                        format!("Filter by provider: {provider_label}"),
+                                        Action::HistoryFilterMenu(false),
+                                        cx,
+                                    )
+                                    .w_auto()
+                                    .px(rpx(SPACE_LG))
+                                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                                    .child(provider_label),
+                                ),
+                        ),
+                )
+            })
+            .when(!collapsed, |list| {
+                list.child(
+                    div()
+                        .px(rpx(SPACE_2XL))
+                        .py(rpx(SPACE_MD))
+                        .flex()
+                        .justify_between()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("Closed sessions")
+                        .child(format!("{} sessions", records.len() + cli_records.len())),
+                )
+            });
         let mut rows = div()
             .id("history-list-scroll")
+            .debug_selector(|| "history-list-scroll".into())
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
+            .px(rpx(SPACE_LG))
             .flex()
             .flex_col();
-        if records.is_empty() && cli_records.is_empty() && !self.session_history_loading {
+        if records.is_empty()
+            && cli_records.is_empty()
+            && !self.session_history_loading
+            && !collapsed
+        {
             if all_native.is_empty() && all_cli.is_empty() {
                 rows =
                     rows.child(div().p(rpx(SPACE_2XL)).text_color(c::FG_DIM()).child(
@@ -460,69 +486,69 @@ impl Sidebar {
         }
         for s in records.iter() {
             let title = s.title.as_deref().unwrap_or(&s.label);
+            let selector = format!("session-history-{}", s.key);
             let row = self
                 .control(
-                    SharedString::from(format!("session-history-{}", s.key)),
+                    SharedString::from(selector.clone()),
                     format!("{title} · {} · {}", s.project, s.cwd),
                     Action::PreviewSessionHistory(s.key.clone()),
                     cx,
                 )
+                .debug_selector(move || selector.clone())
+                .aria_selected(matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key))
                 .w_full()
                 .h_auto()
                 .min_h(rpx(HEAD_H))
                 .justify_start()
                 .p(rpx(SPACE_2XL))
                 .gap(rpx(SPACE_LG))
+                .when(collapsed, |row| row.px_0().justify_center())
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .child(icon(s.provider.agent().icon_name(), ICON_MD, c::FG()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().truncate().child(title.to_string()))
-                        .child(history_row_metadata(&s.project, &checkout_names[&s.cwd], s.provider.label())),
-                );
+                .when(collapsed, |row| row.child(icon(s.provider.agent().icon_name(), ICON_MD, c::FG())))
+                .when(!collapsed, |row| row.child(history_card_content(
+                    s.provider.agent(), &s.project, title, &checkout_names[&s.cwd], false,
+                )));
             rows = rows.child(row);
         }
         for s in cli_records.iter() {
             let title = s.title.as_deref().unwrap_or(&s.label);
+            let selector = format!("cli-history-{}", s.key);
             let row = self
                 .control(
-                    SharedString::from(format!("cli-history-{}", s.key)),
+                    SharedString::from(selector.clone()),
                     format!("{title} · {} · {} · CLI session · transcript unavailable", s.project, s.cwd),
                     Action::PreviewCliHistory(s.key.clone()),
                     cx,
                 )
+                .debug_selector(move || selector.clone())
+                .aria_selected(matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key))
                 .w_full()
                 .h_auto()
                 .min_h(rpx(HEAD_H))
                 .justify_start()
                 .p(rpx(SPACE_2XL))
                 .gap(rpx(SPACE_LG))
+                .when(collapsed, |row| row.px_0().justify_center())
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .child(icon(s.agent.icon_name(), ICON_MD, c::FG()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().truncate().child(title.to_string()))
-                        .child(history_row_metadata(&s.project, &checkout_names[&s.cwd], &format!("{} CLI", s.agent.label()))),
-                );
+                .when(collapsed, |row| row.child(icon(s.agent.icon_name(), ICON_MD, c::FG())))
+                .when(!collapsed, |row| row.child(history_card_content(
+                    s.agent, &s.project, title, &checkout_names[&s.cwd], true,
+                )));
             rows = rows.child(row);
         }
         list = list.child(rows);
+        if sidebar {
+            return list.into_any_element();
+        }
         let mut detail = div()
             .id("history-detail")
+            .debug_selector(|| "history-detail".into())
             .min_w_0()
             .min_h_0()
             .flex()
@@ -553,6 +579,7 @@ impl Sidebar {
                                 Action::ReopenSessionHistory(s.key.clone()),
                                 cx,
                             )
+                            .debug_selector(|| "reopen-history-session".into())
                             .w_auto()
                             .px(rpx(SPACE_LG))
                             .child(icon("reset", ICON_SM, c::FG_DIM()))
@@ -591,27 +618,7 @@ impl Sidebar {
                     .child("Select a closed session to inspect it."),
             );
         }
-        let narrow = history_canvas_is_narrow(
-            Self::logical_window_width(window),
-            self.animated_sidebar_width(window, cx),
-        );
-        let area = if narrow {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_col()
-                .child(list.h(rpx(HISTORY_NARROW_LIST_HEIGHT)).flex_shrink_0())
-                .child(detail.flex_1())
-        } else {
-            div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .child(list.w(rpx(HISTORY_LIST_WIDTH)).flex_shrink_0())
-                .child(detail.flex_1().border_l_1())
-        };
-        page = page.child(area);
+        page = page.child(detail.flex_1());
         if let Some(popup) = &self.history_filter_popup {
             page = page.child(gpui::deferred(
                 gpui::anchored()
@@ -739,10 +746,6 @@ impl Sidebar {
     }
 }
 
-fn history_canvas_is_narrow(window_width: f32, sidebar_width: f32) -> bool {
-    (window_width - sidebar_width).max(0.0) < HISTORY_NARROW_CANVAS
-}
-
 fn history_checkout_name(cwd: &str, project_path: Option<&str>) -> String {
     let path = std::path::Path::new(cwd);
     if project_path.is_some_and(|project| path == std::path::Path::new(project)) {
@@ -755,21 +758,47 @@ fn history_checkout_name(cwd: &str, project_path: Option<&str>) -> String {
         .to_string()
 }
 
-fn history_row_metadata(project: &str, checkout: &str, provider: &str) -> Div {
+fn history_card_content(
+    agent: Agent,
+    project: &str,
+    title: &str,
+    checkout: &str,
+    cli: bool,
+) -> Div {
     div()
-        .flex()
+        .flex_1()
         .min_w_0()
+        .flex()
+        .flex_col()
         .gap(rpx(SPACE_SM))
-        .text_size(rpx(TEXT_SMALL))
-        .text_color(c::FG_DIM())
         .child(
             div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(format!("{project} · {checkout}")),
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG_DIM())
+                .child(icon(agent.icon_name(), ICON_MD, c::FG()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(project.to_string()),
+                )
+                .when(cli, |row| row.child("CLI")),
         )
-        .child(div().flex_shrink_0().child(format!("· {provider}")))
+        .child(div().min_w_0().truncate().child(title.to_string()))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .text_size(rpx(TEXT_SMALL))
+                .text_color(c::FG_DIM())
+                .child(icon("git-branch", ICON_SM, c::FG_DIM()))
+                .child(div().min_w_0().truncate().child(checkout.to_string())),
+        )
 }
 
 fn history_matches(query: &str, title: &str, project: &str, cwd: &str) -> bool {
@@ -781,11 +810,9 @@ fn history_matches(query: &str, title: &str, project: &str, cwd: &str) -> bool {
 
 #[cfg(test)]
 mod history_filter_tests {
-    use super::{history_canvas_is_narrow, history_checkout_name, history_matches};
+    use super::{history_checkout_name, history_matches};
     #[test]
-    fn adapts_to_canvas_width_and_uses_concise_checkout_names() {
-        assert!(!history_canvas_is_narrow(1200.0, 260.0));
-        assert!(history_canvas_is_narrow(1200.0, 520.0));
+    fn uses_concise_checkout_names() {
         assert_eq!(
             history_checkout_name("/work/grove", Some("/work/grove")),
             "Main checkout"

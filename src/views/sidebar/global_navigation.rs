@@ -207,8 +207,11 @@ impl Sidebar {
                 }),
             );
         }
+        let showing_history =
+            !settings && self.destination == Destination::History && self.selection.is_none();
         let grouping = SessionGrouping::current(&cx.global::<SettingsState>().store);
         let mut heading = div()
+            .debug_selector(|| "sidebar-sessions-heading".into())
             .px(rpx(SIDEBAR_CONTENT_INSET))
             .h(rpx(HEAD_H))
             .flex_shrink_0()
@@ -223,7 +226,11 @@ impl Sidebar {
                     .text_size(rpx(TEXT_SMALL))
                     .text_color(c::FG_DIM())
                     .truncate()
-                    .child("Sessions"),
+                    .child(if showing_history {
+                        "History"
+                    } else {
+                        "Sessions"
+                    }),
             );
             let mut group = super::super::components::preference_choices();
             for (choice, label, glyph, key) in [
@@ -250,7 +257,9 @@ impl Sidebar {
                     .child(icon(glyph, ICON_SM, c::FG_DIM())),
                 );
             }
-            heading = heading.child(group);
+            if !showing_history {
+                heading = heading.child(group);
+            }
         }
         let mut sessions = div()
             .id("sidebar-scroll")
@@ -260,7 +269,11 @@ impl Sidebar {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .px(rpx(SPACE_LG));
-        let groups = self.sidebar_session_groups(cx);
+        let groups = if showing_history {
+            Vec::new()
+        } else {
+            self.sidebar_session_groups(cx)
+        };
         let mut count = 0;
         for (label, ids) in groups {
             if ids.is_empty() {
@@ -292,7 +305,7 @@ impl Sidebar {
                 }
             }
         }
-        if count == 0 && !collapsed {
+        if count == 0 && !collapsed && !showing_history {
             sessions = sessions.child(
                 div()
                     .p(rpx(SPACE_LG))
@@ -347,6 +360,7 @@ impl Sidebar {
         } else {
             div()
                 .id("single-terminals-scroll")
+                .debug_selector(|| "single-terminals-scroll".into())
                 .max_h(gpui::relative(0.3))
                 .overflow_y_scroll()
                 .child(self.terminals(window, cx))
@@ -377,7 +391,11 @@ impl Sidebar {
             )
             .child(nav)
             .child(heading)
-            .child(sessions)
+            .child(if showing_history {
+                self.render_history_sidebar(window, cx, collapsed)
+            } else {
+                sessions.into_any_element()
+            })
             .child(terminal_section)
             .when(!collapsed, |rail| {
                 rail.child(
@@ -711,6 +729,143 @@ mod tests {
             let _ = window.draw(cx);
         });
     }
+    #[gpui::test]
+    fn history_cards_replace_sidebar_sessions_and_open_record_in_canvas(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(800.)));
+        draw(cx);
+        cx.update(|_, cx| {
+            sidebar.update(cx, |s, cx| {
+                s.destination = Destination::History;
+                s.dashboard_open = false;
+                s.selection = None;
+                for (key, provider) in [
+                    ("codex-record", grove_core::codex::Provider::Codex),
+                    ("claude-record", grove_core::codex::Provider::Claude),
+                ] {
+                    let saved = grove_core::codex::SavedSession {
+                        rich_plans: Default::default(),
+                        claude_resume: None,
+                        claude_subagents: Default::default(),
+                        edit_checkpoints: Vec::new(),
+                        pending_edit: None,
+                        provider,
+                        composer: Default::default(),
+                        context: None,
+                        key: key.into(),
+                        project: "Example".into(),
+                        cwd: "/grove-single-sidebar-example".into(),
+                        label: key.into(),
+                        title: None,
+                        title_generation: None,
+                        roots: Vec::new(),
+                        thread_id: None,
+                        items: Vec::new().into(),
+                        work_periods: Vec::new(),
+                        draft: String::new(),
+                        draft_images: Vec::new(),
+                        draft_reference: None,
+                        config_args: Vec::new(),
+                        native_config_version: 1,
+                        activity_reporting: false,
+                    };
+                    s.session_history.push(saved);
+                }
+                s.cli_session_history
+                    .push(grove_core::session_meta::ClosedCliSession {
+                        key: "cli-record".into(),
+                        agent: Agent::Claude,
+                        label: "CLI".into(),
+                        title: None,
+                        project: "Example".into(),
+                        cwd: "/grove-single-sidebar-example".into(),
+                        closed_at: 1,
+                        context_roots: Vec::new(),
+                        tmux_name: None,
+                    });
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let rail = cx.debug_bounds("global-navigation").unwrap();
+        let list = cx.debug_bounds("history-list-scroll").unwrap();
+        let detail = cx.debug_bounds("history-detail").unwrap();
+        assert!(list.left() >= rail.left() && list.right() <= rail.right());
+        assert!(detail.left() >= rail.right());
+        assert!(cx.debug_bounds("sidebar-scroll").is_none());
+        assert!(cx.debug_bounds("session-group-false").is_none());
+        for (key, selector) in [
+            ("codex-record", "session-history-codex-record"),
+            ("claude-record", "session-history-claude-record"),
+        ] {
+            let row = cx.debug_bounds(selector).unwrap();
+            cx.simulate_click(row.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(sidebar.read_with(cx, |s, _| matches!(&s.session_history_selected, Some(super::super::session_history::HistorySelection::Native(selected)) if selected == key)));
+            assert!(cx.debug_bounds("history-list-scroll").is_some());
+            assert!(cx.debug_bounds("reopen-history-session").is_some());
+        }
+        let cli = cx.debug_bounds("cli-history-cli-record").unwrap();
+        cx.simulate_click(cli.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(sidebar.read_with(cx, |s, _| matches!(&s.session_history_selected, Some(super::super::session_history::HistorySelection::Cli(key)) if key == "cli-record")));
+        assert!(cx.debug_bounds("reopen-history-session").is_none());
+
+        // Overflow only the card list; navigation, the list heading and terminals
+        // remain stationary when a real wheel event is delivered over the list.
+        cx.update(|_, cx| {
+            sidebar.update(cx, |s, cx| {
+                let original = s.session_history[0].clone();
+                for i in 0..20 {
+                    let mut item = original.clone();
+                    item.key = format!("overflow-{i}");
+                    item.label = item.key.clone();
+                    s.session_history.push(item);
+                }
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let scroll = cx.debug_bounds("history-list-scroll").unwrap();
+        let first = cx.debug_bounds("session-history-codex-record").unwrap();
+        let last = cx.debug_bounds("session-history-overflow-19").unwrap();
+        let nav = cx.debug_bounds("global-nav-history").unwrap();
+        let heading = cx.debug_bounds("sidebar-sessions-heading").unwrap();
+        let terminals = cx.debug_bounds("single-terminals-scroll").unwrap();
+        assert!(
+            last.bottom() > scroll.bottom(),
+            "fixture must overflow History list"
+        );
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: scroll.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-120.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        let first_after = cx.debug_bounds("session-history-codex-record").unwrap();
+        assert!(
+            first_after.top() < first.top(),
+            "wheel must move History cards"
+        );
+        assert_eq!(cx.debug_bounds("history-list-scroll"), Some(scroll));
+        assert_eq!(cx.debug_bounds("global-nav-history"), Some(nav));
+        assert_eq!(cx.debug_bounds("sidebar-sessions-heading"), Some(heading));
+        assert_eq!(cx.debug_bounds("single-terminals-scroll"), Some(terminals));
+
+        let home = cx.debug_bounds("global-nav-home").unwrap();
+        cx.simulate_click(home.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("sidebar-scroll").is_some());
+        assert!(cx.debug_bounds("history-list-scroll").is_none());
+    }
+
     #[gpui::test]
     fn single_sidebar_destinations_grouping_and_collapsed_geometry(cx: &mut gpui::TestAppContext) {
         cx.update(init);
