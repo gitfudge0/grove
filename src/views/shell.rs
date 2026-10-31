@@ -190,6 +190,9 @@ impl Shell {
             );
         let sidebar_events =
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
+                super::sidebar::SidebarEvent::NewSessionRequested => {
+                    this.open_session_picker(window, cx)
+                }
                 super::sidebar::SidebarEvent::NewMultiProjectSessionRequested => {
                     if !this.shortcut_blocked_in(window, cx) {
                         this.sidebar
@@ -837,6 +840,24 @@ impl Shell {
                 self.sidebar
                     .update(cx, |sidebar, cx| sidebar.select_session_id(id, window, cx));
             }
+        }
+    }
+
+    fn open_session_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.shortcut_blocked_in(window, cx) {
+            self.sidebar
+                .update(cx, super::sidebar::Sidebar::dismiss_project_context);
+            self.launcher
+                .update(cx, |launcher, cx| launcher.open_session_picker(window, cx));
+        }
+    }
+
+    fn open_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.shortcut_blocked_in(window, cx) {
+            self.sidebar
+                .update(cx, super::sidebar::Sidebar::dismiss_project_context);
+            self.launcher
+                .update(cx, |launcher, cx| launcher.open(window, cx));
         }
     }
 
@@ -1660,12 +1681,7 @@ impl Render for Shell {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &k::NewSession, window, cx| {
-                if !this.shortcut_blocked_in(window, cx) {
-                    this.sidebar
-                        .update(cx, super::sidebar::Sidebar::dismiss_project_context);
-                    this.launcher
-                        .update(cx, |launcher, cx| launcher.open(window, cx));
-                }
+                this.open_new_session(window, cx);
             }))
             .on_action(
                 cx.listener(|this, _: &k::NewSessionInWorktree, window, cx| {
@@ -2139,6 +2155,148 @@ mod tests {
     }
 
     #[gpui::test]
+    fn new_session_sidebar_and_shortcuts_open_launcher_preserving_home_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        cx.update(|cx| cx.bind_keys(k::shell_bindings()));
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        let composer = cx.debug_bounds("codex-composer-input").unwrap();
+        cx.simulate_click(composer.center(), gpui::Modifiers::default());
+        cx.simulate_input("Keep my Home overview draft");
+        draw(cx);
+        for source in ["sidebar", "numbered", "new-session"] {
+            let before = cx.update(|window, cx| {
+                if source == "sidebar" {
+                    Some(shell.read(cx).sidebar.read(cx).new_session_focus_for_test())
+                } else {
+                    window.focused(cx)
+                }
+            });
+            if source == "sidebar" {
+                let row = cx.debug_bounds("global-nav-new-session").unwrap();
+                cx.simulate_click(row.center(), gpui::Modifiers::default());
+            } else {
+                cx.simulate_keystrokes(&format!(
+                    "{}{}",
+                    k::platform_mod_prefix(),
+                    if source == "numbered" { "1" } else { "p" }
+                ));
+            }
+            draw(cx);
+            assert!(
+                cx.debug_bounds("worktree-launcher-panel").is_some(),
+                "{source}"
+            );
+            assert!(cx.debug_bounds("worktree-launcher-search").is_some());
+            assert!(cx.debug_bounds("dashboard-summary").is_some());
+            cx.update(|_, cx| {
+                let owner = shell.read(cx);
+                assert!(owner.launcher.read(cx).is_open());
+                let launcher = owner.launcher.read(cx);
+                assert_eq!(
+                    launcher.title_for_test(),
+                    if source == "new-session" {
+                        "Command palette"
+                    } else {
+                        "New session"
+                    }
+                );
+                if source != "new-session" {
+                    assert!(launcher
+                        .rows_for_test(cx)
+                        .iter()
+                        .all(|row| matches!(row, PaletteRow::Combo { .. })));
+                }
+                assert_eq!(
+                    owner
+                        .sidebar
+                        .read(cx)
+                        .dashboard_draft_for_test(cx)
+                        .as_deref(),
+                    Some("Keep my Home overview draft")
+                );
+                assert_eq!(owner.runtime.read(cx).registry.read(cx).len(), 0);
+            });
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            if source != "new-session" {
+                cx.update(|_, cx| {
+                    let launcher = shell.read(cx).launcher.read(cx);
+                    assert!(launcher.is_open());
+                    assert_eq!(launcher.title_for_test(), "Command palette");
+                });
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+            }
+            cx.update(|window, cx| {
+                assert!(!shell.read(cx).launcher.read(cx).is_open());
+                assert_eq!(window.focused(cx), before);
+                assert_eq!(
+                    shell
+                        .read(cx)
+                        .sidebar
+                        .read(cx)
+                        .dashboard_draft_for_test(cx)
+                        .as_deref(),
+                    Some("Keep my Home overview draft")
+                );
+            });
+        }
+        // Opening the modal from another destination must not navigate to Home.
+        cx.simulate_keystrokes(&format!("{}3", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.debug_bounds("projects-destination").is_some());
+        cx.simulate_keystrokes(&format!("{}1", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.debug_bounds("worktree-launcher-panel").is_some());
+        cx.simulate_keystrokes("escape escape");
+        draw(cx);
+        assert!(cx.debug_bounds("projects-destination").is_some());
+        cx.simulate_keystrokes(&format!("{}2", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        cx.update(|_, cx| {
+            assert_eq!(
+                shell
+                    .read(cx)
+                    .sidebar
+                    .read(cx)
+                    .dashboard_draft_for_test(cx)
+                    .as_deref(),
+                Some("Keep my Home overview draft")
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn new_session_landing_opens_launcher_over_home_overview(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            init(cx);
+            cx.global_mut::<crate::settings::SettingsState>()
+                .store
+                .default_landing_page = grove_core::storage::LandingPage::NewSession;
+        });
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        assert!(cx.debug_bounds("worktree-launcher-panel").is_some());
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        cx.update(|_, cx| {
+            let launcher = shell.read(cx).launcher.read(cx);
+            assert_eq!(launcher.title_for_test(), "New session");
+            assert!(launcher
+                .rows_for_test(cx)
+                .iter()
+                .all(|row| matches!(row, PaletteRow::Combo { .. })));
+        });
+        cx.simulate_keystrokes("escape escape");
+        draw(cx);
+        assert!(!cx.update(|_, cx| shell.read(cx).launcher.read(cx).is_open()));
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+    }
+
+    #[gpui::test]
     fn numbered_destinations_route_and_respect_blocking_overlays(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         cx.update(|cx| cx.bind_keys(k::shell_bindings()));
@@ -2148,7 +2306,7 @@ mod tests {
             ("3", "projects-destination"),
             ("4", "session-history-page"),
             ("2", "dashboard-page"),
-            ("1", "dashboard-page"),
+            ("1", "worktree-launcher-panel"),
         ] {
             cx.update(|window, cx| {
                 let focus = shell.read(cx).focus.clone();
@@ -2161,6 +2319,8 @@ mod tests {
                 "{key} must open {destination}"
             );
         }
+        cx.simulate_keystrokes("escape escape");
+        draw(cx);
         cx.update(|window, cx| window.dispatch_action(Box::new(k::Settings), cx));
         draw(cx);
         cx.simulate_keystrokes(&format!("{}2", k::platform_mod_prefix()));

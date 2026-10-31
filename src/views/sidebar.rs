@@ -279,6 +279,7 @@ fn terminal_directory_label(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarEvent {
+    NewSessionRequested,
     #[cfg(test)]
     SettingsRequested,
     NewMultiProjectSessionRequested,
@@ -2046,6 +2047,18 @@ impl Sidebar {
             })
     }
     #[cfg(test)]
+    pub(crate) fn new_session_focus_for_test(&self) -> FocusHandle {
+        self.navigation_focus[0].clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dashboard_draft_for_test(&self, cx: &App) -> Option<String> {
+        self.dashboard
+            .as_ref()
+            .map(|dashboard| dashboard.session.read(cx).state.saved.draft.clone())
+    }
+
+    #[cfg(test)]
     pub(crate) fn select_project_canvas_for_test(&mut self, cx: &mut Context<Self>) {
         self.select(Selection::Project(0), cx);
     }
@@ -2060,11 +2073,8 @@ impl Sidebar {
             }
             Selection::Home(_) => self.destination = global_navigation::Destination::Terminals,
             Selection::Session(_)
-                if matches!(
-                    self.destination,
-                    global_navigation::Destination::Home
-                        | global_navigation::Destination::NewSession
-                ) || self.destination == global_navigation::Destination::Terminals =>
+                if self.destination == global_navigation::Destination::Home
+                    || self.destination == global_navigation::Destination::Terminals =>
             {
                 if self.mode == ViewMode::Grid {
                     self.destination = global_navigation::Destination::Projects;

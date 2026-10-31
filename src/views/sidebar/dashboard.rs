@@ -292,9 +292,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.destination != super::global_navigation::Destination::NewSession {
-            self.destination = super::global_navigation::Destination::Home;
-        }
+        self.destination = super::global_navigation::Destination::Home;
         self.dismiss_project_panel_for_navigation();
         if let Some(settings) = &self.settings_panel {
             settings.update(cx, |settings, cx| settings.close(window, cx));

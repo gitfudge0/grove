@@ -56,14 +56,17 @@ impl Sidebar {
         if !self.navigation_available() {
             return;
         }
-        self.open_destination(
-            cx.global::<SettingsState>()
-                .store
-                .default_landing_page
-                .into(),
-            window,
-            cx,
-        );
+        let destination = cx
+            .global::<SettingsState>()
+            .store
+            .default_landing_page
+            .into();
+        if destination == Destination::NewSession {
+            // The launcher overlays an existing canvas; startup/workspace landing
+            // establishes the overview before opening the modal.
+            self.open_destination(Destination::Home, window, cx);
+        }
+        self.open_destination(destination, window, cx);
     }
     pub(super) fn open_destination(
         &mut self,
@@ -71,6 +74,12 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if destination == Destination::NewSession {
+            if self.navigation_available() {
+                cx.emit(SidebarEvent::NewSessionRequested);
+            }
+            return;
+        }
         if self.project_panel.is_some() && !self.project_decision {
             self.dismiss_project_panel_for_navigation();
         }
@@ -84,12 +93,9 @@ impl Sidebar {
         self.pending_canvas_focus = None;
         self.pending_grid_workspace_focus = None;
         self.initial_selection_pending = false;
-        if matches!(destination, Destination::NewSession | Destination::Home) {
+        if destination == Destination::Home {
             self.open_dashboard(window, cx);
-            self.destination = destination;
-            if destination == Destination::Home {
-                self.focus.focus(window, cx);
-            }
+            self.focus.focus(window, cx);
         } else {
             self.destination = destination;
             self.dashboard_open = false;
@@ -153,8 +159,7 @@ impl Sidebar {
         {
             let selected = !settings
                 && self.destination == destination
-                && (self.selection.is_none()
-                    || matches!(destination, Destination::NewSession | Destination::Home));
+                && (self.selection.is_none() || destination == Destination::Home);
             let id = match destination {
                 Destination::NewSession => "global-nav-new-session".to_owned(),
                 Destination::Home => "global-nav-home".to_owned(),
@@ -762,56 +767,49 @@ mod tests {
         });
     }
     #[gpui::test]
-    fn new_session_and_home_keep_draft_and_route_focus(cx: &mut gpui::TestAppContext) {
+    fn new_session_requests_launcher_without_replacing_dashboard_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
         cx.update(init);
         let (sidebar, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(Runtime::new);
             Sidebar::new(runtime, window, cx)
         });
+        let requests = std::rc::Rc::new(std::cell::Cell::new(0));
+        cx.update(|_, cx| {
+            let requests = requests.clone();
+            cx.subscribe(&sidebar, move |_, event, _| {
+                if *event == SidebarEvent::NewSessionRequested {
+                    requests.set(requests.get() + 1);
+                }
+            })
+            .detach();
+        });
+        draw(cx);
+        let (session, view) = cx.update(|window, cx| {
+            let dashboard = sidebar.read(cx).dashboard.as_ref().unwrap();
+            let result = (dashboard.session.clone(), dashboard.view.clone());
+            result.1.focus_handle(cx).focus(window, cx);
+            result
+        });
+        cx.simulate_input("Keep my workspace draft");
         draw(cx);
         let new_session = cx.debug_bounds("global-nav-new-session").unwrap();
         cx.simulate_click(new_session.center(), gpui::Modifiers::default());
         draw(cx);
-        let (session, view) = cx.update(|window, cx| {
-            let owner = sidebar.read(cx);
-            let dashboard = owner.dashboard.as_ref().unwrap();
-            assert_eq!(owner.destination, Destination::NewSession);
-            assert!(dashboard.view.focus_handle(cx).is_focused(window));
-            (dashboard.session.clone(), dashboard.view.clone())
-        });
-        cx.simulate_input("Keep my workspace draft");
-        draw(cx);
+        assert_eq!(requests.get(), 1);
         cx.update(|_, cx| {
-            assert_eq!(
-                session.read(cx).state.saved.draft,
-                "Keep my workspace draft"
-            )
-        });
-        let home = cx.debug_bounds("global-nav-home").unwrap();
-        cx.simulate_click(home.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.update(|window, cx| {
             let owner = sidebar.read(cx);
             let dashboard = owner.dashboard.as_ref().unwrap();
             assert_eq!(owner.destination, Destination::Home);
             assert_eq!(dashboard.session, session);
             assert_eq!(dashboard.view, view);
-            assert!(!view.focus_handle(cx).is_focused(window));
             assert_eq!(
                 session.read(cx).state.saved.draft,
                 "Keep my workspace draft"
             );
         });
         assert!(cx.debug_bounds("dashboard-summary").is_some());
-        cx.simulate_click(new_session.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.update(|window, cx| {
-            assert!(view.focus_handle(cx).is_focused(window));
-            assert_eq!(
-                session.read(cx).state.saved.draft,
-                "Keep my workspace draft"
-            );
-        });
     }
 
     #[gpui::test]

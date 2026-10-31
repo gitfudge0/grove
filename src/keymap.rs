@@ -165,7 +165,7 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         action: Some(GlobalShortcut::OpenNewSession),
         triggers: &["1"],
         display_keys: "1",
-        description: "New Session composer",
+        description: "New Session",
         scopes: G,
         requires_alt: false,
         literal: false,

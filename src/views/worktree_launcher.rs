@@ -184,6 +184,35 @@ impl WorktreeLauncher {
         cx.notify();
     }
 
+    /// Open the existing New session worktree picker without the command rows.
+    pub(crate) fn open_session_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open(window, cx);
+        let rows = self.rows(cx);
+        if let Some(index) = rows.iter().position(|row| *row == PaletteRow::NewSession) {
+            self.selected = index;
+            self.anchor = Some(launcher::row_identity(&rows[index]));
+            self.activate(window, cx);
+        }
+    }
+
+    fn title(&self) -> &'static str {
+        match self.mode {
+            PaletteMode::Root => "Command palette",
+            PaletteMode::Single => "New session",
+            PaletteMode::Multi => "New cross-project session",
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn title_for_test(&self) -> &'static str {
+        self.title()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rows_for_test(&self, cx: &App) -> Vec<PaletteRow> {
+        self.rows(cx)
+    }
+
     /// Open the existing multi-worktree selector directly from the sidebar.
     pub(crate) fn open_multi_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open(window, cx);
@@ -918,11 +947,7 @@ impl Render for WorktreeLauncher {
                             .flex()
                             .flex_col()
                             .gap(rpx(if compact { SPACE_SM } else { SPACE_2XL }))
-                            .when(!compact, |header| header.child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(match self.mode {
-                                PaletteMode::Root => "Command palette",
-                                PaletteMode::Single => "New session",
-                                PaletteMode::Multi => "New cross-project session",
-                            })))
+                            .when(!compact, |header| header.child(div().text_size(rpx(TEXT_TITLE)).text_color(c::FG()).child(self.title())))
                             .child(
                                 div()
                                     .id("worktree-launcher-search")
