@@ -2853,8 +2853,7 @@ impl Sidebar {
             }
             Action::GroupSessions(grouping) => {
                 SettingsState::update(cx, |store| {
-                    store.sidebar_group_by_project =
-                        grouping == global_navigation::SessionGrouping::Projects;
+                    store.sidebar_group_by_project = false;
                     store.sidebar_group_by_worktree =
                         grouping == global_navigation::SessionGrouping::Worktrees;
                 });
@@ -6639,7 +6638,7 @@ mod tests {
                     sidebar.selected_worktree(),
                     Some((0, "/grove-sidebar-navigation-test".into()))
                 );
-                SettingsState::update(cx, |store| store.sidebar_group_by_project = true);
+                SettingsState::update(cx, |store| store.sidebar_group_by_worktree = true);
                 assert_eq!(sidebar.visible_session_order(cx), ids);
                 sidebar.select(Selection::Session(ids[0]), cx);
                 sidebar.select_waiting_session(window, cx);

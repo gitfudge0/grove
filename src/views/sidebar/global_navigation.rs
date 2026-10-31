@@ -13,15 +13,12 @@ pub(super) enum Destination {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SessionGrouping {
     Activity,
-    Projects,
     Worktrees,
 }
 impl SessionGrouping {
     fn current(store: &grove_core::storage::Store) -> Self {
         if store.sidebar_group_by_worktree {
             Self::Worktrees
-        } else if store.sidebar_group_by_project {
-            Self::Projects
         } else {
             Self::Activity
         }
@@ -212,10 +209,9 @@ impl Sidebar {
             let mut group = super::super::components::preference_choices();
             for (choice, label, glyph, key) in [
                 (SessionGrouping::Activity, "Activity", "list", "false"),
-                (SessionGrouping::Projects, "Projects", "folder", "true"),
                 (
                     SessionGrouping::Worktrees,
-                    "Worktrees",
+                    "Worktree",
                     "git-branch",
                     "worktrees",
                 ),
@@ -391,12 +387,6 @@ impl Sidebar {
                 .list_session_groups(cx)
                 .into_iter()
                 .map(|(name, ids)| (name.to_owned(), ids))
-                .collect(),
-            SessionGrouping::Projects => self
-                .snapshot
-                .projects
-                .iter()
-                .map(|project| (project.name.clone(), project.sessions.clone()))
                 .collect(),
             SessionGrouping::Worktrees => {
                 let registry = self.runtime.read(cx).registry.read(cx);
@@ -714,12 +704,25 @@ mod tests {
         cx.simulate_click(projects.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("projects-destination").is_some());
-        let group = cx.debug_bounds("session-group-true").unwrap();
+        assert!(cx.debug_bounds("session-group-true").is_none());
+        let group = cx.debug_bounds("session-group-false").unwrap();
         assert_eq!(f32::from(group.size.height), STEPPER_BTN_W);
         assert_eq!(f32::from(group.size.width), STEPPER_BTN_W);
         cx.simulate_click(group.center(), gpui::Modifiers::default());
         draw(cx);
         let worktrees = cx.debug_bounds("session-group-worktrees").unwrap();
+        cx.simulate_click(worktrees.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(cx.global::<SettingsState>().store.sidebar_group_by_worktree);
+            SettingsState::update(cx, |store| store.sidebar_group_by_project = true);
+        });
+        cx.simulate_click(group.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(!cx.global::<SettingsState>().store.sidebar_group_by_worktree);
+            assert!(!cx.global::<SettingsState>().store.sidebar_group_by_project);
+        });
         cx.simulate_click(worktrees.center(), gpui::Modifiers::default());
         draw(cx);
         cx.update(|window, cx| {
@@ -809,7 +812,7 @@ mod tests {
                     sidebar.visible_session_order(cx),
                     vec![ids[0], ids[2], ids[1], ids[3]]
                 );
-                // New preference persists and old project-only records keep their meaning.
+                // Worktree grouping persists; retired project-only grouping falls back to Activity.
                 let saved = serde_json::to_string(&cx.global::<SettingsState>().store).unwrap();
                 let restored: grove_core::storage::Store = serde_json::from_str(&saved).unwrap();
                 assert_eq!(
@@ -818,7 +821,7 @@ mod tests {
                 );
                 let legacy: grove_core::storage::Store =
                     serde_json::from_str(r#"{"sidebar_group_by_project":true}"#).unwrap();
-                assert_eq!(SessionGrouping::current(&legacy), SessionGrouping::Projects);
+                assert_eq!(SessionGrouping::current(&legacy), SessionGrouping::Activity);
             })
         });
     }
