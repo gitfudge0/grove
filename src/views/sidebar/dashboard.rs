@@ -292,6 +292,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.destination = super::global_navigation::Destination::Home;
         self.dismiss_project_panel_for_navigation();
         if let Some(settings) = &self.settings_panel {
             settings.update(cx, |settings, cx| settings.close(window, cx));
@@ -1696,6 +1697,14 @@ mod tests {
         });
         cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(900.)));
         cx.run_until_parked();
+        cx.update(|_, cx| {
+            let session = sidebar.read(cx).dashboard.as_ref().unwrap().session.clone();
+            session.update(
+                cx,
+                crate::entities::codex_session::CodexSession::settle_draft_catalog_for_test,
+            );
+        });
+        cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
@@ -1721,7 +1730,10 @@ mod tests {
         assert_eq!(tray.top(), composer.bottom());
         assert!(hints.top() >= tray.bottom());
         assert!(recent.top() >= hints.bottom());
-        assert!(recent.top() - hints.bottom() < gpui::px(50.));
+        assert!(
+            recent.top() - hints.bottom() < gpui::px(50.),
+            "recent={recent:?}; hints={hints:?}"
+        );
         assert!(composer.size.height > gpui::px(50.));
         assert!(composer.size.height < gpui::px(130.));
 

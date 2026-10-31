@@ -25,6 +25,8 @@ use grove_core::agent::Agent;
 const SESSION_HEADER_H: f32 = 36.;
 const SESSION_ICON_SLOT: f32 = 24.;
 const HEADER_PREFIX_FRACTION: f32 = 0.4;
+// Keep identity/title and Close usable when both navigation columns are visible.
+const HEADER_STATUS_LABEL_MIN_W: f32 = 320.0;
 const EMPTY_CARD_W: f32 = 430.;
 const EMPTY_CARD_PAD: f32 = 24.;
 const EMPTY_TITLE_SIZE: f32 = 18.;
@@ -783,6 +785,8 @@ impl Sidebar {
             self.selection,
             Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id
         );
+        let compact_status =
+            bounds.get().size.width <= rpx(HEADER_STATUS_LABEL_MIN_W).to_pixels(window.rem_size());
         let header_owner = cx.entity().entity_id();
         let mut header = div()
             .id(gpui::SharedString::from(format!(
@@ -798,8 +802,13 @@ impl Sidebar {
                     move |rect, window, cx| {
                         let threshold = rpx(MODAL_W_XL).to_pixels(window.rem_size());
                         let was_wide = bounds.get().size.width > threshold;
+                        let compact_threshold =
+                            rpx(HEADER_STATUS_LABEL_MIN_W).to_pixels(window.rem_size());
+                        let was_compact = bounds.get().size.width <= compact_threshold;
                         bounds.set(rect);
-                        if was_wide != (rect.size.width > threshold) {
+                        if was_wide != (rect.size.width > threshold)
+                            || was_compact != (rect.size.width <= compact_threshold)
+                        {
                             cx.notify(header_owner);
                         }
                     },
@@ -857,7 +866,7 @@ impl Sidebar {
                 ICON_SM,
                 cx,
             ))
-            .child(state.label());
+            .when(!compact_status, |status| status.child(state.label()));
         let status = motion::fast(
             status,
             format!("canvas-session-status-{}-{}", id.raw(), state.label()),
@@ -868,12 +877,7 @@ impl Sidebar {
         });
         let header_status = task_progress.unwrap_or(status);
         header = header
-            .h(rpx(if grid {
-                SESSION_HEADER_H
-            } else {
-                APPBAR_TOTAL_H
-            }))
-            .when(!grid, |header| header.pt(rpx(APPBAR_TOP_INSET)))
+            .h(rpx(if grid { SESSION_HEADER_H } else { APPBAR_H }))
             .child(
                 div()
                     .id(gpui::SharedString::from(format!(
@@ -1723,6 +1727,30 @@ impl Sidebar {
                 _ => {}
             }
         }
+        if self.selection.is_none() && self.mode != ViewMode::Grid {
+            return div()
+                .id("navigation-empty-canvas")
+                .debug_selector(|| "navigation-empty-canvas".into())
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(rpx(TEXT_BODY))
+                .text_color(c::FG_DIM())
+                .child(
+                    div()
+                        .debug_selector(|| "navigation-empty-message".into())
+                        .child(
+                            if self.destination == super::global_navigation::Destination::Terminals
+                            {
+                                "Select a terminal to view here"
+                            } else {
+                                "Select a session to view here"
+                            },
+                        ),
+                )
+                .into_any_element();
+        }
         let selected_worktree = match (&self.mode, &self.selection) {
             (ViewMode::Grid, _) => None,
             (_, Some(Selection::Worktree(idx, path))) => self
@@ -1994,8 +2022,7 @@ fn canvas_section_header(title: String) -> impl gpui::IntoElement {
     div()
         .id("canvas-section-header")
         .debug_selector(|| "canvas-section-header".into())
-        .h(rpx(APPBAR_TOTAL_H))
-        .pt(rpx(APPBAR_TOP_INSET))
+        .h(rpx(APPBAR_H))
         .flex_shrink_0()
         .min_w_0()
         .px(rpx(SPACE_3XL))
@@ -2821,18 +2848,14 @@ mod tests {
             close.left() >= header.left() && close.right() <= header.right(),
             "{header:?} {close:?}"
         );
-        assert_eq!(f32::from(header.size.height), APPBAR_TOTAL_H);
+        assert_eq!(f32::from(header.size.height), APPBAR_H);
         let worktree = cx.debug_bounds("session-header-worktree-1").unwrap();
         let title = cx.debug_bounds("session-header-title-1").unwrap();
         assert!(worktree.right() < title.left());
         assert!(title.right() <= close.left());
         for zone in ["terminal-header-left-1", "terminal-header-right-1"] {
             let bounds = cx.debug_bounds(zone).unwrap();
-            assert!(
-                f32::from(bounds.center().y - header.center().y - gpui::px(APPBAR_TOP_INSET / 2.))
-                    .abs()
-                    < 1.
-            );
+            assert!(f32::from(bounds.center().y - header.center().y).abs() < 1.);
         }
 
         cx.update(|window, cx| {
@@ -2903,20 +2926,26 @@ mod tests {
             let mut sidebar = Sidebar::new(runtime, window, cx);
             sidebar.sync(window, cx);
             // This fixture exercises the canvas overview rather than Dashboard.
-            sidebar.dashboard_open = false;
+            sidebar.open_destination(
+                crate::views::sidebar::global_navigation::Destination::Projects,
+                window,
+                cx,
+            );
             sidebar
         });
         cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
         draw(cx);
-        let canvas = cx.debug_bounds("canvas-overview").unwrap();
-        let header = cx.debug_bounds("canvas-section-header").unwrap();
-        let scroll = cx.debug_bounds("canvas-empty-scroll").unwrap();
-        let card = cx.debug_bounds("canvas-empty-card").unwrap();
-        assert_eq!(f32::from(header.size.height), APPBAR_TOTAL_H);
-        assert!(header.bottom() <= scroll.top());
-        assert!(card.left() >= canvas.left() && card.right() <= canvas.right());
-        assert!((f32::from(card.center().x - canvas.center().x)).abs() < 1.);
-        assert!(card.top() >= canvas.top() && card.bottom() <= canvas.bottom());
+        let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
+        let placeholder = cx.debug_bounds("navigation-empty-canvas").unwrap();
+        assert_eq!(placeholder, canvas);
+        let message = cx.debug_bounds("navigation-empty-message").unwrap();
+        assert!((f32::from(message.center().x - canvas.center().x)).abs() < 1.);
+        assert!((f32::from(message.center().y - canvas.center().y)).abs() < 1.);
+        assert!(message.left() >= canvas.left() && message.right() <= canvas.right());
+        assert!(message.top() >= canvas.top() && message.bottom() <= canvas.bottom());
+        assert!(cx.debug_bounds("canvas-empty-card").is_none());
+        assert!(cx.debug_bounds("global-nav-projects").is_some());
+        assert!(cx.debug_bounds("sidebar-rail").is_some());
     }
     #[gpui::test]
     fn start_panel_scrolls_overflow_and_centers_on_desktop(cx: &mut gpui::TestAppContext) {

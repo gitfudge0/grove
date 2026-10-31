@@ -1131,6 +1131,37 @@ impl SettingsPanel {
             cx,
             |this, enabled, _, cx| this.set_reduce_motion(enabled, cx),
         );
+        let landing_page = store.default_landing_page;
+        let mut landing_choices = Self::choices();
+        for page in grove_core::storage::LandingPage::ALL {
+            let label = page.label();
+            let id = format!("settings-landing-{}", label.to_lowercase());
+            landing_choices = landing_choices.child(
+                self.choice(id.clone(), label, landing_page == page, true)
+                    .debug_selector(move || id.clone())
+                    .child(label)
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        SettingsState::update(cx, |store| {
+                            store.default_landing_page = page;
+                        });
+                        cx.notify();
+                    }))
+                    .on_key_down(
+                        cx.listener(move |_, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.is_held
+                            {
+                                SettingsState::update(cx, |store| {
+                                    store.default_landing_page = page;
+                                });
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        }),
+                    ),
+            );
+        }
         body = body.when(self.category == Category::General, |body| {
             body.child(
                 div()
@@ -1151,6 +1182,11 @@ impl SettingsPanel {
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_nested(Page::Archived, window, cx);
                         })),
+                    ))
+                    .child(Self::setting_row(
+                        "Default landing page",
+                        "Used whenever Grove opens its landing page",
+                        landing_choices,
                     ))
                     .child(Self::section("Appearance"))
                     .child(Self::setting_row(
@@ -1685,7 +1721,7 @@ impl Render for SettingsPanel {
             .flex_col()
             .items_center()
             .px(rpx(SPACE_20))
-            .pt(rpx(APPBAR_TOTAL_H + SPACE_20))
+            .pt(rpx(SPACE_20))
             .pb(rpx(SPACE_20))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::key))
@@ -1911,6 +1947,44 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    #[gpui::test]
+    fn landing_page_group_saves_without_leaving_settings(cx: &mut gpui::TestAppContext) {
+        cx.update(setup);
+        let (panel, cx) = cx.add_window_view(|_, cx| {
+            let runtime = cx.new(Runtime::new);
+            SettingsPanel::new(runtime, cx)
+        });
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.open(window, cx)));
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(900.)));
+        draw(cx);
+        for (name, page) in [
+            (
+                "settings-landing-projects",
+                grove_core::storage::LandingPage::Projects,
+            ),
+            (
+                "settings-landing-sessions",
+                grove_core::storage::LandingPage::Sessions,
+            ),
+            (
+                "settings-landing-home",
+                grove_core::storage::LandingPage::Home,
+            ),
+        ] {
+            let bounds = cx.debug_bounds(name).unwrap();
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            draw(cx);
+            cx.update(|_, cx| {
+                assert_eq!(
+                    cx.global::<SettingsState>().store.default_landing_page,
+                    page
+                );
+                assert!(panel.read(cx).is_open());
+                assert_eq!(panel.read(cx).category, Category::General);
+            });
+        }
     }
 
     #[test]
@@ -2194,7 +2268,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn settings_headers_reserve_shell_chrome_at_zoom_and_short_heights(
+    fn settings_headers_start_at_content_inset_at_zoom_and_short_heights(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(setup);
@@ -2221,11 +2295,11 @@ mod tests {
                     });
                 });
                 draw(cx);
-                let chrome_bottom = gpui::px(APPBAR_TOTAL_H * zoom);
+                let chrome_bottom = gpui::px(SPACE_20 * zoom);
                 let heading = cx
                     .debug_bounds("settings-heading")
                     .expect("settings heading");
-                assert!(heading.top() >= chrome_bottom, "{page:?} at {zoom}x: heading {heading:?} overlaps shell chrome ending at {chrome_bottom:?}");
+                assert!(heading.top() >= chrome_bottom, "{page:?} at {zoom}x: heading {heading:?} precedes content inset ending at {chrome_bottom:?}");
                 for selector in ["settings-close", "settings-back"] {
                     if selector == "settings-back" && page == Page::Settings {
                         continue;
@@ -2233,7 +2307,7 @@ mod tests {
                     let control = cx.debug_bounds(selector).expect("settings header control");
                     assert!(
                         control.top() >= chrome_bottom,
-                        "{selector} overlaps appbar at {zoom}x"
+                        "{selector} precedes content inset at {zoom}x"
                     );
                     assert!(
                         control.bottom() <= gpui::px(height),

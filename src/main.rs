@@ -113,6 +113,15 @@ fn main() {
             )]);
             cx.bind_keys([
                 gpui::KeyBinding::new(
+                    if cfg!(target_os = "macos") {
+                        "ctrl-cmd-f"
+                    } else {
+                        "f11"
+                    },
+                    views::shell::ToggleFullscreen,
+                    None,
+                ),
+                gpui::KeyBinding::new(
                     &format!("{}q", keymap::platform_mod_prefix()),
                     views::shell::Quit,
                     None,

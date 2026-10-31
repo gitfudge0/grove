@@ -145,6 +145,17 @@ impl CodexSession {
         composer_catalog::invalidate(&self.state.saved, &args);
         self.refresh_catalog(self.state.saved.cwd.clone(), args, cx);
     }
+    /// Geometry fixtures must not depend on installed CLIs or an asynchronous handshake.
+    #[cfg(test)]
+    pub(crate) fn settle_draft_catalog_for_test(&mut self, cx: &mut Context<Self>) {
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
+        self.catalog_loading = false;
+        self.catalog_error = None;
+        self.catalog_selection_error = false;
+        self.state.error = None;
+        cx.notify();
+    }
+
     fn complete_catalog(
         &mut self,
         generation: u64,

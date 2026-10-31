@@ -670,11 +670,10 @@ impl Sidebar {
                     );
                 if selected && !state.expanded {
                     let left = graph_w.min(PREVIEW_ANCHOR_MAX);
-                    let available =
-                        f32::from(window.viewport_size().width - self.rail_bounds.get().size.width)
-                            / (f32::from(window.rem_size()) / 16.0)
-                            - left
-                            - SPACE_2XL;
+                    let available = Self::logical_window_width(window)
+                        - self.rail_width(window, cx)
+                        - left
+                        - SPACE_2XL;
                     let mut card = div()
                         .id("history-commit-preview")
                         .debug_selector(|| "history-commit-preview".into())

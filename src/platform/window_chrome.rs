@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "macos")]
 pub fn sync_native_buttons(window: &gpui::Window) {
-    use objc::runtime::{Object, BOOL, NO, YES};
+    use objc::runtime::{Object, BOOL, YES};
     use objc::{msg_send, sel, sel_impl};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
@@ -13,9 +13,9 @@ pub fn sync_native_buttons(window: &gpui::Window) {
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
         return;
     };
-    // The system's fullscreen titlebar owns these controls when revealed at the
-    // top edge. Outside fullscreen, Grove supplies its own window buttons.
-    let hidden = if window.is_fullscreen() { NO } else { YES };
+    // Grove's navigation extends to the top edge; native menu actions retain
+    // close/minimize/fullscreen without visible window buttons.
+    let hidden = YES;
     // SAFETY: GPUI calls this on the AppKit main thread. Its borrowed handle owns a
     // live NSView; the documented window/standardWindowButton selectors return
     // borrowed objects. Only visibility changes, never the window's style mask.

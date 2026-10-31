@@ -3,8 +3,8 @@ mod agent_preview;
 mod branch_history;
 mod branch_preview;
 mod checkout_panel;
-mod collapsed;
 mod content;
+mod global_navigation;
 mod grid;
 mod multi_project;
 mod plan_preview;
@@ -292,9 +292,9 @@ struct Navigation {
 }
 #[derive(Clone)]
 enum Action {
+    Destination(global_navigation::Destination),
     Select(Selection),
     ToggleProject(String),
-    ProjectFlyout(SidebarContext),
     Mode(ViewMode),
     Menu(usize),
     NewWorktree(String),
@@ -313,7 +313,6 @@ enum Action {
     ConfirmWorktreeRemoval,
     SkipWorktreeTeardown,
     DismissWorktreeRemoval,
-    ProjectFlyoutLaunchOptions(String),
     Launch(usize, String, Agent),
     RunScript(String, String),
     RunNamedScript(String, String, String),
@@ -339,7 +338,6 @@ enum Action {
     SelectDiffFile(String),
     RefreshDiff,
     AddTerminal,
-    OpenDashboard,
     OpenSettings,
     UpdateApp,
     NewMultiProjectSession,
@@ -404,7 +402,6 @@ pub struct Sidebar {
     runtime: Entity<Runtime>,
     focus: FocusHandle,
     shell_focus: Option<FocusHandle>,
-    collapse_focus: FocusHandle,
     compact_workspace_focus: FocusHandle,
     selection: Option<Selection>,
     initial_selection_pending: bool,
@@ -428,17 +425,12 @@ pub struct Sidebar {
     project_group_bounds: HashMap<usize, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
     project_flyout_popup_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     project_flyout_focus: FocusHandle,
-    project_flyout_index: usize,
     project_flyout_launch_path: Option<String>,
     project_flyout_launch_error: Option<String>,
-    project_flyout_launch_focus: FocusHandle,
     project_flyout_plus_focus: HashMap<String, FocusHandle>,
     project_flyout_item_focus: HashMap<String, FocusHandle>,
     rail_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
-    project_flyout_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
-    project_flyout_scroll: ScrollHandle,
     multi_project_focus: FocusHandle,
-    multi_project_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     multi_project_group_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     menu: Option<usize>,
     menu_opened_by_hover: bool,
@@ -493,6 +485,7 @@ pub struct Sidebar {
     terminal_views: HashMap<SessionId, Entity<TerminalView>>,
     dashboard: Option<dashboard::Dashboard>,
     dashboard_open: bool,
+    destination: global_navigation::Destination,
     codex_views: HashMap<SessionId, Entity<super::codex_view::CodexView>>,
     home_terminal_views: HashMap<SessionId, Entity<TerminalView>>,
     available: [bool; 4],
@@ -624,8 +617,7 @@ impl Sidebar {
             workspace_selector: None,
             focus: cx.focus_handle(),
             shell_focus: None,
-            collapse_focus: cx.focus_handle(),
-            compact_workspace_focus: cx.focus_handle(),
+            compact_workspace_focus: cx.focus_handle().tab_stop(true),
             selection: None,
             initial_selection_pending: true,
             pending_canvas_focus: None,
@@ -647,17 +639,12 @@ impl Sidebar {
             project_group_bounds: HashMap::new(),
             project_flyout_popup_bounds: std::rc::Rc::default(),
             project_flyout_focus: cx.focus_handle(),
-            project_flyout_index: 0,
             project_flyout_launch_path: None,
             project_flyout_launch_error: None,
-            project_flyout_launch_focus: cx.focus_handle().tab_stop(true),
             project_flyout_plus_focus: HashMap::new(),
             project_flyout_item_focus: HashMap::new(),
             rail_bounds: std::rc::Rc::default(),
-            project_flyout_bounds: std::rc::Rc::default(),
-            project_flyout_scroll: ScrollHandle::new(),
             multi_project_focus: cx.focus_handle(),
-            multi_project_bounds: std::rc::Rc::default(),
             multi_project_group_bounds: std::rc::Rc::default(),
             menu: None,
             menu_opened_by_hover: false,
@@ -711,6 +698,7 @@ impl Sidebar {
             terminal_views: HashMap::new(),
             dashboard: None,
             dashboard_open: false,
+            destination: global_navigation::Destination::Home,
             codex_views: HashMap::new(),
             home_terminal_views: HashMap::new(),
             available: WORKTREE_LAUNCH_AGENTS.map(Agent::available),
@@ -1095,7 +1083,10 @@ impl Sidebar {
                         .map(|project| Selection::Project(project.idx))
                 });
             if let Some(selection) = next {
+                let (mode, last_mode) = (self.mode, self.last_mode);
                 self.select(selection, cx);
+                self.mode = mode;
+                self.last_mode = last_mode;
                 self.pending_canvas_focus = match self.selection {
                     Some(Selection::Session(id) | Selection::Home(id)) => Some(id),
                     _ => None,
@@ -1117,7 +1108,10 @@ impl Sidebar {
                 });
             }
             if let Some(selection) = self.selection.clone() {
+                let (mode, last_mode) = (self.mode, self.last_mode);
                 self.select(selection, cx);
+                self.mode = mode;
+                self.last_mode = last_mode;
             }
             self.pending_canvas_focus = match self.selection {
                 Some(Selection::Session(id) | Selection::Home(id)) => Some(id),
@@ -1132,7 +1126,7 @@ impl Sidebar {
             self.initial_selection_pending = false;
             self.pending_canvas_focus = None;
             self.pending_grid_workspace_focus = None;
-            self.open_dashboard(window, cx);
+            self.open_landing_page(window, cx);
         }
         let checked_indices = [
             match &self.selection {
@@ -1354,7 +1348,16 @@ impl Sidebar {
         );
     }
     fn focus_remaining_canvas(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((id, home)) = self.active_canvas_sessions(cx).first().copied() {
+        let next = self
+            .active_canvas_sessions(cx)
+            .into_iter()
+            .find(|(_, home)| {
+                self.destination != global_navigation::Destination::Terminals
+                    || self.mode == ViewMode::Grid
+                    || self.is_zen()
+                    || *home
+            });
+        if let Some((id, home)) = next {
             self.select(
                 if home {
                     Selection::Home(id)
@@ -1502,26 +1505,18 @@ impl Sidebar {
         f32::from(window.viewport_size().width)
             / (f32::from(window.rem_size()) / crate::zoom::REM_BASE)
     }
-    /// Shared with the appbar so window controls follow the rail actually on screen.
-    pub(crate) fn rail_visible(&self, window: &Window, cx: &App) -> bool {
-        let settings_open = self
-            .settings_panel
-            .as_ref()
-            .is_some_and(|panel| panel.read(cx).is_open());
-        let editor_open = self.pending_new_worktree.is_some()
-            || self.project_panel.is_some()
-            || self.project_setup.is_some()
-            || settings_open;
-        ((self.mode != ViewMode::Grid && !self.is_zen()) || settings_open)
-            && !(editor_open && Self::logical_window_width(window) < EDITOR_FULL_WIDTH_BREAKPOINT)
-    }
     pub(crate) fn is_collapsed(&self, cx: &App) -> bool {
         cx.global::<SettingsState>().store.sidebar_collapsed
     }
     pub(crate) fn rail_width(&self, window: &Window, cx: &App) -> f32 {
-        if self.is_collapsed(cx) {
-            return SIDEBAR_COLLAPSED_W;
-        }
+        SIDEBAR_COLLAPSED_W
+            + if self.context_visible(window, cx) {
+                self.context_width(window, cx)
+            } else {
+                0.0
+            }
+    }
+    fn context_width(&self, window: &Window, cx: &App) -> f32 {
         let preferred = self.drag.map_or_else(
             || {
                 cx.global::<SettingsState>()
@@ -1550,12 +1545,12 @@ impl Sidebar {
             cx.notify();
             return;
         }
-        let width = self.rail_width(window, cx);
+        let width = self.context_width(window, cx);
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         self.drag = Some(SidebarDrag {
             start_width: width,
             width,
-            grab_offset: width - f32::from(event.position.x) / scale,
+            grab_offset: SIDEBAR_COLLAPSED_W + width - f32::from(event.position.x) / scale,
         });
     }
     fn divider_move(&mut self, event: &MouseMoveEvent, window: &Window, cx: &mut Context<Self>) {
@@ -1569,7 +1564,7 @@ impl Sidebar {
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let cursor = f32::from(event.position.x) / scale;
         let width = effective_rail_width(
-            cursor + drag.grab_offset,
+            cursor + drag.grab_offset - SIDEBAR_COLLAPSED_W,
             Self::logical_window_width(window),
         );
         if (drag.width - width).abs() > f32::EPSILON {
@@ -1591,6 +1586,7 @@ impl Sidebar {
     pub(crate) fn menu_state(&self, window: &Window, cx: &App) -> crate::app_menus::MenuState {
         crate::app_menus::MenuState {
             window: true,
+            fullscreen: window.is_fullscreen(),
             navigation: self.navigation_available(),
             worktree: self.selected_worktree().is_some(),
             close_session: matches!(
@@ -1665,9 +1661,6 @@ impl Sidebar {
         }
         cx.notify();
     }
-    pub fn view_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        self.view_controls_with_gap(SPACE_LG, cx)
-    }
     fn view_controls_with_gap(&self, gap: f32, cx: &mut Context<Self>) -> AnyElement {
         let target = if self.mode == ViewMode::Grid {
             self.last_mode
@@ -1733,86 +1726,6 @@ impl Sidebar {
                 cx,
             ))
             .into_any_element()
-    }
-    /// Workspace controls share the appbar with the native window controls.
-    pub(crate) fn workspace_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("sidebar-workspace-header")
-            .debug_selector(|| "sidebar-workspace-header".into())
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .items_center()
-            .on_mouse_down(MouseButton::Left, |event, window, cx| {
-                if event.click_count == 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
-                cx.stop_propagation();
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .when_some(self.workspace_selector.clone(), gpui::ParentElement::child),
-            )
-            .when(
-                self.runtime.read(cx).upgrade.read(cx).can_update(),
-                |header| {
-                    header.child(
-                        div()
-                            .flex_shrink_0()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(
-                                self.control(
-                                    "sidebar-update",
-                                    "Update Grove",
-                                    Action::UpdateApp,
-                                    cx,
-                                )
-                                .debug_selector(|| "sidebar-update".into())
-                                .child(icon(
-                                    "arrow-up",
-                                    ICON_MD,
-                                    c::FG_DIM(),
-                                )),
-                            ),
-                    )
-                },
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .flex()
-                    .items_center()
-                    .child(
-                        self.control("sidebar-dashboard", "Dashboard", Action::OpenDashboard, cx)
-                            .debug_selector(|| "sidebar-dashboard".into())
-                            .child(icon("home", ICON_MD, c::FG_DIM())),
-                    )
-                    .child(self.settings_control(cx)),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(self.collapse_control(cx)),
-            )
-            .into_any_element()
-    }
-    fn settings_control(&self, cx: &mut Context<Self>) -> AnyElement {
-        self.control(
-            "sidebar-settings",
-            "Open settings",
-            Action::OpenSettings,
-            cx,
-        )
-        .debug_selector(|| "sidebar-settings".into())
-        .child(icon("cog", ICON_MD, c::FG_DIM()))
-        .into_any_element()
     }
     fn navigation_heading(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let project = self.mode == ViewMode::Project;
@@ -2039,10 +1952,8 @@ impl Sidebar {
                 }
             })
             .when(
-                !(matches!(
-                    &action,
-                    Action::ProjectFlyout(_) | Action::SelectCommit(_) | Action::ExpandCommit
-                ) || icon_rail && matches!(&action, Action::Select(Selection::Session(_)))),
+                !(matches!(&action, Action::SelectCommit(_) | Action::ExpandCommit)
+                    || icon_rail && matches!(&action, Action::Select(Selection::Session(_)))),
                 |control| {
                     control.tooltip(move |window, cx| {
                         crate::views::components::tooltip(tooltip_label.clone(), window)
@@ -2125,6 +2036,26 @@ impl Sidebar {
 
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         self.dashboard_open = false;
+        match selection {
+            Selection::Project(_) | Selection::Worktree(..) => {
+                self.destination = global_navigation::Destination::Projects;
+                self.mode = ViewMode::Project;
+                self.last_mode = ViewMode::Project;
+            }
+            Selection::Home(_) => self.destination = global_navigation::Destination::Terminals,
+            Selection::Session(_)
+                if self.destination == global_navigation::Destination::Home
+                    || self.destination == global_navigation::Destination::Terminals =>
+            {
+                if self.mode == ViewMode::Grid {
+                    self.destination = global_navigation::Destination::Projects;
+                } else {
+                    self.destination = global_navigation::Destination::Sessions;
+                    self.mode = ViewMode::List;
+                }
+            }
+            Selection::Session(_) => {}
+        }
         if self
             .history_selection
             .as_ref()
@@ -2905,41 +2836,12 @@ impl Sidebar {
         let was_project_flyout = self.project_flyout.is_some();
         if !matches!(
             &action,
-            Action::ProjectFlyout(_)
-                | Action::ProjectFlyoutLaunchOptions(_)
-                | Action::Launch(..)
-                | Action::Close(_)
-                | Action::ConfirmClose(_)
-                | Action::Cancel
+            Action::Launch(..) | Action::Close(_) | Action::ConfirmClose(_) | Action::Cancel
         ) {
             self.dismiss_project_context(cx);
             self.track_project_flyout_pointer(window.mouse_position(), window, cx);
         }
         match action {
-            Action::ProjectFlyout(target) => {
-                if self.project_flyout.as_ref() == Some(&target) && self.project_flyout_hover_open {
-                    self.project_flyout_hover_open = false;
-                    self.project_flyout_hide_task = None;
-                    self.project_flyout_focus.focus(window, cx);
-                    cx.notify();
-                } else if self.project_flyout.as_ref() == Some(&target) {
-                    self.close_project_flyout(window, cx);
-                } else if self.sidebar_context_is_active(&target, cx) {
-                    self.menu = None;
-                    if let Some(bounds) = self.sidebar_context_trigger(&target) {
-                        self.project_flyout_bounds = bounds;
-                    }
-                    self.project_flyout_hover_open = false;
-                    self.project_flyout_hide_task = None;
-                    self.project_flyout_launch_path = None;
-                    self.project_flyout_launch_error = None;
-                    self.project_flyout = Some(target);
-                    self.project_flyout_index = 0;
-                    self.project_flyout_scroll = ScrollHandle::new();
-                    self.project_flyout_focus.focus(window, cx);
-                    cx.notify();
-                }
-            }
             Action::ToggleSidebar => {
                 let collapsed = !self.is_collapsed(cx);
                 self.drag = None;
@@ -2947,7 +2849,7 @@ impl Sidebar {
                 self.menu_return_focus = None;
                 self.menu_opened_by_hover = false;
                 SettingsState::update(cx, |store| store.sidebar_collapsed = collapsed);
-                self.collapse_focus.focus(window, cx);
+                self.focus.focus(window, cx);
                 cx.notify();
             }
             Action::OpenWorkspaces => {
@@ -2995,7 +2897,7 @@ impl Sidebar {
                     }
                 }
             }
-            Action::OpenDashboard => self.open_dashboard(window, cx),
+            Action::Destination(destination) => self.open_destination(destination, window, cx),
             Action::OpenSettings => {
                 if self.navigation_available() {
                     cx.emit(SidebarEvent::SettingsRequested);
@@ -3046,6 +2948,12 @@ impl Sidebar {
                 let leaving_project_panel = self.project_panel.is_some();
                 self.dismiss_project_panel_for_navigation();
                 change_mode(&mut self.mode, &mut self.last_mode, mode);
+                self.destination = if mode == ViewMode::List {
+                    global_navigation::Destination::Sessions
+                } else {
+                    global_navigation::Destination::Projects
+                };
+                self.dashboard_open = false;
                 self.menu = None;
                 if leaving_project_panel {
                     self.focus.focus(window, cx);
@@ -3247,16 +3155,6 @@ impl Sidebar {
                     self.focus.focus(window, cx);
                 }
             }
-            Action::ProjectFlyoutLaunchOptions(path) => {
-                if self.project_flyout.is_some() {
-                    self.project_flyout_launch_path = Some(path);
-                    self.project_flyout_launch_error = None;
-                    self.project_flyout_hover_open = false;
-                    self.project_flyout_hide_task = None;
-                    let focus = self.project_flyout_launch_focus.clone();
-                    cx.defer_in(window, move |_, window, cx| focus.focus(window, cx));
-                }
-            }
             Action::Launch(i, path, agent) => {
                 if self.launch(i, path, agent, cx) {
                     if was_project_flyout {
@@ -3349,7 +3247,7 @@ impl Sidebar {
                 self.canvas_close_anchor = None;
                 self.runtime.update(cx, |r, cx| r.kill_session(id, cx));
                 self.pending_close = None;
-                self.open_dashboard(window, cx);
+                self.open_landing_page(window, cx);
             }
             Action::Retry(id) => {
                 if let Some(session) = self.runtime.read(cx).registry.read(cx).codex(id).cloned() {
@@ -3409,8 +3307,9 @@ impl Sidebar {
                             cx,
                         );
                     });
-                    if let Some(id) = self.runtime.read(cx).state.read(cx).active_session() {
-                        self.selection = Some(Selection::Session(id));
+                    let active = self.runtime.read(cx).state.read(cx).active_session();
+                    if let Some(id) = active {
+                        self.select(Selection::Session(id), cx);
                     }
                 }
             }
@@ -3570,8 +3469,12 @@ impl Sidebar {
                 };
                 if let Some(id) = new_id {
                     self.terminal_owners.insert(id, self.active_workspace);
-                    self.selection = Some(Selection::Home(id));
+                    self.close_settings_for_session_navigation(window, cx);
+                    self.select(Selection::Home(id), cx);
+                    self.mode = ViewMode::Project;
                     self.terminals_collapsed = false;
+                    SettingsState::update(cx, |store| store.sidebar_collapsed = false);
+                    self.pending_canvas_focus = Some(id);
                 }
             }
             Action::FoldTerminals => self.terminals_collapsed = !self.terminals_collapsed,
@@ -5366,27 +5269,14 @@ impl Render for Sidebar {
                 self.project_flyout_launch_error = None;
             }
         }
-        let rail_width = self.rail_width(window, cx);
+        let rail_width = self.context_width(window, cx);
         self.compact_rail = rail_width < SIDEBAR_COMPACT_THRESHOLD;
-        let collapsed = self.is_collapsed(cx);
-        let navigation = if collapsed {
-            div()
-                .flex()
-                .flex_col()
-                .w_full()
-                .min_h_full()
-                .child(self.collapsed_controls(cx))
-                .child(self.collapsed_navigation(window, cx))
-                .child(self.collapsed_terminals(window, cx))
-                .child(div().flex_1().min_h(rpx(SPACE_LG)))
-                .child(self.collapsed_utilities(cx))
-                .into_any_element()
-        } else if self.mode == ViewMode::List {
-            self.list(window, cx)
-        } else {
-            self.tree(window, cx)
+        let collapsed = false;
+        let navigation = match self.destination {
+            global_navigation::Destination::Terminals => self.terminals(window, cx),
+            global_navigation::Destination::Sessions => self.list(window, cx),
+            _ => self.tree(window, cx),
         };
-        let terminals = (!collapsed).then(|| self.terminals(window, cx));
         let empty = self.snapshot.projects.is_empty();
         let rail = div()
             .id("sidebar-rail")
@@ -5404,38 +5294,18 @@ impl Render for Sidebar {
             .line_height(rpx(SPACE_3XL))
             .font_weight(gpui::FontWeight::NORMAL)
             .text_color(c::alpha(c::FG(), 0.88))
-            .when(collapsed, |rail| rail.pt(rpx(SPACE_LG)))
-            .when(!collapsed, |rail| {
-                rail.child(
-                    div()
-                        .id("sidebar-appbar-spacer")
-                        .debug_selector(|| "sidebar-appbar-spacer".into())
-                        .h(rpx(APPBAR_TOTAL_H))
-                        .flex_shrink_0(),
-                )
-            })
-            .when(collapsed, |rail| {
-                rail.child(
-                    div()
-                        .id("sidebar-workspace-header")
-                        .debug_selector(|| "sidebar-workspace-header".into())
-                        .w_full()
-                        .h(rpx(HEAD_H))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(self.collapse_control(cx)),
-                )
-            })
-            .when(!collapsed && self.mode != ViewMode::Project, |rail| {
-                rail.child(
-                    div()
-                        .px(rpx(SIDEBAR_CONTENT_INSET))
-                        .pt(rpx(SPACE_LG))
-                        .child(self.navigation_heading(window, cx)),
-                )
-            })
+            .child(self.context_workspace_header(cx))
+            .when(
+                !collapsed && self.destination == global_navigation::Destination::Sessions,
+                |rail| {
+                    rail.child(
+                        div()
+                            .px(rpx(SIDEBAR_CONTENT_INSET))
+                            .pt(rpx(SPACE_LG))
+                            .child(self.navigation_heading(window, cx)),
+                    )
+                },
+            )
             .child(
                 div()
                     .id("sidebar-scroll")
@@ -5444,7 +5314,13 @@ impl Render for Sidebar {
                     .min_h_0()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .p(rpx(if collapsed { SPACE_SM } else { SPACE_LG }))
+                    .p(rpx(
+                        if self.destination == global_navigation::Destination::Terminals {
+                            0.0
+                        } else {
+                            SPACE_LG
+                        },
+                    ))
                     .when(empty && !collapsed && self.mode != ViewMode::Project, |d| {
                         d.child(
                             div()
@@ -5455,9 +5331,9 @@ impl Render for Sidebar {
                         )
                     })
                     .child(navigation),
-            )
-            .when_some(terminals, gpui::ParentElement::child);
-        let rail_visible = self.rail_visible(window, cx);
+            );
+        let rail_visible = self.context_visible(window, cx);
+        let global_rail = self.global_rail(window, cx);
         let content = self.render_content(window, cx);
         let confirming = self.project_decision
             || self.pending_close.is_some()
@@ -5662,6 +5538,7 @@ impl Render for Sidebar {
                     cx.stop_propagation();
                 }
             }))
+            .child(global_rail)
             .when(rail_visible, |d| {
                 d.child(
                     div()
@@ -5942,29 +5819,8 @@ mod tests {
         sidebar: Entity<Sidebar>,
     }
     impl Render for WorkspaceHeaderFixture {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let sidebar = self.sidebar.read(cx);
-            let collapsed = sidebar.is_collapsed(cx);
-            let width = sidebar.rail_width(window, cx);
-            div()
-                .size_full()
-                .relative()
-                .child(self.sidebar.clone())
-                .when(!collapsed, |root| {
-                    root.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(rpx(width))
-                            .h(rpx(APPBAR_TOTAL_H))
-                            .pt(rpx(APPBAR_TOP_INSET))
-                            .child(
-                                self.sidebar
-                                    .update(cx, |sidebar, cx| sidebar.workspace_header(cx)),
-                            ),
-                    )
-                })
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.sidebar.clone())
         }
     }
 
@@ -6085,7 +5941,14 @@ mod tests {
     ) {
         cx.update(|cx| {
             gpui_component::init(cx);
-            let mut store = grove_core::storage::Store::default();
+            let mut store = grove_core::storage::Store {
+                default_landing_page: if list {
+                    grove_core::storage::LandingPage::Sessions
+                } else {
+                    grove_core::storage::LandingPage::Projects
+                },
+                ..Default::default()
+            };
             if projects {
                 for name in ["alpha", "beta"] {
                     let path = format!("/grove-empty-multi-{name}");
@@ -6383,8 +6246,8 @@ mod tests {
                 assert!(sidebar.dashboard_open);
                 assert!(sidebar.pending_canvas_focus.is_none());
                 assert!(sidebar.pending_grid_workspace_focus.is_none());
-                assert_eq!(sidebar.mode, sidebar_mode);
-                assert_eq!(sidebar.last_mode, sidebar_mode);
+                assert_eq!(sidebar.mode, ViewMode::Project);
+                assert_eq!(sidebar.last_mode, ViewMode::Project);
                 assert_eq!(sidebar.selection, Some(Selection::Project(2)));
                 assert!(!sidebar.terminals_collapsed);
                 assert!(sidebar.is_collapsed(cx));
@@ -6395,7 +6258,7 @@ mod tests {
                 assert!(sidebar.dashboard_open);
                 assert!(sidebar.pending_canvas_focus.is_none());
                 assert!(sidebar.pending_grid_workspace_focus.is_none());
-                assert_eq!(sidebar.mode, sidebar_mode);
+                assert_eq!(sidebar.mode, ViewMode::Project);
                 assert_eq!(sidebar.selection, Some(Selection::Project(1)));
                 assert_eq!(sidebar.scroll.offset().y, gpui::px(-80.0));
                 assert!(!sidebar.terminals_collapsed);
@@ -6519,943 +6382,6 @@ mod tests {
         );
         assert!(cx.debug_bounds("project-start-card").is_some());
         assert!(cx.debug_bounds("start-terminal").is_some());
-    }
-
-    fn assert_compact_column(
-        cx: &mut gpui::VisualTestContext,
-        items: &[(&'static str, &'static str)],
-    ) {
-        let rail = cx.debug_bounds("sidebar-rail").unwrap();
-        let expand = cx
-            .debug_bounds("compact-glyph-sidebar-collapse-toggle")
-            .unwrap();
-        assert!((f32::from(expand.center().x - rail.center().x)).abs() <= 0.5);
-        for &(row_selector, glyph_selector) in items {
-            let row = cx.debug_bounds(row_selector).unwrap();
-            let glyph = cx.debug_bounds(glyph_selector).unwrap();
-            assert_eq!(f32::from(row.size.width), 36.0, "{row_selector}");
-            assert_eq!(f32::from(row.size.height), 32.0, "{row_selector}");
-            assert_eq!(row.center().x, expand.center().x, "{row_selector}");
-            if let Some((kind, id)) = row_selector
-                .split_once('-')
-                .filter(|(kind, _)| matches!(*kind, "session" | "home"))
-            {
-                let status = cx
-                    .debug_bounds(Box::leak(
-                        format!("compact-{kind}-status-{id}").into_boxed_str(),
-                    ))
-                    .unwrap();
-                assert_eq!(status.left(), row.center().x, "{row_selector}");
-                assert_eq!(status.top(), row.center().y, "{row_selector}");
-                assert_eq!(status.size.width, gpui::px(ICON_SM), "{row_selector}");
-                assert_eq!(status.size.height, gpui::px(ICON_SM), "{row_selector}");
-                assert!(status.left() < glyph.right(), "{row_selector}");
-                assert!(status.top() < glyph.bottom(), "{row_selector}");
-                assert!(status.right() <= row.right(), "{row_selector}");
-                assert!(status.bottom() <= row.bottom(), "{row_selector}");
-            }
-            assert_eq!(glyph.center().x, expand.center().x, "{glyph_selector}");
-            assert_eq!(glyph.center().y, row.center().y, "{glyph_selector}");
-            assert!(
-                row.left() >= rail.left() && row.right() <= rail.right(),
-                "{row_selector}"
-            );
-            assert!(
-                glyph.left() >= row.left() && glyph.right() <= row.right(),
-                "{glyph_selector}"
-            );
-        }
-    }
-
-    fn assert_compact_overlay(
-        cx: &mut gpui::VisualTestContext,
-        row_selector: &'static str,
-        overlay_selector: &'static str,
-    ) {
-        let row = cx.debug_bounds(row_selector).unwrap();
-        let overlay = cx.debug_bounds(overlay_selector).unwrap();
-        assert!(
-            overlay.left() >= row.left() && overlay.right() <= row.right(),
-            "{overlay_selector}"
-        );
-        assert!(
-            overlay.top() >= row.top() && overlay.bottom() <= row.bottom(),
-            "{overlay_selector}"
-        );
-    }
-
-    fn assert_compact_disclosure(
-        cx: &mut gpui::VisualTestContext,
-        row_selector: &'static str,
-        glyph_selector: &'static str,
-        disclosure_selector: &'static str,
-    ) {
-        assert_compact_overlay(cx, row_selector, disclosure_selector);
-        let row = cx.debug_bounds(row_selector).unwrap();
-        let glyph = cx.debug_bounds(glyph_selector).unwrap();
-        let disclosure = cx.debug_bounds(disclosure_selector).unwrap();
-        assert!(
-            (f32::from(disclosure.center().y - row.center().y)).abs() <= 0.5,
-            "{disclosure_selector}: row={row:?}, disclosure={disclosure:?}"
-        );
-        assert!(disclosure.left() >= glyph.right(), "{disclosure_selector}");
-    }
-
-    #[gpui::test]
-    fn project_flyout_launch_picker_replaces_plus_and_restores_focus(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let path = "/grove-sidebar-collapse-test";
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            cx.set_global(SettingsState::new(grove_core::storage::Store {
-                projects: vec![
-                    grove_core::storage::Project {
-                        name: "demo".into(),
-                        path: path.into(),
-                        scripts: grove_core::storage::ProjectScripts::default(),
-                        archived: false,
-                        worktree_dir: None,
-                    },
-                    grove_core::storage::Project {
-                        name: "second".into(),
-                        path: "/grove-sidebar-second".into(),
-                        scripts: grove_core::storage::ProjectScripts::default(),
-                        archived: false,
-                        worktree_dir: None,
-                    },
-                ],
-                sidebar_width: Some(300.0),
-                sidebar_collapsed: true,
-                ..Default::default()
-            }));
-            cx.set_global(crate::zoom::CurrentPtyDims::default());
-            cx.set_global(crate::zoom::ZoomState::new(1.0));
-            cx.set_global(crate::theme::ThemeState::new(
-                false,
-                "tokyonight".into(),
-                "tokyonight-day".into(),
-            ));
-        });
-        let (sidebar, cx) = cx.add_window_view(|window, cx| {
-            let runtime = cx.new(Runtime::new);
-            let registry = runtime.read(cx).registry.clone();
-            let ids = registry.update(cx, |registry, _| {
-                [Agent::Codex, Agent::Claude].map(|agent| {
-                    registry.insert_meta(
-                        "demo".into(),
-                        if agent == Agent::Claude {
-                            format!("{path}/feature")
-                        } else {
-                            path.into()
-                        },
-                        agent,
-                    )
-                })
-            });
-            let home_terminal = cx.new(|cx| {
-                crate::entities::terminal_session::TerminalSession::attach_existing(
-                    "grove_compact_alignment_test",
-                    24,
-                    80,
-                    cx,
-                )
-            });
-            registry.update(cx, |registry, _| {
-                let mut home = registry.meta(ids[0]).unwrap().clone();
-                home.id = SessionId::from_raw(3);
-                home.project.clear();
-                home.wt_path = "/".into();
-                home.agent = Agent::Terminal;
-                home.label = "Terminal 3".into();
-                home.context_roots.clear();
-                home.attention = None;
-                registry.push_home(home, home_terminal);
-            });
-            runtime.read(cx).tree.clone().update(cx, |tree, _| {
-                tree.set_active_worktrees(
-                    0,
-                    vec![
-                        grove_core::git::Worktree {
-                            path: path.into(),
-                            branch: "main".into(),
-                            mtime: None,
-                            is_main: true,
-                        },
-                        grove_core::git::Worktree {
-                            path: format!("{path}/feature"),
-                            branch: "feature".into(),
-                            mtime: None,
-                            is_main: false,
-                        },
-                        grove_core::git::Worktree {
-                            path: format!("{path}/empty"),
-                            branch: "empty".into(),
-                            mtime: None,
-                            is_main: false,
-                        },
-                    ],
-                );
-            });
-            runtime.read(cx).activity.clone().update(cx, |activity, _| {
-                activity.set_state_for_test(ids[0], ActivityState::Working);
-                activity.set_state_for_test(ids[1], ActivityState::WaitingForInput);
-            });
-            Sidebar::new(runtime, window, cx)
-        });
-        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
-        draw(cx);
-        let anchor = cx.debug_bounds("project-0").unwrap();
-        cx.simulate_mouse_move(anchor.center(), None, gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("flyout-project-count").is_none());
-        let plus = cx
-            .debug_bounds("flyout-launch-plus-/grove-sidebar-collapse-test")
-            .unwrap();
-        cx.simulate_click(plus.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx
-            .debug_bounds("flyout-launch-plus-/grove-sidebar-collapse-test")
-            .is_none());
-        let terminal = cx
-            .debug_bounds("flyout-launch-terminal-/grove-sidebar-collapse-test")
-            .unwrap();
-        let title = cx
-            .debug_bounds("flyout-worktree-title-/grove-sidebar-collapse-test")
-            .unwrap();
-        assert!((f32::from(terminal.center().y - title.center().y)).abs() <= 1.0);
-        assert!(sidebar.read_with(cx, |sidebar, _| !sidebar.project_flyout_hover_open));
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                assert!(sidebar.project_flyout_launch_focus.is_focused(window));
-                assert_eq!(
-                    sidebar.launch_target(0, format!("{path}/feature"), Agent::Terminal, cx),
-                    Some(("demo".into(), format!("{path}/feature"), Agent::Terminal))
-                );
-            });
-        });
-        cx.simulate_keystrokes("tab");
-        cx.update(|window, cx| {
-            assert!(!sidebar
-                .read(cx)
-                .project_flyout_launch_focus
-                .is_focused(window));
-        });
-        cx.simulate_keystrokes("shift-tab");
-        cx.update(|window, cx| {
-            assert!(sidebar
-                .read(cx)
-                .project_flyout_launch_focus
-                .is_focused(window));
-        });
-        let feature_plus = cx
-            .debug_bounds("flyout-launch-plus-/grove-sidebar-collapse-test/feature")
-            .unwrap();
-        cx.simulate_click(feature_plus.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx
-            .debug_bounds("flyout-launch-plus-/grove-sidebar-collapse-test")
-            .is_some());
-        assert!(cx
-            .debug_bounds("flyout-launch-plus-/grove-sidebar-collapse-test/feature")
-            .is_none());
-        cx.update(|_, cx| sidebar.update(cx, |sidebar, _| sidebar.available[2] = false));
-        let opencode = cx
-            .debug_bounds("flyout-launch-opencode-/grove-sidebar-collapse-test/feature")
-            .unwrap();
-        cx.simulate_click(opencode.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
-            .content_error
-            .as_deref()
-            .is_some_and(|error| error.contains("OpenCode CLI not found"))));
-        assert!(cx
-            .debug_bounds("flyout-launch-opencode-/grove-sidebar-collapse-test/feature")
-            .is_some());
-        assert!(cx
-            .debug_bounds("flyout-launch-error-/grove-sidebar-collapse-test/feature")
-            .is_some());
-        cx.simulate_mouse_move(
-            gpui::point(gpui::px(900.0), gpui::px(740.0)),
-            None,
-            gpui::Modifiers::default(),
-        );
-        cx.executor()
-            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_some());
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        assert!(cx
-            .debug_bounds("flyout-launch-plus-/grove-sidebar-collapse-test/feature")
-            .is_some());
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, _| {
-                assert!(
-                    sidebar.project_flyout_plus_focus["/grove-sidebar-collapse-test/feature"]
-                        .is_focused(window)
-                );
-            });
-        });
-        assert!(cx.debug_bounds("project-session-flyout").is_some());
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_none());
-        cx.simulate_resize(gpui::size(gpui::px(240.0), gpui::px(300.0)));
-        cx.simulate_click(anchor.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.simulate_keystrokes("tab tab tab tab tab tab tab");
-        draw(cx);
-        let popup = cx.debug_bounds("project-session-flyout").unwrap();
-        let footer = cx.debug_bounds("flyout-project-actions").unwrap();
-        assert!(
-            footer.top() >= popup.top() && footer.bottom() <= popup.bottom(),
-            "keyboard-focused footer={footer:?}; popup={popup:?}"
-        );
-    }
-
-    #[gpui::test]
-    fn collapsed_tree_and_list_preserve_session_selection_and_safe_close(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let path = "/grove-sidebar-collapse-test";
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            cx.set_global(SettingsState::new(grove_core::storage::Store {
-                projects: vec![
-                    grove_core::storage::Project {
-                        name: "demo".into(),
-                        path: path.into(),
-                        scripts: grove_core::storage::ProjectScripts::default(),
-                        archived: false,
-                        worktree_dir: None,
-                    },
-                    grove_core::storage::Project {
-                        name: "second".into(),
-                        path: "/grove-sidebar-second".into(),
-                        scripts: grove_core::storage::ProjectScripts::default(),
-                        archived: false,
-                        worktree_dir: None,
-                    },
-                ],
-                sidebar_width: Some(300.0),
-                sidebar_collapsed: true,
-                ..Default::default()
-            }));
-            cx.set_global(crate::zoom::CurrentPtyDims::default());
-            cx.set_global(crate::zoom::ZoomState::new(1.0));
-            cx.set_global(crate::theme::ThemeState::new(
-                false,
-                "tokyonight".into(),
-                "tokyonight-day".into(),
-            ));
-        });
-        let (sidebar, cx) = cx.add_window_view(|window, cx| {
-            let runtime = cx.new(Runtime::new);
-            let registry = runtime.read(cx).registry.clone();
-            let ids = registry.update(cx, |registry, _| {
-                [Agent::Codex, Agent::Claude].map(|agent| {
-                    registry.insert_meta(
-                        "demo".into(),
-                        if agent == Agent::Claude {
-                            format!("{path}/feature")
-                        } else {
-                            path.into()
-                        },
-                        agent,
-                    )
-                })
-            });
-            let home_terminal = cx.new(|cx| {
-                crate::entities::terminal_session::TerminalSession::attach_existing(
-                    "grove_compact_alignment_test",
-                    24,
-                    80,
-                    cx,
-                )
-            });
-            registry.update(cx, |registry, _| {
-                let mut home = registry.meta(ids[0]).unwrap().clone();
-                home.id = SessionId::from_raw(3);
-                home.project.clear();
-                home.wt_path = "/".into();
-                home.agent = Agent::Terminal;
-                home.label = "Terminal 3".into();
-                home.context_roots.clear();
-                home.attention = None;
-                registry.push_home(home, home_terminal);
-            });
-            runtime.read(cx).tree.clone().update(cx, |tree, _| {
-                tree.set_active_worktrees(
-                    0,
-                    vec![
-                        grove_core::git::Worktree {
-                            path: path.into(),
-                            branch: "main".into(),
-                            mtime: None,
-                            is_main: true,
-                        },
-                        grove_core::git::Worktree {
-                            path: format!("{path}/feature"),
-                            branch: "feature".into(),
-                            mtime: None,
-                            is_main: false,
-                        },
-                        grove_core::git::Worktree {
-                            path: format!("{path}/empty"),
-                            branch: "empty".into(),
-                            mtime: None,
-                            is_main: false,
-                        },
-                    ],
-                );
-            });
-            runtime.read(cx).activity.clone().update(cx, |activity, _| {
-                activity.set_state_for_test(ids[0], ActivityState::Working);
-                activity.set_state_for_test(ids[1], ActivityState::WaitingForInput);
-            });
-            Sidebar::new(runtime, window, cx)
-        });
-        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
-        draw(cx);
-        let rail = cx.debug_bounds("sidebar-rail").unwrap();
-        let header = cx.debug_bounds("sidebar-workspace-header").unwrap();
-        assert_eq!(header.top(), rail.top() + gpui::px(SPACE_LG));
-        let toggle = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
-        assert!(
-            (f32::from(toggle.top() - rail.top()) - f32::from(toggle.left() - rail.left())).abs()
-                <= 1.0
-        );
-        assert!(cx.debug_bounds("sidebar-appbar-spacer").is_none());
-        assert_compact_disclosure(
-            cx,
-            "fold-terminals",
-            "compact-glyph-fold-terminals",
-            "compact-terminals-disclosure",
-        );
-        let project = cx.debug_bounds("project-0").unwrap();
-        let first = cx.debug_bounds("session-1").unwrap();
-        let second = cx.debug_bounds("session-2").unwrap();
-        assert!(project.top() < first.top() && first.top() < second.top());
-        for bounds in [project, first, second] {
-            assert_eq!(f32::from(bounds.size.width), 36.0);
-            assert_eq!(f32::from(bounds.size.height), 32.0);
-        }
-        let other_project = cx.debug_bounds("project-1").unwrap();
-        let initials = cx.debug_bounds("compact-project-initials-0").unwrap();
-        let other_initials = cx.debug_bounds("compact-project-initials-1").unwrap();
-        assert_eq!(initials.center().x, project.center().x);
-        assert_eq!(other_initials.center().x, other_project.center().x);
-        for (initial_selector, other_selector) in [
-            ("compact-project-initial-0-0", "compact-project-initial-1-0"),
-            ("compact-project-initial-0-1", "compact-project-initial-1-1"),
-        ] {
-            let initial = cx.debug_bounds(initial_selector).unwrap();
-            let other_initial = cx.debug_bounds(other_selector).unwrap();
-            assert_eq!(initial.center().x, other_initial.center().x);
-        }
-        assert!(cx.debug_bounds("compact-project-count-0").is_none());
-        assert!(cx.debug_bounds("compact-project-count-1").is_none());
-        let spinner_phase = |cx: &mut gpui::VisualTestContext| {
-            (0..crate::entities::animation_clock::SPINNER_FRAMES)
-                .find(|frame| {
-                    cx.debug_bounds(Box::leak(
-                        format!("session-spinner-phase-1-{frame}").into_boxed_str(),
-                    ))
-                    .is_some()
-                })
-                .expect("compact working session mounts the shared spinner")
-        };
-        let initial_phase = spinner_phase(cx);
-        std::thread::sleep(SESSION_SPINNER_PERIOD / 4);
-        cx.update(Window::simulate_next_frame);
-        draw(cx);
-        assert_ne!(spinner_phase(cx), initial_phase);
-        cx.update(|_, cx| {
-            cx.set_reduce_motion(true);
-            sidebar.update(cx, |_, cx| cx.notify());
-        });
-        cx.update(Window::simulate_next_frame);
-        draw(cx);
-        assert!(cx.debug_bounds("session-spinner-phase-1-0").is_some());
-        cx.update(|_, cx| {
-            cx.set_reduce_motion(false);
-            sidebar.update(cx, |_, cx| cx.notify());
-        });
-        draw(cx);
-        assert_compact_column(
-            cx,
-            &[
-                ("session-1", "compact-glyph-session-1"),
-                ("session-2", "compact-glyph-session-2"),
-                ("home-3", "compact-glyph-home-3"),
-                ("sidebar-view", "compact-glyph-sidebar-view"),
-                ("sidebar-grid", "compact-glyph-sidebar-grid"),
-                ("fold-terminals", "compact-glyph-fold-terminals"),
-                ("add-terminal", "compact-glyph-add-terminal"),
-                ("projects-add", "compact-glyph-projects-add"),
-            ],
-        );
-        assert_compact_overlay(cx, "session-2", "compact-session-status-2");
-        assert_compact_overlay(cx, "home-3", "compact-home-status-3");
-        let canvas_left = cx.debug_bounds("sidebar-canvas").unwrap().left();
-        let selected_before_hover = sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
-        let focus_before_hover = cx.update(|window, cx| window.focused(cx));
-        cx.simulate_mouse_move(second.center(), None, gpui::Modifiers::default());
-        draw(cx);
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.project_flyout_hover_open));
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            selected_before_hover
-        );
-        cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before_hover));
-        let hovered_popup = cx.debug_bounds("project-session-flyout").unwrap();
-        assert!((f32::from(hovered_popup.left() - rail.right()) - 8.0).abs() <= 0.5);
-        for selector in [
-            "flyout-worktree-divider-/grove-sidebar-collapse-test/feature",
-            "flyout-worktree-divider-/grove-sidebar-collapse-test/empty",
-            "flyout-footer-divider",
-        ] {
-            let divider = cx.debug_bounds(selector).unwrap();
-            assert_eq!(divider.left(), hovered_popup.left() + gpui::px(1.0));
-            assert_eq!(divider.right(), hovered_popup.right() - gpui::px(1.0));
-        }
-        assert!(cx.debug_bounds("flyout-project-count").is_none());
-        let session_row = cx.debug_bounds("flyout-session-1").unwrap();
-        assert_eq!(f32::from(session_row.size.height), SESSION_ROW_H);
-        let session_label = cx.debug_bounds("flyout-session-title-1").unwrap();
-        let footer_label = cx.debug_bounds("flyout-actions-label").unwrap();
-        assert!((f32::from(session_label.left() - footer_label.left())).abs() <= 1.0);
-
-        let group = cx.debug_bounds("compact-project-group-0").unwrap();
-        let crossing = gpui::point(
-            (group.right() + hovered_popup.left()) / 2.0,
-            second.center().y,
-        );
-        cx.simulate_mouse_move(crossing, None, gpui::Modifiers::default());
-        draw(cx);
-        cx.executor()
-            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_some());
-        cx.simulate_mouse_move(hovered_popup.center(), None, gpui::Modifiers::default());
-        draw(cx);
-        cx.executor()
-            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_some());
-        let reentry_outside = gpui::point(gpui::px(900.0), gpui::px(740.0));
-        cx.simulate_mouse_move(reentry_outside, None, gpui::Modifiers::default());
-        draw(cx);
-        cx.executor()
-            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_none());
-        cx.simulate_mouse_move(second.center(), None, gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_some());
-        let other_project = cx.debug_bounds("project-1").unwrap();
-        cx.simulate_mouse_move(other_project.center(), None, gpui::Modifiers::default());
-        draw(cx);
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
-            .project_flyout
-            .as_ref()
-            .and_then(SidebarContext::project_path)
-            .map(String::as_str)
-            == Some("/grove-sidebar-second")));
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            selected_before_hover
-        );
-        cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before_hover));
-        let outside_context = gpui::point(gpui::px(900.0), gpui::px(740.0));
-        cx.simulate_mouse_move(outside_context, None, gpui::Modifiers::default());
-        draw(cx);
-        cx.executor()
-            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_none());
-        cx.update(|window, cx| assert_eq!(window.focused(cx), focus_before_hover));
-        cx.simulate_mouse_move(second.center(), None, gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_some());
-        cx.simulate_click(second.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_none());
-        cx.simulate_mouse_move(second.center(), None, gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_none());
-        cx.simulate_mouse_move(outside_context, None, gpui::Modifiers::default());
-        draw(cx);
-        cx.simulate_click(project.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.simulate_mouse_move(outside_context, None, gpui::Modifiers::default());
-        draw(cx);
-        cx.executor()
-            .advance_clock(Duration::from_millis(MOTION_SLOW_MS * 2));
-        draw(cx);
-        assert!(!sidebar.read_with(cx, |sidebar, _| sidebar.project_flyout_hover_open));
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_some());
-        let popup = cx.debug_bounds("project-session-flyout").unwrap();
-        let trigger = sidebar.read_with(cx, |sidebar, _| sidebar.project_flyout_bounds.get());
-        assert!(
-            popup.left() >= rail.right(),
-            "popup={popup:?}; rail={rail:?}; trigger={trigger:?}"
-        );
-        assert!(cx
-            .debug_bounds("flyout-worktree-/grove-sidebar-collapse-test/feature")
-            .is_some());
-        assert!(cx
-            .debug_bounds("flyout-empty-/grove-sidebar-collapse-test/empty")
-            .is_some());
-        let selection_before_inspecting =
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone());
-        let second_project = cx.debug_bounds("project-1").unwrap();
-        cx.simulate_click(second_project.center(), gpui::Modifiers::default());
-        draw(cx);
-        let second_popup = cx.debug_bounds("project-session-flyout").unwrap();
-        assert!(second_popup.left() >= rail.right());
-        assert!(
-            (f32::from(second_popup.top() - second_project.top())).abs() <= 1.0,
-            "second popup={second_popup:?}; project={second_project:?}"
-        );
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            selection_before_inspecting
-        );
-        cx.simulate_click(project.center(), gpui::Modifiers::default());
-        draw(cx);
-        let project_menu = cx.debug_bounds("flyout-project-actions").unwrap();
-        cx.simulate_click(project_menu.center(), gpui::Modifiers::default());
-        draw(cx);
-        let popup = cx.debug_bounds("project-actions-popup").unwrap();
-        assert!(popup.right() > cx.debug_bounds("sidebar-rail").unwrap().right());
-        assert_eq!(
-            cx.debug_bounds("sidebar-canvas").unwrap().left(),
-            canvas_left
-        );
-        assert_eq!(
-            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
-            52.0
-        );
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        let home_close = cx.debug_bounds("compact-close-home-3").unwrap();
-        cx.simulate_click(home_close.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.pending_home_close
-                == Some(SessionId::from_raw(3)))
-        );
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.canvas_close_anchor.is_none()));
-        assert!(cx.debug_bounds("compact-close-home-3").is_some());
-        assert!(cx.debug_bounds("confirm-close").is_some());
-        assert!(
-            cx.debug_bounds("sidebar-confirmation").unwrap().right()
-                > cx.debug_bounds("sidebar-rail").unwrap().right()
-        );
-        assert_eq!(
-            cx.debug_bounds("sidebar-canvas").unwrap().left(),
-            canvas_left
-        );
-        cx.simulate_resize(gpui::size(gpui::px(240.0), gpui::px(800.0)));
-        draw(cx);
-        let narrow_confirmation = cx.debug_bounds("sidebar-confirmation").unwrap();
-        assert!(narrow_confirmation.left() >= gpui::px(0.0));
-        assert!(narrow_confirmation.right() <= gpui::px(240.0));
-        assert_eq!(
-            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
-            52.0
-        );
-        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
-        draw(cx);
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        assert!(cx.debug_bounds("fold-terminals").is_some());
-        assert!(cx.debug_bounds("add-terminal").is_some());
-        assert!(cx.debug_bounds("projects-add").is_some());
-        cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                sidebar.collapsed_projects.insert(path.to_string());
-                assert_eq!(
-                    sidebar.visible_session_order(cx),
-                    vec![SessionId::from_raw(1), SessionId::from_raw(2)]
-                );
-                cx.notify();
-            });
-        });
-        let project_center = cx.debug_bounds("project-0").unwrap().center();
-        cx.simulate_click(project_center, gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_some());
-        assert!(cx.debug_bounds("session-1").is_some());
-        cx.simulate_resize(gpui::size(gpui::px(240.0), gpui::px(300.0)));
-        draw(cx);
-        let flyout = cx.debug_bounds("project-session-flyout").unwrap();
-        assert!(flyout.left() >= gpui::px(0.0));
-        assert!(flyout.right() <= gpui::px(240.0));
-        assert!(flyout.bottom() <= gpui::px(300.0));
-        cx.simulate_keystrokes("down down down down down down");
-        draw(cx);
-        let actions = cx.debug_bounds("flyout-project-actions").unwrap();
-        assert!(
-            actions.top() >= flyout.top() && actions.bottom() <= flyout.bottom(),
-            "scrolled actions={actions:?}; flyout={flyout:?}"
-        );
-
-        cx.simulate_resize(gpui::size(gpui::px(1280.0), gpui::px(800.0)));
-        cx.update(|window, _| window.set_rem_size(gpui::px(crate::zoom::REM_BASE * 1.5)));
-        draw(cx);
-        let zoomed_rail = cx.debug_bounds("sidebar-rail").unwrap();
-        let zoomed_popup = cx.debug_bounds("project-session-flyout").unwrap();
-        assert!((f32::from(zoomed_popup.left() - zoomed_rail.right()) - 12.0).abs() <= 0.5);
-        let zoomed_divider = cx.debug_bounds("flyout-footer-divider").unwrap();
-        assert_eq!(zoomed_divider.left(), zoomed_popup.left() + gpui::px(1.0));
-        assert_eq!(zoomed_divider.right(), zoomed_popup.right() - gpui::px(1.0));
-        cx.update(|window, _| window.set_rem_size(gpui::px(crate::zoom::REM_BASE)));
-        draw(cx);
-        assert!(cx
-            .debug_bounds("worktree-/grove-sidebar-collapse-test")
-            .is_none());
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        assert!(cx.debug_bounds("project-session-flyout").is_none());
-        cx.update(|window, cx| {
-            assert!(sidebar.read(cx).project_toggle_focus[path].is_focused(window));
-        });
-        cx.simulate_click(project_center, gpui::Modifiers::default());
-        draw(cx);
-        let second = cx.debug_bounds("flyout-session-2").unwrap();
-        cx.simulate_click(second.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            Some(Selection::Session(SessionId::from_raw(2)))
-        );
-        assert!(cx.debug_bounds("project-session-flyout").is_none());
-        assert_compact_column(cx, &[("session-2", "compact-glyph-session-2")]);
-        assert_compact_overlay(cx, "session-2", "compact-session-status-2");
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.toggle_tree_list(window, cx));
-        });
-        draw(cx);
-        assert!(cx.debug_bounds("project-0").is_none());
-        assert!(cx.debug_bounds("session-1").is_some());
-        assert!(
-            cx.debug_bounds("session-2").unwrap().top()
-                < cx.debug_bounds("session-1").unwrap().top()
-        );
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            Some(Selection::Session(SessionId::from_raw(2)))
-        );
-        cx.update(|window, cx| sidebar.update(cx, |sidebar, cx| sidebar.toggle_zen(window, cx)));
-        draw(cx);
-        assert!(cx.debug_bounds("sidebar-rail").is_none());
-        cx.update(|window, cx| sidebar.update(cx, |sidebar, cx| sidebar.toggle_zen(window, cx)));
-        draw(cx);
-        assert_eq!(
-            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
-            52.0
-        );
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.request_close_focused(window, cx));
-        });
-        draw(cx);
-        assert_eq!(
-            f32::from(cx.debug_bounds("sidebar-rail").unwrap().size.width),
-            52.0
-        );
-        let rail = cx.debug_bounds("sidebar-rail").unwrap();
-        assert!(cx.debug_bounds("sidebar-appbar-spacer").is_none());
-        assert_eq!(
-            cx.debug_bounds("sidebar-canvas").unwrap().left(),
-            canvas_left
-        );
-        assert!(cx.debug_bounds("sidebar-confirmation").unwrap().right() > rail.right());
-        assert!(cx.debug_bounds("confirm-close").is_some());
-        assert!(cx.debug_bounds("cancel-close").is_some());
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        assert!(!sidebar.read_with(cx, |sidebar, _| sidebar.confirmation_open()));
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            Some(Selection::Session(SessionId::from_raw(2)))
-        );
-        let toggle = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
-        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
-        draw(cx);
-        let expanded_rail = cx.debug_bounds("sidebar-rail").unwrap();
-        let expanded_canvas_left = cx.debug_bounds("sidebar-canvas").unwrap().left();
-        let session_row_top = cx.debug_bounds("session-2").unwrap().top();
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.request_close_focused(window, cx));
-        });
-        draw(cx);
-        assert_eq!(cx.debug_bounds("sidebar-rail").unwrap(), expanded_rail);
-        assert_eq!(
-            cx.debug_bounds("sidebar-canvas").unwrap().left(),
-            expanded_canvas_left
-        );
-        assert_eq!(cx.debug_bounds("session-2").unwrap().top(), session_row_top);
-        assert!(cx.debug_bounds("sidebar-confirmation").unwrap().right() > expanded_rail.right());
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-    }
-
-    #[gpui::test]
-    fn collapsed_short_window_scrolls_controls_and_standalone_terminals(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        cx.update(|cx| {
-            gpui_component::init(cx);
-            cx.set_global(SettingsState::new(grove_core::storage::Store {
-                sidebar_collapsed: true,
-                ..Default::default()
-            }));
-            cx.set_global(crate::zoom::CurrentPtyDims::default());
-            cx.set_global(crate::zoom::ZoomState::new(1.0));
-            cx.set_global(crate::theme::ThemeState::new(
-                false,
-                "tokyonight".into(),
-                "tokyonight-day".into(),
-            ));
-        });
-        let (sidebar, cx) = cx.add_window_view(|window, cx| {
-            let runtime = cx.new(Runtime::new);
-            let registry = runtime.read(cx).registry.clone();
-            for number in 1..=12 {
-                let terminal = cx.new(|cx| {
-                    crate::entities::terminal_session::TerminalSession::attach_existing(
-                        "grove_compact_scroll_test",
-                        24,
-                        80,
-                        cx,
-                    )
-                });
-                registry.update(cx, |registry, _| {
-                    registry.push_home(
-                        SessionMeta {
-                            id: SessionId::from_raw(number),
-                            project: String::new(),
-                            wt_path: "/".into(),
-                            agent: Agent::Terminal,
-                            context_roots: vec![],
-                            temp_bundle_path: None,
-                            label: format!("Terminal {number}"),
-                            restored_title: None,
-                            spawned_at: Instant::now(),
-                            attention: None,
-                            tmux: false,
-                            tmux_name: None,
-                        },
-                        terminal,
-                    );
-                });
-            }
-            Sidebar::new(runtime, window, cx)
-        });
-        cx.simulate_resize(gpui::size(gpui::px(320.0), gpui::px(200.0)));
-        draw(cx);
-        let toggle = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
-        let rail = cx.debug_bounds("sidebar-rail").unwrap();
-        assert!(rail.contains(&toggle.center()));
-        assert_eq!(
-            cx.debug_bounds("sidebar-workspace-header").unwrap().top(),
-            rail.top() + gpui::px(SPACE_LG)
-        );
-        assert_compact_disclosure(
-            cx,
-            "fold-terminals",
-            "compact-glyph-fold-terminals",
-            "compact-terminals-disclosure",
-        );
-        assert_compact_column(
-            cx,
-            &[
-                ("sidebar-view", "compact-glyph-sidebar-view"),
-                ("fold-terminals", "compact-glyph-fold-terminals"),
-                ("home-12", "compact-glyph-home-12"),
-                ("add-terminal", "compact-glyph-add-terminal"),
-                ("projects-add", "compact-glyph-projects-add"),
-            ],
-        );
-        assert_compact_overlay(cx, "home-12", "compact-home-status-12");
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.scroll.max_offset().y) > gpui::px(0.0));
-        sidebar.update(cx, |sidebar, cx| {
-            sidebar.scroll.scroll_to_bottom();
-            cx.notify();
-        });
-        draw(cx);
-        let scroll = cx.debug_bounds("sidebar-scroll").unwrap();
-        assert!(scroll.contains(&cx.debug_bounds("projects-add").unwrap().center()));
-        assert_eq!(cx.debug_bounds("sidebar-collapse-toggle"), Some(toggle));
-        // Scroll up from utilities to bring the separate Add terminal and final shell into view.
-        let add_terminal = cx.debug_bounds("add-terminal").unwrap();
-        sidebar.update(cx, |sidebar, cx| {
-            let mut offset = sidebar.scroll.offset();
-            offset.y += scroll.bottom() - add_terminal.bottom() - gpui::px(SPACE_SM);
-            sidebar.scroll.set_offset(offset);
-            cx.notify();
-        });
-        draw(cx);
-        assert!(scroll.contains(&cx.debug_bounds("add-terminal").unwrap().center()));
-        let terminal = cx.debug_bounds("home-12").unwrap();
-        assert!(scroll.contains(&terminal.center()));
-        assert_compact_column(
-            cx,
-            &[
-                ("home-12", "compact-glyph-home-12"),
-                ("add-terminal", "compact-glyph-add-terminal"),
-            ],
-        );
-        assert_compact_overlay(cx, "home-12", "compact-home-status-12");
-        cx.simulate_click(terminal.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            Some(Selection::Home(SessionId::from_raw(12)))
-        );
-        assert_compact_column(
-            cx,
-            &[
-                ("home-12", "compact-glyph-home-12"),
-                ("fold-terminals", "compact-glyph-fold-terminals"),
-            ],
-        );
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.scroll.offset().x),
-            gpui::px(0.0)
-        );
-        cx.update(|window, cx| {
-            let focus = sidebar.read(cx).focus.clone();
-            focus.focus(window, cx);
-        });
-        let fold = cx.debug_bounds("fold-terminals").unwrap();
-        sidebar.update(cx, |sidebar, cx| {
-            let mut offset = sidebar.scroll.offset();
-            offset.y += scroll.top() - fold.top() + gpui::px(SPACE_SM);
-            sidebar.scroll.set_offset(offset);
-            cx.notify();
-        });
-        draw(cx);
-        let fold = cx.debug_bounds("fold-terminals").unwrap().center();
-        cx.simulate_click(fold, gpui::Modifiers::default());
-        draw(cx);
-        cx.simulate_keystrokes("tab shift-tab");
-        draw(cx);
-        assert_compact_column(cx, &[("fold-terminals", "compact-glyph-fold-terminals")]);
-        assert_compact_disclosure(
-            cx,
-            "fold-terminals",
-            "compact-glyph-fold-terminals",
-            "compact-terminals-disclosure",
-        );
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.scroll.offset().x),
-            gpui::px(0.0)
-        );
     }
 
     #[test]
@@ -7838,7 +6764,10 @@ mod tests {
     ) {
         cx.update(|cx| {
             gpui_component::init(cx);
-            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
+                ..Default::default()
+            }));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
         });
         let (fixture, cx) = cx.add_window_view(|window, cx| {
@@ -7872,14 +6801,16 @@ mod tests {
         });
         draw(cx);
         let update = cx.debug_bounds("sidebar-update").unwrap();
-        let settings = cx.debug_bounds("sidebar-settings").unwrap();
-        let collapse = cx.debug_bounds("sidebar-collapse-toggle").unwrap();
-        assert!(update.right() <= settings.left());
-        assert!(settings.right() <= collapse.left());
+        let header = cx.debug_bounds("context-workspace-row").unwrap();
+        assert!(update.left() >= header.left() && update.right() <= header.right());
+        assert!(cx.debug_bounds("global-nav-settings").is_some());
         cx.update(|_, cx| SettingsState::update(cx, |store| store.sidebar_collapsed = true));
         draw(cx);
-        assert!(cx.debug_bounds("sidebar-update").is_none());
-        assert!(cx.debug_bounds("sidebar-collapse-toggle").is_some());
+        let update = cx.debug_bounds("sidebar-update").unwrap();
+        let rail = cx.debug_bounds("global-navigation").unwrap();
+        assert!(rail.contains(&update.center()));
+        assert!(cx.debug_bounds("context-workspace-row").is_none());
+        assert!(cx.debug_bounds("global-nav-settings").is_some());
     }
 
     #[gpui::test]
@@ -8781,6 +7712,7 @@ mod tests {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Sessions,
                 projects: vec![grove_core::storage::Project {
                     name: "poll demo".into(),
                     path: path.clone(),
@@ -9304,6 +8236,7 @@ for line in sys.stdin:
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects: ["grove", "alpha", "beta"]
                     .into_iter()
                     .map(|name| grove_core::storage::Project {
@@ -9344,10 +8277,18 @@ for line in sys.stdin:
             let project_action = cx.debug_bounds("project-menu-0").unwrap();
             let add = cx.debug_bounds("projects-add").unwrap();
             assert_eq!(project_action.right(), add.right());
-            let terminal_heading = cx.debug_bounds("sidebar-terminals-heading").unwrap();
-            let terminal_fold = cx.debug_bounds("sidebar-terminals-fold").unwrap();
-            assert!(f32::from(heading.left() - terminal_heading.left()).abs() <= 1.0);
-            assert!(f32::from(add.right() - terminal_fold.right()).abs() <= 1.0);
+            assert!(cx.debug_bounds("sidebar-terminals-heading").is_none());
+            let global_project = cx.debug_bounds("global-nav-projects").unwrap();
+            for destination in [
+                "global-nav-home",
+                "global-nav-sessions",
+                "global-nav-terminals",
+                "global-nav-settings",
+            ] {
+                let control = cx.debug_bounds(destination).unwrap();
+                assert_eq!(control.center().x, global_project.center().x);
+                assert_eq!(control.size, global_project.size);
+            }
             let centers = ["sidebar-view", "sidebar-grid", "projects-add"]
                 .map(|id| f32::from(cx.debug_bounds(id).unwrap().center().x));
             for pair in centers.windows(2) {
@@ -9416,6 +8357,7 @@ for line in sys.stdin:
             gpui_component::init(cx);
             crate::fonts::register(cx).unwrap();
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects: (0..4)
                     .map(|index| grove_core::storage::Project {
                         name: format!("project-{index}"),
@@ -9516,6 +8458,7 @@ for line in sys.stdin:
                 })
                 .collect();
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects,
                 ..Default::default()
             }));
@@ -9573,6 +8516,7 @@ for line in sys.stdin:
                 })
                 .collect();
             let mut store = grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects,
                 ..Default::default()
             };
@@ -9593,9 +8537,11 @@ for line in sys.stdin:
         draw(cx);
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
-                if let Some(selection) = sidebar.selection.clone() {
-                    sidebar.act(Action::Select(selection), window, cx);
-                }
+                sidebar.act(
+                    Action::Select(Selection::Session(SessionId::from_raw(1))),
+                    window,
+                    cx,
+                );
             });
         });
         draw(cx);
@@ -9655,9 +8601,9 @@ for line in sys.stdin:
             .debug_bounds("worktree-/grove-folder-toggle-one")
             .is_none());
         assert!(cx.debug_bounds("session-1").is_none());
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            initial
+        assert!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.selection.is_none()),
+            "disclosure preserves the unselected Projects landing after workspace return"
         );
         cx.simulate_keystrokes("space");
         draw(cx);
@@ -9671,9 +8617,9 @@ for line in sys.stdin:
         draw(cx);
         cx.update(|_, cx| cx.global_mut::<SettingsState>().store.workspaces.select(1));
         draw(cx);
-        assert_eq!(
-            sidebar.read_with(cx, |sidebar, _| sidebar.selection.clone()),
-            Some(Selection::Session(SessionId::from_raw(1)))
+        assert!(
+            sidebar.read_with(cx, |sidebar, _| sidebar.selection.is_none()),
+            "configured Projects landing is unselected after a workspace switch"
         );
         cx.update(|window, cx| {
             cx.global_mut::<SettingsState>().store.projects.remove(0);
@@ -9687,6 +8633,7 @@ for line in sys.stdin:
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects: vec![grove_core::storage::Project {
                     name: "one".into(),
                     path: "/grove-project-menu-test".into(),
@@ -9716,7 +8663,7 @@ for line in sys.stdin:
     }
 
     #[gpui::test]
-    fn session_click_closes_settings_and_focuses_same_or_different_session(
+    fn session_navigation_closes_settings_and_focuses_same_or_different_session(
         cx: &mut gpui::TestAppContext,
     ) {
         let path = "/grove-settings-navigation-fixture";
@@ -9829,12 +8776,16 @@ for line in sys.stdin:
                     });
                 });
                 draw(cx);
-                let selector: &'static str = Box::leak(format!("session-{raw}").into_boxed_str());
-                let target = cx
-                    .debug_bounds(selector)
-                    .expect("session is visible")
-                    .center();
-                cx.simulate_click(target, gpui::Modifiers::default());
+                assert!(
+                    cx.debug_bounds("sidebar-rail").is_none(),
+                    "Settings hides context navigation"
+                );
+                assert!(cx.debug_bounds("global-nav-sessions").is_some());
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.select_session_id(id, window, cx);
+                    });
+                });
                 draw(cx);
                 cx.update(|window, cx| {
                     let sidebar = sidebar.read(cx);
@@ -9858,6 +8809,7 @@ for line in sys.stdin:
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects: vec![grove_core::storage::Project {
                     name: "demo".into(),
                     path: "/grove-spacing-main".into(),
@@ -10183,6 +9135,7 @@ for line in sys.stdin:
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects: vec![grove_core::storage::Project {
                     name: "script demo".into(),
                     path: path.clone(),
@@ -10344,7 +9297,12 @@ for line in sys.stdin:
                 assert_eq!(sidebar.selection, Some(Selection::Session(first_id)));
                 sidebar.act(Action::Close(first_id), window, cx);
                 sidebar.act(Action::ConfirmClose(first_id), window, cx);
-                assert!(sidebar.dashboard_open);
+                assert!(!sidebar.dashboard_open);
+                assert_eq!(
+                    sidebar.destination,
+                    global_navigation::Destination::Projects
+                );
+                assert!(sidebar.selection.is_none());
                 let registry = sidebar.runtime.read(cx).registry.read(cx);
                 assert!(registry.meta(first_id).is_none());
                 assert!(registry.meta(second_id).is_some());
@@ -10352,7 +9310,12 @@ for line in sys.stdin:
                 assert_eq!(sidebar.selection, Some(Selection::Session(second_id)));
                 sidebar.act(Action::Close(second_id), window, cx);
                 sidebar.act(Action::ConfirmClose(second_id), window, cx);
-                assert!(sidebar.dashboard_open);
+                assert!(!sidebar.dashboard_open);
+                assert_eq!(
+                    sidebar.destination,
+                    global_navigation::Destination::Projects
+                );
+                assert!(sidebar.selection.is_none());
                 assert!(sidebar.runtime.read(cx).registry.read(cx).all().is_empty());
             });
         });
@@ -11859,7 +10822,10 @@ for line in sys.stdin:
                     );
                 });
             }
-            Sidebar::new(runtime, window, cx)
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.sync(window, cx);
+            sidebar.open_destination(global_navigation::Destination::Terminals, window, cx);
+            sidebar
         });
         draw(cx);
         let rail = cx.debug_bounds("sidebar-rail").unwrap();
@@ -11892,6 +10858,7 @@ for line in sys.stdin:
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects: vec![grove_core::storage::Project {
                     name: "alignment".into(),
                     path: path.into(),
@@ -12288,6 +11255,7 @@ for line in sys.stdin:
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects: vec![grove_core::storage::Project {
                     name: "one".into(),
                     path: "/grove-sidebar-hover-test".into(),
@@ -12345,6 +11313,7 @@ for line in sys.stdin:
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects: vec![grove_core::storage::Project {
                     name: "one".into(),
                     path: "/grove-sidebar-archive-test".into(),
@@ -12689,6 +11658,7 @@ for line in sys.stdin:
                 })
                 .collect();
             cx.set_global(SettingsState::new(grove_core::storage::Store {
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 projects,
                 ..Default::default()
             }));
@@ -12714,12 +11684,13 @@ for line in sys.stdin:
                 sidebar.sync(window, cx);
                 assert!(sidebar.project_panel.is_none());
                 assert!(sidebar.project_return_focus.is_none());
-                assert!(sidebar.dashboard_open);
-                let dashboard = sidebar
-                    .dashboard
-                    .as_ref()
-                    .expect("Dashboard after workspace switch");
-                assert_eq!(window.focused(cx), Some(dashboard.view.focus_handle(cx)));
+                assert!(!sidebar.dashboard_open);
+                assert_eq!(
+                    sidebar.destination,
+                    global_navigation::Destination::Projects
+                );
+                assert!(sidebar.selection.is_none());
+                assert_eq!(window.focused(cx), Some(sidebar.focus.clone()));
                 sidebar.act(Action::EditProject(one_path.clone()), window, cx);
                 assert!(
                     sidebar.project_panel.is_none(),
@@ -12876,7 +11847,9 @@ for line in sys.stdin:
         let rail = cx.debug_bounds("sidebar-rail").unwrap();
         let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
         assert!((f32::from(rail.size.width) - 128.0).abs() <= 1.0);
-        assert!((f32::from(canvas.size.width) - 192.0).abs() <= 1.0);
+        let navigation_width = cx.debug_bounds("global-navigation").unwrap().size.width
+            + cx.debug_bounds("sidebar-rail").unwrap().size.width;
+        assert!((canvas.size.width - (gpui::px(320.0) - navigation_width)).abs() <= gpui::px(1.0));
         assert!(canvas.left() >= rail.right());
         let project = cx.debug_bounds("project-0").unwrap();
         assert!(project.right() <= rail.right());

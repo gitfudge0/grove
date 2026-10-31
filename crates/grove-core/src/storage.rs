@@ -439,8 +439,30 @@ pub struct ModelFavorite {
     pub model: String,
 }
 
+/// Destination used whenever the app opens its landing page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LandingPage {
+    #[default]
+    Home,
+    Projects,
+    Sessions,
+}
+impl LandingPage {
+    pub const ALL: [Self; 3] = [Self::Home, Self::Projects, Self::Sessions];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::Projects => "Projects",
+            Self::Sessions => "Sessions",
+        }
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Store {
+    #[serde(default)]
+    pub default_landing_page: LandingPage,
     #[serde(default)]
     pub model_favorites: Vec<ModelFavorite>,
     #[serde(default)]
@@ -943,6 +965,21 @@ pub(crate) mod tests {
             "archived project must round-trip as archived"
         );
         assert_eq!(recovered.recent_launches, original.recent_launches);
+    }
+
+    #[test]
+    fn default_landing_page_migrates_and_round_trips() {
+        let legacy: Store = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
+        assert_eq!(legacy.default_landing_page, LandingPage::Home);
+        for page in LandingPage::ALL {
+            let store = Store {
+                default_landing_page: page,
+                ..Default::default()
+            };
+            let saved = serde_json::to_string(&store).unwrap();
+            let restored: Store = serde_json::from_str(&saved).unwrap();
+            assert_eq!(restored.default_landing_page, page);
+        }
     }
 
     #[test]

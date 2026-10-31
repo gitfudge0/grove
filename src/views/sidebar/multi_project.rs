@@ -3,14 +3,12 @@ use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum SidebarContext {
-    Project(String),
     MultiProject,
 }
 
 impl SidebarContext {
     pub(super) fn project_path(&self) -> Option<&String> {
         match self {
-            Self::Project(path) => Some(path),
             Self::MultiProject => None,
         }
     }
@@ -95,28 +93,6 @@ impl Sidebar {
             }
         }
         snapshot
-    }
-
-    pub(super) fn sidebar_context_is_active(&self, target: &SidebarContext, cx: &App) -> bool {
-        match target {
-            SidebarContext::Project(path) => self.project_path_is_active(path, cx),
-            SidebarContext::MultiProject => true,
-        }
-    }
-
-    pub(super) fn sidebar_context_trigger(
-        &self,
-        target: &SidebarContext,
-    ) -> Option<std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>> {
-        match target {
-            SidebarContext::MultiProject => Some(self.multi_project_bounds.clone()),
-            SidebarContext::Project(path) => self
-                .project_paths
-                .iter()
-                .find(|(_, candidate)| *candidate == path)
-                .and_then(|(idx, _)| self.project_menu_bounds.get(idx))
-                .cloned(),
-        }
     }
 }
 

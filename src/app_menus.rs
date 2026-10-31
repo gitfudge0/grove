@@ -1,7 +1,7 @@
 //! Native macOS menus. Existing actions remain the owners of application behavior.
 use crate::{
     keymap as k,
-    views::shell::{CloseWindow, Quit},
+    views::shell::{CloseWindow, Quit, ToggleFullscreen},
 };
 use gpui::{actions, App, Global, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType};
 use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
@@ -23,6 +23,7 @@ actions!(
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct MenuState {
     pub window: bool,
+    pub fullscreen: bool,
     pub navigation: bool,
     pub switcher: bool,
     pub worktree: bool,
@@ -136,6 +137,15 @@ fn menus(s: MenuState) -> Vec<Menu> {
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize).disabled(!s.window),
             MenuItem::action("Zoom", ZoomWindow).disabled(!s.window),
+            MenuItem::action(
+                if s.fullscreen {
+                    "Exit Full Screen"
+                } else {
+                    "Enter Full Screen"
+                },
+                ToggleFullscreen,
+            )
+            .disabled(!s.window),
             MenuItem::separator(),
             MenuItem::action("Bring All to Front", BringAllToFront).disabled(!s.window),
         ]),
@@ -225,5 +235,26 @@ mod tests {
         assert!(
             matches!(find(&menus,"Copy"), MenuItem::Action {os_action:Some(OsAction::Copy),action,..} if action.as_any().is::<Copy>())
         );
+    }
+    #[test]
+    fn fullscreen_window_menu_tracks_native_state_and_preserves_action() {
+        let unavailable = menus(MenuState::default());
+        assert!(find(&unavailable, "Enter Full Screen").is_disabled());
+        for fullscreen in [false, true] {
+            let menu = menus(MenuState {
+                window: true,
+                fullscreen,
+                ..Default::default()
+            });
+            let title = if fullscreen {
+                "Exit Full Screen"
+            } else {
+                "Enter Full Screen"
+            };
+            assert!(!find(&menu, title).is_disabled());
+            assert!(
+                matches!(find(&menu, title), MenuItem::Action { action, .. } if action.as_any().is::<ToggleFullscreen>())
+            );
+        }
     }
 }
