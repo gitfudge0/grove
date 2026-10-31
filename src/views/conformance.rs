@@ -724,10 +724,12 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(!preview.contains("TextView::markdown("));
     assert!(!preview.contains("session.send("));
     assert!(transcript.contains("view.preview_child = Some(child)"));
+    assert!(transcript.contains("self.history_readonly || self.preview_child.is_some()"));
+    assert!(transcript.contains("Self::new_with_history_mode(session, true, window, cx)"));
     let preview_return = transcript
-        .rsplit("if self.preview_child.is_some() {")
-        .next()
-        .expect("child preview uses the common transcript rendering path")
+        .split("if self.transcript_only() {\n            self.message_slots.clear();")
+        .nth(1)
+        .expect("child preview and retained History use the common transcript rendering path")
         .split("if let Some(editor) = self")
         .next()
         .expect("preview returns before editable conversation controls");
@@ -735,7 +737,7 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
     assert!(preview_return.contains("self.scroll.scroll_to_bottom()"));
     assert!(preview_return.contains(".child(messages.px("));
     assert!(!preview_return.contains("session.send("));
-    assert!(transcript.contains("if this.preview_child.is_some() {\n                    return;"));
+    assert!(transcript.contains("if this.transcript_only() {\n                    return;"));
     let message_row = transcript
         .split("fn render_message_row(")
         .nth(1)
@@ -745,7 +747,7 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
         .unwrap();
     let message_row = message_row.split_whitespace().collect::<Vec<_>>().join(" ");
     let guarded_edit = message_row
-        .split("if self.preview_child.is_none() && approval.is_none() {")
+        .split("if !self.transcript_only() && approval.is_none() {")
         .nth(1)
         .expect("editing requires a main conversation without an approval receipt")
         .split("let keyboard_key = key.clone();")

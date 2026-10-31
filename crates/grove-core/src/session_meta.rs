@@ -11,6 +11,104 @@ pub struct ContextRoot {
     pub wt_path: String,
 }
 
+/// A closed CLI session's identity. CLI backends do not provide a retained
+/// structured transcript, so this record deliberately contains no resume action,
+/// command arguments, authentication material, or scraped terminal contents.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosedCliSession {
+    pub key: String,
+    pub agent: Agent,
+    pub label: String,
+    pub title: Option<String>,
+    pub project: String,
+    pub cwd: String,
+    /// Unix milliseconds when Grove explicitly closed the session.
+    pub closed_at: u64,
+    #[serde(default)]
+    pub context_roots: Vec<ContextRoot>,
+    pub tmux_name: Option<String>,
+}
+
+fn valid_cli_history_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() < 128
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+fn cli_session_history_dir() -> std::result::Result<PathBuf, String> {
+    crate::storage::config_dir()
+        .map(|dir| dir.join("cli-session-history"))
+        .map_err(|e| e.to_string())
+}
+
+pub fn archive_cli_session(record: &ClosedCliSession) -> std::result::Result<(), String> {
+    archive_cli_session_in_dir(record, &cli_session_history_dir()?)
+}
+
+fn archive_cli_session_in_dir(
+    record: &ClosedCliSession,
+    dir: &std::path::Path,
+) -> std::result::Result<(), String> {
+    if !valid_cli_history_key(&record.key) {
+        return Err("Invalid CLI session history key".into());
+    }
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(record).map_err(|e| e.to_string())?;
+    crate::storage::write_atomic_private(&dir.join(format!("{}.json", record.key)), &bytes)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Default)]
+pub struct CliHistory {
+    pub sessions: Vec<ClosedCliSession>,
+    pub warnings: Vec<String>,
+}
+
+pub fn load_cli_session_history() -> std::result::Result<CliHistory, String> {
+    load_cli_session_history_in_dir(&cli_session_history_dir()?)
+}
+
+fn load_cli_session_history_in_dir(
+    dir: &std::path::Path,
+) -> std::result::Result<CliHistory, String> {
+    if !dir.exists() {
+        return Ok(CliHistory::default());
+    }
+    let mut history = CliHistory::default();
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
+        let parsed = fs::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                serde_json::from_slice::<ClosedCliSession>(&bytes).map_err(|e| e.to_string())
+            });
+        let Ok(record) = parsed else {
+            history.warnings.push(format!(
+                "Could not read closed CLI session {}. Its file was preserved.",
+                path.display()
+            ));
+            continue;
+        };
+        if !valid_cli_history_key(&record.key)
+            || path.file_stem().and_then(|stem| stem.to_str()) != Some(record.key.as_str())
+        {
+            history.warnings.push(format!(
+                "Invalid closed CLI session {}. Its file was preserved.",
+                path.display()
+            ));
+            continue;
+        }
+        history.sessions.push(record);
+    }
+    history
+        .sessions
+        .sort_by_cached_key(|record| std::cmp::Reverse(record.closed_at));
+    Ok(history)
+}
+
 /// The compact identity shown for a session spanning distinct projects.
 #[must_use]
 pub fn multi_project_identity(
@@ -350,6 +448,79 @@ mod tests {
 
     use super::*;
     use crate::agent::Agent;
+
+    #[test]
+    fn closed_cli_history_round_trips_codex_and_claude_metadata_without_transcripts() {
+        let dir = tempfile::tempdir().unwrap();
+        for (index, agent) in [Agent::Codex, Agent::Claude].into_iter().enumerate() {
+            let record = ClosedCliSession {
+                key: format!("cli-123-{}-456", index + 1),
+                agent,
+                label: format!("{} 1", agent.label()),
+                title: Some("Inspect navigation".into()),
+                project: "Project".into(),
+                cwd: "/project/topic".into(),
+                closed_at: 123_000 + index as u64,
+                context_roots: vec![ContextRoot {
+                    project: "Other".into(),
+                    wt_path: "/other".into(),
+                }],
+                tmux_name: Some(format!("grove-cli-{index}")),
+            };
+            archive_cli_session_in_dir(&record, dir.path()).unwrap();
+            let bytes = fs::read(dir.path().join(format!("{}.json", record.key))).unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(json.get("items").is_none());
+            assert!(json.get("args").is_none());
+            assert_eq!(
+                serde_json::from_slice::<ClosedCliSession>(&bytes).unwrap(),
+                record
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(dir.path().join(format!("{}.json", record.key)))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
+        }
+        let loaded = load_cli_session_history_in_dir(dir.path()).unwrap();
+        assert_eq!(loaded.sessions.len(), 2);
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.sessions[0].agent, Agent::Claude);
+        assert_eq!(loaded.sessions[1].agent, Agent::Codex);
+    }
+
+    #[test]
+    fn closed_cli_history_preserves_corrupt_records_and_rejects_unsafe_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.json");
+        fs::write(&path, "invalid json").unwrap();
+        let unsafe_record = ClosedCliSession {
+            key: "../escape".into(),
+            agent: Agent::Codex,
+            label: "Codex".into(),
+            title: None,
+            project: "P".into(),
+            cwd: "/p".into(),
+            closed_at: 0,
+            context_roots: Vec::new(),
+            tmux_name: None,
+        };
+        assert!(archive_cli_session_in_dir(&unsafe_record, dir.path()).is_err());
+        let mut valid = unsafe_record;
+        valid.key = "cli-valid-record".into();
+        archive_cli_session_in_dir(&valid, dir.path()).unwrap();
+        let loaded = load_cli_session_history_in_dir(dir.path()).unwrap();
+        assert_eq!(loaded.sessions, vec![valid]);
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(fs::read_to_string(path).unwrap(), "invalid json");
+    }
 
     fn make_meta() -> SessionMeta {
         SessionMeta {

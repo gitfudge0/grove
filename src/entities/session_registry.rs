@@ -59,6 +59,37 @@ pub struct SessionMeta {
     pub tmux_name: Option<String>,
 }
 
+fn closed_cli_record(
+    meta: &SessionMeta,
+    native: bool,
+    closed_at: std::time::SystemTime,
+) -> Option<session_meta::ClosedCliSession> {
+    // Home terminals live outside `order`; the empty project guard also keeps
+    // accidentally routed standalone terminals out of agent History.
+    if native || meta.project.is_empty() {
+        return None;
+    }
+    let elapsed = closed_at
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    Some(session_meta::ClosedCliSession {
+        key: format!(
+            "cli-{}-{}-{}",
+            std::process::id(),
+            meta.id.raw(),
+            elapsed.as_nanos()
+        ),
+        agent: meta.agent,
+        label: meta.label.clone(),
+        title: meta.restored_title.clone(),
+        project: meta.project.clone(),
+        cwd: meta.wt_path.clone(),
+        closed_at: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        context_roots: meta.context_roots.clone(),
+        tmux_name: meta.tmux_name.clone(),
+    })
+}
+
 /// Where a new session opens. Replaces [`TerminalSession::spawn`]'s hardcoded single target.
 #[derive(Clone, Debug)]
 pub struct SpawnTarget {
@@ -122,11 +153,53 @@ pub struct SessionRegistry {
     /// Awaiting the spawn call that consumes them ([`Self::take_attention_args`]).
     attention_args: HashMap<SessionId, Vec<String>>,
     stopped_codex: Vec<std::sync::mpsc::Receiver<()>>,
+    history_outcomes: Vec<std::sync::mpsc::Receiver<Result<(), String>>>,
+    pending_cli_history: Vec<session_meta::ClosedCliSession>,
+    history_warnings: Vec<String>,
     next_id: u64,
     home_terminal_seq: usize,
 }
 
 impl SessionRegistry {
+    pub fn unpersisted_cli_history(&self) -> &[session_meta::ClosedCliSession] {
+        &self.pending_cli_history
+    }
+
+    pub fn take_history_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.history_warnings)
+    }
+
+    fn retain_cli_history(
+        &mut self,
+        record: session_meta::ClosedCliSession,
+        archive: impl FnOnce(&session_meta::ClosedCliSession) -> Result<(), String>,
+    ) {
+        if let Err(error) = archive(&record) {
+            self.history_warnings.push(format!("Could not save History for {}: {error}. Its metadata is retained in this window. Open History and retry before quitting Grove.", record.title.as_deref().unwrap_or(&record.label)));
+            self.pending_cli_history.push(record);
+        }
+    }
+
+    pub fn retry_cli_history(&mut self) -> Vec<String> {
+        self.retry_cli_history_with(session_meta::archive_cli_session)
+    }
+
+    fn retry_cli_history_with(
+        &mut self,
+        archive: impl Fn(&session_meta::ClosedCliSession) -> Result<(), String>,
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
+        self.pending_cli_history
+            .retain(|record| match archive(record) {
+                Ok(()) => false,
+                Err(error) => {
+                    errors.push(error);
+                    true
+                }
+            });
+        errors
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -231,6 +304,9 @@ impl SessionRegistry {
         }
     }
 
+    pub fn take_history_outcomes(&mut self) -> Vec<std::sync::mpsc::Receiver<Result<(), String>>> {
+        std::mem::take(&mut self.history_outcomes)
+    }
     pub fn stop_codex_sessions(&mut self) -> Vec<std::sync::mpsc::Receiver<()>> {
         let mut pending = std::mem::take(&mut self.stopped_codex);
         pending.extend(
@@ -280,9 +356,25 @@ impl SessionRegistry {
 
     /// Also cleans up attention files, so a killed session leaves no `.state` for the next GC to guess at (`session.rs:530-535`).
     pub fn remove(&mut self, id: SessionId) -> Option<SessionMeta> {
+        if !cfg!(test) {
+            if let Some(record) = self.meta(id).and_then(|meta| {
+                closed_cli_record(
+                    meta,
+                    self.codex.contains_key(&id),
+                    std::time::SystemTime::now(),
+                )
+            }) {
+                self.retain_cli_history(record, session_meta::archive_cli_session);
+            }
+        }
         self.terms.remove(&id);
-        if let Some((_, handle)) = self.codex.remove(&id) {
-            self.stopped_codex.push(handle.stop_completion(true));
+        if let Some((session, handle)) = self.codex.remove(&id) {
+            let (done, outcome) = handle.stop_archiving();
+            self.stopped_codex.push(done);
+            self.history_outcomes.push(outcome);
+            // Queue explicit close before the entity's Drop queues app-shutdown
+            // preservation; the actor must archive rather than keep it active.
+            drop(session);
         }
         self.attention_args.remove(&id);
         let pos = self.order.iter().position(|m| m.id == id)?;
@@ -615,6 +707,58 @@ impl SessionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_history_write_failure_preserves_record_after_close_until_retry_succeeds() {
+        let mut registry = SessionRegistry::new();
+        let id = registry.insert_meta("Project".into(), "/project".into(), Agent::Codex);
+        let record = closed_cli_record(
+            registry.meta(id).unwrap(),
+            false,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+        registry.retain_cli_history(record.clone(), |_| Err("disk full".into()));
+        registry.remove(id);
+        assert!(registry.meta(id).is_none());
+        assert_eq!(
+            registry.unpersisted_cli_history(),
+            std::slice::from_ref(&record)
+        );
+        assert!(registry.take_history_warnings()[0].contains("retained in this window"));
+        assert_eq!(
+            registry.retry_cli_history_with(|_| Err("disk full".into())),
+            vec!["disk full"]
+        );
+        assert_eq!(registry.unpersisted_cli_history(), &[record]);
+        assert!(registry.retry_cli_history_with(|_| Ok(())).is_empty());
+        assert!(registry.unpersisted_cli_history().is_empty());
+    }
+
+    #[test]
+    fn cli_history_capture_excludes_native_and_standalone_terminals() {
+        let mut registry = SessionRegistry::new();
+        for agent in [
+            Agent::Codex,
+            Agent::Claude,
+            Agent::OpenCode,
+            Agent::Terminal,
+        ] {
+            let id = registry.insert_meta("Project".into(), "/project/topic".into(), agent);
+            let meta = registry.meta(id).unwrap();
+            let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(123);
+            assert!(closed_cli_record(meta, true, when).is_none());
+            let record = closed_cli_record(meta, false, when).unwrap();
+            assert_eq!(record.agent, agent);
+            assert_eq!(record.closed_at, 123_000);
+            assert!(record
+                .key
+                .starts_with(&format!("cli-{}-{}-", std::process::id(), id.raw())));
+            let mut standalone = meta.clone();
+            standalone.project.clear();
+            assert!(closed_cli_record(&standalone, false, when).is_none());
+        }
+    }
 
     #[test]
     fn root_binary_tests_do_not_kill_production_tmux_from_registry() {

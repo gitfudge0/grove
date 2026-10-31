@@ -45,6 +45,27 @@ pub struct CodexSession {
     dashboard_title_waiting: Option<String>,
 }
 impl CodexSession {
+    /// A retained transcript for read-only History. No actor, capability
+    /// discovery, transport polling, or disk writes are started.
+    pub fn history(saved: SavedSession, _: &mut Context<Self>) -> Self {
+        let (handle, receiver) = Handle::channel();
+        drop(receiver);
+        let mut state = Snapshot::new(saved);
+        state.status = codex::Status::Done;
+        Self {
+            state: state.into(),
+            handle,
+            _poll: Task::ready(()),
+            deferred: None,
+            catalog_generation: 0,
+            catalog_scope: None,
+            catalog_loading: false,
+            catalog_error: None,
+            catalog_selection_error: false,
+            dashboard_title_waiting: None,
+        }
+    }
+
     /// A composer-owned draft with no conversation, persistence, or registry entry.
     /// Capability discovery uses a temporary metadata-only provider handshake.
     pub fn draft(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
@@ -618,6 +639,28 @@ impl Drop for CodexSession {
 #[cfg(test)]
 mod dashboard_tests {
     use super::*;
+
+    #[gpui::test]
+    fn history_snapshot_has_no_transport_or_catalog_for_codex_and_claude(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let record = saved(provider);
+                let expected = serde_json::to_value(&record).unwrap();
+                let session = cx.new(|cx| CodexSession::history(record, cx));
+                let session = session.read(cx);
+                assert_eq!(
+                    serde_json::to_value(&session.state.saved).unwrap(),
+                    expected
+                );
+                assert_eq!(session.state.status, codex::Status::Done);
+                assert!(!session.catalog_loading);
+                assert!(session.deferred.is_none());
+                assert!(session.handle.send(Action::Reconnect).is_err());
+            }
+        });
+    }
 
     #[gpui::test]
     fn dashboard_title_remains_pending_through_startup_and_hands_off_or_fails(

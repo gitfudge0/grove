@@ -167,6 +167,28 @@ impl Runtime {
             }),
             cx.observe(&registry, |this, _, cx| {
                 let registry = this.registry.clone();
+                let warnings = registry.update(cx, |registry, _| registry.take_history_warnings());
+                if !warnings.is_empty() {
+                    this.toast
+                        .update(cx, |toast, cx| toast.set_error(warnings.join("\n"), cx));
+                }
+                let outcomes = registry.update(cx, |registry, _| registry.take_history_outcomes());
+                for outcome in outcomes {
+                    cx.spawn(async move |this, cx| {
+                        let result = cx.background_spawn(async move {
+                            outcome.recv()
+                                .map_err(|_| "Could not confirm that session History was saved.".to_string())
+                                .and_then(|result| result)
+                        }).await;
+                        if let Err(error) = result {
+                            let _ = this.update(cx, |this, cx| {
+                                this.toast.update(cx, |toast, cx| {
+                                    toast.set_error(format!("Could not save session History: {error} Recovery was kept and may restore on restart."), cx);
+                                });
+                            });
+                        }
+                    }).detach();
+                }
                 this.native_title_observers
                     .retain(|id, _| registry.read(cx).codex(*id).is_some());
                 this.sync_grid_tiles(cx);
@@ -506,6 +528,71 @@ impl Runtime {
         });
         self.observe_native_title(id, &session, cx);
         id
+    }
+    /// Reopen a retained native transcript without changing its provider,
+    /// permissions, draft, or checkout identity. Browsing history never calls this.
+    pub(crate) fn reopen_session_history(
+        &mut self,
+        mut saved: grove_core::codex::SavedSession,
+        cx: &mut Context<Self>,
+    ) -> Result<SessionId, String> {
+        if !native_codex_enabled(&cx.global::<SettingsState>().store, None) {
+            return Err("Enable native agents before reopening this session.".into());
+        }
+        if self.registry.read(cx).has_stopping_provider_sessions() {
+            return Err("Wait for the closing session to finish, then try again.".into());
+        }
+        if let Some(id) = self.registry.read(cx).all().iter().find_map(|meta| {
+            self.registry
+                .read(cx)
+                .codex(meta.id)
+                .filter(|session| session.read(cx).state.saved.key == saved.key)
+                .map(|_| meta.id)
+        }) {
+            return Ok(id);
+        }
+        let projects = &cx.global::<SettingsState>().store.projects;
+        let owner = grove_core::session_meta::project_owner(projects, &saved.cwd)?;
+        for wt in std::iter::once(saved.cwd.as_str())
+            .chain(saved.roots.iter().map(|root| root.wt_path.as_str()))
+        {
+            let project = grove_core::session_meta::project_owner(projects, wt)?;
+            if project.archived || !std::path::Path::new(wt).is_dir() {
+                return Err(
+                    "Restore every project and checkout before reopening the session.".into(),
+                );
+            }
+            if self.projects.read(cx).is_removing(&project.path) {
+                return Err("Cannot reopen a session while its project is being removed.".into());
+            }
+            if self.projects.read(cx).is_worktree_removing(wt) {
+                return Err("Cannot reopen a session while its worktree is being removed.".into());
+            }
+        }
+        if self
+            .provider_updates
+            .read(cx)
+            .is_updating(saved.provider.agent())
+        {
+            return Err("This provider is updating. Try again when verification finishes.".into());
+        }
+        saved.project.clone_from(&owner.name);
+        grove_core::codex::prepare_history_reopen(&saved)?;
+        let key = saved.key.clone();
+        let id = self.attach_native_codex(saved, Vec::new(), cx);
+        if let Err(error) = grove_core::codex::finish_history_reopen(&key) {
+            // A duplicate archive is recoverable; the active key remains authoritative.
+            self.toast
+                .update(cx, |toast, cx| toast.set_error(error, cx));
+        }
+        let snap = self.snapshot(cx);
+        let old = self.state.read(cx).proj_idx();
+        ProjectTree::adopt_session_project(&self.tree.clone(), &snap, id, old, cx);
+        self.state.update(cx, |state, cx| {
+            state.select_session(id, &snap);
+            cx.notify();
+        });
+        Ok(id)
     }
     /// Register the exact Dashboard session entity so its composer and process retain ownership.
     pub(crate) fn adopt_dashboard_session(
@@ -1298,6 +1385,37 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    #[cfg(not(windows))]
+    fn history_reopen_rejects_primary_and_context_removal_before_preparing_recovery(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let primary = root.path().join("primary");
+        let context = root.path().join("context");
+        fs_err::create_dir_all(&primary).unwrap();
+        fs_err::create_dir_all(&context).unwrap();
+        let primary = primary.to_str().unwrap().to_owned();
+        let context = context.to_str().unwrap().to_owned();
+        for (project, path, worktree) in [
+            (&primary, &primary, false),
+            (&primary, &primary, true),
+            (&context, &context, false),
+            (&context, &context, true),
+        ] {
+            cx.update(|cx|{
+                cx.set_global(SettingsState::new(grove_core::storage::Store{native_agents_enabled:true,projects:[("Primary",&primary),("Context",&context)].into_iter().map(|(name,path)|grove_core::storage::Project{name:name.into(),path:path.clone(),scripts:Default::default(),archived:false,worktree_dir:None}).collect(),..Default::default()}));
+                cx.set_global(crate::zoom::CurrentPtyDims::default());
+                let runtime=cx.new(Runtime::new);
+                runtime.read(cx).projects.clone().update(cx,|service,_|service.mark_history_removal_for_test(project,worktree.then_some(path.as_str())));
+                let saved:grove_core::codex::SavedSession=serde_json::from_value(serde_json::json!({"key":"invalid key prevents any writes if the guard regresses","provider":"codex","project":"Primary","cwd":primary,"label":"Fixture","roots":[{"project":"Context","wt_path":context}],"thread_id":null,"items":[]})).unwrap();
+                let error=runtime.update(cx,|runtime,cx|runtime.reopen_session_history(saved,cx)).unwrap_err();
+                assert!(error.contains("being removed"),"{error}");
+                assert!(runtime.read(cx).registry.read(cx).all().is_empty());
+            });
+        }
+    }
 
     #[test]
     fn native_codex_requires_opt_in_and_respects_tmux_override() {

@@ -826,9 +826,10 @@ impl Sidebar {
             .bg(if grid && active {
                 c::BG_HOVER()
             } else {
-                c::BG_STRIP()
+                c::BG()
             })
-            .when(!grid || !active, |header| {
+            .when(!grid, |header| header.rounded_tl(rpx(RADIUS_PANEL)))
+            .when(grid && !active, |header| {
                 header.border_b_1().border_color(c::BORDER())
             })
             .when(grid, |header| {
@@ -843,6 +844,7 @@ impl Sidebar {
                 crate::views::components::tooltip(title_tooltip.clone(), window).build(window, cx)
             });
         let agent_icon = div()
+            .debug_selector(move || format!("session-header-provider-{}", id.raw()))
             .w(rpx(SESSION_ICON_SLOT))
             .flex_shrink_0()
             .flex()
@@ -890,7 +892,6 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_LG))
-                    .child(agent_icon)
                     .child(
                         div()
                             .flex_1()
@@ -954,6 +955,7 @@ impl Sidebar {
                                             .child("/"),
                                     ),
                             )
+                            .child(agent_icon)
                             .child(
                                 div()
                                     .debug_selector(move || {
@@ -1687,6 +1689,27 @@ impl Sidebar {
         }
         if self.dashboard_open {
             return self.render_dashboard(window, cx);
+        }
+        if self.destination == super::global_navigation::Destination::History
+            && self.selection.is_none()
+        {
+            return self.render_session_history(cx);
+        }
+        if self.destination == super::global_navigation::Destination::Projects
+            && matches!(self.selection, None | Some(Selection::Project(_)))
+        {
+            return self.render_projects_destination(window, cx);
+        }
+        if self.destination == super::global_navigation::Destination::Sessions
+            && self.selection.is_none()
+        {
+            return div()
+                .id("legacy-session-list")
+                .size_full()
+                .overflow_y_scroll()
+                .p(rpx(SPACE_3XL))
+                .child(self.list(window, cx))
+                .into_any_element();
         }
         if self.is_zen() {
             match self.selection.clone() {
@@ -2915,7 +2938,7 @@ mod tests {
         assert!(title.right() < close.left());
     }
     #[gpui::test]
-    fn empty_workspace_card_is_centered_and_bounded(cx: &mut gpui::TestAppContext) {
+    fn projects_landing_uses_canvas_and_keeps_add_reachable(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
@@ -2936,16 +2959,12 @@ mod tests {
         cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
         draw(cx);
         let canvas = cx.debug_bounds("sidebar-canvas").unwrap();
-        let placeholder = cx.debug_bounds("navigation-empty-canvas").unwrap();
-        assert_eq!(placeholder, canvas);
-        let message = cx.debug_bounds("navigation-empty-message").unwrap();
-        assert!((f32::from(message.center().x - canvas.center().x)).abs() < 1.);
-        assert!((f32::from(message.center().y - canvas.center().y)).abs() < 1.);
-        assert!(message.left() >= canvas.left() && message.right() <= canvas.right());
-        assert!(message.top() >= canvas.top() && message.bottom() <= canvas.bottom());
+        let page = cx.debug_bounds("projects-destination").unwrap();
+        assert_eq!(page, canvas);
+        assert!(cx.debug_bounds("projects-add").is_some());
         assert!(cx.debug_bounds("canvas-empty-card").is_none());
         assert!(cx.debug_bounds("global-nav-projects").is_some());
-        assert!(cx.debug_bounds("sidebar-rail").is_some());
+        assert!(cx.debug_bounds("sidebar-rail").is_none());
     }
     #[gpui::test]
     fn start_panel_scrolls_overflow_and_centers_on_desktop(cx: &mut gpui::TestAppContext) {
@@ -2962,6 +2981,7 @@ mod tests {
                     worktree_dir: None,
                 }],
                 sidebar_collapsed: true,
+                default_landing_page: grove_core::storage::LandingPage::Projects,
                 ..Default::default()
             }));
             cx.set_global(crate::zoom::CurrentPtyDims::default());
@@ -2981,11 +3001,12 @@ mod tests {
             });
             Sidebar::new(runtime, window, cx)
         });
-        cx.update(|_, cx| {
+        cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
+                sidebar.sync(window, cx);
                 sidebar.available = [true; 4];
                 sidebar.mode = ViewMode::Project;
-                sidebar.select(Selection::Project(0), cx);
+                sidebar.select(Selection::Worktree(0, path.clone()), cx);
                 sidebar.worktree_readiness.insert(
                     path.clone(),
                     (std::time::Instant::now(), Some(WorktreeReadiness::Ready)),
@@ -2995,7 +3016,7 @@ mod tests {
         });
         cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
         draw(cx);
-        let desktop_scroll = cx.debug_bounds("project-start-scroll").unwrap();
+        let desktop_scroll = cx.debug_bounds("worktree-start-scroll").unwrap();
         let desktop_card = cx.debug_bounds("project-start-card").unwrap();
         eprintln!("desktop scroll={desktop_scroll:?} card={desktop_card:?}");
         assert!((f32::from(desktop_card.center().y - desktop_scroll.center().y)).abs() < 1.);
@@ -3014,8 +3035,8 @@ mod tests {
         }
         cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(540.)));
         draw(cx);
-        let scroll = cx.debug_bounds("project-start-scroll").unwrap();
-        let wrapper = cx.debug_bounds("project-start-scroll-content").unwrap();
+        let scroll = cx.debug_bounds("worktree-start-scroll").unwrap();
+        let wrapper = cx.debug_bounds("worktree-start-scroll-content").unwrap();
         let card = cx.debug_bounds("project-start-card").unwrap();
         let before = cx.debug_bounds("project-new-worktree").unwrap();
         eprintln!("narrow scroll={scroll:?} wrapper={wrapper:?} card={card:?} CTA={before:?}");
@@ -3049,7 +3070,7 @@ mod tests {
         );
         cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(200.)));
         draw(cx);
-        let short_scroll = cx.debug_bounds("project-start-scroll").unwrap();
+        let short_scroll = cx.debug_bounds("worktree-start-scroll").unwrap();
         cx.simulate_event(gpui::ScrollWheelEvent {
             position: short_scroll.center(),
             delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-1000.))),
@@ -3132,6 +3153,7 @@ mod tests {
             "session-header-project-separator-1",
             "session-header-worktree-1",
             "session-header-title-separator-1",
+            "session-header-provider-1",
             "session-header-title-1",
         ];
         for adjacent in selectors.windows(2) {

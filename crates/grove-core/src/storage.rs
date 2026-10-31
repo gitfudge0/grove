@@ -447,14 +447,16 @@ pub enum LandingPage {
     Home,
     Projects,
     Sessions,
+    History,
 }
 impl LandingPage {
-    pub const ALL: [Self; 3] = [Self::Home, Self::Projects, Self::Sessions];
+    pub const ALL: [Self; 3] = [Self::Home, Self::Projects, Self::History];
     pub fn label(self) -> &'static str {
         match self {
             Self::Home => "Home",
             Self::Projects => "Projects",
             Self::Sessions => "Sessions",
+            Self::History => "History",
         }
     }
 }
@@ -495,6 +497,8 @@ pub struct Store {
     /// Compact icon rail; kept separately so expanding restores the resized width.
     #[serde(default)]
     pub sidebar_collapsed: bool,
+    #[serde(default)]
+    pub sidebar_group_by_project: bool,
     /// `false` = project → worktree → session tree, `true` = flat cross-project session list.
     #[serde(default)]
     pub rail_sessions: bool,
@@ -971,6 +975,8 @@ pub(crate) mod tests {
     fn default_landing_page_migrates_and_round_trips() {
         let legacy: Store = serde_json::from_str(r#"{"projects":[]}"#).unwrap();
         assert_eq!(legacy.default_landing_page, LandingPage::Home);
+        let prior: Store = serde_json::from_str(r#"{"default_landing_page":"sessions"}"#).unwrap();
+        assert_eq!(prior.default_landing_page, LandingPage::Sessions);
         for page in LandingPage::ALL {
             let store = Store {
                 default_landing_page: page,

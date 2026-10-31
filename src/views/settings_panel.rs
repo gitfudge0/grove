@@ -1965,8 +1965,8 @@ mod tests {
                 grove_core::storage::LandingPage::Projects,
             ),
             (
-                "settings-landing-sessions",
-                grove_core::storage::LandingPage::Sessions,
+                "settings-landing-history",
+                grove_core::storage::LandingPage::History,
             ),
             (
                 "settings-landing-home",

@@ -2950,6 +2950,7 @@ pub enum Action {
     Stop {
         forget: bool,
         done: mpsc::Sender<()>,
+        archive_outcome: Option<mpsc::Sender<Result<(), String>>>,
     },
 }
 #[derive(Clone)]
@@ -3008,6 +3009,17 @@ impl Handle {
             .map_err(|_| "Codex session is disconnected".into())
     }
     pub fn stop_completion(&self, forget: bool) -> mpsc::Receiver<()> {
+        self.stop_with_outcome(forget, None)
+    }
+    pub fn stop_archiving(&self) -> (mpsc::Receiver<()>, mpsc::Receiver<Result<(), String>>) {
+        let (send, receive) = mpsc::channel();
+        (self.stop_with_outcome(true, Some(send)), receive)
+    }
+    fn stop_with_outcome(
+        &self,
+        forget: bool,
+        archive_outcome: Option<mpsc::Sender<Result<(), String>>>,
+    ) -> mpsc::Receiver<()> {
         self.2.store(true, Ordering::SeqCst);
         let pid = self.1.swap(0, Ordering::SeqCst);
         #[cfg(not(unix))]
@@ -3020,7 +3032,11 @@ impl Handle {
             }
         }
         let (done, receive) = mpsc::channel();
-        let _ = self.send(Action::Stop { forget, done });
+        let _ = self.send(Action::Stop {
+            forget,
+            done,
+            archive_outcome,
+        });
         receive
     }
     pub fn stop(&self, forget: bool) {
@@ -3036,6 +3052,67 @@ pub fn recovery_dir() -> Result<PathBuf, String> {
     crate::storage::config_dir()
         .map(|p| p.join("codex-sessions"))
         .map_err(|e| e.to_string())
+}
+/// Closed native sessions live separately from startup recovery.
+pub fn session_history_dir() -> Result<PathBuf, String> {
+    crate::storage::config_dir()
+        .map(|p| p.join("session-history"))
+        .map_err(|e| e.to_string())
+}
+
+pub fn load_session_history() -> Result<Recovery, String> {
+    let dir = session_history_dir()?;
+    if !dir.exists() {
+        return Ok(Recovery {
+            sessions: Vec::new(),
+            warnings: Vec::new(),
+        });
+    }
+    let mut history = load_from_dir(&dir)?;
+    history.sessions.sort_by_cached_key(|saved| {
+        std::cmp::Reverse(
+            fs_err::metadata(dir.join(format!("{}.json", saved.key)))
+                .and_then(|metadata| metadata.modified())
+                .ok(),
+        )
+    });
+    Ok(history)
+}
+
+/// Persist recovery before an archived record is adopted by the live registry.
+pub fn prepare_history_reopen(saved: &SavedSession) -> Result<(), String> {
+    persist(saved)
+}
+
+/// Called only after the live registry owns the reopened session.
+pub fn finish_history_reopen(key: &str) -> Result<(), String> {
+    if !valid_key(key) {
+        return Err("Invalid native session history key".into());
+    }
+    let path = session_history_dir()?.join(format!("{key}.json"));
+    match fs_err::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+pub(crate) fn archive_closed_session(saved: &SavedSession) -> Result<(), String> {
+    archive_closed_in_dirs(saved, &recovery_dir()?, &session_history_dir()?)
+}
+
+fn archive_closed_in_dirs(
+    saved: &SavedSession,
+    active: &std::path::Path,
+    history: &std::path::Path,
+) -> Result<(), String> {
+    // The archive is durable before removing the only startup recovery record.
+    persist_in_dir(saved, history)?;
+    match fs_err::remove_file(active.join(format!("{}.json", saved.key))) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 fn valid_key(key: &str) -> bool {
     !key.is_empty()
@@ -4413,16 +4490,25 @@ impl Actor {
                     return Err(error);
                 }
             }
-            Action::Stop { forget, done } => {
+            Action::Stop {
+                forget,
+                done,
+                archive_outcome,
+            } => {
                 self.pid.store(0, Ordering::SeqCst);
                 self.process = None;
-                if forget {
-                    if let Ok(dir) = recovery_dir() {
-                        let _ =
-                            fs_err::remove_file(dir.join(format!("{}.json", self.state.saved.key)));
-                    }
+                let outcome = if forget {
+                    archive_closed_session(&self.state.saved)
                 } else {
                     self.save();
+                    Ok(())
+                };
+                if let Err(error) = &outcome {
+                    self.save();
+                    eprintln!("Could not archive closed native session: {error}");
+                }
+                if let Some(sender) = archive_outcome {
+                    let _ = sender.send(outcome);
                 }
                 let _ = done.send(());
                 return Ok(false);
@@ -6134,6 +6220,52 @@ mod tests {
             context: None,
         }
     }
+    #[test]
+    fn session_history_close_preserves_codex_and_claude_transcripts_separately_from_recovery() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let root = tempfile::tempdir().unwrap();
+            let active = root.path().join("active");
+            let history = root.path().join("history");
+            let mut session = saved();
+            session.provider = provider;
+            session.draft = "unsent draft".into();
+            session.items.push(
+                serde_json::json!({"id":"reply", "type":"agentMessage", "text":"Retained answer"}),
+            );
+            session.config_args = vec!["--example-preserved-option".into()];
+            persist_in_dir(&session, &active).unwrap();
+            archive_closed_in_dirs(&session, &active, &history).unwrap();
+            assert!(load_from_dir(&active).unwrap().sessions.is_empty());
+            let retained = load_from_dir(&history).unwrap().sessions.remove(0);
+            assert_eq!(
+                serde_json::to_value(&retained).unwrap(),
+                serde_json::to_value(&session).unwrap()
+            );
+            // Reopen writes recovery before archive cleanup, so interrupted adoption
+            // retains both copies rather than losing the conversation.
+            persist_in_dir(&retained, &active).unwrap();
+            assert_eq!(load_from_dir(&active).unwrap().sessions.len(), 1);
+            assert_eq!(load_from_dir(&history).unwrap().sessions.len(), 1);
+        }
+    }
+
+    #[test]
+    fn session_history_archive_failure_preserves_active_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let active = root.path().join("active");
+        let blocked = root.path().join("blocked");
+        let session = saved();
+        persist_in_dir(&session, &active).unwrap();
+        fs_err::write(&blocked, "not a directory").unwrap();
+        assert!(archive_closed_in_dirs(&session, &active, &blocked).is_err());
+        assert_eq!(load_from_dir(&active).unwrap().sessions.len(), 1);
+        let mut unsafe_key = session;
+        unsafe_key.key = "../escape".into();
+        assert!(
+            archive_closed_in_dirs(&unsafe_key, &active, &root.path().join("history")).is_err()
+        );
+        assert_eq!(load_from_dir(&active).unwrap().sessions.len(), 1);
+    }
     /// Real-session clone/update CPU timings; excludes rendering, I/O and provider latency.
     #[test]
     #[ignore = "manual snapshot payload benchmark; GROVE_PERF_SESSION selects a private fixture"]
@@ -7420,6 +7552,23 @@ mod tests {
         actor.state = state();
         actor
     }
+    #[test]
+    fn native_history_stop_reports_archive_failure_separately_from_process_completion() {
+        let mut actor = actor();
+        actor.state.saved.key = "invalid key".into();
+        let (done, completed) = mpsc::channel();
+        let (archive_outcome, outcome) = mpsc::channel();
+        assert!(!actor
+            .action(Action::Stop {
+                forget: true,
+                done,
+                archive_outcome: Some(archive_outcome)
+            })
+            .unwrap());
+        completed.recv().unwrap();
+        assert!(outcome.recv().unwrap().is_err());
+    }
+
     #[test]
     #[cfg(unix)]
     fn project_prompt_preserves_composer_and_uses_native_queue() {

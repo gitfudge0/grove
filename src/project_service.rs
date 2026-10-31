@@ -344,6 +344,23 @@ impl ProjectService {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn mark_history_removal_for_test(&mut self, project: &str, worktree: Option<&str>) {
+        if let Some(path) = worktree {
+            self.worktree_removals.insert(
+                path.into(),
+                WorktreeRemoval {
+                    stage: WorktreeRemovalStage::Removing,
+                    error: None,
+                    project_path: project.into(),
+                    canonical_path: std::path::PathBuf::from(path),
+                },
+            );
+        } else {
+            self.removals
+                .insert(project.into(), ProjectRemoval::default());
+        }
+    }
     pub fn is_removing(&self, path: &str) -> bool {
         self.removals
             .get(path)

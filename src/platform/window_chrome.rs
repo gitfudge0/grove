@@ -13,8 +13,8 @@ pub fn sync_native_buttons(window: &gpui::Window) {
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
         return;
     };
-    // Grove's navigation extends to the top edge; native menu actions retain
-    // close/minimize/fullscreen without visible window buttons.
+    // The app-owned header renders the themed window controls. Hide the AppKit
+    // duplicates while retaining titled-window menus, resizing and fullscreen.
     let hidden = YES;
     // SAFETY: GPUI calls this on the AppKit main thread. Its borrowed handle owns a
     // live NSView; the documented window/standardWindowButton selectors return

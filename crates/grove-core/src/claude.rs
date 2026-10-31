@@ -973,6 +973,29 @@ impl Actor {
             dirty: false,
         }
     }
+    fn stop(
+        &mut self,
+        forget: bool,
+        done: mpsc::Sender<()>,
+        archive_outcome: Option<mpsc::Sender<Result<(), String>>>,
+    ) {
+        self.process.take();
+        self.pid.store(0, Ordering::SeqCst);
+        let outcome = if forget {
+            codex::archive_closed_session(&self.state.saved)
+        } else {
+            self.save();
+            Ok(())
+        };
+        if let Err(error) = &outcome {
+            self.save();
+            eprintln!("Could not archive closed native session: {error}");
+        }
+        if let Some(sender) = archive_outcome {
+            let _ = sender.send(outcome);
+        }
+        let _ = done.send(());
+    }
     fn run(mut self) {
         if let Err(error) = self.start() {
             self.fail(error);
@@ -981,29 +1004,12 @@ impl Actor {
         self.publish();
         loop {
             match self.input.recv_timeout(Duration::from_millis(20)) {
-                Ok(Action::Stop { forget, done }) => {
-                    self.process.take();
-                    self.pid.store(0, Ordering::SeqCst);
-                    if forget {
-                        if !self.state.saved.key.is_empty()
-                            && self.state.saved.key.len() < 128
-                            && self
-                                .state
-                                .saved
-                                .key
-                                .bytes()
-                                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                        {
-                            if let Ok(dir) = codex::recovery_dir() {
-                                let _ = fs_err::remove_file(
-                                    dir.join(format!("{}.json", self.state.saved.key)),
-                                );
-                            }
-                        }
-                    } else {
-                        self.save();
-                    }
-                    let _ = done.send(());
+                Ok(Action::Stop {
+                    forget,
+                    done,
+                    archive_outcome,
+                }) => {
+                    self.stop(forget, done, archive_outcome);
                     break;
                 }
                 Ok(action) => {
@@ -3552,6 +3558,16 @@ mod tests {
             Arc::new(AtomicU32::new(0)),
             Arc::new(AtomicBool::new(false)),
         )
+    }
+    #[test]
+    fn native_history_stop_reports_archive_failure_separately_from_process_completion() {
+        let mut actor = actor();
+        actor.state.saved.key = "invalid key".into();
+        let (done, completed) = mpsc::channel();
+        let (archive_outcome, outcome) = mpsc::channel();
+        actor.stop(true, done, Some(archive_outcome));
+        completed.recv().unwrap();
+        assert!(outcome.recv().unwrap().is_err());
     }
     #[test]
     #[cfg(unix)]

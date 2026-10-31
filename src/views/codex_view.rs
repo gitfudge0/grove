@@ -1025,6 +1025,7 @@ pub struct CodexView {
     dashboard_retry_focus: FocusHandle,
     script_runtime: Option<Entity<crate::runtime::Runtime>>,
     preview_child: Option<String>,
+    history_readonly: bool,
     session: Entity<CodexSession>,
     pub(super) html: Entity<super::inline_html::HtmlSession>,
     markdown_decorations: TextDecorationCollection,
@@ -1130,6 +1131,10 @@ pub struct CodexView {
 }
 impl CodexView {
     fn sync_native_plans(&mut self, cx: &mut Context<Self>) {
+        if self.history_readonly {
+            self.native_plans.clear();
+            return;
+        }
         let plan_keys: HashSet<_> = self
             .session
             .read(cx)
@@ -1195,7 +1200,29 @@ impl CodexView {
         view
     }
 
+    /// Render the original retained transcript with disclosure and Copy only.
+    pub fn history(
+        session: Entity<CodexSession>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_history_mode(session, true, window, cx)
+    }
+
+    fn transcript_only(&self) -> bool {
+        self.history_readonly || self.preview_child.is_some()
+    }
+
     pub fn new(session: Entity<CodexSession>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_with_history_mode(session, false, window, cx)
+    }
+
+    fn new_with_history_mode(
+        session: Entity<CodexSession>,
+        history_readonly: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let stream_thread = session.read(cx).state.saved.thread_id.clone();
         let draft = session.read(cx).state.saved.draft.clone();
         let images = session.read(cx).state.saved.draft_images.clone();
@@ -1233,7 +1260,7 @@ impl CodexView {
                 cx.notify();
             }),
             cx.subscribe_in(&input, window, |this, _, event, window, cx| {
-                if this.preview_child.is_some() {
+                if this.transcript_only() {
                     return;
                 }
                 match event {
@@ -1261,7 +1288,7 @@ impl CodexView {
                     InputEvent::Change => {
                         this.set_composer_collapsed(false, cx);
                         let text = this.input.read(cx).value().to_string();
-                        if this.preview_child.is_none() && this.queue_editor.is_none() {
+                        if !this.transcript_only() && this.queue_editor.is_none() {
                             this.queue_selected = None;
                             this.session
                                 .update(cx, |session, cx| session.send(Action::Draft(text), cx));
@@ -1293,6 +1320,7 @@ impl CodexView {
         }));
         let mut view = Self {
             preview_child: None,
+            history_readonly,
             session,
             html,
             native_plans: HashMap::new(),
@@ -3325,7 +3353,7 @@ impl CodexView {
                             let source = text.clone();
                             let runtime = self.script_runtime.clone();
                             let cwd = state.saved.cwd.clone();
-                            let finalized = (item["groveCompleted"] == true || item["status"] == "completed") && item["status"] != "inProgress" && self.preview_child.is_none();
+                            let finalized = (item["groveCompleted"] == true || item["status"] == "completed") && item["status"] != "inProgress" && !self.transcript_only();
                             view.code_block_actions(move |block, window, cx| {
                                 let code = block.code().to_string();
                                 let key = format!("{owner_key}:code:{}", block.span.as_ref().map_or(0, |span| span.start));
@@ -3390,7 +3418,7 @@ impl CodexView {
             let html_entity = self.html.clone();
             let linked = html_entity.update(cx, |html, cx| html.linked(&html_message, window, cx));
             row = row.children(linked);
-            if kind == "agentMessage" {
+            if kind == "agentMessage" && !self.history_readonly {
                 let plans: Vec<_> = self
                     .session
                     .read(cx)
@@ -3688,7 +3716,7 @@ impl CodexView {
                 );
             }
             let unavailable = state.editable_message(index).err();
-            if self.preview_child.is_none() && approval.is_none() {
+            if !self.transcript_only() && approval.is_none() {
                 let edit_focus = self.ensure_control_focus(&format!("{key}:edit"), window, cx);
                 actions = actions.child(
                     header_control("codex-edit-message", "Edit sent message")
@@ -3919,7 +3947,7 @@ impl CodexView {
         // The next render observes the final offset after native wheel dispatch.
         // Keep this separate from layout/content updates, which never enter browse mode.
         self.smooth_follow = false;
-        if self.preview_child.is_some() {
+        if self.transcript_only() {
             self.preview_follow_latest = toward_bottom
                 && self.scroll.max_offset().y + self.scroll.offset().y <= gpui::px(1.);
             // Native dispatch applies the wheel delta after this listener. Recheck
@@ -4039,6 +4067,9 @@ impl CodexView {
         cx.notify();
     }
     fn submit_mode(&mut self, mode: SubmissionMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.transcript_only() {
+            return;
+        }
         if self.message_editor.is_some()
             || self.edit_confirmation.is_some()
             || self.edit_request_pending
@@ -4383,7 +4414,7 @@ impl Render for CodexView {
         let near_bottom = self.scroll.max_offset().y + self.scroll.offset().y
             <= rpx(SPACE_20).to_pixels(window.rem_size());
         if let Some(toward_bottom) = self.pending_composer_scroll.take() {
-            if self.preview_child.is_some() {
+            if self.transcript_only() {
                 self.preview_follow_latest = toward_bottom
                     && self.scroll.max_offset().y + self.scroll.offset().y <= gpui::px(1.);
             } else {
@@ -4443,7 +4474,7 @@ impl Render for CodexView {
             .motion_frame
             .replace(now)
             .map_or(0.0, |previous| now.duration_since(previous).as_secs_f32());
-        if self.preview_child.is_none()
+        if !self.transcript_only()
             && self.edit_confirmation.is_none()
             && (self.follow_after_submit
                 || (content != self.last_content
@@ -4594,7 +4625,7 @@ impl Render for CodexView {
             // may be hidden commentary, a checklist, or a collapsed tool.
             if let Some(group_index) = response_ends[index] {
                 let group = &response_groups[group_index];
-                let footer = if self.preview_child.is_some()
+                let footer = if self.transcript_only()
                     || window.is_a11y_active()
                     || measured_slot::force_eager()
                     || measured_slot::force_footer_eager()
@@ -4638,7 +4669,7 @@ impl Render for CodexView {
                 self.message_focus.insert(focus_key.clone(), focus.clone());
                 let header = if !active
                     && !expanded
-                    && self.preview_child.is_none()
+                    && !self.transcript_only()
                     && !window.is_a11y_active()
                     && !measured_slot::force_eager()
                     && !measured_slot::force_header_eager()
@@ -5097,7 +5128,7 @@ impl Render for CodexView {
                 && !editing
                 && !tail_stream
                 && !entrance
-                && self.preview_child.is_none()
+                && !self.transcript_only()
                 && !window.is_a11y_active()
             {
                 rendered_slot_keys.insert(slot_key.clone());
@@ -5131,7 +5162,7 @@ impl Render for CodexView {
                     .child(row),
             );
         }
-        if self.preview_child.is_some() {
+        if self.transcript_only() {
             self.message_slots.clear();
             self.work_header_slots.clear();
             // Stay pinned through layout growth until a wheel gesture starts browsing.
@@ -5140,6 +5171,8 @@ impl Render for CodexView {
                 self.scroll.scroll_to_bottom();
             }
             return div()
+                .debug_selector(|| "codex-readonly-transcript".into())
+                .track_focus(&self.input.focus_handle(cx))
                 .size_full()
                 .min_h_0()
                 .min_w_0()
@@ -6499,6 +6532,9 @@ impl CodexView {
     }
 
     fn request_edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.transcript_only() {
+            return;
+        }
         let state = &self.session.read(cx).state;
         match state.editable_message(index) {
             Ok(_) => {
@@ -12414,6 +12450,61 @@ mod tests {
         state.saved.provider = codex::Provider::Codex;
         assert!(!tool_is_running(&state, 0));
     }
+    #[gpui::test]
+    fn history_transcript_keeps_structured_tools_and_sends_no_actions_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| view.update(cx, |view, cx| {
+                view.history_readonly = true;
+                view.expanded.clear();
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = provider;
+                    session.state.status = Status::Done;
+                    session.state.saved.draft = "Retained unsent draft".into();
+                    session.state.saved.items = vec![
+                        json!({"id":"history-user", "type":"userMessage", "content":[{"text":"Inspect the change"}]}),
+                        json!({"id":"history-command", "type":"commandExecution", "command":"cargo test", "status":"completed", "aggregatedOutput":"Two tests passed"}),
+                        json!({"id":"history-answer", "type":"agentMessage", "text":"The **structured** transcript is retained.", "status":"completed"}),
+                    ].into();
+                    cx.notify();
+                });
+                view.input.update(cx, |input, cx| input.set_value("Hidden edit", window, cx));
+                view.request_edit(0, window, cx);
+                view.submit_mode(SubmissionMode::Send, window, cx);
+            }));
+            draw(cx);
+            assert!(cx.debug_bounds("codex-readonly-transcript").is_some());
+            assert!(cx.debug_bounds("codex-composer").is_none());
+            assert!(cx.debug_bounds("codex-edit-message-0").is_none());
+            assert!(cx.debug_bounds("codex-toggle-tool-1").is_none());
+            let work = cx
+                .debug_bounds("codex-work-header-1")
+                .expect("retained completed work remains behind the original disclosure");
+            cx.simulate_click(work.center(), gpui::Modifiers::default());
+            draw(cx);
+            let tool = cx
+                .debug_bounds("codex-toggle-tool-1")
+                .expect("expanding retained work reveals its original tool disclosure");
+            cx.simulate_click(tool.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(cx.debug_bounds("codex-tool-detail-1").is_some());
+            assert!(
+                actions.try_iter().next().is_none(),
+                "{provider:?}: History must not send provider actions"
+            );
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.session.read(cx).state.saved.draft,
+                    "Retained unsent draft"
+                );
+                assert!(view.expanded.contains("tool-history-command"));
+                assert!(view.native_plans.is_empty());
+            });
+        }
+    }
+
     #[gpui::test]
     fn child_preview_wheel_browsing_survives_updates_for_both_providers(
         cx: &mut gpui::TestAppContext,
