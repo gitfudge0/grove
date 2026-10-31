@@ -898,6 +898,7 @@ impl Sidebar {
                             .min_w_0()
                             .flex()
                             .items_center()
+                            .gap(rpx(SPACE_MD))
                             .text_size(rpx(TEXT_BODY))
                             .text_color(c::FG_MUTE())
                             .child(
@@ -906,6 +907,8 @@ impl Sidebar {
                                     .max_w(gpui::relative(HEADER_PREFIX_FRACTION))
                                     .flex()
                                     .items_center()
+                                    .gap(rpx(SPACE_MD))
+                                    .text_size(rpx(TEXT_SMALL))
                                     .child(
                                         div()
                                             .debug_selector(move || {
@@ -986,7 +989,7 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_MD))
-                    .child(header_status)
+                    .when(grid, |actions| actions.child(header_status))
                     .child(close),
             );
         let header = if grid {
@@ -2594,7 +2597,7 @@ mod tests {
             sidebar
         });
         draw(cx);
-        assert_contiguous_session_breadcrumb(cx);
+        assert_spaced_session_breadcrumb(cx);
         for selector in [
             "terminal-header-1",
             "terminal-header-left-1",
@@ -2613,7 +2616,7 @@ mod tests {
             });
         });
         draw(cx);
-        assert_contiguous_session_breadcrumb(cx);
+        assert_spaced_session_breadcrumb(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.mode == ViewMode::Grid));
         let header = cx.debug_bounds("terminal-header-1").unwrap();
         cx.simulate_mouse_down(
@@ -2647,7 +2650,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn shared_header_compacts_tasks_and_discloses_them_without_grid_drag(
+    fn grid_header_compacts_tasks_and_discloses_them_without_grid_drag(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
@@ -2726,9 +2729,9 @@ mod tests {
         });
         let id = crate::entities::session_registry::SessionId::from_raw(1);
         draw(cx);
-        // Main and grid share one compact progress control.
+        // Single-session chrome leaves task progress to the transcript dock.
         assert!(cx.debug_bounds("terminal-header-1").is_some());
-        assert!(cx.debug_bounds("header-tasks-1").is_some());
+        assert!(cx.debug_bounds("header-tasks-1").is_none());
         assert!(cx.debug_bounds("grid-header-task-now-1").is_none());
         assert!(cx.debug_bounds("grid-header-tasks-1").is_none());
         assert_eq!(
@@ -2927,7 +2930,7 @@ mod tests {
             let run = window.text_style().to_run(text.len());
             window
                 .text_system()
-                .shape_line(text, gpui::px(TEXT_BODY), &[run], None)
+                .shape_line(text, gpui::px(TEXT_SMALL), &[run], None)
                 .width()
         });
         assert!(
@@ -3147,7 +3150,7 @@ mod tests {
         assert_eq!(worktree_error_field("Worktree path /x already exists."), 2);
         assert_eq!(worktree_error_field("git rev-parse --verify failed"), 2);
     }
-    fn assert_contiguous_session_breadcrumb(cx: &mut gpui::VisualTestContext) {
+    fn assert_spaced_session_breadcrumb(cx: &mut gpui::VisualTestContext) {
         let selectors = [
             "session-header-project-1",
             "session-header-project-separator-1",
@@ -3159,10 +3162,9 @@ mod tests {
         for adjacent in selectors.windows(2) {
             let left = cx.debug_bounds(adjacent[0]).unwrap();
             let right = cx.debug_bounds(adjacent[1]).unwrap();
-            assert_eq!(
-                left.right(),
-                right.left(),
-                "breadcrumb segments must remain adjacent: {} and {}",
+            assert!(
+                (f32::from(right.left() - left.right()) - SPACE_MD).abs() <= 1.,
+                "breadcrumb segments need the shared gap: {} and {}",
                 adjacent[0],
                 adjacent[1],
             );

@@ -266,6 +266,7 @@ impl Shell {
                 "window-minimize",
                 "window-fullscreen",
                 "sidebar-toggle",
+                "header-grid",
                 "header-settings",
             ]
             .into_iter()
@@ -401,8 +402,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let focus = self.header_focus[id].clone();
-        let enabled =
-            !matches!(id, "sidebar-toggle" | "header-settings") || !self.shortcut_blocked(cx);
+        let enabled = !matches!(id, "sidebar-toggle" | "header-grid" | "header-settings")
+            || !self.shortcut_blocked(cx);
         header_control(id, label)
             .debug_selector(move || id.into())
             .track_focus(&focus)
@@ -462,7 +463,8 @@ impl Shell {
             .flex()
             .items_center()
             .gap(rpx(if compact { SPACE_SM } else { SPACE_LG }))
-            .px(rpx(SPACE_LG))
+            .pl(rpx(SPACE_LG))
+            .pr(rpx(SPACE_20))
             .pt(rpx(APPBAR_TOP_INSET))
             .bg(c::BG_RAIL())
             .child(
@@ -543,10 +545,6 @@ impl Shell {
                 )
             })
             .child(
-                self.sidebar
-                    .update(cx, |sidebar, cx| sidebar.header_workspace_control(cx)),
-            )
-            .child(
                 div()
                     .id("header-main-drag-region")
                     .flex_1()
@@ -559,6 +557,25 @@ impl Shell {
                             window.start_window_move();
                         }
                     }),
+            )
+            .child(
+                self.header_action(
+                    "header-grid",
+                    if self.sidebar.read(cx).is_grid() {
+                        "Exit grid view"
+                    } else {
+                        "Open grid view"
+                    },
+                    |this, window, cx| {
+                        if !this.shortcut_blocked_in(window, cx) {
+                            this.sidebar
+                                .update(cx, |sidebar, cx| sidebar.toggle_grid(window, cx));
+                        }
+                    },
+                    cx,
+                )
+                .aria_selected(self.sidebar.read(cx).is_grid())
+                .child(icon("grid", ICON_LG, c::FG_DIM())),
             )
             .child(
                 self.header_action(
@@ -1517,7 +1534,7 @@ impl Render for Shell {
                 });
             });
         }
-        // The app header supplies the sole workspace trigger.
+        // The sidebar supplies the sole workspace trigger; its popover uses compact anchoring.
         let compact_workspace_picker = true;
         let workspace_hover_blocked = self.highlights.is_some()
             || self.backend_choice_open
@@ -2375,10 +2392,7 @@ mod tests {
         draw(cx);
         let trigger = cx.debug_bounds("header-workspace").unwrap();
         let rail = cx.debug_bounds("global-navigation").unwrap();
-        assert!(cx
-            .debug_bounds("app-header")
-            .unwrap()
-            .contains(&trigger.center()));
+        assert!(rail.contains(&trigger.center()));
         cx.simulate_click(trigger.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("workspace-popup").is_some());
@@ -2403,7 +2417,7 @@ mod tests {
         let workspace = cx
             .debug_bounds("header-workspace")
             .expect("shared workspace access");
-        assert!(header.contains(&workspace.center()));
+        assert!(rail.contains(&workspace.center()));
         cx.simulate_click(workspace.center(), gpui::Modifiers::default());
         draw(cx);
         let popup = cx
@@ -2578,6 +2592,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn header_grid_control_toggles_and_respects_blocking(cx: &mut gpui::TestAppContext) {
+        cx.update(init_projects);
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        let grid = cx.debug_bounds("header-grid").unwrap();
+        let settings = cx.debug_bounds("header-settings").unwrap();
+        assert!(grid.right() < settings.left());
+        cx.simulate_click(grid.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        cx.update(|window, cx| {
+            let focus = shell.read(cx).header_focus["header-grid"].clone();
+            focus.focus(window, cx);
+        });
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(!cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        cx.simulate_click(settings.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).settings.read(cx).is_open()));
+        cx.simulate_click(grid.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(!cx.update(|_, cx| shell.read(cx).sidebar.read(cx).is_grid()));
+        assert!(cx.update(|_, cx| shell.read(cx).settings.read(cx).is_open()));
+    }
+
+    #[gpui::test]
     fn settings_stays_in_header_across_destination_changes(cx: &mut gpui::TestAppContext) {
         cx.update(init_projects);
         let (_, cx) = cx.add_window_view(Shell::new);
@@ -2645,16 +2686,12 @@ mod tests {
                     let settings = cx.debug_bounds("header-settings").unwrap();
                     assert_eq!(rail.top(), header.bottom());
                     assert_eq!(canvas.top(), header.bottom());
-                    assert!(header.contains(&picker.center()));
+                    assert!(rail.contains(&picker.center()));
                     assert!(header.contains(&settings.center()));
-                    assert!(picker.right() <= settings.left());
-                    if let Some(title) = cx.debug_bounds("header-app-title") {
-                        assert!(
-                            (f32::from(picker.left() - title.right()) - SPACE_LG * zoom).abs()
-                                <= 1.,
-                            "workspace picker must hug the app title"
-                        );
-                    }
+                    let grid = cx.debug_bounds("header-grid").unwrap();
+                    assert!(header.contains(&grid.center()));
+                    assert!(grid.right() <= settings.left());
+                    assert!(f32::from(header.right() - settings.right()) >= SPACE_3XL * zoom);
                     for selector in [
                         "window-close",
                         "window-minimize",
@@ -2685,10 +2722,10 @@ mod tests {
             for width in [1280., 500., 320.] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.)));
                 draw(cx);
-                let header = cx.debug_bounds("app-header").unwrap();
+                let rail = cx.debug_bounds("global-navigation").unwrap();
                 let control = cx.debug_bounds("header-workspace").unwrap();
-                assert!(header.contains(&control.center()));
-                assert!(control.right() <= cx.debug_bounds("header-settings").unwrap().left());
+                assert!(rail.contains(&control.center()));
+                assert!(control.bottom() <= cx.debug_bounds("global-nav-home").unwrap().top());
             }
         }
         cx.update(|_, cx| cx.set_global(crate::zoom::ZoomState::new(1.0)));

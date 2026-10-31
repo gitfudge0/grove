@@ -499,6 +499,9 @@ pub struct Store {
     pub sidebar_collapsed: bool,
     #[serde(default)]
     pub sidebar_group_by_project: bool,
+    /// Worktree grouping takes precedence over the retained project preference.
+    #[serde(default)]
+    pub sidebar_group_by_worktree: bool,
     /// `false` = project → worktree → session tree, `true` = flat cross-project session list.
     #[serde(default)]
     pub rail_sessions: bool,

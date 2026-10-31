@@ -45,7 +45,6 @@ use std::time::{Duration, Instant};
 
 const SIDEBAR_W: f32 = 260.0;
 const SIDEBAR_COLLAPSED_W: f32 = 52.0;
-const SIDEBAR_COMPACT_THRESHOLD: f32 = 236.0;
 const SIDEBAR_MAX_VIEWPORT_FRACTION: f32 = 0.4;
 const SIDEBAR_NARROW_BREAKPOINT: f32 = SIDEBAR_W / SIDEBAR_MAX_VIEWPORT_FRACTION;
 const SIDEBAR_DRAG_EPSILON: f32 = 1.0;
@@ -343,7 +342,7 @@ enum Action {
     UpdateApp,
     NewMultiProjectSession,
     ToggleSidebar,
-    GroupSessions(bool),
+    GroupSessions(global_navigation::SessionGrouping),
     RefreshSessionHistory,
     PreviewSessionHistory(String),
     ReopenSessionHistory(String),
@@ -510,7 +509,6 @@ pub struct Sidebar {
     session_diff_focus: HashMap<SessionId, FocusHandle>,
     session_diff_observers: HashMap<SessionId, (gpui::Subscription, gpui::Subscription)>,
     cache_warm: Option<(u64, u64)>,
-    compact_rail: bool,
     drag: Option<SidebarDrag>,
     grid_layouts: HashMap<u64, grid::WorkspaceGrid>,
     grid_drag: Option<grid::GridDrag>,
@@ -731,7 +729,6 @@ impl Sidebar {
             session_diff_focus: HashMap::new(),
             session_diff_observers: HashMap::new(),
             cache_warm: None,
-            compact_rail: false,
             drag: None,
             grid_layouts: HashMap::new(),
             grid_drag: None,
@@ -2298,18 +2295,10 @@ impl Sidebar {
         }
         // Shortcut/switcher order follows the always-mounted Sessions section,
         // independently of which main-content destination is currently open.
-        if cx.global::<SettingsState>().store.sidebar_group_by_project {
-            self.snapshot
-                .projects
-                .iter()
-                .flat_map(|project| project.sessions.iter().copied())
-                .collect()
-        } else {
-            self.list_session_groups(cx)
-                .into_iter()
-                .flat_map(|(_, ids)| ids)
-                .collect()
-        }
+        self.sidebar_session_groups(cx)
+            .into_iter()
+            .flat_map(|(_, ids)| ids)
+            .collect()
     }
 
     pub(crate) fn visible_session_targets(&self, cx: &App) -> Vec<(SessionId, String)> {
@@ -2862,8 +2851,13 @@ impl Sidebar {
                 self.focus.focus(window, cx);
                 cx.notify();
             }
-            Action::GroupSessions(projects) => {
-                SettingsState::update(cx, |store| store.sidebar_group_by_project = projects);
+            Action::GroupSessions(grouping) => {
+                SettingsState::update(cx, |store| {
+                    store.sidebar_group_by_project =
+                        grouping == global_navigation::SessionGrouping::Projects;
+                    store.sidebar_group_by_worktree =
+                        grouping == global_navigation::SessionGrouping::Worktrees;
+                });
                 cx.notify();
             }
             Action::RefreshSessionHistory => {
@@ -3821,14 +3815,17 @@ impl Sidebar {
         let tasks_suffix = tasks.as_ref().map_or_else(String::new, |tasks| {
             format!(" · {}", tasks.tooltip_suffix())
         });
+        let registry = self.runtime.read(cx).registry.read(cx);
         let title = session_display_title(
             meta,
-            self.runtime
-                .read(cx)
-                .registry
-                .read(cx)
-                .session(id)
-                .and_then(|session| session.read(cx).title()),
+            registry
+                .codex(id)
+                .and_then(|session| session.read(cx).state.saved.title.clone())
+                .or_else(|| {
+                    registry
+                        .session(id)
+                        .and_then(|session| session.read(cx).title())
+                }),
         );
         let label = if list {
             format!("{} · {}", title, meta.project)
@@ -3841,7 +3838,7 @@ impl Sidebar {
             title.clone()
         };
         let row = if list {
-            let selected = self.selection == Some(Selection::Session(id));
+            let selected = self.selection == Some(Selection::Session(id)) && !self.dashboard_open;
             let worktree = self
                 .snapshot
                 .projects
@@ -5064,60 +5061,54 @@ impl Sidebar {
         body.into_any_element()
     }
     fn terminals(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut panel = div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .border_t_1()
-            .border_color(c::BORDER())
-            .child(
-                div()
-                    .h(rpx(HEAD_H))
-                    .px(rpx(SIDEBAR_CONTENT_INSET))
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .debug_selector(|| "sidebar-terminals-heading".into())
-                            .child("Terminals"),
+        let mut panel = div().flex().flex_col().flex_shrink_0().child(
+            div()
+                .h(rpx(HEAD_H))
+                .px(rpx(SIDEBAR_CONTENT_INSET))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .debug_selector(|| "sidebar-terminals-heading".into())
+                        .child("Terminals"),
+                )
+                .child(
+                    self.control("add-terminal", "Add terminal", Action::AddTerminal, cx)
+                        .child(icon("plus", ICON_SM, c::FG_DIM())),
+                )
+                .child(
+                    self.control(
+                        "fold-terminals",
+                        if self.terminals_collapsed {
+                            "Expand terminals"
+                        } else {
+                            "Collapse terminals"
+                        },
+                        Action::FoldTerminals,
+                        cx,
                     )
-                    .child(
-                        self.control("add-terminal", "Add terminal", Action::AddTerminal, cx)
-                            .child(icon("plus", ICON_SM, c::FG_DIM())),
-                    )
-                    .child(
-                        self.control(
-                            "fold-terminals",
+                    .debug_selector(|| "sidebar-terminals-fold".into())
+                    .child(motion::fast(
+                        icon(
                             if self.terminals_collapsed {
-                                "Expand terminals"
+                                "chev-right"
                             } else {
-                                "Collapse terminals"
+                                "chev-down"
                             },
-                            Action::FoldTerminals,
-                            cx,
-                        )
-                        .debug_selector(|| "sidebar-terminals-fold".into())
-                        .child(motion::fast(
-                            icon(
-                                if self.terminals_collapsed {
-                                    "chev-right"
-                                } else {
-                                    "chev-down"
-                                },
-                                ICON_SM,
-                                c::FG_DIM(),
-                            ),
-                            format!("terminal-disclosure-{}", self.terminals_collapsed),
-                            cx,
-                        )),
-                    ),
-            );
+                            ICON_SM,
+                            c::FG_DIM(),
+                        ),
+                        format!("terminal-disclosure-{}", self.terminals_collapsed),
+                        cx,
+                    )),
+                ),
+        );
         if !self.terminals_collapsed {
             for meta in self
                 .runtime
@@ -5760,25 +5751,10 @@ mod tests {
         sidebar: Entity<Sidebar>,
     }
     impl Render for WorkspaceHeaderFixture {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let header = self
-                .sidebar
-                .update(cx, |sidebar, cx| sidebar.header_workspace_control(cx));
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .id("workspace-header-fixture")
-                        .debug_selector(|| "workspace-header-fixture".into())
-                        .w_full()
-                        .h(rpx(APPBAR_TOTAL_H))
-                        .flex()
-                        .items_center()
-                        .child(header),
-                )
-                .child(div().flex_1().min_h_0().child(self.sidebar.clone()))
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            // The workspace/update controls now belong to the actual sidebar.
+            // Mounting a second header copy would duplicate their IDs and anchors.
+            div().size_full().child(self.sidebar.clone())
         }
     }
 
@@ -6916,15 +6892,18 @@ mod tests {
         fixture.update(cx, |_, cx| cx.notify());
         draw(cx);
         let update = cx.debug_bounds("sidebar-update").unwrap();
-        let header = cx.debug_bounds("workspace-header-fixture").unwrap();
+        let header = cx.debug_bounds("global-navigation").unwrap();
         assert!(update.left() >= header.left() && update.right() <= header.right());
         assert!(cx.debug_bounds("header-workspace").is_some());
         cx.update(|_, cx| SettingsState::update(cx, |store| store.sidebar_collapsed = true));
         draw(cx);
         let update = cx.debug_bounds("sidebar-update").unwrap();
-        let header = cx.debug_bounds("workspace-header-fixture").unwrap();
-        assert!(header.contains(&update.center()));
-        assert!(cx.debug_bounds("header-workspace").is_some());
+        let header = cx.debug_bounds("global-navigation").unwrap();
+        assert!(header.contains(&update.origin));
+        assert!(header.contains(&update.bottom_right()));
+        let picker = cx.debug_bounds("header-workspace").unwrap();
+        assert!(header.contains(&picker.center()));
+        assert!((f32::from(update.center().x - picker.center().x)).abs() <= 1.);
     }
 
     #[gpui::test]
@@ -9910,12 +9889,31 @@ for line in sys.stdin:
                 true,
                 grove_core::codex::Provider::Codex,
             ),
+            (
+                "light-worktrees-codex",
+                true,
+                1100.,
+                16.,
+                false,
+                false,
+                grove_core::codex::Provider::Codex,
+            ),
+            (
+                "dark-worktrees-narrow-claude",
+                false,
+                760.,
+                20.,
+                false,
+                false,
+                grove_core::codex::Provider::Claude,
+            ),
         ] {
             let path = "/grove-single-sidebar-fixture";
             cx.update(|cx| {
                 cx.set_global(SettingsState::new(grove_core::storage::Store {
                     sidebar_collapsed: collapsed,
                     sidebar_group_by_project: projects,
+                    sidebar_group_by_worktree: name.contains("worktrees"),
                     projects: vec![grove_core::storage::Project {
                         name: "Layout fixture".into(),
                         path: path.into(),
@@ -9939,12 +9937,22 @@ for line in sys.stdin:
                         runtime.read(cx).tree.clone().update(cx, |tree, _| {
                             tree.set_active_worktrees(
                                 0,
-                                vec![grove_core::git::Worktree {
-                                    path: path.into(),
-                                    branch: "feature/navigation-with-a-long-worktree-name".into(),
-                                    mtime: None,
-                                    is_main: true,
-                                }],
+                                vec![
+                                    grove_core::git::Worktree {
+                                        path: path.into(),
+                                        branch: "feature/navigation-with-a-long-worktree-name"
+                                            .into(),
+                                        mtime: None,
+                                        is_main: true,
+                                    },
+                                    grove_core::git::Worktree {
+                                        path: format!("{path}/review-checkout"),
+                                        branch: "feature/navigation-with-a-long-worktree-name"
+                                            .into(),
+                                        mtime: None,
+                                        is_main: false,
+                                    },
+                                ],
                             )
                         });
                         let mut sidebar = Sidebar::new(runtime, window, cx);
@@ -9957,7 +9965,7 @@ for line in sys.stdin:
                         );
                         attach_removal_layout_session(
                             &mut sidebar,
-                            path,
+                            &format!("{path}/review-checkout"),
                             grove_core::codex::Provider::Claude,
                             window,
                             cx,
@@ -11387,7 +11395,7 @@ for line in sys.stdin:
             );
             assert!(sidebar.terminal_views.is_empty());
         });
-        assert!(cx.debug_bounds("single-session-1").is_some());
+        assert!(cx.debug_bounds("session-list-title-1").is_some());
         assert!(cx.debug_bounds("terminal-header-1").is_some());
     }
 

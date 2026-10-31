@@ -10,6 +10,23 @@ pub(super) enum Destination {
     Sessions,
     Terminals,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SessionGrouping {
+    Activity,
+    Projects,
+    Worktrees,
+}
+impl SessionGrouping {
+    fn current(store: &grove_core::storage::Store) -> Self {
+        if store.sidebar_group_by_worktree {
+            Self::Worktrees
+        } else if store.sidebar_group_by_project {
+            Self::Projects
+        } else {
+            Self::Activity
+        }
+    }
+}
 impl From<LandingPage> for Destination {
     fn from(page: LandingPage) -> Self {
         match page {
@@ -70,10 +87,6 @@ impl Sidebar {
         }
         cx.notify();
     }
-    // Kept for contextual overlays that need to know whether full navigation fits.
-    pub(super) fn context_visible(&self, _window: &Window, cx: &App) -> bool {
-        !self.is_collapsed(cx)
-    }
     pub(super) fn animated_sidebar_width(&self, window: &Window, cx: &App) -> f32 {
         if !cx.reduce_motion() {
             if let Some((started, from, to)) = self.navigation_transition {
@@ -86,8 +99,6 @@ impl Sidebar {
     }
     pub(super) fn global_rail(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let collapsed = self.is_collapsed(cx);
-        self.compact_rail = !self.context_visible(window, cx)
-            || self.context_width(window, cx) < SIDEBAR_COMPACT_THRESHOLD;
         let width = self.animated_sidebar_width(window, cx);
         if self.navigation_transition.is_some_and(|(started, _, _)| {
             started.elapsed() < Duration::from_millis(MOTION_BASE_MS)
@@ -100,9 +111,16 @@ impl Sidebar {
         let mut nav = div()
             .flex()
             .flex_col()
-            .gap(rpx(SPACE_XS))
+            .gap(rpx(SPACE_MD))
             .px(rpx(SPACE_LG))
-            .py(rpx(SPACE_2XL));
+            .pt(rpx(SPACE_LG))
+            .pb(rpx(SPACE_20))
+            .child(
+                div()
+                    .when(!collapsed, |row| row.px(rpx(SPACE_LG)))
+                    .pb(rpx(SPACE_2XL))
+                    .child(self.header_workspace_control(cx)),
+            );
         let settings = self
             .settings_panel
             .as_ref()
@@ -134,15 +152,19 @@ impl Sidebar {
                 .w_full()
                 .h(rpx(HEAD_H))
                 .justify_start()
-                .gap(rpx(SPACE_LG))
-                .px(rpx(SPACE_LG))
+                .gap(rpx(SPACE_2XL))
+                .px(rpx(SPACE_2XL))
+                .when(collapsed, |row| row.px_0().justify_center())
+                .text_size(rpx(TEXT_BODY))
+                .text_color(c::FG_DIM())
+                .font_weight(gpui::FontWeight::NORMAL)
                 .aria_selected(selected)
                 .when(selected, |row| row.bg(c::BG_HOVER()))
                 .child(icon(glyph, ICON_MD, c::FG_DIM()))
                 .when(!collapsed, |row| row.child(label)),
             );
         }
-        let by_project = cx.global::<SettingsState>().store.sidebar_group_by_project;
+        let grouping = SessionGrouping::current(&cx.global::<SettingsState>().store);
         let mut heading = div()
             .px(rpx(SIDEBAR_CONTENT_INSET))
             .h(rpx(HEAD_H))
@@ -161,29 +183,29 @@ impl Sidebar {
                     .child("Sessions"),
             );
             let mut group = super::super::components::preference_choices();
-            for (projects, label) in [(false, "Activity"), (true, "Projects")] {
+            for (choice, label, glyph, key) in [
+                (SessionGrouping::Activity, "Activity", "list", "false"),
+                (SessionGrouping::Projects, "Projects", "folder", "true"),
+                (
+                    SessionGrouping::Worktrees,
+                    "Worktrees",
+                    "git-branch",
+                    "worktrees",
+                ),
+            ] {
                 group = group.child(
                     self.control(
-                        SharedString::from(format!("session-group-{projects}")),
+                        SharedString::from(format!("session-group-{key}")),
                         format!("Group sessions by {label}"),
-                        Action::GroupSessions(projects),
+                        Action::GroupSessions(choice),
                         cx,
                     )
-                    .debug_selector(move || format!("session-group-{projects}"))
-                    .w_auto()
-                    .h(rpx(CONTROL_H))
-                    .px(rpx(SPACE_SM))
-                    .text_size(rpx(TEXT_MICRO))
-                    .aria_selected(projects == by_project)
-                    .when(projects == by_project, |row| row.bg(c::BG_HOVER()))
-                    .when(self.compact_rail, |row| {
-                        row.child(icon(
-                            if projects { "folder" } else { "list" },
-                            ICON_SM,
-                            c::FG_DIM(),
-                        ))
-                    })
-                    .when(!self.compact_rail, |row| row.child(label)),
+                    .debug_selector(move || format!("session-group-{key}"))
+                    .size(rpx(CONTROL_H))
+                    .justify_center()
+                    .aria_selected(choice == grouping)
+                    .when(choice == grouping, |row| row.bg(c::BG_HOVER()))
+                    .child(icon(glyph, ICON_SM, c::FG_DIM())),
                 );
             }
             heading = heading.child(group);
@@ -196,18 +218,7 @@ impl Sidebar {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .px(rpx(SPACE_LG));
-        let groups: Vec<(String, Vec<SessionId>)> = if by_project {
-            self.snapshot
-                .projects
-                .iter()
-                .map(|p| (p.name.clone(), p.sessions.clone()))
-                .collect()
-        } else {
-            self.list_session_groups(cx)
-                .into_iter()
-                .map(|(name, ids)| (name.to_string(), ids))
-                .collect()
-        };
+        let groups = self.sidebar_session_groups(cx);
         let mut count = 0;
         for (label, ids) in groups {
             if ids.is_empty() {
@@ -221,14 +232,21 @@ impl Sidebar {
                         .pb(rpx(SPACE_SM))
                         .text_size(rpx(TEXT_MICRO))
                         .text_color(c::FG_DIM())
-                        .child(format!("{label} · {}", ids.len())),
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .child(div().flex_1().min_w_0().truncate().child(label))
+                        .child(ids.len().to_string()),
                 );
             }
             for id in ids {
                 if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(id).cloned() {
                     count += 1;
-                    sessions =
-                        sessions.child(self.single_session_row(&meta, collapsed, window, cx));
+                    sessions = sessions.child(if collapsed {
+                        self.single_session_row(&meta, true, window, cx)
+                    } else {
+                        self.session_row(&meta, true, None, false, window, cx)
+                    });
                 }
             }
         }
@@ -339,6 +357,68 @@ impl Sidebar {
                 )
             })
             .into_any_element()
+    }
+    pub(super) fn sidebar_session_groups(&self, cx: &App) -> Vec<(String, Vec<SessionId>)> {
+        match SessionGrouping::current(&cx.global::<SettingsState>().store) {
+            SessionGrouping::Activity => self
+                .list_session_groups(cx)
+                .into_iter()
+                .map(|(name, ids)| (name.to_owned(), ids))
+                .collect(),
+            SessionGrouping::Projects => self
+                .snapshot
+                .projects
+                .iter()
+                .map(|project| (project.name.clone(), project.sessions.clone()))
+                .collect(),
+            SessionGrouping::Worktrees => {
+                let registry = self.runtime.read(cx).registry.read(cx);
+                let mut groups = Vec::<((String, String), String, Vec<SessionId>)>::new();
+                let mut seen = HashSet::new();
+                for project in &self.snapshot.projects {
+                    for id in &project.sessions {
+                        if !seen.insert(*id) {
+                            continue;
+                        }
+                        let Some(meta) = registry.meta(*id) else {
+                            continue;
+                        };
+                        // Project and full checkout path own identity. Equal branch names
+                        // in distinct repositories or checkouts must never merge.
+                        let key = (meta.project.clone(), meta.wt_path.clone());
+                        if let Some((_, _, ids)) =
+                            groups.iter_mut().find(|(identity, _, _)| *identity == key)
+                        {
+                            ids.push(*id);
+                            continue;
+                        }
+                        let name = self
+                            .snapshot
+                            .projects
+                            .iter()
+                            .find(|owner| owner.name == meta.project)
+                            .and_then(|owner| {
+                                owner.worktrees.iter().find(|wt| wt.path == meta.wt_path)
+                            })
+                            .map_or_else(
+                                || {
+                                    std::path::Path::new(&meta.wt_path)
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .into_owned()
+                                },
+                                |wt| wt.name.clone(),
+                            );
+                        groups.push((key, format!("{} / {}", meta.project, name), vec![*id]));
+                    }
+                }
+                groups
+                    .into_iter()
+                    .map(|(_, label, ids)| (label, ids))
+                    .collect()
+            }
+        }
     }
     fn single_session_row(
         &self,
@@ -529,11 +609,16 @@ impl Sidebar {
             .w_auto()
             .justify_start()
             .max_w(rpx(SIDEBAR_W))
+            .h(rpx(HEAD_H))
             .px_0()
             .gap(rpx(SPACE_LG))
+            .when(self.is_collapsed(cx), gpui::Styled::justify_center)
+            .text_size(rpx(TEXT_BODY))
             .child(icon("folder", ICON_MD, c::FG_DIM()))
-            .child(div().min_w_0().truncate().child(name))
-            .child(icon("chev-down", ICON_SM, c::FG_DIM()));
+            .when(!self.is_collapsed(cx), |row| {
+                row.child(div().flex_1().min_w_0().truncate().child(name))
+                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+            });
         if let Some(trigger) = trigger {
             row = row.child(
                 gpui::canvas(move |bounds, _, _| trigger.set(bounds), |_, (), _, _| {})
@@ -551,6 +636,9 @@ impl Sidebar {
                 d.child(
                     self.control("sidebar-update", "Update Grove", Action::UpdateApp, cx)
                         .debug_selector(|| "sidebar-update".into())
+                        .when(self.is_collapsed(cx), |button| {
+                            button.w_full().justify_center()
+                        })
                         .child(icon("arrow-up", ICON_SM, c::FG_DIM())),
                 )
             })
@@ -602,9 +690,13 @@ mod tests {
         let group = cx.debug_bounds("session-group-true").unwrap();
         cx.simulate_click(group.center(), gpui::Modifiers::default());
         draw(cx);
+        let worktrees = cx.debug_bounds("session-group-worktrees").unwrap();
+        cx.simulate_click(worktrees.center(), gpui::Modifiers::default());
+        draw(cx);
         cx.update(|window, cx| {
             sidebar.update(cx, |s, cx| {
-                assert!(cx.global::<SettingsState>().store.sidebar_group_by_project);
+                assert!(cx.global::<SettingsState>().store.sidebar_group_by_worktree);
+                assert!(!cx.global::<SettingsState>().store.sidebar_group_by_project);
                 let expanded = s.rail_width(window, cx);
                 s.toggle_sidebar(window, cx);
                 assert_eq!(s.rail_width(window, cx), SIDEBAR_COLLAPSED_W);
@@ -613,6 +705,91 @@ mod tests {
                 s.open_destination(Destination::Home, window, cx);
                 assert!(s.is_collapsed(cx));
                 assert!(s.dashboard_open);
+            })
+        });
+    }
+    #[gpui::test]
+    fn worktree_groups_keep_checkout_identity_and_keyboard_order(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                use crate::entities::workspace_state::{SnapshotProject, SnapshotWorktree};
+                let registry = sidebar.runtime.read(cx).registry.clone();
+                let ids = registry.update(cx, |registry, _| {
+                    [
+                        ("Alpha", "/alpha/main", Agent::Codex),
+                        ("Alpha", "/alpha/review", Agent::Claude),
+                        ("Alpha", "/alpha/main", Agent::Claude),
+                        ("Beta", "/beta/main", Agent::Codex),
+                        ("Hidden", "/hidden/main", Agent::Codex),
+                    ]
+                    .map(|(project, path, agent)| {
+                        registry.insert_meta(project.into(), path.into(), agent)
+                    })
+                });
+                sidebar.snapshot.projects = vec![
+                    SnapshotProject {
+                        name: "Alpha".into(),
+                        sessions: vec![ids[0], ids[1], ids[2]],
+                        worktrees: vec![
+                            SnapshotWorktree {
+                                path: "/alpha/main".into(),
+                                name: "main".into(),
+                                branch: "same-branch".into(),
+                                is_main: true,
+                                sessions: vec![ids[0], ids[2]],
+                            },
+                            SnapshotWorktree {
+                                path: "/alpha/review".into(),
+                                name: "review".into(),
+                                branch: "same-branch".into(),
+                                is_main: false,
+                                sessions: vec![ids[1]],
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    // A multi-root reference also appears in Beta's inventory, once only.
+                    SnapshotProject {
+                        name: "Beta".into(),
+                        sessions: vec![ids[3], ids[0]],
+                        worktrees: vec![SnapshotWorktree {
+                            path: "/beta/main".into(),
+                            name: "main".into(),
+                            branch: "same-branch".into(),
+                            is_main: true,
+                            sessions: vec![ids[3]],
+                        }],
+                        ..Default::default()
+                    },
+                ];
+                SettingsState::update(cx, |store| store.sidebar_group_by_worktree = true);
+                assert_eq!(
+                    sidebar.sidebar_session_groups(cx),
+                    vec![
+                        ("Alpha / main".into(), vec![ids[0], ids[2]]),
+                        ("Alpha / review".into(), vec![ids[1]]),
+                        ("Beta / main".into(), vec![ids[3]]),
+                    ]
+                );
+                assert_eq!(
+                    sidebar.visible_session_order(cx),
+                    vec![ids[0], ids[2], ids[1], ids[3]]
+                );
+                // New preference persists and old project-only records keep their meaning.
+                let saved = serde_json::to_string(&cx.global::<SettingsState>().store).unwrap();
+                let restored: grove_core::storage::Store = serde_json::from_str(&saved).unwrap();
+                assert_eq!(
+                    SessionGrouping::current(&restored),
+                    SessionGrouping::Worktrees
+                );
+                let legacy: grove_core::storage::Store =
+                    serde_json::from_str(r#"{"sidebar_group_by_project":true}"#).unwrap();
+                assert_eq!(SessionGrouping::current(&legacy), SessionGrouping::Projects);
             })
         });
     }
