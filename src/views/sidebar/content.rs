@@ -2976,6 +2976,152 @@ mod tests {
         assert!(cx.debug_bounds("global-nav-projects").is_some());
         assert!(cx.debug_bounds("sidebar-rail").is_none());
     }
+    #[test]
+    #[ignore = "requires macOS Metal renderer; writes project management screenshots to /tmp"]
+    #[cfg(target_os = "macos")]
+    fn projects_management_native_snapshots() {
+        use gpui::AppContext as _;
+        let repo = super::super::tests::ChangedGitRepo::new();
+        let path = repo.path();
+        let mut app = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            std::sync::Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        app.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Example project with a long name".into(),
+                    path: path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+        });
+        for (label, width) in [("wide", 1280.), ("narrow", 680.)] {
+            let window = app
+                .open_window(gpui::size(gpui::px(width), gpui::px(800.)), |window, cx| {
+                    let runtime = cx.new(crate::runtime::Runtime::new);
+                    let sidebar = cx.new(|cx| {
+                        let mut sidebar = Sidebar::new(runtime, window, cx);
+                        sidebar.sync(window, cx);
+                        sidebar.open_destination(
+                            crate::views::sidebar::global_navigation::Destination::Projects,
+                            window,
+                            cx,
+                        );
+                        sidebar.projects_expanded.insert(path.clone());
+                        sidebar
+                    });
+                    cx.new(|cx| {
+                        gpui_component::Root::new(sidebar, window, cx)
+                            .bordered(false)
+                            .bg(c::BG())
+                    })
+                })
+                .unwrap();
+            app.run_until_parked();
+            app.update_window(window.into(), |_, window, cx| {
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            app.capture_screenshot(window.into())
+                .unwrap()
+                .save(format!("/tmp/grove-projects-management-{label}.png"))
+                .unwrap();
+            app.update_window(window.into(), |_, window, _| window.remove_window())
+                .unwrap();
+        }
+    }
+    #[gpui::test]
+    fn projects_management_discloses_worktrees_and_filters(cx: &mut gpui::TestAppContext) {
+        let repo = super::super::tests::ChangedGitRepo::new();
+        let path = repo.path();
+        let other = format!("{path}/extra");
+        assert!(std::process::Command::new("git")
+            .args(["-C", &path, "worktree", "add", "-b", "feature", &other])
+            .status()
+            .unwrap()
+            .success());
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Example project".into(),
+                    path: path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![
+                        grove_core::git::Worktree {
+                            path: path.clone(),
+                            branch: "main".into(),
+                            mtime: None,
+                            is_main: true,
+                        },
+                        grove_core::git::Worktree {
+                            path: other.clone(),
+                            branch: "feature".into(),
+                            mtime: None,
+                            is_main: false,
+                        },
+                    ],
+                )
+            });
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.sync(window, cx);
+            sidebar.open_destination(
+                crate::views::sidebar::global_navigation::Destination::Projects,
+                window,
+                cx,
+            );
+            sidebar
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        draw(cx);
+        let page = cx.debug_bounds("projects-content").unwrap();
+        assert!(f32::from(page.size.width) <= 760.0);
+        let row = cx.debug_bounds("projects-open-0").unwrap();
+        cx.simulate_mouse_down(
+            row.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            row.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        assert!(cx.debug_bounds("projects-delete-0-1").is_some());
+        assert!(cx.debug_bounds("projects-delete-0-0").is_none());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar
+                    .projects_search
+                    .update(cx, |input, cx| input.set_value("not a match", window, cx));
+            })
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("projects-open-0").is_none());
+    }
     #[gpui::test]
     fn start_panel_scrolls_overflow_and_centers_on_desktop(cx: &mut gpui::TestAppContext) {
         let repo = super::super::tests::ChangedGitRepo::new();

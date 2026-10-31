@@ -498,7 +498,7 @@ impl Sidebar {
                 .justify_start()
                 .p(rpx(SPACE_2XL))
                 .gap(rpx(SPACE_LG))
-                
+
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
@@ -527,7 +527,7 @@ impl Sidebar {
                 .justify_start()
                 .p(rpx(SPACE_2XL))
                 .gap(rpx(SPACE_LG))
-                
+
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
@@ -612,17 +612,30 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        use gpui_component::input::Input;
+        let query = self.projects_search.read(cx).value().trim().to_lowercase();
+        let focused = self
+            .projects_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let projects = cx
+            .global::<SettingsState>()
+            .store
+            .workspace_projects(self.active_workspace)
+            .map(|(idx, p)| (idx, p.clone()))
+            .collect::<Vec<_>>();
         let mut page = div()
-            .id("projects-destination")
-            .debug_selector(|| "projects-destination".into())
-            .size_full()
-            .overflow_y_scroll()
-            .p(rpx(SPACE_3XL))
+            .debug_selector(|| "projects-content".into())
+            .w_full()
+            .max_w(rpx(super::super::codex_view::CHAT_MAX_W))
+            .min_w_0()
             .flex()
             .flex_col()
             .gap(rpx(SPACE_2XL))
             .child(
                 div()
+                    .w_full()
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_LG))
@@ -632,7 +645,6 @@ impl Sidebar {
                             .text_size(rpx(TEXT_DISPLAY))
                             .child("Projects"),
                     )
-                    .child(self.view_controls_with_gap(SPACE_SM, cx))
                     .child(
                         self.control("projects-add", "Add project", Action::AddProject, cx)
                             .debug_selector(|| "projects-add".into())
@@ -642,83 +654,294 @@ impl Sidebar {
                             .child(icon("plus", ICON_SM, c::FG_DIM()))
                             .child("Add project"),
                     ),
-            );
-        let projects = cx
-            .global::<SettingsState>()
-            .store
-            .workspace_projects(self.active_workspace)
-            .map(|(idx, p)| (idx, p.clone()))
-            .collect::<Vec<_>>();
-        for (idx, project) in projects {
-            if matches!(self.selection,Some(Selection::Project(selected)) if selected!=idx) {
-                continue;
-            }
-            let count = self
-                .snapshot
-                .projects
-                .iter()
-                .find(|p| p.idx == idx)
-                .map_or(0, |p| p.sessions.len());
-            page = page.child(
+            )
+            .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_LG))
-                    .p(rpx(SPACE_2XL))
-                    .border_1()
-                    .border_color(c::BORDER_SOFT())
-                    .rounded(rpx(RADIUS_PANEL))
-                    .child(icon("folder", ICON_MD, c::FG_DIM()))
+                    .text_color(c::FG_DIM())
+                    .child("Manage projects and worktrees"),
+            )
+            .child(
+                crate::views::components::project_field_well(focused, false)
+                    .w_full()
                     .child(
-                        self.control(
-                            SharedString::from(format!("projects-open-{idx}")),
-                            format!("Open project {}", project.name),
-                            Action::Select(Selection::Project(idx)),
-                            cx,
-                        )
-                        .debug_selector(move || format!("projects-open-{idx}"))
-                        .flex_1()
-                        .min_w_0()
-                        .h_auto()
-                        .justify_start()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(div().truncate().child(project.name.clone()))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM())
-                                        .child(format!(
-                                            "{} · {count} active sessions",
-                                            project.path
-                                        )),
-                                ),
-                        ),
-                    )
-                    .child(
-                        self.control(
-                            SharedString::from(format!("projects-manage-{idx}")),
-                            format!("Manage {}", project.name),
-                            Action::EditProject(project.path.clone()),
-                            cx,
-                        )
-                        .debug_selector(move || format!("projects-manage-{idx}"))
-                        .w_auto()
-                        .px(rpx(SPACE_LG))
-                        .gap(rpx(SPACE_SM))
-                        .child(icon("cog", ICON_SM, c::FG_DIM()))
-                        .child("Manage"),
+                        Input::new(&self.projects_search)
+                            .aria_label("Find a project")
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .p_0(),
                     ),
             );
+        if let Some(error) = &self.content_error {
+            page = page.child(div().text_color(c::RED()).child(error.clone()));
         }
-        if let Some(Selection::Project(idx)) = self.selection {
-            page = page.child(self.tree_for_project(idx, window, cx));
+        let mut shown = 0;
+        for (idx, project) in &projects {
+            if !query.is_empty()
+                && !format!("{} {}", project.name, project.path)
+                    .to_lowercase()
+                    .contains(&query)
+            {
+                continue;
+            }
+            shown += 1;
+            let idx = *idx;
+            let expanded = self.projects_expanded.contains(&project.path);
+            let snapshot = self.snapshot.projects.iter().find(|p| p.idx == idx);
+            let count = snapshot.map_or(0, |p| p.worktrees.len());
+            let initials = project
+                .name
+                .split_whitespace()
+                .take(2)
+                .filter_map(|word| word.chars().next())
+                .flat_map(char::to_uppercase)
+                .collect::<String>();
+            let mut row = div()
+                .w_full()
+                .min_w_0()
+                .border_t_1()
+                .border_color(c::BORDER_SOFT())
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .size(rpx(CONTROL_H))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .border_1()
+                                .border_color(c::BORDER_SOFT())
+                                .rounded(rpx(RADIUS_CONTROL))
+                                .child(initials),
+                        )
+                        .child(
+                            self.control(
+                                SharedString::from(format!("projects-open-{idx}")),
+                                format!(
+                                    "{} project {}",
+                                    if expanded { "Collapse" } else { "Expand" },
+                                    project.name
+                                ),
+                                Action::ToggleProjectsDestination(project.path.clone()),
+                                cx,
+                            )
+                            .debug_selector(move || format!("projects-open-{idx}"))
+                            .aria_expanded(expanded)
+                            .flex_1()
+                            .min_w_0()
+                            .h_auto()
+                            .justify_start()
+                            .py(rpx(SPACE_LG))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().truncate().child(project.name.clone()))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .text_color(c::FG_DIM())
+                                            .child(project.path.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child(if count == 0 {
+                                        "Worktrees unavailable".to_string()
+                                    } else {
+                                        format!(
+                                            "{count} {}",
+                                            if count == 1 { "worktree" } else { "worktrees" }
+                                        )
+                                    }),
+                            )
+                            .child(icon(
+                                if expanded { "chev-down" } else { "chev-right" },
+                                ICON_SM,
+                                c::FG_DIM(),
+                            )),
+                        )
+                        .child(
+                            self.control(
+                                SharedString::from(format!("projects-manage-{idx}")),
+                                format!("Manage {}", project.name),
+                                Action::Menu(idx),
+                                cx,
+                            )
+                            .debug_selector(move || format!("projects-manage-{idx}"))
+                            .w_auto()
+                            .px(rpx(SPACE_LG))
+                            .child("Manage")
+                            .when_some(
+                                self.project_menu_focus.get(&idx),
+                                gpui::InteractiveElement::track_focus,
+                            )
+                            .when_some(
+                                self.project_menu_bounds.get(&idx).cloned(),
+                                |button, bounds| {
+                                    button.child(
+                                        gpui::canvas(
+                                            move |rect, _, _| bounds.set(rect),
+                                            |_, (), _, _| {},
+                                        )
+                                        .absolute()
+                                        .inset_0(),
+                                    )
+                                },
+                            )
+                            .when(self.menu == Some(idx), |button| {
+                                button.child(gpui::deferred(self.project_popup(idx, window, cx)))
+                            }),
+                        ),
+                );
+            if expanded {
+                let mut tree = div()
+                    .w_full()
+                    .min_w_0()
+                    .pl(rpx(SPACE_3XL))
+                    .pb(rpx(SPACE_2XL))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_LG))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child("WORKTREES"),
+                            )
+                            .child(
+                                self.control(
+                                    SharedString::from(format!("projects-add-worktree-{idx}")),
+                                    "Add worktree",
+                                    Action::NewWorktree(project.path.clone()),
+                                    cx,
+                                )
+                                .w_auto()
+                                .px(rpx(SPACE_LG))
+                                .gap(rpx(SPACE_SM))
+                                .child(icon("plus", ICON_SM, c::FG_DIM()))
+                                .child("Add worktree"),
+                            ),
+                    );
+                if let Some(snapshot) = snapshot {
+                    if snapshot.worktrees.is_empty() {
+                        tree = tree.child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child("Worktrees are unavailable. Check the project folder and try again."),
+                        );
+                    }
+                    for (worktree_index, worktree) in snapshot.worktrees.iter().enumerate() {
+                        let path = worktree.path.clone();
+                        let name =
+                            sidebar_worktree_name(&worktree.name, worktree.is_main).to_string();
+                        let mut wt = div()
+                            .w_full()
+                            .min_w_0()
+                            .border_t_1()
+                            .border_color(c::BORDER_SOFT())
+                            .py(rpx(SPACE_LG))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_LG))
+                            .child(icon("git-branch", ICON_SM, c::FG_DIM()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().truncate().child(name.clone()))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(rpx(TEXT_SMALL))
+                                            .text_color(c::FG_DIM())
+                                            .child(format!("{} · {}", worktree.branch, path)),
+                                    ),
+                            );
+                        if worktree.is_main {
+                            wt = wt.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child("Main checkout"),
+                            );
+                        } else {
+                            wt = wt.child(
+                                self.control(
+                                    SharedString::from(format!("projects-delete-{path}")),
+                                    format!("Delete worktree {name}"),
+                                    Action::RemoveWorktree(idx, path.clone()),
+                                    cx,
+                                )
+                                .debug_selector(move || {
+                                    format!("projects-delete-{idx}-{worktree_index}")
+                                })
+                                .w_auto()
+                                .px(rpx(SPACE_LG))
+                                .when_some(
+                                    self.worktree_delete_focus.get(&path),
+                                    gpui::InteractiveElement::track_focus,
+                                )
+                                .child("Delete"),
+                            );
+                        }
+                        tree = tree.child(wt);
+                    }
+                } else {
+                    tree = tree.child(
+                        div()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(
+                            "Worktrees are unavailable. Check the project folder and try again.",
+                        ),
+                    );
+                }
+                row = row.child(tree);
+            }
+            page = page.child(row);
         }
-        page.into_any_element()
+        if shown == 0 {
+            page = page.child(div().text_color(c::FG_DIM()).child(if projects.is_empty() {
+                "No projects yet. Add a project to get started."
+            } else {
+                "No projects match your search. Try another name or path."
+            }));
+        }
+        div()
+            .id("projects-destination")
+            .debug_selector(|| "projects-destination".into())
+            .size_full()
+            .overflow_y_scroll()
+            .p(rpx(SPACE_3XL))
+            .flex()
+            .justify_center()
+            .child(page)
+            .into_any_element()
     }
 }
 

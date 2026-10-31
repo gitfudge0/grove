@@ -295,6 +295,7 @@ enum Action {
     Destination(global_navigation::Destination),
     Select(Selection),
     ToggleProject(String),
+    ToggleProjectsDestination(String),
     Mode(ViewMode),
     Menu(usize),
     NewWorktree(String),
@@ -504,6 +505,8 @@ pub struct Sidebar {
     session_history_selected: Option<session_history::HistorySelection>,
     session_history_view: Option<Entity<super::codex_view::CodexView>>,
     history_search: Entity<InputState>,
+    projects_search: Entity<InputState>,
+    projects_expanded: HashSet<String>,
     history_project_filter: Option<String>,
     history_provider_filter: Option<Agent>,
     history_filter_popup: Option<Entity<gpui_component::menu::PopupMenu>>,
@@ -589,6 +592,8 @@ impl Sidebar {
         let worktree_branch =
             cx.new(|cx| InputState::new(window, cx).placeholder("feat/billing-retry"));
         let worktree_base = cx.new(|cx| InputState::new(window, cx).placeholder("main"));
+        let projects_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Find a project"));
         let history_search = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search titles, projects, or checkouts")
         });
@@ -608,6 +613,11 @@ impl Sidebar {
                 }
             }),
             cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
+            cx.subscribe_in(&projects_search, window, |_, _, event, _, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&history_search, window, |_, _, event, _, cx| {
                 if matches!(event, gpui_component::input::InputEvent::Change) {
                     cx.notify();
@@ -739,6 +749,8 @@ impl Sidebar {
             session_history_selected: None,
             session_history_view: None,
             history_search,
+            projects_search,
+            projects_expanded: HashSet::new(),
             history_project_filter: None,
             history_provider_filter: None,
             history_filter_popup: None,
@@ -877,6 +889,9 @@ impl Sidebar {
             self.history_provider_filter = None;
             self.history_search
                 .update(cx, |input, cx| input.set_value("", window, cx));
+            self.projects_search
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.projects_expanded.clear();
             self.history_filter_popup = None;
             self.history_filter_subscription = None;
             self.session_history.clear();
@@ -2957,6 +2972,12 @@ impl Sidebar {
                 cx.notify();
             }
             Action::AddProject => self.add_project(window, cx),
+            Action::ToggleProjectsDestination(path) => {
+                if !self.projects_expanded.insert(path.clone()) {
+                    self.projects_expanded.remove(&path);
+                }
+                cx.notify();
+            }
             Action::ToggleProject(path) => {
                 if self.project_path_is_active(&path, cx) {
                     let leaving_project_panel = self.project_panel.is_some();
