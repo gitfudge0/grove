@@ -199,9 +199,7 @@ impl Sidebar {
                 .font_weight(gpui::FontWeight::NORMAL)
                 .aria_selected(selected)
                 .when(destination == Destination::NewSession, |row| {
-                    row.border_1()
-                        .border_color(c::BORDER_SOFT())
-                        .mb(rpx(SPACE_MD))
+                    row.mb(rpx(SPACE_MD))
                 })
                 .when(selected, |row| row.bg(c::BG_HOVER()))
                 .child(crate::icons::action_icon(glyph, ICON_LG))
