@@ -198,6 +198,11 @@ impl Sidebar {
                 .text_color(c::FG_DIM())
                 .font_weight(gpui::FontWeight::NORMAL)
                 .aria_selected(selected)
+                .when(destination == Destination::NewSession, |row| {
+                    row.border_1()
+                        .border_color(c::BORDER_SOFT())
+                        .mb(rpx(SPACE_MD))
+                })
                 .when(selected, |row| row.bg(c::BG_HOVER()))
                 .child(crate::icons::action_icon(glyph, ICON_LG))
                 .when(!collapsed, |row| {
@@ -677,14 +682,27 @@ impl Sidebar {
             .text_color(c::FG_DIM())
             .child(crate::icons::action_icon("folder", ICON_LG))
             .when(!self.is_collapsed(cx), |row| {
-                row.child(div().flex_1().min_w_0().truncate().child(name))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_MUTE())
-                            .child("Workspace"),
-                    )
+                row.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .child(div().min_w_0().truncate().child(name))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_MUTE())
+                                .child("· Workspace"),
+                        ),
+                )
+                .child(div().flex_shrink_0().child(icon(
+                    "chev-down",
+                    ICON_SM,
+                    c::FG_DIM(),
+                )))
             });
         if let Some(trigger) = trigger {
             row = row.child(
