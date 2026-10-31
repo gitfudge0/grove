@@ -345,7 +345,10 @@ enum Action {
     ToggleSidebar,
     GroupSessions(global_navigation::SessionGrouping),
     RefreshSessionHistory,
+    HistoryFilterMenu(bool),
+    ClearHistoryFilters,
     PreviewSessionHistory(String),
+    PreviewCliHistory(String),
     ReopenSessionHistory(String),
     OpenWorkspaces,
     FoldTerminals,
@@ -497,8 +500,14 @@ pub struct Sidebar {
     cli_session_history: Vec<grove_core::session_meta::ClosedCliSession>,
     session_history_loading: bool,
     session_history_error: Option<String>,
-    session_history_selected: Option<String>,
+    session_history_selected: Option<session_history::HistorySelection>,
     session_history_view: Option<Entity<super::codex_view::CodexView>>,
+    history_search: Entity<InputState>,
+    history_project_filter: Option<String>,
+    history_provider_filter: Option<Agent>,
+    history_filter_popup: Option<Entity<gpui_component::menu::PopupMenu>>,
+    history_filter_subscription: Option<gpui::Subscription>,
+    history_filter_position: gpui::Point<gpui::Pixels>,
     codex_views: HashMap<SessionId, Entity<super::codex_view::CodexView>>,
     home_terminal_views: HashMap<SessionId, Entity<TerminalView>>,
     available: [bool; 4],
@@ -579,6 +588,9 @@ impl Sidebar {
         let worktree_branch =
             cx.new(|cx| InputState::new(window, cx).placeholder("feat/billing-retry"));
         let worktree_base = cx.new(|cx| InputState::new(window, cx).placeholder("main"));
+        let history_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Search titles, projects, or checkouts")
+        });
         let mut observers = vec![
             cx.observe(&runtime, |_, _, cx| cx.notify()),
             cx.observe(&registry, |_, _, cx| cx.notify()),
@@ -595,6 +607,11 @@ impl Sidebar {
                 }
             }),
             cx.observe_global::<SettingsState>(|_, cx| cx.notify()),
+            cx.subscribe_in(&history_search, window, |_, _, event, _, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
         ];
         for (index, input) in [&worktree_name, &worktree_branch, &worktree_base]
             .into_iter()
@@ -719,6 +736,12 @@ impl Sidebar {
             session_history_error: None,
             session_history_selected: None,
             session_history_view: None,
+            history_search,
+            history_project_filter: None,
+            history_provider_filter: None,
+            history_filter_popup: None,
+            history_filter_subscription: None,
+            history_filter_position: gpui::Point::default(),
             codex_views: HashMap::new(),
             home_terminal_views: HashMap::new(),
             available: WORKTREE_LAUNCH_AGENTS.map(Agent::available),
@@ -848,6 +871,12 @@ impl Sidebar {
         if active != self.active_workspace {
             self.session_history_selected = None;
             self.session_history_view = None;
+            self.history_project_filter = None;
+            self.history_provider_filter = None;
+            self.history_search
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            self.history_filter_popup = None;
+            self.history_filter_subscription = None;
             self.session_history.clear();
             self.dashboard_open = false;
             self.branch_peek = None;
@@ -1989,6 +2018,7 @@ impl Sidebar {
                         | Action::RunScript(..)
                         | Action::RunNamedScript(..)
                         | Action::RemoveWorktree(..)
+                        | Action::HistoryFilterMenu(..)
                 ) {
                     this.action_source_bounds.set(click_bounds.get());
                 }
@@ -2018,6 +2048,7 @@ impl Sidebar {
                                 | Action::RunScript(..)
                                 | Action::RunNamedScript(..)
                                 | Action::RemoveWorktree(..)
+                                | Action::HistoryFilterMenu(..)
                         ) {
                             this.action_source_bounds.set(key_bounds.get());
                         }
@@ -2878,6 +2909,14 @@ impl Sidebar {
                     });
                 self.load_session_history(cx);
             }
+            Action::HistoryFilterMenu(project) => self.open_history_filter(project, window, cx),
+            Action::ClearHistoryFilters => {
+                self.history_project_filter = None;
+                self.history_provider_filter = None;
+                self.history_search
+                    .update(cx, |input, cx| input.set_value("", window, cx));
+                cx.notify();
+            }
             Action::PreviewSessionHistory(key) => {
                 if let Some(saved) = self.session_history.iter().find(|s| s.key == key).cloned() {
                     let session = cx
@@ -2885,9 +2924,15 @@ impl Sidebar {
                     self.session_history_view = Some(
                         cx.new(|cx| super::codex_view::CodexView::history(session, window, cx)),
                     );
-                    self.session_history_selected = Some(key);
-                } else if self.cli_session_history.iter().any(|s| s.key == key) {
-                    self.session_history_selected = Some(key);
+                    self.session_history_selected =
+                        Some(session_history::HistorySelection::Native(key));
+                }
+                cx.notify();
+            }
+            Action::PreviewCliHistory(key) => {
+                if self.cli_session_history.iter().any(|s| s.key == key) {
+                    self.session_history_selected =
+                        Some(session_history::HistorySelection::Cli(key));
                     self.session_history_view = None;
                 }
                 cx.notify();

@@ -1,5 +1,15 @@
 //! Read-only saved-session browsing; provider attachment requires explicit Reopen.
 use super::*;
+
+const HISTORY_NARROW_CANVAS: f32 = 700.0;
+const HISTORY_LIST_WIDTH: f32 = 320.0;
+const HISTORY_NARROW_LIST_HEIGHT: f32 = 260.0;
+
+#[derive(PartialEq, Eq)]
+pub(super) enum HistorySelection {
+    Native(String),
+    Cli(String),
+}
 impl Sidebar {
     pub(super) fn load_session_history(&mut self, cx: &mut Context<Self>) {
         if self.session_history_loading {
@@ -68,10 +78,128 @@ impl Sidebar {
         }
         cx.notify();
     }
-    pub(super) fn render_session_history(&self, cx: &mut Context<Self>) -> AnyElement {
-        let store = &cx.global::<SettingsState>().store;
+    pub(super) fn open_history_filter(
+        &mut self,
+        project: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_component::menu::{PopupMenu, PopupMenuItem};
+        let owner = cx.entity().downgrade();
+        let selected_project = self.history_project_filter.clone();
+        let selected_provider = self.history_provider_filter;
+        let projects = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .filter(|p| {
+                cx.global::<SettingsState>()
+                    .store
+                    .project_workspace_id(&p.path)
+                    == self.active_workspace
+            })
+            .map(|p| (p.name.clone(), p.path.clone()))
+            .collect::<Vec<_>>();
+        let focus = window.focused(cx);
+        let popup = PopupMenu::build(window, cx, move |mut menu, _, _| {
+            let target = owner.clone();
+            menu = menu.item(
+                PopupMenuItem::new(if project {
+                    "All projects"
+                } else {
+                    "All providers"
+                })
+                .checked(if project {
+                    selected_project.is_none()
+                } else {
+                    selected_provider.is_none()
+                })
+                .on_click(move |_, _, cx| {
+                    let _ = target.update(cx, |this, cx| {
+                        if project {
+                            this.history_project_filter = None;
+                        } else {
+                            this.history_provider_filter = None;
+                        }
+                        cx.notify();
+                    });
+                }),
+            );
+            if project {
+                for (name, path) in projects {
+                    let target = owner.clone();
+                    let checked = selected_project.as_ref() == Some(&path);
+                    menu = menu.item(PopupMenuItem::new(name).checked(checked).on_click(
+                        move |_, _, cx| {
+                            let _ = target.update(cx, |this, cx| {
+                                this.history_project_filter = Some(path.clone());
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
+            } else {
+                for (name, agent) in [
+                    ("Codex", Agent::Codex),
+                    ("Claude", Agent::Claude),
+                    ("OpenCode", Agent::OpenCode),
+                ] {
+                    let target = owner.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(name)
+                            .checked(selected_provider == Some(agent))
+                            .on_click(move |_, _, cx| {
+                                let _ = target.update(cx, |this, cx| {
+                                    this.history_provider_filter = Some(agent);
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                }
+            }
+            menu.scrollable(true)
+        });
+        self.history_filter_position = self.action_source_bounds.get().bottom_left();
+        self.history_filter_subscription = Some(cx.subscribe_in(
+            &popup,
+            window,
+            move |this, _, _: &gpui::DismissEvent, window, cx| {
+                this.history_filter_popup = None;
+                this.history_filter_subscription = None;
+                if let Some(focus) = &focus {
+                    focus.focus(window, cx);
+                }
+                cx.notify();
+            },
+        ));
+        popup.focus_handle(cx).focus(window, cx);
+        self.history_filter_popup = Some(popup);
+        cx.notify();
+    }
 
-        let records = self
+    pub(super) fn render_session_history(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use gpui_component::input::Input;
+        let store = &cx.global::<SettingsState>().store;
+        let query = self.history_search.read(cx).value().trim().to_lowercase();
+        let matches = |title: &str, project: &str, cwd: &str, agent: Agent| {
+            let owner = grove_core::session_meta::project_owner(&store.projects, cwd).ok();
+            owner.is_some_and(|owner| {
+                store.project_workspace_id(&owner.path) == self.active_workspace
+                    && self
+                        .history_project_filter
+                        .as_ref()
+                        .is_none_or(|path| path == &owner.path)
+            }) && self
+                .history_provider_filter
+                .is_none_or(|filter| filter == agent)
+                && history_matches(&query, title, project, cwd)
+        };
+        let all_native = self
             .session_history
             .iter()
             .filter(|saved| {
@@ -99,7 +227,7 @@ impl Sidebar {
                         })
             })
             .collect::<Vec<_>>();
-        let cli_records = self
+        let all_cli = self
             .cli_session_history
             .iter()
             .filter(|saved| {
@@ -110,21 +238,75 @@ impl Sidebar {
                     })
             })
             .collect::<Vec<_>>();
+        let records = all_native
+            .iter()
+            .copied()
+            .filter(|s| {
+                matches(
+                    s.title.as_deref().unwrap_or(&s.label),
+                    &s.project,
+                    &s.cwd,
+                    s.provider.agent(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let cli_records = all_cli
+            .iter()
+            .copied()
+            .filter(|s| {
+                matches(
+                    s.title.as_deref().unwrap_or(&s.label),
+                    &s.project,
+                    &s.cwd,
+                    s.agent,
+                )
+            })
+            .collect::<Vec<_>>();
+        let checkout_names: HashMap<String, String> = records
+            .iter()
+            .map(|s| s.cwd.as_str())
+            .chain(cli_records.iter().map(|s| s.cwd.as_str()))
+            .map(|cwd| {
+                let owner = grove_core::session_meta::project_owner(&store.projects, cwd).ok();
+                (
+                    cwd.to_string(),
+                    history_checkout_name(cwd, owner.map(|p| p.path.as_str())),
+                )
+            })
+            .collect();
+        let project_label = self
+            .history_project_filter
+            .as_ref()
+            .and_then(|path| store.projects.iter().find(|p| &p.path == path))
+            .map_or("All projects", |p| p.name.as_str())
+            .to_string();
         let mut page = div()
             .id("session-history-page")
             .debug_selector(|| "session-history-page".into())
             .size_full()
-            .overflow_y_scroll()
-            .p(rpx(SPACE_3XL))
+            .min_h_0()
             .flex()
-            .flex_col()
-            .gap(rpx(SPACE_2XL));
+            .flex_col();
         page = page.child(
             div()
                 .flex()
                 .items_center()
                 .gap(rpx(SPACE_LG))
-                .child(div().flex_1().text_size(rpx(TEXT_DISPLAY)).child("History"))
+                .p(rpx(SPACE_3XL))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(rpx(TEXT_DISPLAY)).child("History"))
+                        .child(
+                            div()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child("Closed sessions in this workspace"),
+                        ),
+                )
                 .child(
                     self.control(
                         "refresh-session-history",
@@ -132,160 +314,313 @@ impl Sidebar {
                         Action::RefreshSessionHistory,
                         cx,
                     )
-                    .child(icon("reset", ICON_MD, c::FG_DIM())),
+                    .w_auto()
+                    .px(rpx(SPACE_LG))
+                    .child(icon("reset", ICON_SM, c::FG_DIM()))
+                    .child("Refresh"),
                 ),
         );
         if let Some(error) = &self.session_history_error {
-            page = page.child(div().text_color(c::FORM_ERROR()).child(error.clone()));
-        }
-        if self.session_history_loading {
-            page = page.child(div().text_color(c::FG_DIM()).child("Loading history…"));
-        }
-        if let Some(saved) = records
-            .iter()
-            .find(|s| Some(&s.key) == self.session_history_selected.as_ref())
-        {
-            let title = saved.title.as_deref().unwrap_or(&saved.label);
             page = page.child(
                 div()
+                    .px(rpx(SPACE_3XL))
+                    .text_color(c::FORM_ERROR())
+                    .child(error.clone()),
+            );
+        }
+        if self.session_history_loading {
+            page = page.child(
+                div()
+                    .px(rpx(SPACE_3XL))
+                    .text_color(c::FG_DIM())
+                    .child("Loading history…"),
+            );
+        }
+        let selected_native = records
+            .iter()
+            .find(|s| matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key));
+        let selected_cli = cli_records
+            .iter()
+            .find(|s| matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key));
+        let provider_label = self
+            .history_provider_filter
+            .map_or("All providers", |a| match a {
+                Agent::Codex => "Codex",
+                Agent::Claude => "Claude",
+                Agent::OpenCode => "OpenCode",
+                Agent::Terminal => "Terminal",
+            });
+        let focused = self
+            .history_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let mut list = div()
+            .id("history-list")
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(c::BORDER_SOFT())
+            .child(
+                div()
+                    .p(rpx(SPACE_2XL))
                     .flex()
-                    .items_center()
+                    .flex_col()
                     .gap(rpx(SPACE_LG))
-                    .child(icon(
-                        if saved.provider == grove_core::codex::Provider::Claude {
-                            "claude"
-                        } else {
-                            "codex"
-                        },
-                        ICON_MD,
-                        c::FG(),
-                    ))
-                    .child(div().flex_1().min_w_0().truncate().child(format!(
-                            "{} / {} / {title}",
-                            saved.project,
-                            std::path::Path::new(&saved.cwd)
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                        )))
+                    .child(
+                        crate::views::components::project_field_well(focused, false)
+                            .w_full()
+                            .child(
+                                Input::new(&self.history_search)
+                                    .aria_label("Search history")
+                                    .appearance(false)
+                                    .bordered(false)
+                                    .focus_bordered(false)
+                                    .p_0(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(rpx(SPACE_SM))
+                            .child(
+                                self.control(
+                                    "history-project-filter",
+                                    format!("Filter by project: {project_label}"),
+                                    Action::HistoryFilterMenu(true),
+                                    cx,
+                                )
+                                .w_auto()
+                                .px(rpx(SPACE_LG))
+                                .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                                .child(project_label),
+                            )
+                            .child(
+                                self.control(
+                                    "history-provider-filter",
+                                    format!("Filter by provider: {provider_label}"),
+                                    Action::HistoryFilterMenu(false),
+                                    cx,
+                                )
+                                .w_auto()
+                                .px(rpx(SPACE_LG))
+                                .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                                .child(provider_label),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .px(rpx(SPACE_2XL))
+                    .py(rpx(SPACE_MD))
+                    .flex()
+                    .justify_between()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child("Closed sessions")
+                    .child(format!("{} sessions", records.len() + cli_records.len())),
+            );
+        let mut rows = div()
+            .id("history-list-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col();
+        if records.is_empty() && cli_records.is_empty() && !self.session_history_loading {
+            if all_native.is_empty() && all_cli.is_empty() {
+                rows =
+                    rows.child(div().p(rpx(SPACE_2XL)).text_color(c::FG_DIM()).child(
+                        "No closed sessions yet. Earlier removed sessions are unavailable.",
+                    ));
+            } else {
+                rows = rows
+                    .child(
+                        div()
+                            .p(rpx(SPACE_2XL))
+                            .text_color(c::FG_DIM())
+                            .child("No sessions match your search or filters."),
+                    )
                     .child(
                         self.control(
-                            "reopen-history-session",
-                            "Reopen session",
-                            Action::ReopenSessionHistory(saved.key.clone()),
+                            "history-clear-filters",
+                            "Clear filters",
+                            Action::ClearHistoryFilters,
                             cx,
                         )
                         .w_auto()
-                        .px(rpx(SPACE_LG))
-                        .gap(rpx(SPACE_SM))
-                        .child(icon("reset", ICON_SM, c::FG_DIM()))
-                        .child("Reopen session"),
-                    ),
-            );
-            page = page.child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Closed session · read only"),
-            );
-            if let Some(view) = &self.session_history_view {
-                page = page
-                    .overflow_hidden()
-                    .child(div().flex_1().min_h_0().child(view.clone()));
+                        .px(rpx(SPACE_2XL))
+                        .justify_start()
+                        .child(icon("close", ICON_SM, c::FG_DIM()))
+                        .child("Clear filters"),
+                    );
             }
-        } else if let Some(saved) = cli_records
-            .iter()
-            .find(|s| Some(&s.key) == self.session_history_selected.as_ref())
-        {
-            page=page.child(div().flex().items_center().gap(rpx(SPACE_LG)).child(icon(saved.agent.icon_name(),ICON_MD,c::FG())).child(div().min_w_0().truncate().child(saved.title.clone().unwrap_or_else(||saved.label.clone()))))
-                .child(div().text_color(c::FG_DIM()).child(format!("{} / {}",saved.project,saved.cwd)))
-                .child(div().text_color(c::FG_DIM()).child("Closed CLI session · transcript unavailable. Start a new session from Projects to continue working."));
-        } else {
-            page=page.child(div().text_color(c::FG_DIM()).text_size(rpx(TEXT_SMALL)).child("Closed sessions are retained here from now on. Earlier removed sessions are unavailable; CLI records retain identity without a transcript."));
-            if records.is_empty() && cli_records.is_empty() && !self.session_history_loading {
-                page = page.child(
+        }
+        for s in records.iter() {
+            let title = s.title.as_deref().unwrap_or(&s.label);
+            let row = self
+                .control(
+                    SharedString::from(format!("session-history-{}", s.key)),
+                    format!("{title} · {} · {}", s.project, s.cwd),
+                    Action::PreviewSessionHistory(s.key.clone()),
+                    cx,
+                )
+                .w_full()
+                .h_auto()
+                .min_h(rpx(HEAD_H))
+                .justify_start()
+                .p(rpx(SPACE_2XL))
+                .gap(rpx(SPACE_LG))
+                .when(
+                    matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key),
+                    |d| d.bg(c::BG_HOVER()),
+                )
+                .child(icon(s.provider.agent().icon_name(), ICON_MD, c::FG()))
+                .child(
                     div()
-                        .py(rpx(SPACE_3XL))
-                        .text_color(c::FG_DIM())
-                        .child("No historical sessions yet"),
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(title.to_string()))
+                        .child(history_row_metadata(&s.project, &checkout_names[&s.cwd], s.provider.label())),
                 );
-            }
-            for saved in records {
-                let title = saved.title.as_deref().unwrap_or(&saved.label);
-                page = page.child(
-                    self.control(
-                        SharedString::from(format!("session-history-{}", saved.key)),
-                        format!("{title} · {} · {}", saved.project, saved.cwd),
-                        Action::PreviewSessionHistory(saved.key.clone()),
-                        cx,
-                    )
-                    .w_full()
-                    .h_auto()
-                    .min_h(rpx(HEAD_H))
-                    .justify_start()
-                    .gap(rpx(SPACE_LG))
-                    .p(rpx(SPACE_LG))
-                    .child(icon(
-                        if saved.provider == grove_core::codex::Provider::Claude {
-                            "claude"
-                        } else {
-                            "codex"
-                        },
-                        ICON_MD,
-                        c::FG(),
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().child(title.to_string()))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
-                                    .child(format!("{} / {}", saved.project, saved.cwd)),
-                            ),
-                    ),
+            rows = rows.child(row);
+        }
+        for s in cli_records.iter() {
+            let title = s.title.as_deref().unwrap_or(&s.label);
+            let row = self
+                .control(
+                    SharedString::from(format!("cli-history-{}", s.key)),
+                    format!("{title} · {} · {} · CLI session · transcript unavailable", s.project, s.cwd),
+                    Action::PreviewCliHistory(s.key.clone()),
+                    cx,
+                )
+                .w_full()
+                .h_auto()
+                .min_h(rpx(HEAD_H))
+                .justify_start()
+                .p(rpx(SPACE_2XL))
+                .gap(rpx(SPACE_LG))
+                .when(
+                    matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key),
+                    |d| d.bg(c::BG_HOVER()),
+                )
+                .child(icon(s.agent.icon_name(), ICON_MD, c::FG()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(title.to_string()))
+                        .child(history_row_metadata(&s.project, &checkout_names[&s.cwd], &format!("{} CLI", s.agent.label()))),
                 );
-            }
-            for saved in cli_records {
-                let title = saved.title.as_deref().unwrap_or(&saved.label);
-                page = page.child(
-                    self.control(
-                        SharedString::from(format!("cli-history-{}", saved.key)),
-                        format!(
-                            "{title} · {} · CLI session · transcript unavailable",
-                            saved.project
+            rows = rows.child(row);
+        }
+        list = list.child(rows);
+        let mut detail = div()
+            .id("history-detail")
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_LG))
+            .p(rpx(SPACE_2XL))
+            .border_t_1()
+            .border_color(c::BORDER_SOFT());
+        if let Some(s) = selected_native {
+            detail = detail
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rpx(TEXT_TITLE))
+                                .child(s.title.as_deref().unwrap_or(&s.label).to_string()),
+                        )
+                        .child(
+                            self.control(
+                                "reopen-history-session",
+                                "Reopen session",
+                                Action::ReopenSessionHistory(s.key.clone()),
+                                cx,
+                            )
+                            .w_auto()
+                            .px(rpx(SPACE_LG))
+                            .child(icon("reset", ICON_SM, c::FG_DIM()))
+                            .child("Reopen session"),
                         ),
-                        Action::PreviewSessionHistory(saved.key.clone()),
-                        cx,
-                    )
-                    .w_full()
-                    .h_auto()
-                    .min_h(rpx(HEAD_H))
-                    .justify_start()
-                    .gap(rpx(SPACE_LG))
-                    .p(rpx(SPACE_LG))
-                    .child(icon(saved.agent.icon_name(), ICON_MD, c::FG()))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().child(title.to_string()))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
-                                    .child(format!("{} / {} · CLI", saved.project, saved.cwd)),
-                            ),
-                    ),
+                )
+                .child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(format!(
+                            "{} / {} / {}",
+                            s.project,
+                            s.cwd,
+                            s.provider.label()
+                        )),
+                )
+                .child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child("Closed session · read only"),
                 );
+            if let Some(view) = &self.session_history_view {
+                detail = detail.child(div().flex_1().min_h_0().child(view.clone()));
             }
+        } else if let Some(s) = selected_cli {
+            detail = detail.child(div().text_size(rpx(TEXT_TITLE)).child(s.title.as_deref().unwrap_or(&s.label).to_string()))
+                .child(div().text_color(c::FG_DIM()).child(format!("{} / {} / {} CLI", s.project, s.cwd, s.agent.label())))
+                .child(div().child("Transcript unavailable"))
+                .child(div().text_color(c::FG_DIM()).child("This closed CLI session retains its identity and checkout, but its terminal transcript was not saved. Start a new session from Projects to continue working."));
+        } else {
+            detail = detail.child(
+                div()
+                    .text_color(c::FG_DIM())
+                    .child("Select a closed session to inspect it."),
+            );
+        }
+        let narrow = history_canvas_is_narrow(
+            Self::logical_window_width(window),
+            self.animated_sidebar_width(window, cx),
+        );
+        let area = if narrow {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(list.h(rpx(HISTORY_NARROW_LIST_HEIGHT)).flex_shrink_0())
+                .child(detail.flex_1())
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(list.w(rpx(HISTORY_LIST_WIDTH)).flex_shrink_0())
+                .child(detail.flex_1().border_l_1())
+        };
+        page = page.child(area);
+        if let Some(popup) = &self.history_filter_popup {
+            page = page.child(gpui::deferred(
+                gpui::anchored()
+                    .position_mode(gpui::AnchoredPositionMode::Window)
+                    .anchor(gpui::Anchor::TopLeft)
+                    .position(self.history_filter_position)
+                    .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
+                    .child(popup.clone()),
+            ));
         }
         page.into_any_element()
     }
@@ -401,5 +736,76 @@ impl Sidebar {
             page = page.child(self.tree_for_project(idx, window, cx));
         }
         page.into_any_element()
+    }
+}
+
+fn history_canvas_is_narrow(window_width: f32, sidebar_width: f32) -> bool {
+    (window_width - sidebar_width).max(0.0) < HISTORY_NARROW_CANVAS
+}
+
+fn history_checkout_name(cwd: &str, project_path: Option<&str>) -> String {
+    let path = std::path::Path::new(cwd);
+    if project_path.is_some_and(|project| path == std::path::Path::new(project)) {
+        return sidebar_worktree_name("", true).to_string();
+    }
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(cwd)
+        .to_string()
+}
+
+fn history_row_metadata(project: &str, checkout: &str, provider: &str) -> Div {
+    div()
+        .flex()
+        .min_w_0()
+        .gap(rpx(SPACE_SM))
+        .text_size(rpx(TEXT_SMALL))
+        .text_color(c::FG_DIM())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(format!("{project} · {checkout}")),
+        )
+        .child(div().flex_shrink_0().child(format!("· {provider}")))
+}
+
+fn history_matches(query: &str, title: &str, project: &str, cwd: &str) -> bool {
+    query.is_empty()
+        || [title, project, cwd]
+            .iter()
+            .any(|value| value.to_lowercase().contains(query))
+}
+
+#[cfg(test)]
+mod history_filter_tests {
+    use super::{history_canvas_is_narrow, history_checkout_name, history_matches};
+    #[test]
+    fn adapts_to_canvas_width_and_uses_concise_checkout_names() {
+        assert!(!history_canvas_is_narrow(1200.0, 260.0));
+        assert!(history_canvas_is_narrow(1200.0, 520.0));
+        assert_eq!(
+            history_checkout_name("/work/grove", Some("/work/grove")),
+            "Main checkout"
+        );
+        assert_eq!(
+            history_checkout_name("/worktrees/new-sidebar", Some("/work/grove")),
+            "new-sidebar"
+        );
+    }
+    #[test]
+    fn matches_titles_projects_and_checkouts_case_insensitively() {
+        assert!(history_matches(
+            "billing",
+            "Fix BILLING",
+            "grove",
+            "/tmp/main"
+        ));
+        assert!(history_matches("grove", "Fix", "Grove", "/tmp/main"));
+        assert!(history_matches("main", "Fix", "Grove", "/tmp/Main"));
+        assert!(!history_matches("other", "Fix", "Grove", "/tmp/Main"));
+        assert!(history_matches("", "Fix", "Grove", "/tmp/Main"));
     }
 }

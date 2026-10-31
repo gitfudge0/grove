@@ -1696,7 +1696,7 @@ impl Sidebar {
         if self.destination == super::global_navigation::Destination::History
             && self.selection.is_none()
         {
-            return self.render_session_history(cx);
+            return self.render_session_history(window, cx);
         }
         if self.destination == super::global_navigation::Destination::Projects
             && matches!(self.selection, None | Some(Selection::Project(_)))
