@@ -98,7 +98,6 @@ pub struct Shell {
     runtime: Entity<Runtime>,
     workspaces: Entity<super::workspace_manager::WorkspaceManager>,
     sidebar: Entity<super::sidebar::Sidebar>,
-    statusbar: Entity<super::statusbar::Statusbar>,
     launcher: Entity<super::worktree_launcher::WorktreeLauncher>,
     settings: Entity<SettingsPanel>,
     _settings_events: gpui::Subscription,
@@ -154,11 +153,11 @@ impl Shell {
             sidebar.set_shell_focus(focus.clone());
         });
         cx.observe(&sidebar, |_, _, cx| cx.notify()).detach();
+        let toast = runtime.read(cx).toast.clone();
+        cx.observe(&toast, |_, _, cx| cx.notify()).detach();
         let provider_updates = runtime.read(cx).provider_updates.clone();
         cx.observe(&provider_updates, |_, _, cx| cx.notify())
             .detach();
-        let statusbar =
-            cx.new(|cx| super::statusbar::Statusbar::new(runtime.clone(), sidebar.clone(), cx));
         let launcher = cx.new(|cx| {
             super::worktree_launcher::WorktreeLauncher::new(
                 runtime.clone(),
@@ -233,7 +232,6 @@ impl Shell {
             highlights_events: None,
             highlights_startup_checked: cfg!(test),
             highlights_startup_scheduled: false,
-            statusbar,
             launcher,
             settings,
             _settings_events: settings_events,
@@ -1709,6 +1707,27 @@ impl Render for Shell {
                     });
                 }
             }))
+            .on_action(cx.listener(|this, _: &k::OpenHome, window, cx| {
+                if !this.shortcut_blocked_in(window, cx) {
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.open_numbered_destination(1, window, cx);
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::OpenProjects, window, cx| {
+                if !this.shortcut_blocked_in(window, cx) {
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.open_numbered_destination(2, window, cx);
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::OpenHistory, window, cx| {
+                if !this.shortcut_blocked_in(window, cx) {
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.open_numbered_destination(3, window, cx);
+                    });
+                }
+            }))
             .on_action(cx.listener(|this, action: &k::SelectSession, window, cx| {
                 if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
@@ -1796,9 +1815,9 @@ impl Render for Shell {
                     .is_some(),
                 |root| root.child(self.provider_update_notice(window, cx)),
             )
-            .when(
-                !self.sidebar.read(cx).is_zen() || self.settings.read(cx).is_open(),
-                |root| root.child(self.statusbar.clone()),
+            .when_some(
+                self.runtime.read(cx).toast.read(cx).current().cloned(),
+                |root, toast| root.child(super::toast_notice::render(toast, cx)),
             )
             .when(self.launcher.read(cx).is_visible(cx), |root| {
                 root.child(gpui::deferred(self.launcher.clone()))
@@ -1959,7 +1978,7 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("app-header").is_some());
         assert!(cx.debug_bounds("global-navigation").is_some());
-        assert!(cx.debug_bounds("statusbar").is_some());
+        assert!(cx.debug_bounds("statusbar").is_none());
         assert!(cx.debug_bounds("global-navigation").is_some());
         let id = cx.update(|_, cx| {
             let registry = shell.read(cx).runtime.read(cx).registry.clone();
@@ -2107,6 +2126,54 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    #[gpui::test]
+    fn numbered_destinations_route_and_respect_blocking_overlays(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        cx.update(|cx| cx.bind_keys(k::shell_bindings()));
+        let (shell, cx) = cx.add_window_view(Shell::new);
+        draw(cx);
+        for (key, destination) in [
+            ("2", "projects-destination"),
+            ("3", "session-history-page"),
+            ("1", "dashboard-page"),
+        ] {
+            cx.update(|window, cx| {
+                let focus = shell.read(cx).focus.clone();
+                focus.focus(window, cx);
+            });
+            cx.simulate_keystrokes(&format!("{}{key}", k::platform_mod_prefix()));
+            draw(cx);
+            assert!(
+                cx.debug_bounds(destination).is_some(),
+                "{key} must open {destination}"
+            );
+        }
+        cx.update(|window, cx| window.dispatch_action(Box::new(k::Settings), cx));
+        draw(cx);
+        cx.simulate_keystrokes(&format!("{}2", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).settings.read(cx).is_open()));
+        assert!(cx.debug_bounds("projects-destination").is_none());
+        assert!(cx.debug_bounds("statusbar").is_none());
+        cx.update(|window, cx| {
+            shell
+                .read(cx)
+                .settings
+                .clone()
+                .update(cx, |settings, cx| settings.close(window, cx))
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            let launcher = shell.read(cx).launcher.clone();
+            launcher.update(cx, |launcher, cx| launcher.open(window, cx));
+        });
+        draw(cx);
+        cx.simulate_keystrokes(&format!("{}3", k::platform_mod_prefix()));
+        draw(cx);
+        assert!(cx.update(|_, cx| shell.read(cx).launcher.read(cx).is_open()));
+        assert!(cx.debug_bounds("session-history-page").is_none());
     }
 
     #[gpui::test]
@@ -2834,7 +2901,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn statusbar_spans_narrow_window_and_tracks_toast_lifecycle(cx: &mut gpui::TestAppContext) {
+    fn footer_is_absent_and_transient_toast_does_not_reserve_layout(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
         cx.simulate_resize(gpui::size(
@@ -2842,13 +2909,9 @@ mod tests {
             gpui::px(crate::WINDOW_MIN_H),
         ));
         draw(cx);
-        let footer = cx.debug_bounds("statusbar").expect("persistent footer");
-        assert_eq!(
-            f32::from(footer.size.height),
-            super::super::statusbar::STATUS_H
-        );
-        assert_eq!(f32::from(footer.size.width), crate::WINDOW_MIN_W);
-        assert_eq!(f32::from(footer.bottom()), crate::WINDOW_MIN_H);
+        assert!(cx.debug_bounds("statusbar").is_none());
+        let canvas = cx.debug_bounds("global-navigation").unwrap();
+        assert_eq!(f32::from(canvas.bottom()), crate::WINDOW_MIN_H);
         cx.update(|_, cx| {
             shell
                 .read(cx)
@@ -2859,19 +2922,20 @@ mod tests {
                 .update(cx, |toast, cx| toast.set_error("Example failure", cx));
         });
         draw(cx);
-        let toast = cx.debug_bounds("status-toast").expect("error toast");
-        assert!(toast.right() <= footer.right());
-        assert!(toast.left() >= footer.left());
+        let toast = cx.debug_bounds("app-toast").expect("error toast");
+        assert!(f32::from(toast.right()) <= crate::WINDOW_MIN_W);
+        assert!(f32::from(toast.left()) >= 0.);
+        assert_eq!(cx.debug_bounds("global-navigation").unwrap(), canvas);
         cx.executor()
             .advance_clock(crate::entities::toast::Toast::ttl(
                 crate::entities::toast::ToastKind::Error,
             ));
         draw(cx);
-        assert!(cx.debug_bounds("status-toast").is_none());
+        assert!(cx.debug_bounds("app-toast").is_none());
     }
 
     #[gpui::test]
-    fn footer_session_scope_changes_before_sidebar_render(cx: &mut gpui::TestAppContext) {
+    fn canvas_session_scope_changes_before_sidebar_render(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
@@ -2895,7 +2959,7 @@ mod tests {
                 settings.store.workspaces.create("Other").unwrap();
             });
             // No draw or artificial entity notification between changing the
-            // active workspace and the footer's scope read.
+            // active workspace and the canvas's scope read.
             assert!(sidebar.read(cx).active_canvas_sessions(cx).is_empty());
             cx.update_global::<crate::settings::SettingsState, _>(|settings, _| {
                 settings.store.workspaces.select(1);

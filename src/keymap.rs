@@ -33,6 +33,9 @@ pub fn platform_mod_label() -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlobalShortcut {
     NewSession,
+    OpenHome,
+    OpenProjects,
+    OpenHistory,
     NewSessionInWorktree,
     Settings,
     ToggleZen,
@@ -157,6 +160,33 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         requires_alt: false,
         literal: false,
     },
+    ShortcutDef {
+        action: Some(GlobalShortcut::OpenHome),
+        triggers: &["1"],
+        display_keys: "1",
+        description: "Home",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::OpenProjects),
+        triggers: &["2"],
+        display_keys: "2",
+        description: "Projects",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::OpenHistory),
+        triggers: &["3"],
+        display_keys: "3",
+        description: "History",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
     // Display-only: the matcher handles 1–9 dynamically.
     ShortcutDef {
         action: None,
@@ -164,7 +194,7 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         display_keys: "1–9",
         description: "Select nth session",
         scopes: G,
-        requires_alt: false,
+        requires_alt: true,
         literal: false,
     },
     ShortcutDef {
@@ -537,6 +567,9 @@ actions!(
     grove,
     [
         NewSession,
+        OpenHome,
+        OpenProjects,
+        OpenHistory,
         NewSessionInWorktree,
         SwitchSession,
         NextSession,
@@ -734,7 +767,7 @@ pub fn modal_input_bindings() -> Vec<KeyBinding> {
 }
 
 fn select_session_bindings() -> Vec<KeyBinding> {
-    let prefix = platform_mod_prefix();
+    let prefix = alt_chord_prefix();
     let mut out = Vec::new();
     for index in 1..=9usize {
         let key = index.to_string();
@@ -743,16 +776,6 @@ fn select_session_bindings() -> Vec<KeyBinding> {
             SelectSession { index },
             None,
         ));
-        // On non-mac these arrive as `!@#$%^&*(` with shift stripped (see `SHIFTED_TWINS`).
-        if needs_shifted_twins() {
-            if let Some(tw) = shifted_twin(&key) {
-                out.push(KeyBinding::new(
-                    &format!("{}{tw}", twin_prefix(prefix)),
-                    SelectSession { index },
-                    None,
-                ));
-            }
-        }
     }
     out
 }
@@ -762,6 +785,9 @@ fn binding_for(keystroke: &str, sc: GlobalShortcut, ctx: Option<&str>) -> Option
     use GlobalShortcut as S;
     Some(match sc {
         S::NewSession => KeyBinding::new(keystroke, NewSession, ctx),
+        S::OpenHome => KeyBinding::new(keystroke, OpenHome, ctx),
+        S::OpenProjects => KeyBinding::new(keystroke, OpenProjects, ctx),
+        S::OpenHistory => KeyBinding::new(keystroke, OpenHistory, ctx),
         S::NewSessionInWorktree => KeyBinding::new(keystroke, NewSessionInWorktree, ctx),
         S::SwitchSession => KeyBinding::new(keystroke, SwitchSession, ctx),
         S::NextSession => KeyBinding::new(keystroke, NextSession, ctx),
@@ -818,6 +844,9 @@ pub fn shell_bindings() -> Vec<KeyBinding> {
         matches!(
             action,
             S::NewSession
+                | S::OpenHome
+                | S::OpenProjects
+                | S::OpenHistory
                 | S::NewSessionInWorktree
                 | S::SwitchSession
                 | S::NextSession
@@ -1009,24 +1038,16 @@ mod tests {
                 "{sc:?} has no binding"
             );
         }
-        // Twins bound without `shift-`, since gpui strips it for digit keys.
         let sel = select_session_bindings();
-        assert_eq!(sel.len(), if needs_shifted_twins() { 18 } else { 9 });
-        if needs_shifted_twins() {
-            let strokes: Vec<String> = sel
-                .iter()
-                .map(|b| {
-                    b.keystrokes()
-                        .iter()
-                        .map(gpui::KeybindingKeystroke::unparse)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .collect();
-            assert!(strokes.contains(&"ctrl-!".to_string()), "{strokes:?}");
-            assert!(strokes.contains(&"ctrl-(".to_string()), "{strokes:?}");
-            assert!(!strokes.iter().any(|s| s.starts_with("ctrl-shift-!")));
-        }
+        assert_eq!(sel.len(), 9);
+        let strokes: Vec<_> = sel
+            .iter()
+            .map(|binding| binding.keystrokes()[0].unparse())
+            .collect();
+        assert!(strokes
+            .iter()
+            .any(|stroke| stroke.contains("alt-") && stroke.ends_with("-1")));
+        assert!(!strokes.contains(&format!("{}1", platform_mod_prefix())));
         // 8 directions × (1 move + 1 swap chord per platform modifier set).
         let per_dir = 1 + grid_swap_prefixes().len();
         assert_eq!(grid_bindings().len(), GRID_DIRECTIONS.len() * per_dir);

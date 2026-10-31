@@ -1,10 +1,10 @@
-//! The statusbar's transient message and its kind-dependent TTL. Ported from
+//! The app's transient message and its kind-dependent TTL. Ported from
 //! `src/app/mod.rs:26-52,149-160`; unlike the iced poll-based expiry, gpui expiry runs on its
 //! own `Timer::after(ttl)` task, so a monotonic `seq` guards against an older toast's timer
 //! outliving the toast it was started for and clearing its replacement.
 //!
-//! No floating toast widget: this is the statusbar's third slot. `animation_clock::toast_pulse`
-//! belongs to the grid-tile scrim, not this toast, which stays unconsumed on purpose.
+//! The shell presents these messages as a transient overlay without reserving footer space.
+//! `animation_clock::toast_pulse` belongs to the grid-tile scrim, not this message.
 
 use std::time::{Duration, Instant};
 

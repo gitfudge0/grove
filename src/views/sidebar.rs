@@ -3901,9 +3901,13 @@ impl Sidebar {
                     "{title} · {full_context} · {status}{tasks_suffix} · {} · {age} · {} session{}",
                     diff.0,
                     meta.agent.label(),
-                    number
-                        .filter(|number| *number <= 9)
-                        .map_or_else(String::new, |number| format!(" · shortcut {number}"))
+                    number.filter(|number| *number <= 9).map_or_else(
+                        String::new,
+                        |number| format!(
+                            " · shortcut {}{number}",
+                            crate::keymap::alt_chord_prefix().replace('-', "+")
+                        )
+                    )
                 ),
                 selected,
                 Action::Select(Selection::Session(id)),
@@ -4140,7 +4144,10 @@ impl Sidebar {
                     meta.agent.label(),
                     number
                         .filter(|n| *n <= 9)
-                        .map_or_else(String::new, |n| format!(" · shortcut {n}"))
+                        .map_or_else(String::new, |n| format!(
+                            " · shortcut {}{n}",
+                            crate::keymap::alt_chord_prefix().replace('-', "+")
+                        ))
                 ),
                 selected,
                 Action::Select(Selection::Session(id)),

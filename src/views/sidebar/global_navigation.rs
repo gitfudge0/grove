@@ -38,6 +38,20 @@ impl From<LandingPage> for Destination {
     }
 }
 impl Sidebar {
+    pub(crate) fn open_numbered_destination(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let destination = match index {
+            1 => Destination::Home,
+            2 => Destination::Projects,
+            3 => Destination::History,
+            _ => return,
+        };
+        self.open_destination(destination, window, cx);
+    }
     pub(crate) fn open_landing_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.navigation_available() {
             return;
@@ -161,7 +175,20 @@ impl Sidebar {
                 .aria_selected(selected)
                 .when(selected, |row| row.bg(c::BG_HOVER()))
                 .child(icon(glyph, ICON_MD, c::FG_DIM()))
-                .when(!collapsed, |row| row.child(label)),
+                .when(!collapsed, |row| {
+                    row.child(div().flex_1().min_w_0().truncate().child(label))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_MUTE())
+                                .child(if cfg!(target_os = "macos") {
+                                    format!("⌘{}", index + 1)
+                                } else {
+                                    format!("Ctrl+Shift+{}", index + 1)
+                                }),
+                        )
+                }),
             );
         }
         let grouping = SessionGrouping::current(&cx.global::<SettingsState>().store);
@@ -201,7 +228,7 @@ impl Sidebar {
                         cx,
                     )
                     .debug_selector(move || format!("session-group-{key}"))
-                    .size(rpx(CONTROL_H))
+                    .size(rpx(STEPPER_BTN_W))
                     .justify_center()
                     .aria_selected(choice == grouping)
                     .when(choice == grouping, |row| row.bg(c::BG_HOVER()))
@@ -688,6 +715,8 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("projects-destination").is_some());
         let group = cx.debug_bounds("session-group-true").unwrap();
+        assert_eq!(f32::from(group.size.height), STEPPER_BTN_W);
+        assert_eq!(f32::from(group.size.width), STEPPER_BTN_W);
         cx.simulate_click(group.center(), gpui::Modifiers::default());
         draw(cx);
         let worktrees = cx.debug_bounds("session-group-worktrees").unwrap();
