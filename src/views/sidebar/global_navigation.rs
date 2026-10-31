@@ -4,6 +4,7 @@ use grove_core::storage::LandingPage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Destination {
+    NewSession,
     Home,
     Projects,
     History,
@@ -27,6 +28,7 @@ impl SessionGrouping {
 impl From<LandingPage> for Destination {
     fn from(page: LandingPage) -> Self {
         match page {
+            LandingPage::NewSession => Self::NewSession,
             LandingPage::Home => Self::Home,
             LandingPage::Projects => Self::Projects,
             LandingPage::History => Self::History,
@@ -42,9 +44,10 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         let destination = match index {
-            1 => Destination::Home,
-            2 => Destination::Projects,
-            3 => Destination::History,
+            1 => Destination::NewSession,
+            2 => Destination::Home,
+            3 => Destination::Projects,
+            4 => Destination::History,
             _ => return,
         };
         self.open_destination(destination, window, cx);
@@ -81,8 +84,12 @@ impl Sidebar {
         self.pending_canvas_focus = None;
         self.pending_grid_workspace_focus = None;
         self.initial_selection_pending = false;
-        if destination == Destination::Home {
+        if matches!(destination, Destination::NewSession | Destination::Home) {
             self.open_dashboard(window, cx);
+            self.destination = destination;
+            if destination == Destination::Home {
+                self.focus.focus(window, cx);
+            }
         } else {
             self.destination = destination;
             self.dashboard_open = false;
@@ -128,7 +135,6 @@ impl Sidebar {
             .pb(rpx(SPACE_20))
             .child(
                 div()
-                    .when(!collapsed, |row| row.px(rpx(SPACE_LG)))
                     .pb(rpx(SPACE_2XL))
                     .child(self.header_workspace_control(cx)),
             );
@@ -137,6 +143,7 @@ impl Sidebar {
             .as_ref()
             .is_some_and(|panel| panel.read(cx).is_open());
         for (index, (destination, label, glyph)) in [
+            (Destination::NewSession, "New Session", "plus"),
             (Destination::Home, "Home", "home"),
             (Destination::Projects, "Projects", "folder"),
             (Destination::History, "History", "history"),
@@ -146,8 +153,13 @@ impl Sidebar {
         {
             let selected = !settings
                 && self.destination == destination
-                && (self.selection.is_none() || destination == Destination::Home);
-            let id = format!("global-nav-{}", label.to_lowercase());
+                && (self.selection.is_none()
+                    || matches!(destination, Destination::NewSession | Destination::Home));
+            let id = match destination {
+                Destination::NewSession => "global-nav-new-session".to_owned(),
+                Destination::Home => "global-nav-home".to_owned(),
+                _ => format!("global-nav-{}", label.to_lowercase()),
+            };
             nav = nav.child(
                 self.control(
                     SharedString::from(id.clone()),
@@ -158,20 +170,22 @@ impl Sidebar {
                 .debug_selector(move || id.clone())
                 .track_focus(&self.navigation_focus[index])
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.navigation_focus[index].focus(window, cx);
+                    if destination != Destination::NewSession {
+                        this.navigation_focus[index].focus(window, cx);
+                    }
                 }))
                 .w_full()
                 .h(rpx(HEAD_H))
                 .justify_start()
-                .gap(rpx(SPACE_2XL))
-                .px(rpx(SPACE_2XL))
+                .gap(rpx(SPACE_SM))
+                .px(rpx(SPACE_LG))
                 .when(collapsed, |row| row.px_0().justify_center())
-                .text_size(rpx(TEXT_BODY))
+                .text_size(rpx(TEXT_TITLE))
                 .text_color(c::FG_DIM())
                 .font_weight(gpui::FontWeight::NORMAL)
                 .aria_selected(selected)
                 .when(selected, |row| row.bg(c::BG_HOVER()))
-                .child(icon(glyph, ICON_MD, c::FG_DIM()))
+                .child(crate::icons::action_icon(glyph, ICON_MD))
                 .when(!collapsed, |row| {
                     row.child(div().flex_1().min_w_0().truncate().child(label))
                         .child(
@@ -627,14 +641,21 @@ impl Sidebar {
             .justify_start()
             .max_w(rpx(SIDEBAR_W))
             .h(rpx(HEAD_H))
-            .px_0()
-            .gap(rpx(SPACE_LG))
-            .when(self.is_collapsed(cx), gpui::Styled::justify_center)
-            .text_size(rpx(TEXT_BODY))
-            .child(icon("folder", ICON_MD, c::FG_DIM()))
+            .px(rpx(SPACE_LG))
+            .gap(rpx(SPACE_SM))
+            .when(self.is_collapsed(cx), |row| row.px_0().justify_center())
+            .text_size(rpx(TEXT_TITLE))
+            .text_color(c::FG_DIM())
+            .child(crate::icons::action_icon("folder", ICON_MD))
             .when(!self.is_collapsed(cx), |row| {
                 row.child(div().flex_1().min_w_0().truncate().child(name))
-                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_MUTE())
+                            .child("Workspace"),
+                    )
             });
         if let Some(trigger) = trigger {
             row = row.child(
@@ -740,6 +761,59 @@ mod tests {
             })
         });
     }
+    #[gpui::test]
+    fn new_session_and_home_keep_draft_and_route_focus(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        draw(cx);
+        let new_session = cx.debug_bounds("global-nav-new-session").unwrap();
+        cx.simulate_click(new_session.center(), gpui::Modifiers::default());
+        draw(cx);
+        let (session, view) = cx.update(|window, cx| {
+            let owner = sidebar.read(cx);
+            let dashboard = owner.dashboard.as_ref().unwrap();
+            assert_eq!(owner.destination, Destination::NewSession);
+            assert!(dashboard.view.focus_handle(cx).is_focused(window));
+            (dashboard.session.clone(), dashboard.view.clone())
+        });
+        cx.simulate_input("Keep my workspace draft");
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                session.read(cx).state.saved.draft,
+                "Keep my workspace draft"
+            )
+        });
+        let home = cx.debug_bounds("global-nav-home").unwrap();
+        cx.simulate_click(home.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|window, cx| {
+            let owner = sidebar.read(cx);
+            let dashboard = owner.dashboard.as_ref().unwrap();
+            assert_eq!(owner.destination, Destination::Home);
+            assert_eq!(dashboard.session, session);
+            assert_eq!(dashboard.view, view);
+            assert!(!view.focus_handle(cx).is_focused(window));
+            assert_eq!(
+                session.read(cx).state.saved.draft,
+                "Keep my workspace draft"
+            );
+        });
+        assert!(cx.debug_bounds("dashboard-summary").is_some());
+        cx.simulate_click(new_session.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(view.focus_handle(cx).is_focused(window));
+            assert_eq!(
+                session.read(cx).state.saved.draft,
+                "Keep my workspace draft"
+            );
+        });
+    }
+
     #[gpui::test]
     fn worktree_groups_keep_checkout_identity_and_keyboard_order(cx: &mut gpui::TestAppContext) {
         cx.update(init);
@@ -881,6 +955,7 @@ mod tests {
         assert_eq!(
             LandingPage::ALL,
             [
+                LandingPage::NewSession,
                 LandingPage::Home,
                 LandingPage::Projects,
                 LandingPage::History

@@ -115,7 +115,9 @@ pub(super) fn header_control_frame(
         .items_center()
         .justify_center()
         .rounded(rpx(RADIUS_CONTROL))
-        .hover(move |s| s.bg(hover))
+        .group("neutral-control")
+        .text_color(c::FG_DIM())
+        .hover(move |s| s.bg(hover).text_color(c::FG()))
         .on_mouse_down(MouseButton::Left, |_, window, cx| {
             window.prevent_default();
             cx.stop_propagation();
@@ -259,7 +261,7 @@ pub fn form_action(
     let (fill, foreground, hover) = if primary {
         (c::FG(), c::BG(), c::FG_DIM())
     } else {
-        (c::FIELD_FILL(), c::FG(), c::BG_HOVER())
+        (c::FIELD_FILL(), c::FG_DIM(), c::BG_HOVER())
     };
     dense_action_with_colors(id, label, fill, foreground, hover, window, cx)
 }
@@ -387,7 +389,14 @@ pub fn dense_action_with_colors(
         Sizable,
     };
     let recipe = DENSE_ACTION_RECIPE;
+    let neutral = foreground == c::FG() || foreground == c::FG_DIM();
+    let rest_foreground = if neutral { c::FG_DIM() } else { foreground };
     Button::new(id)
+        .group(if neutral {
+            "neutral-control"
+        } else {
+            "semantic-control"
+        })
         .label(label)
         .loading_icon(
             gpui_component::Icon::default().path(format!("icons/{}.svg", recipe.loading_icon)),
@@ -399,7 +408,8 @@ pub fn dense_action_with_colors(
         .custom(
             ButtonCustomVariant::new(cx)
                 .color(fill)
-                .foreground(foreground)
+                .foreground(rest_foreground)
+                .hover_foreground(if neutral { c::FG() } else { foreground })
                 .hover(hover)
                 .active(hover)
                 .shadow(false),
@@ -418,6 +428,7 @@ pub fn question_choice(
     div()
         .id(id)
         .cursor_pointer()
+        .group("neutral-control")
         .role(if multiple {
             gpui::Role::CheckBox
         } else {
@@ -440,8 +451,9 @@ pub fn question_choice(
         .gap(rpx(SPACE_LG))
         .p(rpx(SPACE_LG))
         .rounded(rpx(RADIUS_CONTROL))
+        .text_color(c::FG_DIM())
         .bg(if selected { c::BG_HL() } else { c::BG_RAIL() })
-        .hover(|style| style.bg(c::BG_HOVER()))
+        .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
         .focus_visible(|style| style.bg(c::BG_HOVER()).border_color(c::BORDER_STRONG()))
         .border_1()
         .border_color(c::BORDER_SOFT())
@@ -496,6 +508,7 @@ pub fn question_disclosure(
         .role(gpui::Role::Button)
         .cursor_pointer()
         .aria_label(label.clone())
+        .group("neutral-control")
         .aria_expanded(expanded)
         .aria_description(if expanded {
             "Expanded. Activate to collapse"
@@ -513,8 +526,9 @@ pub fn question_disclosure(
         .py(rpx(SPACE_2XL))
         .border_t_1()
         .border_color(c::BORDER_SOFT())
+        .text_color(c::FG_DIM())
         .when(expanded, |row| row.bg(c::FIELD_FILL()))
-        .hover(|row| row.bg(c::BG_HOVER()))
+        .hover(|row| row.bg(c::BG_HOVER()).text_color(c::FG()))
         .focus_visible(|row| row.bg(c::BG_HOVER()))
         .child(crate::icons::icon(
             if expanded { "chev-down" } else { "chev-right" },
@@ -565,10 +579,11 @@ pub fn settings_control(
         .border_1()
         .border_color(c::BORDER_SOFT())
         .text_size(rpx(TEXT_SMALL))
-        .text_color(if enabled { c::FG() } else { c::FG_DIM() })
+        .text_color(c::FG_DIM())
         .when(enabled, |el| {
             el.cursor_pointer()
-                .hover(|style| style.bg(c::BG_HOVER()))
+                .group("neutral-control")
+                .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
         })
         .when(!enabled, |el| el.cursor_default().opacity(OPACITY_DISABLED))

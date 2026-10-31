@@ -443,6 +443,7 @@ pub struct ModelFavorite {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LandingPage {
+    NewSession,
     #[default]
     Home,
     Projects,
@@ -450,9 +451,10 @@ pub enum LandingPage {
     History,
 }
 impl LandingPage {
-    pub const ALL: [Self; 3] = [Self::Home, Self::Projects, Self::History];
+    pub const ALL: [Self; 4] = [Self::NewSession, Self::Home, Self::Projects, Self::History];
     pub fn label(self) -> &'static str {
         match self {
+            Self::NewSession => "New Session",
             Self::Home => "Home",
             Self::Projects => "Projects",
             Self::Sessions => "Sessions",

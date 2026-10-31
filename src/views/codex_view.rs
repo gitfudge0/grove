@@ -573,7 +573,10 @@ fn composer_icon(
         button.focus_visible(|style| style.border_1().border_color(c::SEL_RING()))
     })
     .when(disabled, |button| {
-        button.cursor_default().opacity(OPACITY_DISABLED)
+        button
+            .group("disabled-control")
+            .cursor_default()
+            .opacity(OPACITY_DISABLED)
     })
     .child(crate::icons::icon(
         icon,

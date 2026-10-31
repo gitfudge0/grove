@@ -33,6 +33,7 @@ pub fn platform_mod_label() -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlobalShortcut {
     NewSession,
+    OpenNewSession,
     OpenHome,
     OpenProjects,
     OpenHistory,
@@ -161,9 +162,18 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         literal: false,
     },
     ShortcutDef {
-        action: Some(GlobalShortcut::OpenHome),
+        action: Some(GlobalShortcut::OpenNewSession),
         triggers: &["1"],
         display_keys: "1",
+        description: "New Session composer",
+        scopes: G,
+        requires_alt: false,
+        literal: false,
+    },
+    ShortcutDef {
+        action: Some(GlobalShortcut::OpenHome),
+        triggers: &["2"],
+        display_keys: "2",
         description: "Home",
         scopes: G,
         requires_alt: false,
@@ -171,8 +181,8 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
     },
     ShortcutDef {
         action: Some(GlobalShortcut::OpenProjects),
-        triggers: &["2"],
-        display_keys: "2",
+        triggers: &["3"],
+        display_keys: "3",
         description: "Projects",
         scopes: G,
         requires_alt: false,
@@ -180,8 +190,8 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
     },
     ShortcutDef {
         action: Some(GlobalShortcut::OpenHistory),
-        triggers: &["3"],
-        display_keys: "3",
+        triggers: &["4"],
+        display_keys: "4",
         description: "History",
         scopes: G,
         requires_alt: false,
@@ -567,6 +577,7 @@ actions!(
     grove,
     [
         NewSession,
+        OpenNewSession,
         OpenHome,
         OpenProjects,
         OpenHistory,
@@ -785,6 +796,7 @@ fn binding_for(keystroke: &str, sc: GlobalShortcut, ctx: Option<&str>) -> Option
     use GlobalShortcut as S;
     Some(match sc {
         S::NewSession => KeyBinding::new(keystroke, NewSession, ctx),
+        S::OpenNewSession => KeyBinding::new(keystroke, OpenNewSession, ctx),
         S::OpenHome => KeyBinding::new(keystroke, OpenHome, ctx),
         S::OpenProjects => KeyBinding::new(keystroke, OpenProjects, ctx),
         S::OpenHistory => KeyBinding::new(keystroke, OpenHistory, ctx),
@@ -844,6 +856,7 @@ pub fn shell_bindings() -> Vec<KeyBinding> {
         matches!(
             action,
             S::NewSession
+                | S::OpenNewSession
                 | S::OpenHome
                 | S::OpenProjects
                 | S::OpenHistory

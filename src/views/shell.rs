@@ -408,7 +408,10 @@ impl Shell {
             .tab_index(if enabled { 0 } else { -1 })
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .when(!enabled, |control| {
-                control.cursor_default().opacity(OPACITY_DISABLED)
+                control
+                    .group("disabled-control")
+                    .cursor_default()
+                    .opacity(OPACITY_DISABLED)
             })
             .when(enabled, |control| {
                 control
@@ -1707,24 +1710,31 @@ impl Render for Shell {
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &k::OpenHome, window, cx| {
+            .on_action(cx.listener(|this, _: &k::OpenNewSession, window, cx| {
                 if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.open_numbered_destination(1, window, cx);
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &k::OpenProjects, window, cx| {
+            .on_action(cx.listener(|this, _: &k::OpenHome, window, cx| {
                 if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.open_numbered_destination(2, window, cx);
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &k::OpenHistory, window, cx| {
+            .on_action(cx.listener(|this, _: &k::OpenProjects, window, cx| {
                 if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.open_numbered_destination(3, window, cx);
+                    });
+                }
+            }))
+            .on_action(cx.listener(|this, _: &k::OpenHistory, window, cx| {
+                if !this.shortcut_blocked_in(window, cx) {
+                    this.sidebar.update(cx, |sidebar, cx| {
+                        sidebar.open_numbered_destination(4, window, cx);
                     });
                 }
             }))
@@ -2135,8 +2145,9 @@ mod tests {
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
         for (key, destination) in [
-            ("2", "projects-destination"),
-            ("3", "session-history-page"),
+            ("3", "projects-destination"),
+            ("4", "session-history-page"),
+            ("2", "dashboard-page"),
             ("1", "dashboard-page"),
         ] {
             cx.update(|window, cx| {

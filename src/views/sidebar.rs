@@ -491,7 +491,7 @@ pub struct Sidebar {
     dashboard_open: bool,
     destination: global_navigation::Destination,
     navigation_transition: Option<(Instant, f32, f32)>,
-    navigation_focus: [FocusHandle; 3],
+    navigation_focus: [FocusHandle; 4],
     session_history: Vec<grove_core::codex::SavedSession>,
     cli_session_history: Vec<grove_core::session_meta::ClosedCliSession>,
     session_history_loading: bool,
@@ -1303,7 +1303,7 @@ impl Sidebar {
     ) {
         self.sync(window, cx);
         if self.dashboard_open {
-            self.open_dashboard(window, cx);
+            self.open_destination(self.destination, window, cx);
             return;
         }
         if self.mode != ViewMode::Grid || self.is_zen() {
@@ -1927,6 +1927,11 @@ impl Sidebar {
             .gap(rpx(SPACE_SM))
             .justify_center()
             .rounded(rpx(RADIUS_CONTROL))
+            .text_color(c::FG_DIM())
+            .when(
+                (!confirming || decision) && !danger && !primary,
+                |control| control.group("neutral-control"),
+            )
             .hover(move |s| {
                 if hierarchy_row {
                     s.text_color(c::FG())
@@ -1943,7 +1948,7 @@ impl Sidebar {
                 } else if primary {
                     s.bg(c::FG_DIM()).text_color(c::BG())
                 } else {
-                    s.bg(c::BG_HOVER())
+                    s.bg(c::BG_HOVER()).text_color(c::FG())
                 }
             })
             .focus_visible(move |s| {
@@ -2065,8 +2070,11 @@ impl Sidebar {
             }
             Selection::Home(_) => self.destination = global_navigation::Destination::Terminals,
             Selection::Session(_)
-                if self.destination == global_navigation::Destination::Home
-                    || self.destination == global_navigation::Destination::Terminals =>
+                if matches!(
+                    self.destination,
+                    global_navigation::Destination::Home
+                        | global_navigation::Destination::NewSession
+                ) || self.destination == global_navigation::Destination::Terminals =>
             {
                 if self.mode == ViewMode::Grid {
                     self.destination = global_navigation::Destination::Projects;

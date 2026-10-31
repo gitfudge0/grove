@@ -35,6 +35,7 @@ impl From<Pixels> for ButtonRounded {
 pub struct ButtonCustomVariant {
     color: Hsla,
     foreground: Hsla,
+    hover_foreground: Option<Hsla>,
     shadow: bool,
     hover: Hsla,
     active: Hsla,
@@ -90,6 +91,7 @@ impl ButtonCustomVariant {
         Self {
             color: cx.theme().transparent,
             foreground: cx.theme().foreground,
+            hover_foreground: None,
             hover: cx.theme().transparent,
             active: cx.theme().transparent,
             shadow: false,
@@ -105,6 +107,12 @@ impl ButtonCustomVariant {
     /// Set foreground color, default is theme foreground.
     pub fn foreground(mut self, color: Hsla) -> Self {
         self.foreground = color;
+        self
+    }
+
+    /// Set the hover foreground without changing disabled or resting colors.
+    pub fn hover_foreground(mut self, color: Hsla) -> Self {
+        self.hover_foreground = Some(color);
         self
     }
 
@@ -506,6 +514,7 @@ impl RenderOnce for Button {
             self.icon.as_ref().and_then(ButtonIcon::source_path)
         };
         self.base
+            .when(is_disabled, |base| base.group("disabled-control"))
             .role(if self.variant.is_link() {
                 Role::Link
             } else {
@@ -1023,6 +1032,7 @@ impl ButtonVariant {
         let fg = match self {
             Self::Link => cx.theme().link_hover,
             Self::Text => cx.theme().foreground,
+            Self::Custom(colors) => colors.hover_foreground.unwrap_or(colors.foreground),
             _ => self.text_color(outline, cx),
         };
 
@@ -1103,6 +1113,7 @@ impl ButtonVariant {
         let fg = match self {
             Self::Link => cx.theme().link_active,
             Self::Text => cx.theme().foreground.opacity(0.7),
+            Self::Custom(colors) => colors.hover_foreground.unwrap_or(colors.foreground),
             _ => self.text_color(outline, cx),
         };
         let underline = self.underline(cx);
@@ -1259,6 +1270,15 @@ mod tests {
                 assert_eq!(variant.active(false, cx).bg, active.into());
                 assert_eq!(variant.active(false, cx).fg, foreground);
                 assert_eq!(variant.disabled(false, cx).fg, foreground.opacity(0.5));
+                let strong: Hsla = gpui::rgb(0x080808).into();
+                let ButtonVariant::Custom(colors) = variant else {
+                    unreachable!()
+                };
+                let strengthened = ButtonVariant::Custom(colors.hover_foreground(strong));
+                assert_eq!(strengthened.normal(false, cx).fg, foreground);
+                assert_eq!(strengthened.hovered(false, cx).fg, strong);
+                assert_eq!(strengthened.active(false, cx).fg, strong);
+                assert_eq!(strengthened.disabled(false, cx).fg, foreground.opacity(0.5));
                 assert_ne!(
                     variant.disabled(false, cx).bg,
                     variant.disabled(false, cx).fg.into()

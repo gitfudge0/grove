@@ -1135,7 +1135,13 @@ impl SettingsPanel {
         let mut landing_choices = Self::choices();
         for page in grove_core::storage::LandingPage::ALL {
             let label = page.label();
-            let id = format!("settings-landing-{}", label.to_lowercase());
+            let id = match page {
+                grove_core::storage::LandingPage::NewSession => {
+                    "settings-landing-new-session".to_owned()
+                }
+                grove_core::storage::LandingPage::Home => "settings-landing-home".to_owned(),
+                _ => format!("settings-landing-{}", label.to_lowercase()),
+            };
             landing_choices = landing_choices.child(
                 self.choice(id.clone(), label, landing_page == page, true)
                     .debug_selector(move || id.clone())
@@ -1960,6 +1966,10 @@ mod tests {
         cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(900.)));
         draw(cx);
         for (name, page) in [
+            (
+                "settings-landing-new-session",
+                grove_core::storage::LandingPage::NewSession,
+            ),
             (
                 "settings-landing-projects",
                 grove_core::storage::LandingPage::Projects,

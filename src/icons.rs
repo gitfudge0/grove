@@ -23,22 +23,34 @@
 #![allow(dead_code)]
 
 use crate::views::rpx;
-use gpui::{svg, Hsla, SharedString, Styled as _, Svg};
+use gpui::{svg, Hsla, InteractiveElement as _, SharedString, Styled as _, Svg};
 
 use crate::entities::animation_clock::{spinner_frame, SPINNER_FRAMES};
 
 /// A square icon by sprite name. Provider marks retain their brand colors;
 /// all other glyphs use the caller’s semantic tint.
 pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
+    let provider = matches!(
+        name.strip_prefix("compact-status-").unwrap_or(name),
+        "claude" | "codex"
+    );
+    let neutral = !provider && (color == crate::theme::FG_DIM() || color == crate::theme::FG());
     let color = match name.strip_prefix("compact-status-").unwrap_or(name) {
         "claude" => crate::theme::CLAUDE_BRAND(),
         "codex" => crate::theme::OPENAI_BRAND(),
         _ => color,
     };
-    svg()
+    let glyph = svg()
         .path(SharedString::from(format!("icons/{name}.svg")))
         .size(rpx(size))
-        .text_color(color)
+        .text_color(color);
+    if neutral {
+        glyph.group_hover("neutral-control", |style| {
+            style.text_color(crate::theme::FG())
+        })
+    } else {
+        glyph
+    }
 }
 
 /// Action glyphs follow their button's foreground through hover and focus.

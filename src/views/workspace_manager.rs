@@ -491,6 +491,8 @@ impl WorkspaceManager {
                         .h(rpx(MENU_ROW_H))
                         .flex_shrink_0()
                         .text_size(rpx(TEXT_BODY))
+                        .text_color(c::FG_DIM())
+                        .group("neutral-control")
                         .font_weight(FontWeight::MEDIUM)
                         .px(rpx(SPACE_LG))
                         .flex()
@@ -501,7 +503,7 @@ impl WorkspaceManager {
                             el.bg(c::MENU_HOVER())
                         })
                         .when(!self.keyboard_navigation, |el| {
-                            el.hover(|s| s.bg(c::MENU_HOVER()))
+                            el.hover(|s| s.bg(c::MENU_HOVER()).text_color(c::FG()))
                         })
                         .on_mouse_move(cx.listener(move |this, _, _, cx| {
                             if this.panel == Panel::Menu
@@ -567,6 +569,8 @@ impl WorkspaceManager {
                         .aria_label(label)
                         .h(rpx(MENU_ROW_H))
                         .text_size(rpx(TEXT_BODY))
+                        .text_color(c::FG_DIM())
+                        .group("neutral-control")
                         .font_weight(FontWeight::MEDIUM)
                         .flex_shrink_0()
                         .px(rpx(SPACE_LG))
@@ -580,7 +584,7 @@ impl WorkspaceManager {
                             |el| el.bg(c::MENU_HOVER()),
                         )
                         .when(!self.keyboard_navigation, |el| {
-                            el.hover(|s| s.bg(c::MENU_HOVER()))
+                            el.hover(|s| s.bg(c::MENU_HOVER()).text_color(c::FG()))
                         })
                         .on_mouse_move(cx.listener(move |this, _, _, cx| {
                             let index = this.state.rows.len() + offset;
