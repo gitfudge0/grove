@@ -6805,6 +6805,7 @@ mod tests {
             for (label, width, collapsed) in [
                 ("narrow", 220.0, false),
                 ("default", 260.0, false),
+                ("wide", 360.0, false),
                 ("collapsed", 260.0, true),
             ] {
                 cx.update(|cx| {

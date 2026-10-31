@@ -642,9 +642,8 @@ impl Sidebar {
             )
             .debug_selector(|| "header-workspace".into())
             .track_focus(&self.compact_workspace_focus)
-            .w_auto()
+            .w_full()
             .justify_start()
-            .max_w(rpx(SIDEBAR_W))
             .h(rpx(HEAD_H))
             .px(rpx(SPACE_LG))
             .gap(rpx(SPACE_SM))
@@ -671,9 +670,8 @@ impl Sidebar {
         }
         div()
             .relative()
-            .w_auto()
+            .w_full()
             .min_w_0()
-            .max_w(rpx(SIDEBAR_W))
             .child(row.w_full().min_w_0())
             .when(self.runtime.read(cx).upgrade.read(cx).can_update(), |d| {
                 d.child(
@@ -726,6 +724,16 @@ mod tests {
         assert!(cx.debug_bounds("sidebar-rail").is_none());
         assert!(cx.debug_bounds("global-nav-home").is_some());
         assert!(cx.debug_bounds("global-nav-history").is_some());
+        for width in [220., 260., 360.] {
+            cx.update(|_, cx| {
+                SettingsState::update(cx, |store| store.sidebar_width = Some(width));
+            });
+            draw(cx);
+            let workspace = cx.debug_bounds("header-workspace").unwrap();
+            let destination = cx.debug_bounds("global-nav-home").unwrap();
+            assert_eq!(workspace.left(), destination.left());
+            assert_eq!(workspace.right(), destination.right());
+        }
         let projects = cx.debug_bounds("global-nav-projects").unwrap();
         cx.simulate_click(projects.center(), gpui::Modifiers::default());
         draw(cx);
