@@ -1690,20 +1690,26 @@ impl Sidebar {
                 );
             return motion::base(editor, "worktree-editor-enter", cx);
         }
-        if self.dashboard_open {
-            return self.render_dashboard(window, cx);
-        }
         if self.destination == super::global_navigation::Destination::History
-            && self.selection.is_none()
+            && self.session_history_selected.is_some()
         {
             return self.render_session_history(window, cx);
         }
-        if self.destination == super::global_navigation::Destination::Projects
+        if self.dashboard_open {
+            return self.render_dashboard(window, cx);
+        }
+        let canvas_destination =
+            if self.destination == super::global_navigation::Destination::History {
+                self.history_canvas_destination
+            } else {
+                self.destination
+            };
+        if canvas_destination == super::global_navigation::Destination::Projects
             && matches!(self.selection, None | Some(Selection::Project(_)))
         {
             return self.render_projects_destination(window, cx);
         }
-        if self.destination == super::global_navigation::Destination::Sessions
+        if canvas_destination == super::global_navigation::Destination::Sessions
             && self.selection.is_none()
         {
             return div()
@@ -1767,7 +1773,8 @@ impl Sidebar {
                     div()
                         .debug_selector(|| "navigation-empty-message".into())
                         .child(
-                            if self.destination == super::global_navigation::Destination::Terminals
+                            if canvas_destination
+                                == super::global_navigation::Destination::Terminals
                             {
                                 "Select a terminal to view here"
                             } else {

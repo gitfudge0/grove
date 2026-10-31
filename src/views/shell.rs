@@ -2304,7 +2304,7 @@ mod tests {
         draw(cx);
         for (key, destination) in [
             ("3", "projects-destination"),
-            ("4", "session-history-page"),
+            ("4", "history-list-scroll"),
             ("2", "dashboard-page"),
             ("1", "worktree-launcher-panel"),
         ] {

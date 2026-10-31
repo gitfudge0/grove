@@ -93,7 +93,16 @@ impl Sidebar {
         self.pending_canvas_focus = None;
         self.pending_grid_workspace_focus = None;
         self.initial_selection_pending = false;
-        if destination == Destination::Home {
+        if destination == Destination::History {
+            if self.destination != Destination::History {
+                self.history_canvas_destination = self.destination;
+            }
+            self.destination = destination;
+            self.session_history_selected = None;
+            self.session_history_view = None;
+            self.load_session_history(cx);
+            self.focus.focus(window, cx);
+        } else if destination == Destination::Home {
             self.open_dashboard(window, cx);
             self.focus.focus(window, cx);
         } else {
@@ -159,7 +168,8 @@ impl Sidebar {
         {
             let selected = !settings
                 && self.destination == destination
-                && (self.selection.is_none() || destination == Destination::Home);
+                && (self.selection.is_none()
+                    || matches!(destination, Destination::Home | Destination::History));
             let id = match destination {
                 Destination::NewSession => "global-nav-new-session".to_owned(),
                 Destination::Home => "global-nav-home".to_owned(),
@@ -206,8 +216,7 @@ impl Sidebar {
                 }),
             );
         }
-        let showing_history =
-            !settings && self.destination == Destination::History && self.selection.is_none();
+        let showing_history = !settings && self.destination == Destination::History;
         let grouping = SessionGrouping::current(&cx.global::<SettingsState>().store);
         let mut heading = div()
             .debug_selector(|| "sidebar-sessions-heading".into())
@@ -389,7 +398,7 @@ impl Sidebar {
                 .inset_0(),
             )
             .child(nav)
-            .child(heading)
+            .when(!showing_history, |rail| rail.child(heading))
             .child(if showing_history {
                 self.render_history_sidebar(window, cx, collapsed)
             } else {
@@ -741,7 +750,7 @@ mod tests {
         cx.update(|_, cx| {
             sidebar.update(cx, |s, cx| {
                 s.destination = Destination::History;
-                s.dashboard_open = false;
+                s.dashboard_open = true;
                 s.selection = None;
                 for (key, provider) in [
                     ("codex-record", grove_core::codex::Provider::Codex),
@@ -793,9 +802,9 @@ mod tests {
         draw(cx);
         let rail = cx.debug_bounds("global-navigation").unwrap();
         let list = cx.debug_bounds("history-list-scroll").unwrap();
-        let detail = cx.debug_bounds("history-detail").unwrap();
+        assert!(cx.debug_bounds("dashboard-page").is_some());
+        assert!(cx.debug_bounds("history-detail").is_none());
         assert!(list.left() >= rail.left() && list.right() <= rail.right());
-        assert!(detail.left() >= rail.right());
         assert!(cx.debug_bounds("sidebar-scroll").is_none());
         assert!(cx.debug_bounds("session-group-false").is_none());
         for (key, selector) in [
@@ -834,7 +843,7 @@ mod tests {
         let first = cx.debug_bounds("session-history-codex-record").unwrap();
         let last = cx.debug_bounds("session-history-overflow-19").unwrap();
         let nav = cx.debug_bounds("global-nav-history").unwrap();
-        let heading = cx.debug_bounds("sidebar-sessions-heading").unwrap();
+        assert!(cx.debug_bounds("sidebar-sessions-heading").is_none());
         let terminals = cx.debug_bounds("single-terminals-scroll").unwrap();
         assert!(
             last.bottom() > scroll.bottom(),
@@ -854,7 +863,7 @@ mod tests {
         );
         assert_eq!(cx.debug_bounds("history-list-scroll"), Some(scroll));
         assert_eq!(cx.debug_bounds("global-nav-history"), Some(nav));
-        assert_eq!(cx.debug_bounds("sidebar-sessions-heading"), Some(heading));
+        assert!(cx.debug_bounds("sidebar-sessions-heading").is_none());
         assert_eq!(cx.debug_bounds("single-terminals-scroll"), Some(terminals));
 
         let home = cx.debug_bounds("global-nav-home").unwrap();
@@ -1086,9 +1095,11 @@ mod tests {
                     .flat_map(|(_, ids)| ids)
                     .collect::<Vec<_>>();
                 assert_eq!(ids.len(), 2);
+                let selection = s.selection.clone();
+                let dashboard_open = s.dashboard_open;
                 s.open_destination(Destination::History, window, cx);
-                assert!(s.selection.is_none());
-                assert!(!s.dashboard_open);
+                assert_eq!(s.selection, selection);
+                assert_eq!(s.dashboard_open, dashboard_open);
                 assert_eq!(s.runtime.read(cx).registry.read(cx).all().len(), 2);
                 s.open_destination(Destination::Home, window, cx);
                 assert_eq!(

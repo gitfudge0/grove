@@ -374,7 +374,7 @@ impl Sidebar {
             .flex_1()
             .flex()
             .flex_col()
-            .when(!collapsed, |list| {
+            .when(!collapsed && !sidebar, |list| {
                 list.child(
                     div()
                         .p(rpx(SPACE_2XL))
@@ -425,7 +425,7 @@ impl Sidebar {
                         ),
                 )
             })
-            .when(!collapsed, |list| {
+            .when(!collapsed && !sidebar, |list| {
                 list.child(
                     div()
                         .px(rpx(SPACE_2XL))
@@ -498,6 +498,7 @@ impl Sidebar {
                 .justify_start()
                 .p(rpx(SPACE_2XL))
                 .gap(rpx(SPACE_LG))
+                
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
@@ -526,6 +527,7 @@ impl Sidebar {
                 .justify_start()
                 .p(rpx(SPACE_2XL))
                 .gap(rpx(SPACE_LG))
+                
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
@@ -816,26 +818,12 @@ fn history_card_content(
                 .text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG_DIM())
                 .child(icon(agent.icon_name(), ICON_MD, c::FG()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(project.to_string()),
-                )
+                .child(div().min_w_0().truncate().child(project.to_string()))
+                .child(icon("git-branch", ICON_SM, c::FG_DIM()))
+                .child(div().min_w_0().truncate().child(checkout.to_string()))
                 .when(cli, |row| row.child("CLI")),
         )
         .child(div().min_w_0().truncate().child(title.to_string()))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_SM))
-                .text_size(rpx(TEXT_SMALL))
-                .text_color(c::FG_DIM())
-                .child(icon("git-branch", ICON_SM, c::FG_DIM()))
-                .child(div().min_w_0().truncate().child(checkout.to_string())),
-        )
 }
 
 fn history_matches(query: &str, title: &str, project: &str, cwd: &str) -> bool {

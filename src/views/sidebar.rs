@@ -494,6 +494,7 @@ pub struct Sidebar {
     dashboard: Option<dashboard::Dashboard>,
     dashboard_open: bool,
     destination: global_navigation::Destination,
+    history_canvas_destination: global_navigation::Destination,
     navigation_transition: Option<(Instant, f32, f32)>,
     navigation_focus: [FocusHandle; 4],
     session_history: Vec<grove_core::codex::SavedSession>,
@@ -728,6 +729,7 @@ impl Sidebar {
             dashboard: None,
             dashboard_open: false,
             destination: global_navigation::Destination::Home,
+            history_canvas_destination: global_navigation::Destination::Home,
             navigation_transition: None,
             navigation_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             session_history: Vec::new(),
@@ -2096,6 +2098,11 @@ impl Sidebar {
 
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
         self.dashboard_open = false;
+        if self.destination == global_navigation::Destination::History {
+            self.destination = global_navigation::Destination::Sessions;
+            self.session_history_selected = None;
+            self.session_history_view = None;
+        }
         match selection {
             Selection::Project(_) | Selection::Worktree(..) => {
                 self.destination = global_navigation::Destination::Projects;
