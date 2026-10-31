@@ -443,7 +443,7 @@ impl Sidebar {
                     .flex_shrink_0()
                     .when(vertical, |seam| seam.w(gpui::px(1.)).h_full())
                     .when(!vertical, |seam| seam.h(gpui::px(1.)).w_full())
-                    .group_hover("grid-divider", |seam| seam.bg(c::BG_HOVER()))
+                    .group_hover("grid-divider", |seam| seam.bg(c::FG_DIM()))
                     .when(focus.is_focused(window), |seam| seam.bg(c::BG_HOVER())),
             )
             .on_mouse_down(

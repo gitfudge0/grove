@@ -857,8 +857,8 @@ fn project_action(
             ButtonCustomVariant::new(cx)
                 .color(fill)
                 .foreground(fg)
-                .hover(hover)
-                .active(hover)
+                .hover(fill)
+                .active(fill)
                 .shadow(false),
         )
     };
@@ -1324,7 +1324,7 @@ impl Render for ProjectPanel {
                                 .border_1()
                                 .border_color(c::BORDER_SOFT())
                                 .bg(if selected { c::BG_HOVER() } else { c::BG() })
-                                .hover(|style| style.bg(c::BG_HOVER()))
+                                .hover(|style| style.text_color(c::FG()))
                                 .focus_visible(|style| style.border_color(c::FG()))
                                 .flex()
                                 .items_center()

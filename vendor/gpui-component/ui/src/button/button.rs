@@ -599,8 +599,7 @@ impl RenderOnce for Button {
                     .when(normal_style.underline, |this| this.text_decoration_1())
                     .hover(|this| {
                         let hover_style = style.hovered(self.outline, cx);
-                        this.bg(hover_style.bg)
-                            .border_color(hover_style.border)
+                        this.border_color(hover_style.border)
                             .text_color(hover_style.fg)
                     })
                     .active(|this| {

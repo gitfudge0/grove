@@ -351,7 +351,7 @@ pub fn BG_HOVER() -> Hsla {
     chrome(ChromeRole::Hover)
 }
 
-/// Neutral fill for dense menu hover and keyboard navigation.
+/// Neutral fill for selected menu items and keyboard navigation.
 pub fn MENU_HOVER() -> Hsla {
     chrome(ChromeRole::Hover)
 }
@@ -431,7 +431,7 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     theme.popover_foreground = FG();
     theme.muted_foreground = FG_DIM();
     theme.muted = FIELD_FILL();
-    // Markdown inline code and component hover/selected fills share this neutral role.
+    // Markdown inline code and selected/focused component fills share this neutral role.
     theme.accent = MENU_HOVER();
     theme.accent_foreground = FG();
     theme.input = FIELD_FILL();
@@ -443,12 +443,12 @@ pub fn sync_component_theme(cx: &mut gpui::App) {
     theme.button_danger_hover = FORM_ERROR();
     theme.button_danger_active = FORM_ERROR();
     theme.button_primary = FG();
-    theme.button_primary_hover = FG_DIM();
-    theme.button_primary_active = FG_DIM();
+    theme.button_primary_hover = FG();
+    theme.button_primary_active = FG();
     theme.button_primary_foreground = BG();
     theme.button_secondary = FIELD_FILL();
-    theme.button_secondary_hover = BG_HOVER();
-    theme.button_secondary_active = BG_HOVER();
+    theme.button_secondary_hover = FIELD_FILL();
+    theme.button_secondary_active = FIELD_FILL();
     theme.button_secondary_foreground = FG();
     theme.caret = FG();
     theme.selection = TEXT_SELECTION();

@@ -102,7 +102,7 @@ pub fn header_control_with_tooltip(
 pub(super) fn header_control_frame(
     id: impl Into<gpui::ElementId>,
     label: impl Into<gpui::SharedString>,
-    hover: gpui::Hsla,
+    _hover: gpui::Hsla,
 ) -> Stateful<Div> {
     div()
         .id(id)
@@ -117,7 +117,7 @@ pub(super) fn header_control_frame(
         .rounded(rpx(RADIUS_CONTROL))
         .group("neutral-control")
         .text_color(c::FG_DIM())
-        .hover(move |s| s.bg(hover).text_color(c::FG()))
+        .hover(|s| s.text_color(c::FG()))
         .on_mouse_down(MouseButton::Left, |_, window, cx| {
             window.prevent_default();
             cx.stop_propagation();
@@ -380,7 +380,7 @@ pub fn dense_action_with_colors(
     label: impl Into<gpui::SharedString>,
     fill: gpui::Hsla,
     foreground: gpui::Hsla,
-    hover: gpui::Hsla,
+    _hover: gpui::Hsla,
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> gpui_component::button::Button {
@@ -410,8 +410,8 @@ pub fn dense_action_with_colors(
                 .color(fill)
                 .foreground(rest_foreground)
                 .hover_foreground(if neutral { c::FG() } else { foreground })
-                .hover(hover)
-                .active(hover)
+                .hover(fill)
+                .active(fill)
                 .shadow(false),
         )
         .rounded(rpx(recipe.radius).to_pixels(window.rem_size()))
@@ -453,7 +453,7 @@ pub fn question_choice(
         .rounded(rpx(RADIUS_CONTROL))
         .text_color(c::FG_DIM())
         .bg(if selected { c::BG_HL() } else { c::BG_RAIL() })
-        .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+        .hover(|style| style.text_color(c::FG()))
         .focus_visible(|style| style.bg(c::BG_HOVER()).border_color(c::BORDER_STRONG()))
         .border_1()
         .border_color(c::BORDER_SOFT())
@@ -528,7 +528,7 @@ pub fn question_disclosure(
         .border_color(c::BORDER_SOFT())
         .text_color(c::FG_DIM())
         .when(expanded, |row| row.bg(c::FIELD_FILL()))
-        .hover(|row| row.bg(c::BG_HOVER()).text_color(c::FG()))
+        .hover(|row| row.text_color(c::FG()))
         .focus_visible(|row| row.bg(c::BG_HOVER()))
         .child(crate::icons::icon(
             if expanded { "chev-down" } else { "chev-right" },
@@ -583,7 +583,7 @@ pub fn settings_control(
         .when(enabled, |el| {
             el.cursor_pointer()
                 .group("neutral-control")
-                .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+                .hover(|style| style.text_color(c::FG()))
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
         })
         .when(!enabled, |el| el.cursor_default().opacity(OPACITY_DISABLED))

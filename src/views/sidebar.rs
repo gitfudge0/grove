@@ -1933,22 +1933,12 @@ impl Sidebar {
                 |control| control.group("neutral-control"),
             )
             .hover(move |s| {
-                if hierarchy_row {
-                    s.text_color(c::FG())
-                } else if project_session_row {
-                    s.bg(if selected_session_row {
-                        c::alpha(c::FG(), 0.14)
-                    } else {
-                        c::BG_HOVER()
-                    })
-                } else if project_diff_button || quiet_launch_control {
-                    s
-                } else if danger {
-                    s.bg(c::RED_WASH()).text_color(c::RED())
+                if danger {
+                    s.text_color(c::RED())
                 } else if primary {
-                    s.bg(c::FG_DIM()).text_color(c::BG())
+                    s.text_color(c::BG())
                 } else {
-                    s.bg(c::BG_HOVER()).text_color(c::FG())
+                    s.text_color(c::FG())
                 }
             })
             .focus_visible(move |s| {

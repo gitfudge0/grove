@@ -319,8 +319,8 @@ export function verifyInteraction(native, snapshot, document) {
     } else if (entry.name === 'focus_restoration') {
       if (!handle(facts.before) || facts.before !== facts.after) fail('interaction.focus_restoration.focus', 'same nonempty native focus identity', facts);
     } else if (entry.name === 'hover_release') {
-      if (!rgba(facts.rest) || !rgba(facts.hover) || !rgba(facts.released) || !same(facts.rest, facts.released) || same(facts.rest, facts.hover)) fail('interaction.hover_release.pixels', 'actual distinct hover and restored rest pixels', facts);
-      if (!same(facts.rest, unorm(snapshot?.colors_rgba?.rail)) || !same(facts.hover, unorm(snapshot?.colors_rgba?.hover))) fail('interaction.hover_release.design_system', 'actual rest/hover palette roles', facts);
+      if (!rgba(facts.rest) || !rgba(facts.hover) || !rgba(facts.released) || !same(facts.rest, facts.released) || !same(facts.rest, facts.hover)) fail('interaction.hover_release.pixels', 'unchanged native rest/hover/released background pixels', facts);
+      if (!same(facts.rest, unorm(snapshot?.colors_rgba?.rail)) || !same(facts.hover, unorm(snapshot?.colors_rgba?.rail))) fail('interaction.hover_release.design_system', 'actual retained rest palette role', facts);
     } else if (entry.name === 'stable_slots') {
       const groups = facts.groups;
       const primary = controls.find(control => control.state === 'rest');

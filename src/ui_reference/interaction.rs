@@ -204,9 +204,9 @@ pub fn observe(
         doc.fixture.scale,
     );
     assert_eq!(rest, released, "release must return native fill to rest");
-    assert_ne!(
+    assert_eq!(
         rest, hover,
-        "hover must exercise a different actual native fill"
+        "pointer hover must retain the actual native rest fill"
     );
     cases.push(serde_json::json!({"name":"hover_release","status":"passed","observed":{"rest":rest,"hover":hover,"released":released}}));
     let before = log.borrow().len();

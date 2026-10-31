@@ -262,6 +262,7 @@ pub struct PopupMenu {
     /// Unlike `action_context`, doesn't change where actions dispatch — they still bubble from the menu's own focus path.
     pub(crate) previous_focus_handle: Option<FocusHandle>,
     selected_index: Option<usize>,
+    keyboard_navigation: bool,
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
     max_height: Option<Pixels>,
@@ -291,6 +292,7 @@ impl PopupMenu {
             parent_menu: None,
             menu_items: Vec::new(),
             selected_index: None,
+            keyboard_navigation: false,
             min_width: None,
             max_width: None,
             max_height: None,
@@ -742,6 +744,15 @@ impl PopupMenu {
         None
     }
 
+    fn highlighted_index(&self) -> Option<usize> {
+        self.selected_index.filter(|_| self.keyboard_navigation)
+    }
+
+    #[cfg(feature = "grove-test-support")]
+    pub fn test_highlighted_index(&self) -> Option<usize> {
+        self.highlighted_index()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.menu_items.is_empty()
     }
@@ -807,7 +818,9 @@ impl PopupMenu {
     }
 
     fn set_selected_index(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if self.selected_index != Some(ix) {
+        let was_keyboard = self.keyboard_navigation;
+        self.keyboard_navigation = true;
+        if self.selected_index != Some(ix) || !was_keyboard {
             self.selected_index = Some(ix);
             self.scroll_handle.scroll_to_item(ix);
             cx.notify();
@@ -1105,11 +1118,15 @@ impl PopupMenu {
             .px(self.item_padding.0)
             .rounded(radius)
             .items_center()
-            .selected(selected)
+            .selected(self.highlighted_index() == Some(ix))
             .on_hover(cx.listener(move |this, hovered, _, cx| {
                 if *hovered {
+                    this.keyboard_navigation = false;
                     this.selected_index = Some(ix);
-                } else if !is_submenu && this.selected_index == Some(ix) {
+                } else if !this.keyboard_navigation
+                    && !is_submenu
+                    && this.selected_index == Some(ix)
+                {
                     // TODO: Better handle the submenu unselection when hover out
                     this.selected_index = None;
                 }
@@ -1221,7 +1238,7 @@ impl PopupMenu {
                 menu,
                 disabled,
             } => this
-                .selected(selected)
+                .selected(self.highlighted_index() == Some(ix))
                 .disabled(*disabled)
                 .items_start()
                 .child(

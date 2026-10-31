@@ -2598,7 +2598,7 @@ pub(super) fn checkout_agent_row(
         .role(gpui::Role::Button)
         .tab_index(0)
         .focus_visible(|style| style.bg(c::BG_HOVER()))
-        .hover(|style| style.bg(c::BG_HOVER()))
+        .hover(|style| style.text_color(c::FG()))
         .aria_label(detail.clone())
         .px(rpx(SPACE_2XL))
         .py(rpx(SPACE_SM))

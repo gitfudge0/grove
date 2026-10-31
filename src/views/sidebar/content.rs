@@ -1210,7 +1210,7 @@ impl Sidebar {
             .items_center()
             .justify_center()
             .rounded(rpx(RADIUS_CONTROL))
-            .hover(|style| style.bg(c::BG_HOVER()))
+            .hover(|style| style.text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .tooltip(move |window, cx| {
                 crate::views::components::tooltip(label.clone(), window).build(window, cx)

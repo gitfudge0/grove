@@ -1011,7 +1011,7 @@ impl Shell {
                     } else {
                         c::FIELD_FILL()
                     })
-                    .hover(|style| style.bg(c::BG_HOVER()))
+                    .hover(|style| style.text_color(c::FG()))
                     .on_mouse_down(MouseButton::Left, |_, window, cx| {
                         window.prevent_default();
                         cx.stop_propagation();
@@ -1151,7 +1151,7 @@ impl Shell {
             .rounded(rpx(RADIUS_GROUP))
             .text_color(c::FG())
             .when(selected, |item| item.bg(c::BG_HL()))
-            .hover(|item| item.bg(c::BG_HOVER()))
+            .hover(|item| item.text_color(c::FG()))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.select_switcher_row(index, window, cx)),
             );

@@ -441,7 +441,7 @@ impl Render for ProjectSetup {
                             .gap(rpx(SPACE_LG))
                             .rounded(rpx(RADIUS_CONTROL))
                             .when(index == self.state.dir_sel, |row| row.bg(c::BG_HOVER()))
-                            .hover(|row| row.bg(c::BG_HOVER()))
+                            .hover(|row| row.text_color(c::FG()))
                             .child(icon("folder", ICON_SM, c::FG_DIM()))
                             .child(
                                 div()

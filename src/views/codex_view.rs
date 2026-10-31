@@ -2881,7 +2881,7 @@ impl CodexView {
                         .pr(rpx(SPACE_LG))
                         .rounded(rpx(RADIUS_CONTROL))
                         .text_size(rpx(TEXT_SMALL))
-                        .hover(|style| style.bg(c::MENU_HOVER()))
+                        .hover(|style| style.text_color(c::FG()))
                         .focus_visible(|style| style.bg(c::MENU_HOVER()))
                         .child(animated_task_mark(
                             ("codex-task-row-mark", task_index),
@@ -19372,6 +19372,27 @@ mod tests {
             });
         });
         draw(cx);
+        // Pointer navigation remains actionable without a selected fill. Keyboard
+        // navigation uses the same index that the native menu paints as selected.
+        let menu_bounds = cx.debug_bounds("popup-menu-item-Integer(0)").unwrap();
+        cx.simulate_mouse_move(menu_bounds.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        let menu = view.read_with(cx, |view, _| view.popup.clone().unwrap());
+        cx.update(|_, cx| assert_eq!(menu.read(cx).test_highlighted_index(), None));
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        cx.update(|_, cx| assert!(menu.read(cx).test_highlighted_index().is_some()));
+        // Moving off the menu must not clear the keyboard-selected row.
+        cx.simulate_mouse_move(
+            gpui::point(gpui::px(10.), gpui::px(10.)),
+            None,
+            gpui::Modifiers::default(),
+        );
+        draw(cx);
+        cx.update(|_, cx| assert!(menu.read(cx).test_highlighted_index().is_some()));
+        cx.simulate_mouse_move(menu_bounds.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| assert_eq!(menu.read(cx).test_highlighted_index(), None));
         cx.simulate_keystrokes("escape");
         draw(cx);
         assert!(view.read_with(cx, |view, _| view.popup.is_none()));

@@ -300,7 +300,7 @@ function interactionFixture() {
     pointer_activation: { before: 0, after: 1 }, keyboard_enter: { before: 1, after: 2 }, keyboard_space: { before: 2, after: 3 },
     disabled_rejection: { before: 3, after: 3 }, loading_rejection: { before: 3, after: 3 },
     tab_traversal: { before: 'one', after: 'two', returned: 'one' }, focus_restoration: { before: 'one', after: 'one' },
-    hover_release: { rest: [0, 0, 0, 255], hover: [255, 255, 255, 255], released: [0, 0, 0, 255] }, stable_slots: { groups: slotGroups(document) }
+    hover_release: { rest: [0, 0, 0, 255], hover: [0, 0, 0, 255], released: [0, 0, 0, 255] }, stable_slots: { groups: slotGroups(document) }
   };
   const native = { reference_hash: 'ref', contract_hash: 'contract', context: { native_build_hash: 'build' }, interaction: { schema_version: 1, status: 'passed', reference_hash: 'ref', contract_hash: 'contract', native_build_hash: 'build',
     cases: Object.entries(facts).map(([name, observed]) => ({ name, status: 'passed', observed, evidence: { 'interaction-rest.png': 'a'.repeat(64) } })),

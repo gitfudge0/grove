@@ -86,8 +86,10 @@ impl ParentElement for MenuItemElement {
 
 impl RenderOnce for MenuItemElement {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let debug_selector = format!("popup-menu-item-{:?}", self.id);
         h_flex()
             .id(self.id)
+            .debug_selector(move || debug_selector.clone())
             .role(Role::MenuItem)
             .when_some(self.aria_label, |this, label| this.aria_label(label))
             .aria_selected(self.selected)
@@ -96,7 +98,7 @@ impl RenderOnce for MenuItemElement {
             .py_1()
             .px_2()
             .text_base()
-            .text_color(cx.theme().foreground)
+            .text_color(cx.theme().muted_foreground)
             .relative()
             .items_center()
             .justify_between()
@@ -113,8 +115,7 @@ impl RenderOnce for MenuItemElement {
             })
             .when(!self.disabled, |this| {
                 this.group_hover(self.group_name, |this| {
-                    this.bg(cx.theme().tokens.accent)
-                        .text_color(cx.theme().accent_foreground)
+                    this.text_color(cx.theme().accent_foreground)
                 })
                 .when(self.selected, |this| {
                     this.bg(cx.theme().tokens.accent)
