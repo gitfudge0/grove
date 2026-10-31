@@ -184,13 +184,12 @@ impl Sidebar {
                 .justify_start()
                 .gap(rpx(SPACE_SM))
                 .px(rpx(SPACE_LG))
-                .when(collapsed, |row| row.px_0().justify_center())
                 .text_size(rpx(TEXT_TITLE))
                 .text_color(c::FG_DIM())
                 .font_weight(gpui::FontWeight::NORMAL)
                 .aria_selected(selected)
                 .when(selected, |row| row.bg(c::BG_HOVER()))
-                .child(crate::icons::action_icon(glyph, ICON_MD))
+                .child(crate::icons::action_icon(glyph, ICON_LG))
                 .when(!collapsed, |row| {
                     row.child(div().flex_1().min_w_0().truncate().child(label))
                         .child(
@@ -545,7 +544,7 @@ impl Sidebar {
                 div()
                     .relative()
                     .flex_shrink_0()
-                    .child(icon(meta.agent.icon_name(), ICON_MD, c::FG()))
+                    .child(icon(meta.agent.icon_name(), ICON_LG, c::FG()))
                     .when(!home && collapsed, |slot| {
                         slot.child(
                             div()
@@ -665,10 +664,9 @@ impl Sidebar {
             .h(rpx(HEAD_H))
             .px(rpx(SPACE_LG))
             .gap(rpx(SPACE_SM))
-            .when(self.is_collapsed(cx), |row| row.px_0().justify_center())
             .text_size(rpx(TEXT_TITLE))
             .text_color(c::FG_DIM())
-            .child(crate::icons::action_icon("folder", ICON_MD))
+            .child(crate::icons::action_icon("folder", ICON_LG))
             .when(!self.is_collapsed(cx), |row| {
                 row.child(div().flex_1().min_w_0().truncate().child(name))
                     .child(

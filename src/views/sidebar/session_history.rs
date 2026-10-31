@@ -498,12 +498,11 @@ impl Sidebar {
                 .justify_start()
                 .p(rpx(SPACE_2XL))
                 .gap(rpx(SPACE_LG))
-                .when(collapsed, |row| row.px_0().justify_center())
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .when(collapsed, |row| row.child(icon(s.provider.agent().icon_name(), ICON_MD, c::FG())))
+                .when(collapsed, |row| row.child(icon(s.provider.agent().icon_name(), ICON_LG, c::FG())))
                 .when(!collapsed, |row| row.child(history_card_content(
                     s.provider.agent(), &s.project, title, &checkout_names[&s.cwd], false,
                 )));
@@ -527,12 +526,11 @@ impl Sidebar {
                 .justify_start()
                 .p(rpx(SPACE_2XL))
                 .gap(rpx(SPACE_LG))
-                .when(collapsed, |row| row.px_0().justify_center())
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .when(collapsed, |row| row.child(icon(s.agent.icon_name(), ICON_MD, c::FG())))
+                .when(collapsed, |row| row.child(icon(s.agent.icon_name(), ICON_LG, c::FG())))
                 .when(!collapsed, |row| row.child(history_card_content(
                     s.agent, &s.project, title, &checkout_names[&s.cwd], true,
                 )));
