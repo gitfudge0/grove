@@ -531,6 +531,7 @@ pub struct Sidebar {
     grid_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     canvas_close_anchor: Option<SessionId>,
     canvas_close_focus: HashMap<(SessionId, bool), FocusHandle>,
+    canvas_breadcrumb_focus: HashMap<(SessionId, bool), FocusHandle>,
     canvas_bounds: HashMap<SessionId, std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>>,
     canvas_observers: HashMap<SessionId, gpui::Subscription>,
     canvas_focus_observers: HashMap<SessionId, gpui::Subscription>,
@@ -775,6 +776,7 @@ impl Sidebar {
             grid_bounds: std::rc::Rc::default(),
             canvas_close_anchor: None,
             canvas_close_focus: HashMap::new(),
+            canvas_breadcrumb_focus: HashMap::new(),
             canvas_bounds: HashMap::new(),
             canvas_observers: HashMap::new(),
             canvas_focus_observers: HashMap::new(),
@@ -1107,6 +1109,8 @@ impl Sidebar {
             .collect();
         self.canvas_bounds.retain(|id, _| live.contains(id));
         self.canvas_close_focus
+            .retain(|(id, _), _| live.contains(id));
+        self.canvas_breadcrumb_focus
             .retain(|(id, _), _| live.contains(id));
         self.canvas_observers.retain(|id, _| live.contains(id));
         self.canvas_focus_observers

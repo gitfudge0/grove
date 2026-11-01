@@ -899,7 +899,21 @@ impl Sidebar {
                 cx,
             )
         });
-        let title_tooltip = accessible_label.clone();
+        let breadcrumb_project = (!home)
+            .then(|| {
+                self.snapshot
+                    .projects
+                    .iter()
+                    .find(|project| project.sessions.contains(&id))
+                    .and_then(|project| {
+                        cx.global::<SettingsState>()
+                            .store
+                            .projects
+                            .get(project.idx)
+                            .map(|stored| (project.idx, stored.path.clone()))
+                    })
+            })
+            .flatten();
         let active = matches!(
             self.selection,
             Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id
@@ -958,9 +972,6 @@ impl Sidebar {
                         this.begin_grid_session_drag((id, home), event.position, window, cx);
                     }),
                 )
-            })
-            .tooltip(move |window, cx| {
-                crate::views::components::tooltip(title_tooltip.clone(), window).build(window, cx)
             });
         let agent_icon = div()
             .debug_selector(move || format!("session-header-provider-{}", id.raw()))
@@ -1028,19 +1039,18 @@ impl Sidebar {
                                     .items_center()
                                     .gap(rpx(SPACE_MD))
                                     .text_size(rpx(TEXT_SMALL))
-                                    .child(
-                                        div()
-                                            .debug_selector(move || {
-                                                format!("session-header-project-{}", id.raw())
-                                            })
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(if home {
-                                                workspace.clone()
-                                            } else {
-                                                meta.project.clone()
-                                            }),
-                                    )
+                                    .child(self.session_breadcrumb(
+                                        id,
+                                        false,
+                                        if home {
+                                            workspace.clone()
+                                        } else {
+                                            meta.project.clone()
+                                        },
+                                        breadcrumb_project.clone(),
+                                        meta.wt_path.clone(),
+                                        cx,
+                                    ))
                                     .child(
                                         div()
                                             .debug_selector(move || {
@@ -1052,19 +1062,18 @@ impl Sidebar {
                                             .flex_shrink_0()
                                             .child("/"),
                                     )
-                                    .child(
-                                        div()
-                                            .debug_selector(move || {
-                                                format!("session-header-worktree-{}", id.raw())
-                                            })
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(if home {
-                                                "~".to_owned()
-                                            } else {
-                                                location.clone()
-                                            }),
-                                    )
+                                    .child(self.session_breadcrumb(
+                                        id,
+                                        true,
+                                        if home {
+                                            "~".to_owned()
+                                        } else {
+                                            location.clone()
+                                        },
+                                        breadcrumb_project,
+                                        meta.wt_path.clone(),
+                                        cx,
+                                    ))
                                     .child(
                                         div()
                                             .debug_selector(move || {
@@ -1293,6 +1302,79 @@ impl Sidebar {
             })
             .into_any_element(),
         )
+    }
+    fn session_breadcrumb(
+        &mut self,
+        id: crate::entities::session_registry::SessionId,
+        worktree: bool,
+        label: String,
+        project: Option<(usize, String)>,
+        checkout: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selector = format!(
+            "session-header-{}-{}",
+            if worktree { "worktree" } else { "project" },
+            id.raw()
+        );
+        let Some((project_idx, project_path)) = project else {
+            return div()
+                .debug_selector(move || selector.clone())
+                .min_w_0()
+                .truncate()
+                .child(label)
+                .into_any_element();
+        };
+        let focus = self
+            .canvas_breadcrumb_focus
+            .entry((id, worktree))
+            .or_insert_with(|| cx.focus_handle())
+            .clone();
+        let click_path = project_path.clone();
+        let click_checkout = checkout.clone();
+        div()
+            .id(gpui::SharedString::from(selector.clone()))
+            .debug_selector(move || selector.clone())
+            .track_focus(&focus)
+            .role(gpui::Role::Button)
+            .tab_index(0)
+            .aria_label(label.clone())
+            .cursor_pointer()
+            .min_w_0()
+            .truncate()
+            .hover(|style| style.text_color(c::FG()))
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
+            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                focus.focus(window, cx);
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                let target = if worktree {
+                    &click_checkout
+                } else {
+                    &click_path
+                };
+                this.open_dashboard_for_checkout(project_idx, &click_path, target, window, cx);
+            }))
+            .on_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
+                        let target = if worktree { &checkout } else { &project_path };
+                        this.open_dashboard_for_checkout(
+                            project_idx,
+                            &project_path,
+                            target,
+                            window,
+                            cx,
+                        );
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .child(label)
+            .into_any_element()
     }
     fn canvas_close_button(
         &mut self,
@@ -2678,7 +2760,7 @@ mod tests {
             let id = registry.update(cx, |registry, _| {
                 registry.insert_meta(
                     "demo".into(),
-                    "/grove-native-chrome-fixture".into(),
+                    "/grove-native-chrome-feature".into(),
                     Agent::Codex,
                 )
             });
@@ -2730,7 +2812,6 @@ mod tests {
             "terminal-header-1",
             "terminal-header-left-1",
             "terminal-header-right-1",
-            "canvas-close-1",
         ] {
             assert!(
                 cx.debug_bounds(selector).is_some(),
@@ -2745,6 +2826,7 @@ mod tests {
         });
         draw(cx);
         assert_spaced_session_breadcrumb(cx);
+        assert!(cx.debug_bounds("canvas-close-1").is_some());
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.mode == ViewMode::Grid));
         let header = cx.debug_bounds("terminal-header-1").unwrap();
         cx.simulate_mouse_down(
@@ -2775,6 +2857,40 @@ mod tests {
         assert!(actions
             .try_iter()
             .any(|action| matches!(action, grove_core::codex::Action::Reconnect)));
+        let project = cx.debug_bounds("session-header-project-1").unwrap();
+        cx.simulate_click(project.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.dashboard_open));
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, cx| sidebar.dashboard_destination_for_test(cx)),
+            Some((0, "/grove-native-chrome-fixture".into()))
+        );
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.select(Selection::Session(id), cx))
+        });
+        draw(cx);
+        let worktree = cx.debug_bounds("session-header-worktree-1").unwrap();
+        cx.simulate_click(worktree.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.dashboard_open));
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, cx| sidebar.dashboard_destination_for_test(cx)),
+            Some((0, "/grove-native-chrome-feature".into()))
+        );
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.select(Selection::Session(id), cx);
+                sidebar.canvas_breadcrumb_focus[&(id, false)].focus(window, cx);
+            });
+        });
+        draw(cx);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.dashboard_open));
+        assert_eq!(
+            sidebar.read_with(cx, |sidebar, cx| sidebar.dashboard_destination_for_test(cx)),
+            Some((0, "/grove-native-chrome-fixture".into()))
+        );
     }
 
     #[gpui::test]

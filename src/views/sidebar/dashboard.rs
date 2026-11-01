@@ -301,6 +301,16 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.open_dashboard_for_checkout(project, expected_path, expected_path, window, cx)
+    }
+    pub(super) fn open_dashboard_for_checkout(
+        &mut self,
+        project: usize,
+        expected_path: &str,
+        checkout_path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(path) = cx
             .global::<SettingsState>()
             .store
@@ -311,13 +321,33 @@ impl Sidebar {
             return false;
         };
         self.open_destination(super::global_navigation::Destination::Home, window, cx);
-        if let Some(dashboard) = &self.dashboard {
-            dashboard.tray.update(cx, |tray, cx| {
+        if let Some(tray) = self
+            .dashboard
+            .as_ref()
+            .map(|dashboard| dashboard.tray.clone())
+        {
+            tray.update(cx, |tray, cx| {
                 tray.project = project;
-                tray.path = path;
+                tray.path = if checkout_path == expected_path {
+                    path
+                } else {
+                    checkout_path.to_owned()
+                };
                 cx.notify();
             });
             self.refresh_dashboard_worktrees(cx);
+            if checkout_path != expected_path {
+                tray.update(cx, |tray, cx| {
+                    if !tray.worktrees.iter().any(|(path, _)| path == checkout_path) {
+                        let name = std::path::Path::new(checkout_path).file_name().map_or_else(
+                            || checkout_path.to_owned(),
+                            |name| name.to_string_lossy().into_owned(),
+                        );
+                        tray.worktrees.push((checkout_path.to_owned(), name));
+                    }
+                    cx.notify();
+                });
+            }
             self.refresh_dashboard_catalog(cx);
             if let Some(dashboard) = &self.dashboard {
                 dashboard.view.focus_handle(cx).focus(window, cx);
