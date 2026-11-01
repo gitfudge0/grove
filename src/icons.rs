@@ -143,6 +143,18 @@ fn svg_for(name: &str) -> String {
         "status-attention" => {
             r#"<circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/>"#
         }
+        "status-approval" => {
+            r#"<path d="M8 1.5 13 3.5V8c0 3-3 5-5 6.5C6 13 3 11 3 8V3.5z"/><path d="m5.5 7.5 1.75 1.75 3.25-3.5"/>"#
+        }
+        "status-answer" => {
+            r#"<path d="M13.5 7.5a5.5 5.5 0 0 1-7.9 5l-3.1 1 1-3.1a5.5 5.5 0 1 1 10-2.9Z"/><path d="M6.5 5.5a1.5 1.5 0 1 1 2.25 1.3C8 7.2 8 7.5 8 8M8 10h.01"/>"#
+        }
+        "status-limited" => {
+            r#"<circle cx="8" cy="8" r="6"/><path d="M5 4.5h6M5 11.5h6M5.5 4.5C5.5 7 8 7 8 8s-2.5 1-2.5 3.5M10.5 4.5C10.5 7 8 7 8 8s2.5 1 2.5 3.5"/>"#
+        }
+        "status-disconnected" => {
+            r#"<path d="m2 2 12 12M5.5 5.5 4 7a3.5 3.5 0 0 0 5 5l1.5-1.5M7 4l1.5-1.5a3.5 3.5 0 0 1 5 5L12 9M1.5 14.5 4 12M12 4l2.5-2.5"/>"#
+        }
         "status-warning" => r#"<circle cx="8" cy="8" r="6"/><path d="M8 4.5v4M8 11h.01"/>"#,
         "status-failed" => r#"<circle cx="8" cy="8" r="6"/><path d="m5.5 5.5 5 5m0-5-5 5"/>"#,
         "status-canceled" => r#"<circle cx="8" cy="8" r="6"/><path d="m4 12 8-8"/>"#,
@@ -387,6 +399,10 @@ mod tests {
             "status-success",
             "status-working",
             "status-attention",
+            "status-approval",
+            "status-answer",
+            "status-limited",
+            "status-disconnected",
             "status-warning",
             "status-failed",
             "status-canceled",

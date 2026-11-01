@@ -9,6 +9,10 @@ pub enum StatusKind {
     Working,
     Success,
     NeedsInput,
+    Approval,
+    Answer,
+    Limited,
+    Disconnected,
     Warning,
     Failed,
     Idle,
@@ -23,8 +27,10 @@ impl StatusKind {
         match self {
             Self::Info | Self::Working | Self::Running => c::STATUS_INFO(),
             Self::Success => c::STATUS_SUCCESS(),
-            Self::NeedsInput | Self::Warning => c::STATUS_WARNING(),
-            Self::Failed => c::STATUS_ERROR(),
+            Self::NeedsInput | Self::Approval | Self::Answer | Self::Limited | Self::Warning => {
+                c::STATUS_WARNING()
+            }
+            Self::Failed | Self::Disconnected => c::STATUS_ERROR(),
             _ => c::STATUS_NEUTRAL(),
         }
     }
@@ -34,6 +40,10 @@ impl StatusKind {
             Self::Working | Self::Running => "status-working",
             Self::Success => "status-success",
             Self::NeedsInput => "status-attention",
+            Self::Approval => "status-approval",
+            Self::Answer => "status-answer",
+            Self::Limited => "status-limited",
+            Self::Disconnected => "status-disconnected",
             Self::Warning => "status-warning",
             Self::Failed => "status-failed",
             Self::Canceled => "status-canceled",
@@ -51,11 +61,15 @@ pub fn session_kind(label: &str) -> StatusKind {
         "Running" => StatusKind::Running,
         "Done" => StatusKind::Success,
         "Needs you" | "Waiting" => StatusKind::NeedsInput,
-        "Failed" | "Disconnected" => StatusKind::Failed,
+        "Approval needed" => StatusKind::Approval,
+        "Answer needed" => StatusKind::Answer,
+        "Usage limit" => StatusKind::Limited,
+        "Disconnected" => StatusKind::Disconnected,
+        "Failed" => StatusKind::Failed,
         "Interrupted" | "Stopped" | "Exited" => StatusKind::Stopped,
         "Canceled" | "Cancelled" => StatusKind::Canceled,
         "Pending" => StatusKind::Pending,
-        "Idle" => StatusKind::Idle,
+        "Idle" | "Ready" => StatusKind::Idle,
         _ => StatusKind::Unknown,
     }
 }
@@ -227,6 +241,16 @@ mod tests {
             assert_eq!(codex_kind(status), kind);
         }
         assert_eq!(session_kind("Done").icon_name(), "status-success");
+        for (text, glyph, color) in [
+            ("Approval needed", "status-approval", c::STATUS_WARNING()),
+            ("Answer needed", "status-answer", c::STATUS_WARNING()),
+            ("Usage limit", "status-limited", c::STATUS_WARNING()),
+            ("Disconnected", "status-disconnected", c::STATUS_ERROR()),
+            ("Ready", "status-idle", c::STATUS_NEUTRAL()),
+        ] {
+            assert_eq!(session_kind(text).icon_name(), glyph);
+            assert_eq!(session_kind(text).color(), color);
+        }
         assert_eq!(
             session_kind("unrecognized provider diagnostics"),
             StatusKind::Unknown
@@ -275,6 +299,10 @@ mod native_snapshots {
                 (StatusKind::Idle, "Idle"), (StatusKind::Unknown, "Unavailable"),
                 (StatusKind::Pending, "Pending"), (StatusKind::Canceled, "Canceled"),
                 (StatusKind::Stopped, "Stopped"),
+                (StatusKind::Approval, "Approval needed"),
+                (StatusKind::Answer, "Answer needed"),
+                (StatusKind::Limited, "Usage limit"),
+                (StatusKind::Disconnected, "Disconnected"),
                 (StatusKind::Failed, "Literal provider diagnostic: the connection could not be restored. Your draft remains available.\nAdditional diagnostic details remain visible and wrap within this panel."),
             ].into_iter().enumerate() {
                 panel = panel.child(label(format!("gallery-{index}"), kind, text, ICON_SM, cx));

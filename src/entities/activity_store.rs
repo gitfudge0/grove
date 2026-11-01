@@ -113,8 +113,49 @@ fn resolve_hook_status(
     }
 }
 
+/// Completion identity comes from provider turn boundaries, not transcript revisions:
+/// title generation and other metadata can update after a completed turn was read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompletionKey {
+    conversation: u64,
+    work_periods: usize,
+}
+
+#[derive(Default)]
+struct NativeAttention {
+    acknowledged: Option<CompletionKey>,
+}
+
+impl NativeAttention {
+    fn classify(
+        &mut self,
+        status: grove_core::codex::Status,
+        completion: CompletionKey,
+        focused: bool,
+    ) -> ActivityState {
+        use grove_core::codex::Status;
+        match status {
+            Status::Starting | Status::Working => ActivityState::Working,
+            Status::Waiting => ActivityState::WaitingForInput,
+            Status::Done => {
+                if focused {
+                    self.acknowledged = Some(completion);
+                }
+                if self.acknowledged == Some(completion) {
+                    ActivityState::Idle
+                } else {
+                    ActivityState::Done
+                }
+            }
+            Status::Failed | Status::Disconnected => ActivityState::Exited,
+            Status::Idle | Status::Interrupted => ActivityState::Idle,
+        }
+    }
+}
+
 pub struct ActivityStore {
     trackers: HashMap<SessionId, Tracker>,
+    native_attention: HashMap<SessionId, NativeAttention>,
     /// Waiting sessions in `visible_session_order`, resolved once per pass.
     waiting: Vec<SessionId>,
     /// `Some(t)` while `waiting` is non-empty — the pulse's phase origin.
@@ -146,6 +187,7 @@ impl ActivityStore {
     pub fn new() -> Self {
         Self {
             trackers: HashMap::new(),
+            native_attention: HashMap::new(),
             waiting: Vec::new(),
             pulse_since: None,
             last_badge: 0,
@@ -166,6 +208,7 @@ impl ActivityStore {
         let observer = cx.observe(&state, |this: &mut Self, _, cx| this.drain_acks(cx));
         Self {
             trackers: HashMap::new(),
+            native_attention: HashMap::new(),
             waiting: Vec::new(),
             pulse_since: None,
             last_badge: 0,
@@ -236,6 +279,19 @@ impl ActivityStore {
 
     /// Focus acknowledges completed work, but never consumes an unanswered request.
     pub fn acknowledge(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        if let Some(session) = self
+            .wiring
+            .as_ref()
+            .and_then(|w| w.registry.read(cx).codex(id).cloned())
+        {
+            let snapshot = &session.read(cx).state;
+            if snapshot.status == grove_core::codex::Status::Done {
+                self.native_attention.entry(id).or_default().acknowledged = Some(CompletionKey {
+                    conversation: snapshot.cleared_conversations,
+                    work_periods: snapshot.saved.work_periods.len(),
+                });
+            }
+        }
         if let Some(t) = self.trackers.get_mut(&id) {
             t.acknowledge();
         }
@@ -318,15 +374,19 @@ impl ActivityStore {
         for (id, agent, wt_path, state_file) in &sessions {
             let Some(entity) = entities.get(id) else {
                 if let Some(session) = registry.read(cx).codex(*id) {
-                    use grove_core::codex::Status;
-                    let next = match session.read(cx).state.status {
-                        Status::Starting | Status::Working => ActivityState::Working,
-                        Status::Waiting => ActivityState::WaitingForInput,
-                        Status::Done => ActivityState::Done,
-                        Status::Failed | Status::Disconnected => ActivityState::Exited,
-                        Status::Idle | Status::Interrupted => ActivityState::Idle,
-                    };
+                    let snapshot = &session.read(cx).state;
+                    let next = self.native_attention.entry(*id).or_default().classify(
+                        snapshot.status,
+                        CompletionKey {
+                            conversation: snapshot.cleared_conversations,
+                            work_periods: snapshot.saved.work_periods.len(),
+                        },
+                        active_session == Some(*id) && window_focused,
+                    );
                     let tracker = self.trackers.entry(*id).or_default();
+                    if next == ActivityState::Working {
+                        tracker.last_active = Instant::now();
+                    }
                     if next == ActivityState::WaitingForInput && tracker.state != next {
                         newly_waiting = true;
                     }
@@ -441,6 +501,8 @@ impl ActivityStore {
         self.trackers
             .retain(|id, _| sessions.iter().any(|(live, ..)| live == id));
         changed |= self.trackers.len() != before;
+        self.native_attention
+            .retain(|id, _| sessions.iter().any(|(live, ..)| live == id));
 
         // Tree order, not HashMap order (`update/mod.rs:728-740`); before the first rail paint it's empty, so fall back.
         let order = state.read(cx).visible_session_order().to_vec();
@@ -480,6 +542,91 @@ impl ActivityStore {
 mod tests {
     use super::*;
     use gpui::AppContext as _;
+
+    #[test]
+    fn native_completion_acknowledgment_survives_repeated_done_snapshots() {
+        use grove_core::codex::Status;
+        let mut attention = NativeAttention::default();
+        let completion = CompletionKey {
+            conversation: 0,
+            work_periods: 1,
+        };
+        assert_eq!(
+            attention.classify(Status::Done, completion, false),
+            ActivityState::Done
+        );
+        assert_eq!(
+            attention.classify(Status::Done, completion, true),
+            ActivityState::Idle
+        );
+        assert_eq!(
+            attention.classify(Status::Done, completion, false),
+            ActivityState::Idle
+        );
+        // A request remains actionable after the completion was seen.
+        assert_eq!(
+            attention.classify(Status::Waiting, completion, true),
+            ActivityState::WaitingForInput
+        );
+        assert_eq!(
+            attention.classify(Status::Done, completion, false),
+            ActivityState::Idle
+        );
+    }
+
+    #[test]
+    fn native_completion_uses_turn_identity_even_when_work_finishes_between_polls() {
+        use grove_core::codex::Status;
+        let mut attention = NativeAttention::default();
+        let first = CompletionKey {
+            conversation: 0,
+            work_periods: 1,
+        };
+        attention.classify(Status::Done, first, true);
+        let second = CompletionKey {
+            work_periods: 2,
+            ..first
+        };
+        assert_eq!(
+            attention.classify(Status::Done, second, false),
+            ActivityState::Done
+        );
+        assert_eq!(
+            attention.classify(Status::Done, second, true),
+            ActivityState::Idle
+        );
+        let cleared = CompletionKey {
+            conversation: 1,
+            work_periods: 1,
+        };
+        assert_eq!(
+            attention.classify(Status::Done, cleared, false),
+            ActivityState::Done
+        );
+    }
+
+    #[test]
+    fn native_completion_while_visible_is_seen_but_background_completion_is_unread() {
+        use grove_core::codex::Status;
+        let completion = CompletionKey {
+            conversation: 0,
+            work_periods: 1,
+        };
+        let mut visible = NativeAttention::default();
+        assert_eq!(
+            visible.classify(Status::Working, completion, true),
+            ActivityState::Working
+        );
+        assert_eq!(
+            visible.classify(Status::Done, completion, true),
+            ActivityState::Idle
+        );
+        let mut background = NativeAttention::default();
+        assert_eq!(
+            background.classify(Status::Done, completion, false),
+            ActivityState::Done
+        );
+    }
 
     fn approx(a: f32, b: f32) {
         assert!((a - b).abs() < 1e-3, "{a} != {b}");

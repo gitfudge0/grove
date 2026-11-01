@@ -146,12 +146,22 @@ fn group_sessions_for_list(
 ) -> Vec<(&'static str, Vec<usize>)> {
     let mut groups: [Vec<usize>; 4] = std::array::from_fn(|_| Vec::new());
     for (index, entry) in entries.iter().enumerate() {
-        let section = if entry.status == "Failed"
-            || (entry.status != "Starting" && entry.state == ActivityState::WaitingForInput)
+        let section = if matches!(
+            entry.status,
+            "Approval needed"
+                | "Answer needed"
+                | "Needs you"
+                | "Failed"
+                | "Disconnected"
+                | "Usage limit"
+        ) || (entry.status != "Starting"
+            && entry.state == ActivityState::WaitingForInput)
         {
             0
-        } else if entry.status != "Starting" && entry.state == ActivityState::Done {
+        } else if entry.status == "Done" && entry.state == ActivityState::Done {
             1
+        } else if matches!(entry.status, "Interrupted" | "Exited") {
+            3
         } else if entry.status == "Starting"
             || entry.state == ActivityState::Working
             || (entry.state != ActivityState::Exited
@@ -254,6 +264,34 @@ fn managed_session_status(
         ActivityState::Done => ("Done", c::GREEN()),
         ActivityState::Idle => ("Idle", c::FG_DIM()),
         ActivityState::Exited => ("Exited", c::FG_DIM()),
+    }
+}
+
+/// Pending interactions include requests forwarded from child agents. Their specific
+/// action outranks a coarse runtime state; terminal sessions retain the generic fallback.
+fn structured_session_status(
+    state: &grove_core::codex::Snapshot,
+    activity: ActivityState,
+) -> &'static str {
+    use grove_core::codex::{SessionNoticeKind, Status};
+    if !state.approvals.is_empty() {
+        return "Approval needed";
+    }
+    if !state.questions.is_empty() || !state.elicitations.is_empty() {
+        return "Answer needed";
+    }
+    if matches!(
+        state.status,
+        Status::Failed | Status::Interrupted | Status::Done
+    ) && state
+        .effective_notice()
+        .is_some_and(|notice| notice.kind == SessionNoticeKind::UsageLimit)
+    {
+        return "Usage limit";
+    }
+    match state.status {
+        Status::Done if activity != ActivityState::Done => "Ready",
+        status => status.label(),
     }
 }
 
@@ -3677,22 +3715,9 @@ impl Sidebar {
         let registry = runtime.registry.read(cx);
         if let Some(session) = registry.codex(meta.id) {
             let state = &session.read(cx).state;
-            return (
-                if state.status == grove_core::codex::Status::Disconnected {
-                    "Failed"
-                } else {
-                    state.status.label()
-                },
-                if state.status == grove_core::codex::Status::Failed
-                    || state.status == grove_core::codex::Status::Disconnected
-                {
-                    c::RED()
-                } else if state.status == grove_core::codex::Status::Waiting {
-                    c::AMBER()
-                } else {
-                    c::FG_DIM()
-                },
-            );
+            let label =
+                structured_session_status(state, runtime.activity.read(cx).state_of(meta.id));
+            return (label, super::status::session_kind(label).color());
         }
         let failed = registry
             .session(meta.id)
@@ -7035,6 +7060,114 @@ mod tests {
         assert_eq!(effective_rail_width(f32::NAN, 1280.0), SIDEBAR_W);
         assert_eq!(effective_rail_width(f32::INFINITY, 1280.0), SIDEBAR_W);
         assert_eq!(effective_rail_width(SIDEBAR_W, 1280.0), SIDEBAR_W);
+    }
+
+    #[test]
+    fn structured_sidebar_status_prioritizes_requests_and_preserves_stop_reasons() {
+        use grove_core::codex::{Provider, SessionNotice, SessionNoticeKind, Snapshot, Status};
+        for provider in [Provider::Codex, Provider::Claude] {
+            let saved = serde_json::from_value(serde_json::json!({
+                "key":"status-fixture", "project":"grove", "cwd":"/tmp/grove", "label":"agent",
+                "title":null, "roots":[], "thread_id":null, "items":[]
+            }))
+            .unwrap();
+            let mut state = Snapshot::new(saved);
+            state.saved.provider = provider;
+            state.status = Status::Working;
+            state
+                .approvals
+                .push(serde_json::json!({"id":"child-approval", "groveAgent":"child"}));
+            assert_eq!(
+                structured_session_status(&state, ActivityState::Working),
+                "Approval needed"
+            );
+            state.elicitations.push(grove_core::elicitation::ElicitationRequest::parse_codex(
+                serde_json::json!("child-question"),
+                &serde_json::json!({"message":"Continue?", "requestedSchema":{"type":"object", "properties":{"answer":{"type":"boolean"}}}}),
+            ).unwrap());
+            assert_eq!(
+                structured_session_status(&state, ActivityState::Working),
+                "Approval needed"
+            );
+            state.approvals.clear();
+            assert_eq!(
+                structured_session_status(&state, ActivityState::Working),
+                "Answer needed"
+            );
+            state.elicitations.clear();
+            for (status, expected) in [
+                (Status::Waiting, "Needs you"),
+                (Status::Disconnected, "Disconnected"),
+                (Status::Interrupted, "Interrupted"),
+                (Status::Failed, "Failed"),
+            ] {
+                state.status = status;
+                assert_eq!(
+                    structured_session_status(&state, ActivityState::Working),
+                    expected
+                );
+            }
+            state.status = Status::Failed;
+            state.error = Some("Provider usage limit".into());
+            state.notice = Some(SessionNotice {
+                kind: SessionNoticeKind::UsageLimit,
+                provider: "fixture",
+                body: "Provider usage limit".into(),
+                reset_at: None,
+                usage_url: None,
+            });
+            assert_eq!(
+                structured_session_status(&state, ActivityState::Exited),
+                "Usage limit"
+            );
+            state.error = Some("Different failure".into());
+            assert_eq!(
+                structured_session_status(&state, ActivityState::Exited),
+                "Failed"
+            );
+            state.status = Status::Working;
+            assert_eq!(
+                structured_session_status(&state, ActivityState::Working),
+                "Working"
+            );
+            state.status = Status::Done;
+            assert_eq!(
+                structured_session_status(&state, ActivityState::Done),
+                "Done"
+            );
+            assert_eq!(
+                structured_session_status(&state, ActivityState::Idle),
+                "Ready"
+            );
+        }
+    }
+
+    #[test]
+    fn sessions_list_groups_specific_requests_and_stop_reasons() {
+        let now = Instant::now();
+        let rows: Vec<_> = [
+            "Approval needed",
+            "Answer needed",
+            "Usage limit",
+            "Disconnected",
+            "Failed",
+            "Interrupted",
+            "Ready",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, status)| SessionListEntry {
+            id: SessionId::from_raw(index as u64 + 1),
+            state: ActivityState::Idle,
+            status,
+            since: Some(now),
+            active: None,
+        })
+        .collect();
+        assert_eq!(
+            group_sessions_for_list(&rows, now),
+            vec![("Needs you", vec![0, 1, 2, 3, 4]), ("Idle", vec![6, 5])]
+        );
     }
 
     #[test]
