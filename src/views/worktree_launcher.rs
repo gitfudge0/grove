@@ -1095,7 +1095,7 @@ impl Render for WorktreeLauncher {
                                 let (label, detail, icon_name, suffix) = match &row {
                                     PaletteRow::Recent { proj, wt_path, agent } | PaletteRow::Combo { proj, wt_path, agent } => {
                                         let project = project_names.get(*proj).map_or("", |name| name.as_str());
-                                        (if project_step { project.to_string() } else if self.mode == PaletteMode::Single { worktree_name(wt_path).to_string() } else { format!("{} / {}", project, worktree_name(wt_path)) }, wt_path.clone(), "git-branch", if project_step { "›".to_string() } else { agent.label().to_string() })
+                                        (if project_step { project.to_string() } else if self.mode == PaletteMode::Single { worktree_name(wt_path).to_string() } else { format!("{} / {}", project, worktree_name(wt_path)) }, wt_path.clone(), "git-branch", if project_step { String::new() } else { agent.label().to_string() })
                                     }
                                     PaletteRow::NewSession => ("New session".into(), "Choose a worktree".into(), "plus", String::new()),
                                     PaletteRow::NewMultiProjectSession => ("New cross-project session".into(), "Select multiple worktrees".into(), "plus", String::new()),
@@ -1156,6 +1156,9 @@ impl Render for WorktreeLauncher {
                                                 .child(div().line_height(rpx(SPACE_3XL)).text_size(rpx(TEXT_BODY)).text_color(c::FG()).truncate().child(label))
                                                 .child(div().line_height(rpx(SPACE_3XL)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_MUTE()).truncate().child(detail)))
                                     )
+                                    .when(project_step && is_worktree_row, |row| row.child(
+                                        div().flex_shrink_0().child(icon("chev-right", ICON_20, c::FG_DIM()))
+                                    ))
                                     .when(show_agent_selector, |row| row.child(
                                         self.agent_selector(cx, "launcher-agent-selector")
                                     ))

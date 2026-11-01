@@ -126,6 +126,8 @@ pub(super) struct CheckoutPanel {
     pub(super) toggle_focus: Option<FocusHandle>,
     pub(super) side_chat_owner: Option<Selection>,
     pub(super) side_chat_focus: Option<FocusHandle>,
+    panel_motion: Option<(Instant, f32, f32, u64)>,
+    panel_motion_revision: u64,
     pub(super) side_chats: HashMap<(SessionId, String), super::side_chat::SideChat>,
     pub(super) chosen_root: Option<String>,
     root_owner: Option<Selection>,
@@ -1748,9 +1750,11 @@ impl Sidebar {
     }
 
     pub(super) fn toggle_session_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_visible = !self.checkout_panel.hidden;
         if self.checkout_panel.side_chat_owner.take().is_some() {
             self.checkout_panel.hidden = false;
             self.checkout_panel.expanded = true;
+            self.start_panel_motion(was_visible, true, cx);
             cx.notify();
             return;
         }
@@ -1770,7 +1774,134 @@ impl Sidebar {
             self.checkout_panel.popup = None;
             self.checkout_panel.popup_subscription = None;
         }
+        self.start_panel_motion(was_visible, !self.checkout_panel.hidden, cx);
         cx.notify();
+    }
+
+    pub(super) fn start_panel_motion(&mut self, was_visible: bool, visible: bool, cx: &App) {
+        if cx.reduce_motion() {
+            self.checkout_panel.panel_motion = None;
+            return;
+        }
+        let from = self
+            .panel_motion_width()
+            .unwrap_or(if was_visible { 1. } else { 0. });
+        self.checkout_panel.panel_motion_revision =
+            self.checkout_panel.panel_motion_revision.wrapping_add(1);
+        self.checkout_panel.panel_motion = Some((
+            Instant::now(),
+            from,
+            if visible { 1. } else { 0. },
+            self.checkout_panel.panel_motion_revision,
+        ));
+    }
+
+    fn panel_motion_width(&self) -> Option<f32> {
+        self.checkout_panel
+            .panel_motion
+            .map(|(started, from, to, _)| {
+                let progress = (started.elapsed().as_secs_f32() / (MOTION_BASE_MS as f32 / 1000.))
+                    .clamp(0., 1.);
+                from + (to - from) * motion::ease_standard(progress)
+            })
+    }
+
+    pub(super) fn panel_motion_exiting(&self, cx: &App) -> bool {
+        !cx.reduce_motion()
+            && self
+                .checkout_panel
+                .panel_motion
+                .is_some_and(|(started, _, to, _)| {
+                    to == 0. && started.elapsed() < Duration::from_millis(MOTION_BASE_MS)
+                })
+    }
+
+    fn narrow_panel_entrance(&self, panel: AnyElement, cx: &App) -> AnyElement {
+        match self.checkout_panel.panel_motion {
+            Some((started, _, _, id))
+                if started.elapsed() < Duration::from_millis(MOTION_BASE_MS) =>
+            {
+                motion::fast(
+                    div().w_full().child(panel),
+                    format!("narrow-session-panel-enter-{id}"),
+                    cx,
+                )
+            }
+            _ => panel,
+        }
+    }
+
+    fn wide_panel_layout(
+        &mut self,
+        body: AnyElement,
+        panel: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let side_chat_available = match self.selection {
+            Some(Selection::Session(id) | Selection::Home(id)) => self
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .codex(id)
+                .is_some_and(|session| !session.read(cx).is_deferred()),
+            _ => false,
+        };
+        let controls = matches!(
+            self.selection,
+            Some(Selection::Session(_) | Selection::Home(_))
+        )
+        .then(|| self.session_panel_controls(side_chat_available, window, cx));
+        let mut width = 1.;
+        let mut revision = None;
+        if !cx.reduce_motion() {
+            if let Some((started, _, _, id)) = self.checkout_panel.panel_motion {
+                if started.elapsed() < Duration::from_millis(MOTION_BASE_MS) {
+                    width = self.panel_motion_width().unwrap_or(1.);
+                    revision = Some(id);
+                    window.request_animation_frame();
+                } else {
+                    self.checkout_panel.panel_motion = None;
+                }
+            }
+        } else {
+            self.checkout_panel.panel_motion = None;
+        }
+        let panel = if let Some(id) = revision {
+            motion::fast(div().child(panel), format!("session-panel-enter-{id}"), cx)
+        } else {
+            panel
+        };
+        div()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .relative()
+            .flex()
+            .child(div().flex_1().min_w_0().min_h_0().child(body))
+            .child(
+                div()
+                    .w(rpx(CARD_WIDTH * width))
+                    .h_full()
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .child(panel),
+            )
+            .child(
+                div()
+                    .id("wide-session-panel-controls")
+                    .debug_selector(|| "wide-session-panel-controls".into())
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .h(rpx(APPBAR_H))
+                    .px(rpx(SPACE_3XL))
+                    .flex()
+                    .items_center()
+                    .when_some(controls, gpui::ParentElement::child),
+            )
+            .into_any_element()
     }
 
     pub(super) fn render_content(
@@ -1845,22 +1976,36 @@ impl Sidebar {
             let panel = self.render_side_chat(window, cx);
             if wide {
                 let body = self.render_content_body(window, cx);
-                return div()
-                    .size_full()
-                    .min_w_0()
-                    .min_h_0()
-                    .flex()
-                    .child(div().flex_1().min_w_0().min_h_0().child(body))
-                    .child(panel)
-                    .into_any_element();
+                return self.wide_panel_layout(body, panel, window, cx);
             }
-            self.checkout_panel.narrow_content = Some(panel);
+            self.checkout_panel.narrow_content = Some(self.narrow_panel_entrance(panel, cx));
             return self.render_content_body(window, cx);
         }
         if self.checkout_panel.hidden && !self.is_zen() {
             self.branch_peek = None;
             self.branch_peek_task = None;
             self.branch_entry = None;
+            if !cx.reduce_motion()
+                && self
+                    .checkout_panel
+                    .panel_motion
+                    .is_some_and(|(started, _, _, _)| {
+                        started.elapsed() < Duration::from_millis(MOTION_BASE_MS)
+                    })
+            {
+                if Self::logical_window_width(window) >= WIDE_VIEWPORT {
+                    let body = self.render_content_body(window, cx);
+                    return self.wide_panel_layout(body, div().into_any_element(), window, cx);
+                }
+                let height = (window.viewport_size().height * NARROW_HEIGHT_FRACTION)
+                    .min(rpx(CARD_WIDTH).to_pixels(window.rem_size()))
+                    * self.panel_motion_width().unwrap_or(0.);
+                self.checkout_panel.narrow_content =
+                    Some(div().w_full().h(height).into_any_element());
+                window.request_animation_frame();
+                return self.render_content_body(window, cx);
+            }
+            self.checkout_panel.panel_motion = None;
             return self.render_content_body(window, cx);
         }
         let wide = !self.is_zen() && Self::logical_window_width(window) >= WIDE_VIEWPORT;
@@ -2391,16 +2536,10 @@ impl Sidebar {
         }
         if wide {
             let body = self.render_content_body(window, cx);
-            div()
-                .size_full()
-                .min_w_0()
-                .min_h_0()
-                .flex()
-                .child(div().flex_1().min_w_0().min_h_0().child(body))
-                .child(panel)
-                .into_any_element()
+            self.wide_panel_layout(body, panel.into_any_element(), window, cx)
         } else {
-            self.checkout_panel.narrow_content = Some(panel.into_any_element());
+            self.checkout_panel.narrow_content =
+                Some(self.narrow_panel_entrance(panel.into_any_element(), cx));
             self.render_content_body(window, cx)
         }
     }
@@ -4994,6 +5133,9 @@ mod tests {
             let _ = window.draw(cx);
         });
         let card = cx.debug_bounds("checkout-card").unwrap();
+        let panel = cx.debug_bounds("checkout-panel").unwrap();
+        let toggle = cx.debug_bounds("session-panel-toggle").unwrap();
+        assert!((panel.right() - toggle.right() - gpui::px(SPACE_3XL)).abs() <= gpui::px(1.));
         assert!(card.top() >= gpui::px(APPBAR_TOTAL_H + SPACE_3XL));
         let divider = cx.debug_bounds("checkout-divider").unwrap();
         assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));

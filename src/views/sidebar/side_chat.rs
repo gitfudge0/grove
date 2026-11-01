@@ -73,6 +73,7 @@ impl Sidebar {
         }
     }
     pub(super) fn toggle_side_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_visible = !self.checkout_panel.hidden;
         if self.checkout_panel.side_chat_owner == self.selection {
             self.checkout_panel.side_chat_owner = None;
             self.checkout_panel.hidden = true;
@@ -84,6 +85,7 @@ impl Sidebar {
             self.checkout_panel.hidden = false;
             self.checkout_panel.expanded = true;
         }
+        self.start_panel_motion(was_visible, !self.checkout_panel.hidden, cx);
         cx.notify();
     }
 
