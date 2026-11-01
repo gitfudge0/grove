@@ -176,6 +176,9 @@ fn svg_for(name: &str) -> String {
         "arrow-left" => r#"<path d="M13 8H3M7 4 3 8l4 4"/>"#,
         "external-link" => r#"<path d="M9 2h5v5M14 2 7 9M6 3H3v10h10v-3"/>"#,
         "arrow-right" => r#"<path d="M3 8h10M9 4l4 4-4 4"/>"#,
+        "panel-right" => {
+            r#"<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M10 2.5v11"/>"#
+        }
         // Chevron pointing into a vertical bar — "collapse panel to the right".
         "sidebar-collapse" => {
             r#"<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M6 2.5v11M10 6l-2 2 2 2"/>"#

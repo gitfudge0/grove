@@ -12,7 +12,9 @@ use crate::{
     settings::SettingsState,
     theme as c,
     views::{
-        components::{dense_action_with_colors, form_action, form_field, project_field_well},
+        components::{
+            dense_action_with_colors, form_action, form_field, header_control, project_field_well,
+        },
         motion, rpx,
         terminal_view::TerminalView,
         tokens::*,
@@ -780,6 +782,49 @@ impl Sidebar {
                     .focus(|button| button.opacity(1.0))
             },
         );
+        let panel_toggle = if !grid && self.checkout_panel.toggle_available {
+            let hidden = self.checkout_panel.hidden
+                || (Self::logical_window_width(window) < super::checkout_panel::WIDE_VIEWPORT
+                    && !self.checkout_panel.expanded);
+            let label = if hidden {
+                "Show right panel"
+            } else {
+                "Hide right panel"
+            };
+            let focus = self
+                .checkout_panel
+                .toggle_focus
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
+            let mouse_focus = focus.clone();
+            Some(
+                header_control("session-panel-toggle", label)
+                    .debug_selector(|| "session-panel-toggle".into())
+                    .track_focus(&focus)
+                    .tab_index(0)
+                    .aria_expanded(!hidden)
+                    .focus_visible(|style| style.bg(c::BG_HOVER()))
+                    .when(!hidden, |style| style.bg(c::BG_HOVER()))
+                    .child(icon("panel-right", ICON_LG, c::FG_DIM()))
+                    .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                        mouse_focus.focus(window, cx);
+                    })
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_session_panel(window, cx)),
+                    )
+                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.is_held
+                        {
+                            this.toggle_session_panel(window, cx);
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        }
+                    })),
+            )
+        } else {
+            None
+        };
         let title_tooltip = accessible_label.clone();
         let active = matches!(
             self.selection,
@@ -990,7 +1035,8 @@ impl Sidebar {
                     .items_center()
                     .gap(rpx(SPACE_MD))
                     .when(grid, |actions| actions.child(header_status))
-                    .child(close),
+                    .when(grid, |actions| actions.child(close))
+                    .when_some(panel_toggle, gpui::ParentElement::child),
             );
         let header = if grid {
             let selected = matches!(

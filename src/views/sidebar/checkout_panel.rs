@@ -14,7 +14,7 @@ use grove_core::{
 use std::path::Path;
 
 const CARD_WIDTH: f32 = 280.;
-const WIDE_VIEWPORT: f32 = MODAL_W_XL + MODAL_W_SM;
+pub(super) const WIDE_VIEWPORT: f32 = MODAL_W_XL + MODAL_W_SM;
 const NARROW_HEIGHT_FRACTION: f32 = 0.25;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// Minimum count-column width; wider values expand the shared columns together.
@@ -121,6 +121,9 @@ pub(super) struct CheckoutPanel {
     pr_merge: Option<PullRequest>,
     publish: Option<String>,
     pub(super) expanded: bool,
+    pub(super) hidden: bool,
+    pub(super) toggle_available: bool,
+    pub(super) toggle_focus: Option<FocusHandle>,
     chosen_root: Option<String>,
     root_owner: Option<Selection>,
     return_focus: Option<FocusHandle>,
@@ -1738,6 +1741,26 @@ impl Sidebar {
         Some(section.into_any_element())
     }
 
+    pub(super) fn toggle_session_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let narrow = Self::logical_window_width(window) < WIDE_VIEWPORT;
+        if self.checkout_panel.hidden || (narrow && !self.checkout_panel.expanded) {
+            self.checkout_panel.hidden = false;
+            if narrow {
+                self.checkout_panel.expanded = true;
+            }
+        } else {
+            self.checkout_panel.hidden = true;
+        }
+        if self.checkout_panel.hidden {
+            self.dismiss_agent_peek(window, cx);
+            self.dismiss_plan_peek(window, cx);
+            self.dismiss_script_peek(window, cx);
+            self.checkout_panel.popup = None;
+            self.checkout_panel.popup_subscription = None;
+        }
+        cx.notify();
+    }
+
     pub(super) fn render_content(
         &mut self,
         window: &mut Window,
@@ -1745,6 +1768,7 @@ impl Sidebar {
     ) -> AnyElement {
         self.checkout_panel.narrow_content = None;
         self.checkout_panel.agents_visible = false;
+        self.checkout_panel.toggle_available = false;
         if self.dashboard_open {
             return self.render_content_body(window, cx);
         }
@@ -1795,6 +1819,13 @@ impl Sidebar {
             || (targets.is_empty() && !has_agents && !has_plan)
             || (self.is_zen() && !has_agents && !has_plan)
         {
+            self.branch_peek = None;
+            self.branch_peek_task = None;
+            self.branch_entry = None;
+            return self.render_content_body(window, cx);
+        }
+        self.checkout_panel.toggle_available = !self.is_zen();
+        if self.checkout_panel.hidden && !self.is_zen() {
             self.branch_peek = None;
             self.branch_peek_task = None;
             self.branch_entry = None;
