@@ -179,16 +179,15 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.render_closed_history(window, cx, false, false)
+        self.render_closed_history(window, cx, false)
     }
 
     pub(super) fn render_history_sidebar(
         &self,
         window: &Window,
         cx: &mut Context<Self>,
-        collapsed: bool,
     ) -> AnyElement {
-        self.render_closed_history(window, cx, true, collapsed)
+        self.render_closed_history(window, cx, true)
     }
 
     fn render_closed_history(
@@ -196,7 +195,6 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
         sidebar: bool,
-        collapsed: bool,
     ) -> AnyElement {
         use gpui_component::input::Input;
         let store = &cx.global::<SettingsState>().store;
@@ -374,7 +372,7 @@ impl Sidebar {
             .flex_1()
             .flex()
             .flex_col()
-            .when(!collapsed && !sidebar, |list| {
+            .when(!sidebar, |list| {
                 list.child(
                     div()
                         .p(rpx(SPACE_2XL))
@@ -425,7 +423,7 @@ impl Sidebar {
                         ),
                 )
             })
-            .when(!collapsed && !sidebar, |list| {
+            .when(!sidebar, |list| {
                 list.child(
                     div()
                         .px(rpx(SPACE_2XL))
@@ -447,11 +445,7 @@ impl Sidebar {
             .px(rpx(SPACE_LG))
             .flex()
             .flex_col();
-        if records.is_empty()
-            && cli_records.is_empty()
-            && !self.session_history_loading
-            && !collapsed
-        {
+        if records.is_empty() && cli_records.is_empty() && !self.session_history_loading {
             if all_native.is_empty() && all_cli.is_empty() {
                 rows =
                     rows.child(div().p(rpx(SPACE_2XL)).text_color(c::FG_DIM()).child(
@@ -503,10 +497,9 @@ impl Sidebar {
                     matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .when(collapsed, |row| row.child(icon(s.provider.agent().icon_name(), ICON_LG, c::FG())))
-                .when(!collapsed, |row| row.child(history_card_content(
+                .child(history_card_content(
                     s.provider.agent(), &s.project, title, &checkout_names[&s.cwd], false,
-                )));
+                ));
             rows = rows.child(row);
         }
         for s in cli_records.iter() {
@@ -532,10 +525,9 @@ impl Sidebar {
                     matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .when(collapsed, |row| row.child(icon(s.agent.icon_name(), ICON_LG, c::FG())))
-                .when(!collapsed, |row| row.child(history_card_content(
+                .child(history_card_content(
                     s.agent, &s.project, title, &checkout_names[&s.cwd], true,
-                )));
+                ));
             rows = rows.child(row);
         }
         list = list.child(rows);

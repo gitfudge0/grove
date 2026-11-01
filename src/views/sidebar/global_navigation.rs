@@ -131,7 +131,6 @@ impl Sidebar {
         self.rail_width(window, cx)
     }
     pub(super) fn global_rail(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let collapsed = self.is_collapsed(cx);
         let width = self.animated_sidebar_width(window, cx);
         if self.navigation_transition.is_some_and(|(started, _, _)| {
             started.elapsed() < Duration::from_millis(MOTION_BASE_MS)
@@ -140,6 +139,9 @@ impl Sidebar {
             window.request_animation_frame();
         } else {
             self.navigation_transition = None;
+        }
+        if width <= 0.0 {
+            return div().w_0().h_full().flex_shrink_0().into_any_element();
         }
         let mut nav = div()
             .flex()
@@ -203,20 +205,18 @@ impl Sidebar {
                 })
                 .when(selected, |row| row.bg(c::BG_HOVER()))
                 .child(crate::icons::action_icon(glyph, ICON_LG))
-                .when(!collapsed, |row| {
-                    row.child(div().flex_1().min_w_0().truncate().child(label))
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_MUTE())
-                                .child(if cfg!(target_os = "macos") {
-                                    format!("⌘{}", index + 1)
-                                } else {
-                                    format!("Ctrl+Shift+{}", index + 1)
-                                }),
-                        )
-                }),
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_MUTE())
+                        .child(if cfg!(target_os = "macos") {
+                            format!("⌘{}", index + 1)
+                        } else {
+                            format!("Ctrl+Shift+{}", index + 1)
+                        }),
+                ),
             );
         }
         let showing_history = !settings && self.destination == Destination::History;
@@ -229,7 +229,7 @@ impl Sidebar {
             .flex()
             .items_center()
             .gap(rpx(SPACE_SM));
-        if !collapsed {
+        {
             heading = heading.child(
                 div()
                     .flex_1()
@@ -290,7 +290,7 @@ impl Sidebar {
             if ids.is_empty() {
                 continue;
             }
-            if !collapsed {
+            {
                 sessions = sessions.child(
                     div()
                         .px(rpx(SPACE_LG))
@@ -308,15 +308,12 @@ impl Sidebar {
             for id in ids {
                 if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(id).cloned() {
                     count += 1;
-                    sessions = sessions.child(if collapsed {
-                        self.single_session_row(&meta, true, window, cx)
-                    } else {
-                        self.session_row(&meta, true, None, false, window, cx)
-                    });
+                    sessions =
+                        sessions.child(self.session_row(&meta, true, None, false, window, cx));
                 }
             }
         }
-        if count == 0 && !collapsed && !showing_history {
+        if count == 0 && !showing_history {
             sessions = sessions.child(
                 div()
                     .p(rpx(SPACE_LG))
@@ -325,58 +322,13 @@ impl Sidebar {
                     .child("No active sessions"),
             );
         }
-        let mut terminals = div()
-            .id("sidebar-terminals")
-            .debug_selector(|| "sidebar-terminals".into())
-            .flex_shrink_0()
+        let terminal_section = div()
+            .id("single-terminals-scroll")
+            .debug_selector(|| "single-terminals-scroll".into())
             .max_h(gpui::relative(0.3))
             .overflow_y_scroll()
-            .px(rpx(SPACE_LG))
-            .pb(rpx(SPACE_LG));
-        terminals = terminals.child(
-            div()
-                .h(rpx(HEAD_H))
-                .flex()
-                .items_center()
-                .px(rpx(SPACE_LG))
-                .when(!collapsed, |row| {
-                    row.child(
-                        div()
-                            .flex_1()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child("Terminals"),
-                    )
-                })
-                .child(
-                    self.control("add-terminal", "New terminal", Action::AddTerminal, cx)
-                        .debug_selector(|| "add-terminal".into())
-                        .child(icon("plus", ICON_SM, c::FG_DIM())),
-                ),
-        );
-        let rows = self
-            .runtime
-            .read(cx)
-            .registry
-            .read(cx)
-            .home_terminals()
-            .to_vec();
-        for meta in rows {
-            if self.terminal_owners.get(&meta.id).copied().unwrap_or(1) == self.active_workspace {
-                terminals = terminals.child(self.single_session_row(&meta, collapsed, window, cx));
-            }
-        }
-        let terminal_section = if collapsed {
-            terminals.into_any_element()
-        } else {
-            div()
-                .id("single-terminals-scroll")
-                .debug_selector(|| "single-terminals-scroll".into())
-                .max_h(gpui::relative(0.3))
-                .overflow_y_scroll()
-                .child(self.terminals(window, cx))
-                .into_any_element()
-        };
+            .child(self.terminals(window, cx))
+            .into_any_element();
         div()
             .id("global-navigation")
             .debug_selector(|| "global-navigation".into())
@@ -403,12 +355,12 @@ impl Sidebar {
             .child(nav)
             .when(!showing_history, |rail| rail.child(heading))
             .child(if showing_history {
-                self.render_history_sidebar(window, cx, collapsed)
+                self.render_history_sidebar(window, cx)
             } else {
                 sessions.into_any_element()
             })
             .child(terminal_section)
-            .when(!collapsed, |rail| {
+            .when(!self.is_collapsed(cx), |rail| {
                 rail.child(
                     div()
                         .id("sidebar-divider")
@@ -485,176 +437,6 @@ impl Sidebar {
             }
         }
     }
-    fn single_session_row(
-        &self,
-        meta: &SessionMeta,
-        collapsed: bool,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let home = meta.agent == Agent::Terminal
-            && self
-                .runtime
-                .read(cx)
-                .registry
-                .read(cx)
-                .home_terminals()
-                .iter()
-                .any(|m| m.id == meta.id);
-        let native_title = self
-            .runtime
-            .read(cx)
-            .registry
-            .read(cx)
-            .codex(meta.id)
-            .and_then(|s| s.read(cx).state.saved.title.clone());
-        let live_title = self
-            .runtime
-            .read(cx)
-            .registry
-            .read(cx)
-            .session(meta.id)
-            .and_then(|session| session.read(cx).title());
-        let title = session_display_title(meta, native_title.or(live_title));
-        let status = self.status(meta, cx).0;
-        let label = format!(
-            "{title} · {} / {} · {} · {status}",
-            meta.project,
-            meta.wt_path,
-            meta.agent.label()
-        );
-        let selected = self.selection
-            == Some(if home {
-                Selection::Home(meta.id)
-            } else {
-                Selection::Session(meta.id)
-            })
-            && !self.dashboard_open;
-        let mut row = self
-            .control(
-                SharedString::from(format!("single-session-{}", meta.id.raw())),
-                label,
-                Action::Select(if home {
-                    Selection::Home(meta.id)
-                } else {
-                    Selection::Session(meta.id)
-                }),
-                cx,
-            )
-            .debug_selector({
-                let id = meta.id;
-                move || format!("single-session-{}", id.raw())
-            })
-            .w_full()
-            .min_h(rpx(if collapsed { HEAD_H } else { SESSION_ROW_H }))
-            .justify_start()
-            .px(rpx(SPACE_LG))
-            .gap(rpx(SPACE_LG))
-            .aria_selected(selected)
-            .when(selected, |row| row.bg(c::BG_HOVER()))
-            .child(
-                div()
-                    .relative()
-                    .flex_shrink_0()
-                    .child(icon(meta.agent.icon_name(), ICON_LG, c::FG()))
-                    .when(!home && collapsed, |slot| {
-                        slot.child(
-                            div()
-                                .absolute()
-                                .right(rpx(-SPACE_SM))
-                                .bottom(rpx(-SPACE_SM))
-                                .child(session_status_icon_sized(meta.id, status, ICON_XS, cx)),
-                        )
-                    }),
-            );
-        if !collapsed {
-            row = row.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(rpx(TEXT_SMALL))
-                            .child(title.clone()),
-                    )
-                    .when(!home, |d| {
-                        d.child(
-                            div()
-                                .truncate()
-                                .text_size(rpx(TEXT_MICRO))
-                                .text_color(c::FG_DIM())
-                                .child(format!(
-                                    "{} / {}",
-                                    meta.project,
-                                    std::path::Path::new(&meta.wt_path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                )),
-                        )
-                    }),
-            );
-        }
-        if !home && !collapsed {
-            let id = meta.id;
-            let anchor = self.session_close_bounds.get(&id).cloned();
-            row = row.group("single-session").child(
-                div()
-                    .relative()
-                    .flex_shrink_0()
-                    .size(rpx(CHROME_CONTROL_H))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .group_hover("single-session", |s| s.opacity(0.))
-                            .child(session_status_icon(id, status, cx)),
-                    )
-                    .child(
-                        self.control(
-                            ("single-close", id.raw()),
-                            format!("Close {title}"),
-                            Action::Close(id),
-                            cx,
-                        )
-                        .absolute()
-                        .inset_0()
-                        .opacity(0.)
-                        .group_hover("single-session", |s| s.opacity(1.))
-                        .focus(|s| s.opacity(1.))
-                        .child(icon("close", ICON_SM, c::FG_DIM()))
-                        .when_some(anchor, |d, anchor| {
-                            d.child(
-                                gpui::canvas(
-                                    move |bounds, _, _| anchor.set(bounds),
-                                    |_, (), _, _| {},
-                                )
-                                .absolute()
-                                .inset_0(),
-                            )
-                        }),
-                    ),
-            );
-        }
-        let mut result = div().child(row);
-        if self.pending_close == Some(meta.id) && self.canvas_close_anchor.is_none() {
-            result = result.child(gpui::deferred(self.confirmation_popup(
-                &format!(
-                    "Close {} in {}? Its process will stop. The worktree stays on disk.",
-                    meta.label, meta.project
-                ),
-                Action::ConfirmClose(meta.id),
-                self.rail_bounds.get(),
-                window,
-                cx,
-            )));
-        }
-        result.into_any_element()
-    }
     pub(crate) fn header_workspace_control(&self, cx: &mut Context<Self>) -> AnyElement {
         let ws = &cx.global::<SettingsState>().store.workspaces;
         let name = ws.name(ws.active).to_string();
@@ -679,29 +461,27 @@ impl Sidebar {
             .text_size(rpx(TEXT_TITLE))
             .text_color(c::FG_DIM())
             .child(crate::icons::action_icon("folder", ICON_LG))
-            .when(!self.is_collapsed(cx), |row| {
-                row.child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_SM))
-                        .child(div().min_w_0().truncate().child(name))
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_MUTE())
-                                .child("· Workspace"),
-                        ),
-                )
-                .child(div().flex_shrink_0().child(icon(
-                    "chev-down",
-                    ICON_SM,
-                    c::FG_DIM(),
-                )))
-            });
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_SM))
+                    .child(div().min_w_0().truncate().child(name))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_MUTE())
+                            .child("· Workspace"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .child(icon("chev-down", ICON_SM, c::FG_DIM())),
+            );
         if let Some(trigger) = trigger {
             row = row.child(
                 gpui::canvas(move |bounds, _, _| trigger.set(bounds), |_, (), _, _| {})
@@ -718,9 +498,6 @@ impl Sidebar {
                 d.child(
                     self.control("sidebar-update", "Update Grove", Action::UpdateApp, cx)
                         .debug_selector(|| "sidebar-update".into())
-                        .when(self.is_collapsed(cx), |button| {
-                            button.w_full().justify_center()
-                        })
                         .child(icon("arrow-up", ICON_SM, c::FG_DIM())),
                 )
             })

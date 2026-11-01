@@ -2494,10 +2494,8 @@ mod tests {
         cx.simulate_keystrokes(&chord);
         draw(cx);
         assert!(cx.debug_bounds("sidebar-rail").is_none());
-        assert_eq!(
-            f32::from(cx.debug_bounds("global-navigation").unwrap().size.width),
-            52.0
-        );
+        assert!(cx.debug_bounds("global-navigation").is_none());
+        assert!(cx.debug_bounds("header-workspace").is_none());
         assert!(cx.debug_bounds("header-settings").is_some());
         assert!(cx.debug_bounds("window-close").is_some());
         assert!(cx.debug_bounds("sidebar-divider").is_none());
@@ -2559,19 +2557,17 @@ mod tests {
             let toggle = cx.debug_bounds("sidebar-toggle").unwrap();
             cx.simulate_click(toggle.center(), gpui::Modifiers::default());
             draw(cx);
-            let rail = cx.debug_bounds("global-navigation").unwrap();
-            let header = cx.debug_bounds("app-header").unwrap();
-            assert_eq!(f32::from(rail.size.width), 52.);
-            assert_eq!(rail.top(), header.bottom());
+            assert!(cx.debug_bounds("global-navigation").is_none());
+            assert!(cx.debug_bounds("header-workspace").is_none());
             assert_eq!(
-                cx.debug_bounds("sidebar-canvas").unwrap().left(),
-                rail.right()
+                f32::from(cx.debug_bounds("sidebar-canvas").unwrap().left()),
+                0.
             );
             for id in [
                 "window-close",
                 "window-minimize",
                 "window-fullscreen",
-                "header-workspace",
+                "sidebar-toggle",
                 "header-settings",
             ] {
                 assert!(cx.debug_bounds(id).is_some(), "{id}");

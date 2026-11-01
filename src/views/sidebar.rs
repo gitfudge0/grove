@@ -45,7 +45,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 const SIDEBAR_W: f32 = 260.0;
-const SIDEBAR_COLLAPSED_W: f32 = 52.0;
+const SIDEBAR_COLLAPSED_W: f32 = 0.0;
 const SIDEBAR_MAX_VIEWPORT_FRACTION: f32 = 0.4;
 const SIDEBAR_NARROW_BREAKPOINT: f32 = SIDEBAR_W / SIDEBAR_MAX_VIEWPORT_FRACTION;
 const SIDEBAR_DRAG_EPSILON: f32 = 1.0;
@@ -6937,7 +6937,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn update_header_requires_installable_release_and_preserves_collapsed_header(
+    fn update_header_requires_installable_release_and_hides_when_collapsed(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
@@ -6986,13 +6986,9 @@ mod tests {
         assert!(cx.debug_bounds("header-workspace").is_some());
         cx.update(|_, cx| SettingsState::update(cx, |store| store.sidebar_collapsed = true));
         draw(cx);
-        let update = cx.debug_bounds("sidebar-update").unwrap();
-        let header = cx.debug_bounds("global-navigation").unwrap();
-        assert!(header.contains(&update.origin));
-        assert!(header.contains(&update.bottom_right()));
-        let picker = cx.debug_bounds("header-workspace").unwrap();
-        assert!(header.contains(&picker.center()));
-        assert!((f32::from(update.center().x - picker.center().x)).abs() <= 1.);
+        assert!(cx.debug_bounds("sidebar-update").is_none());
+        assert!(cx.debug_bounds("global-navigation").is_none());
+        assert!(cx.debug_bounds("header-workspace").is_none());
     }
 
     #[gpui::test]
@@ -8959,7 +8955,7 @@ for line in sys.stdin:
                     cx.debug_bounds("sidebar-rail").is_none(),
                     "Settings hides context navigation"
                 );
-                assert!(cx.debug_bounds("global-nav-history").is_some());
+                assert_eq!(cx.debug_bounds("global-nav-history").is_some(), !collapsed);
                 cx.update(|window, cx| {
                     sidebar.update(cx, |sidebar, cx| {
                         sidebar.select_session_id(id, window, cx);
