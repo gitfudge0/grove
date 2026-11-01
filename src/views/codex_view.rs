@@ -4143,7 +4143,14 @@ impl CodexView {
             self.submitted_images = self.images.clone();
             self.submitted = Some(draft);
             self.submitted_ack = Some(submission);
+            // An explicit send leaves browsing mode immediately; subsequent layout
+            // changes continue to follow the new message through follow_after_submit.
+            self.scroll.set_offset(gpui::point(
+                self.scroll.offset().x,
+                -self.scroll.max_offset().y,
+            ));
             self.follow_after_submit = true;
+            cx.notify();
         } else if let Err(error) = result {
             self.session.update(cx, |session, cx| {
                 session.cancel_dashboard_title_waiting();
@@ -18592,6 +18599,40 @@ mod tests {
         view.read_with(cx, |view, _| {
             let (text, shown) = &view.stream_text["history"];
             assert_eq!(*shown, text.len());
+        });
+    }
+
+    #[gpui::test]
+    fn sending_while_browsing_returns_to_latest(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.saved.items = vec![json!({"id":"history", "type":"agentMessage", "text":"Earlier content.\n\n".repeat(80)})].into();
+                cx.notify();
+            });
+        }));
+        draw(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                assert!(view.scroll.max_offset().y > gpui::px(100.));
+                view.scroll
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(-100.)));
+                view.input
+                    .update(cx, |input, cx| input.set_value("hello", window, cx));
+                view.submit(window, cx);
+                assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
+            })
+        });
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Submit { text, .. } if text == "hello")));
+        for _ in 0..120 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
+            draw(cx);
+        }
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y)
         });
     }
 
