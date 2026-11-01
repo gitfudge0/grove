@@ -10,6 +10,7 @@ const SIDE_CHAT_WIDTH: f32 = 280.;
 
 pub(super) struct SideChat {
     input: Entity<InputState>,
+    _input_subscription: gpui::Subscription,
     messages: Vec<(String, String)>,
     busy: bool,
     error: Option<String>,
@@ -20,6 +21,57 @@ pub(super) struct SideChat {
 }
 
 impl Sidebar {
+    fn persist_side_chat_draft(&self, key: &(SessionId, String), cx: &mut Context<Self>) {
+        let Some(chat) = self.checkout_panel.side_chats.get(key) else {
+            return;
+        };
+        let draft = chat.input.read(cx).value().to_string();
+        let session = self
+            .runtime
+            .read(cx)
+            .registry
+            .read(cx)
+            .codex(key.0)
+            .cloned();
+        if let Some(session) = session {
+            session.update(cx, |session, cx| {
+                session.send(
+                    grove_core::codex::Action::SideChatDraft {
+                        checkout: key.1.clone(),
+                        draft,
+                    },
+                    cx,
+                )
+            });
+        }
+    }
+    fn persist_side_chat(&self, key: &(SessionId, String), cx: &mut Context<Self>) {
+        let Some(chat) = self.checkout_panel.side_chats.get(key) else {
+            return;
+        };
+        let saved = grove_core::codex::SavedSideChat {
+            draft: chat.input.read(cx).value().to_string(),
+            messages: chat.messages.clone(),
+        };
+        let session = self
+            .runtime
+            .read(cx)
+            .registry
+            .read(cx)
+            .codex(key.0)
+            .cloned();
+        if let Some(session) = session {
+            session.update(cx, |session, cx| {
+                session.send(
+                    grove_core::codex::Action::SideChat {
+                        checkout: key.1.clone(),
+                        chat: saved,
+                    },
+                    cx,
+                )
+            });
+        }
+    }
     pub(super) fn toggle_side_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.checkout_panel.side_chat_owner == self.selection {
             self.checkout_panel.side_chat_owner = None;
@@ -41,7 +93,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(self.selection, Some(Selection::Session(id)) if id == key.0)
+        if !matches!(self.selection, Some(Selection::Session(id) | Selection::Home(id)) if id == key.0)
             || super::checkout_panel::selected_checkout(
                 &self.checkout_targets(cx),
                 self.checkout_panel.chosen_root.as_deref(),
@@ -82,6 +134,7 @@ impl Sidebar {
         chat.cancel = Some(cancel.clone());
         let conversation = chat.messages.clone();
         chat.follow_latest = true;
+        self.persist_side_chat(&key, cx);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -104,6 +157,7 @@ impl Sidebar {
                         Err(error) => chat.error = Some(error),
                     }
                 }
+                this.persist_side_chat(&key, cx);
                 cx.notify();
             });
         })
@@ -117,7 +171,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(self.selection, Some(Selection::Session(id)) if id == key.0)
+        if !matches!(self.selection, Some(Selection::Session(id) | Selection::Home(id)) if id == key.0)
             || super::checkout_panel::selected_checkout(
                 &self.checkout_targets(cx),
                 self.checkout_panel.chosen_root.as_deref(),
@@ -155,12 +209,54 @@ impl Sidebar {
         let Some(Selection::Session(id) | Selection::Home(id)) = self.selection else {
             return div().into_any_element();
         };
+        let targets = self.checkout_targets(cx);
         let selected = super::checkout_panel::selected_checkout(
-            &self.checkout_targets(cx),
+            &targets,
             self.checkout_panel.chosen_root.as_deref(),
         );
-        let Some((_, path)) = selected else {
-            return div()
+        // Only recover a previously bound conversation when no checkout is
+        // available. Ambiguous multi-root sessions still require a selection.
+        let recovery_paths = if targets.is_empty() {
+            let mut paths = self
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .codex(id)
+                .map(|session| {
+                    session
+                        .read(cx)
+                        .state
+                        .saved
+                        .side_chats
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            paths.extend(
+                self.checkout_panel
+                    .side_chats
+                    .keys()
+                    .filter(|(session, _)| *session == id)
+                    .map(|(_, path)| path.clone()),
+            );
+            paths.sort();
+            paths.dedup();
+            paths
+        } else {
+            Vec::new()
+        };
+        let recovered = self
+            .checkout_panel
+            .chosen_root
+            .as_ref()
+            .filter(|path| recovery_paths.contains(path))
+            .cloned()
+            .or_else(|| (recovery_paths.len() == 1).then(|| recovery_paths[0].clone()));
+        let available = selected.is_some();
+        let Some(path) = selected.map(|(_, path)| path).or(recovered) else {
+            let mut panel = div()
                 .id("side-chat-checkout-required")
                 .w(rpx(SIDE_CHAT_WIDTH))
                 .h_full()
@@ -168,37 +264,91 @@ impl Sidebar {
                 .p(rpx(SPACE_3XL))
                 .text_size(rpx(TEXT_BODY))
                 .text_color(c::FG_DIM())
-                .child("Choose a checkout in the right panel before using Side chat.")
-                .into_any_element();
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_LG));
+            if recovery_paths.is_empty() {
+                panel = panel.child("Choose a checkout in the right panel before using Side chat.");
+            } else {
+                panel = panel.child(
+                    "These checkouts are unavailable. Choose a conversation to view its history.",
+                );
+                for (index, path) in recovery_paths.into_iter().enumerate() {
+                    let target = path.clone();
+                    panel = panel.child(
+                        transcript_action(("side-chat-recover", index), path, false, window, cx)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.checkout_panel.chosen_root = Some(target.clone());
+                                cx.notify();
+                            })),
+                    );
+                }
+            }
+            return panel.into_any_element();
         };
         let key = (id, path.clone());
-        let supported = self
+        let provider = self
             .runtime
             .read(cx)
             .registry
             .read(cx)
             .codex(id)
-            .is_some_and(|session| {
-                session.read(cx).state.saved.provider == grove_core::codex::Provider::Codex
+            .map(|session| session.read(cx).state.saved.provider);
+        let supported = available && provider == Some(grove_core::codex::Provider::Codex);
+        let context_disclosure = match (available, provider) {
+            (false, _) => "Read-only · Context is unavailable; no context is sent.",
+            (true, Some(grove_core::codex::Provider::Codex)) => "Read-only · Each question sends Codex a new, bounded snapshot of this session and worktree. It may omit files or history; answers may become stale as work continues.",
+            (true, Some(grove_core::codex::Provider::Claude)) => "Read-only · Claude Code is unavailable; no context is sent.",
+            (true, None) => "Read-only · Session context is unavailable; no context is sent.",
+        };
+        if !self.checkout_panel.side_chats.contains_key(&key) {
+            let saved = self
+                .runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .codex(id)
+                .and_then(|session| session.read(cx).state.saved.side_chats.get(&path).cloned());
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .multi_line(true)
+                    .placeholder("Ask about this session or worktree…")
             });
-        let chat = self
-            .checkout_panel
-            .side_chats
-            .entry(key.clone())
-            .or_insert_with(|| SideChat {
-                input: cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .multi_line(true)
-                        .placeholder("Ask about this session or worktree…")
-                }),
-                messages: Vec::new(),
-                busy: false,
-                error: None,
-                cancel: None,
-                scroll: gpui::ScrollHandle::new(),
-                follow_latest: true,
-                pending_scroll: None,
+            if let Some(saved) = &saved {
+                input.update(cx, |input, cx| input.set_value(&saved.draft, window, cx));
+            }
+            let subscription_key = key.clone();
+            let subscription = cx.subscribe(&input, move |this, _, event, cx| {
+                if matches!(event, gpui_component::input::InputEvent::Change) {
+                    this.persist_side_chat_draft(&subscription_key, cx);
+                }
             });
+            let interrupted = saved.as_ref().is_some_and(|saved| {
+                saved
+                    .messages
+                    .last()
+                    .is_some_and(|(role, _)| role == "user")
+            });
+            self.checkout_panel.side_chats.insert(
+                key.clone(),
+                SideChat {
+                    input,
+                    _input_subscription: subscription,
+                    messages: saved.map(|saved| saved.messages).unwrap_or_default(),
+                    busy: false,
+                    error: interrupted.then(|| {
+                        "The previous response was interrupted. Retry to continue.".into()
+                    }),
+                    cancel: None,
+                    scroll: gpui::ScrollHandle::new(),
+                    follow_latest: true,
+                    pending_scroll: None,
+                },
+            );
+        }
+        let Some(chat) = self.checkout_panel.side_chats.get_mut(&key) else {
+            return div().into_any_element();
+        };
         if let Some(toward_bottom) = chat.pending_scroll.take() {
             chat.follow_latest = toward_bottom
                 && chat.scroll.max_offset().y + chat.scroll.offset().y <= gpui::px(1.);
@@ -261,16 +411,40 @@ impl Sidebar {
             history = history
                 .child(div().text_color(c::FORM_ERROR()).child(error.clone()))
                 .child(
-                    transcript_action("side-chat-retry", "Retry", false, window, cx).on_click(
-                        cx.listener(move |this, _, window, cx| {
+                    transcript_action("side-chat-retry", "Retry", false, window, cx)
+                        .disabled(!supported)
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.retry_side_chat(retry_key.clone(), window, cx)
-                        }),
-                    ),
+                        })),
                 );
         }
         let input = chat.input.clone();
         let busy = chat.busy;
         let action_key = key.clone();
+        let mut recovery_choices = div().flex().flex_col().gap(rpx(SPACE_SM));
+        if recovery_paths.len() > 1 {
+            recovery_choices = recovery_choices.child("Other saved conversations:");
+            for (index, candidate) in recovery_paths
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| *candidate != &path)
+            {
+                let target = candidate.clone();
+                recovery_choices = recovery_choices.child(
+                    transcript_action(
+                        ("side-chat-recover", index),
+                        candidate.clone(),
+                        false,
+                        window,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.checkout_panel.chosen_root = Some(target.clone());
+                        cx.notify();
+                    })),
+                );
+            }
+        }
         let wide = Self::logical_window_width(window) >= super::checkout_panel::WIDE_VIEWPORT;
         div().id("side-chat-panel").debug_selector(|| "side-chat-panel".into())
             .flex_shrink_0().min_h_0()
@@ -280,8 +454,10 @@ impl Sidebar {
             .text_size(rpx(TEXT_BODY)).text_color(c::FG())
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Side chat"))
             .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(path))
-            .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Read-only · Uses a bounded snapshot of this session and worktree. Context may be incomplete."))
-            .when(!supported, |panel| panel.child(div().text_color(c::FG_DIM()).child("Side chat is unavailable for this provider until read-only access can be enforced.")))
+            .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(context_disclosure))
+            .when(!available, |panel| panel.child(div().text_color(c::FG_DIM()).child("This checkout is unavailable. History remains readable; restore the checkout to ask another question.")))
+            .when(!available && recovery_paths.len() > 1, |panel| panel.child(recovery_choices))
+            .when(available && !supported, |panel| panel.child(div().text_color(c::FG_DIM()).child("Side chat is unavailable for this provider until read-only access can be enforced.")))
             .child(history)
             .child(project_field_well(false, false).h_auto().flex().flex_col().gap(rpx(SPACE_LG))
                 .child(Input::new(&input).aria_label("Ask about this session or worktree").appearance(false).bordered(false).focus_bordered(false).p_0())

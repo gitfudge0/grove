@@ -280,7 +280,10 @@ impl CheckoutPanel {
     }
 }
 
-pub(super) fn selected_checkout(targets: &[(usize, String)], chosen: Option<&str>) -> Option<(usize, String)> {
+pub(super) fn selected_checkout(
+    targets: &[(usize, String)],
+    chosen: Option<&str>,
+) -> Option<(usize, String)> {
     if targets.len() == 1 {
         targets.first().cloned()
     } else {
@@ -329,7 +332,7 @@ impl Sidebar {
     }
 
     pub(super) fn checkout_targets(&self, cx: &App) -> Vec<(usize, String)> {
-        if let Some(Selection::Session(id)) = self.selection {
+        if let Some(Selection::Session(id) | Selection::Home(id)) = self.selection {
             let registry = self.runtime.read(cx).registry.read(cx);
             if let Some(meta) = registry.meta(id) {
                 let mut paths = vec![meta.wt_path.clone()];
@@ -2986,6 +2989,7 @@ mod tests {
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
@@ -3077,6 +3081,7 @@ mod tests {
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
@@ -3877,6 +3882,7 @@ mod tests {
                 let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
@@ -4044,6 +4050,7 @@ mod tests {
         ] {
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
@@ -4363,6 +4370,7 @@ mod tests {
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),

@@ -13044,6 +13044,7 @@ mod tests {
     pub(super) fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
             rich_plans: grove_core::rich_plan::PlanStore::default(),
+            side_chats: Default::default(),
             claude_resume: None,
             claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),

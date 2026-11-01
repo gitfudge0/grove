@@ -826,7 +826,11 @@ impl Sidebar {
         } else {
             None
         };
-        let side_chat_toggle = if !grid && self.checkout_panel.toggle_available && native.is_some()
+        let side_chat_toggle = if !grid
+            && self.checkout_panel.toggle_available
+            && native
+                .as_ref()
+                .is_some_and(|session| !session.read(cx).is_deferred())
         {
             let active = self.checkout_panel.side_chat_owner == self.selection;
             let focus = self
@@ -2656,6 +2660,7 @@ mod tests {
             });
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
@@ -2787,6 +2792,7 @@ mod tests {
             });
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),

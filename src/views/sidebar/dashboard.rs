@@ -336,6 +336,7 @@ impl Sidebar {
             };
             let saved = grove_core::codex::SavedSession {
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
+                side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: HashMap::default(),
                 edit_checkpoints: Vec::new(),

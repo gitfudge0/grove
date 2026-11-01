@@ -424,6 +424,17 @@ impl CodexSession {
         if self.is_deferred() {
             match action {
                 Action::Draft(text) => self.state.saved.draft = text,
+                Action::SideChat { checkout, chat } => {
+                    self.state.saved.side_chats.insert(checkout, chat);
+                }
+                Action::SideChatDraft { checkout, draft } => {
+                    self.state
+                        .saved
+                        .side_chats
+                        .entry(checkout)
+                        .or_default()
+                        .draft = draft;
+                }
                 Action::DraftImages(images) => self.state.saved.draft_images = images,
                 Action::DraftReference(reference) => self.state.saved.draft_reference = reference,
                 Action::Configure {
@@ -727,6 +738,7 @@ mod dashboard_tests {
         SavedSession {
             claude_subagents: std::collections::HashMap::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
+            side_chats: Default::default(),
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,

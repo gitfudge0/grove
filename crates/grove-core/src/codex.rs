@@ -309,12 +309,22 @@ impl ReferenceDraft {
     }
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SavedSideChat {
+    #[serde(default)]
+    pub draft: String,
+    #[serde(default)]
+    pub messages: Vec<(String, String)>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub claude_subagents: HashMap<String, SavedClaudeSubagent>,
     #[serde(default)]
     pub rich_plans: crate::rich_plan::PlanStore,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub side_chats: HashMap<String, SavedSideChat>,
     #[serde(default)]
     pub claude_resume: Option<ClaudeResume>,
     #[serde(default)]
@@ -458,6 +468,7 @@ impl SavedSession {
         saved.items.clear();
         saved.claude_subagents.clear();
         saved.rich_plans = crate::rich_plan::PlanStore::default();
+        saved.side_chats.clear();
         saved.work_periods.clear();
         saved.draft.clear();
         saved.draft_images.clear();
@@ -2943,6 +2954,14 @@ pub enum Action {
     AnswerQuestions(Value, Option<QuestionAnswers>),
     Reconnect,
     Draft(String),
+    SideChat {
+        checkout: String,
+        chat: SavedSideChat,
+    },
+    SideChatDraft {
+        checkout: String,
+        draft: String,
+    },
     Metadata {
         project: String,
         roots: Vec<crate::session_meta::ContextRoot>,
@@ -4227,6 +4246,8 @@ impl Actor {
                 Action::Reconnect
                     | Action::Stop { .. }
                     | Action::Draft(_)
+                    | Action::SideChat { .. }
+                    | Action::SideChatDraft { .. }
                     | Action::DraftImages(_)
                     | Action::DraftReference(_)
             )
@@ -4561,6 +4582,17 @@ impl Actor {
                     }
                 }
                 self.state.saved.draft = text;
+            }
+            Action::SideChat { checkout, chat } => {
+                self.state.saved.side_chats.insert(checkout, chat);
+            }
+            Action::SideChatDraft { checkout, draft } => {
+                self.state
+                    .saved
+                    .side_chats
+                    .entry(checkout)
+                    .or_default()
+                    .draft = draft;
             }
             Action::Metadata { project, roots } => {
                 self.state.saved.project = project;
@@ -6176,6 +6208,61 @@ impl Actor {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn side_chat_retention_is_scoped_to_session_and_checkout() {
+        use super::*;
+        let mut session = saved();
+        session.side_chats.insert(
+            "/checkout/a".into(),
+            SavedSideChat {
+                draft: "unsent".into(),
+                messages: vec![
+                    ("user".into(), "question".into()),
+                    ("assistant".into(), "answer".into()),
+                ],
+            },
+        );
+        session.side_chats.insert(
+            "/checkout/b".into(),
+            SavedSideChat {
+                draft: "other".into(),
+                messages: Vec::new(),
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        persist_in_dir(&session, dir.path()).unwrap();
+        let path = dir.path().join(format!("{}.json", session.key));
+        let decoded: SavedSession = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(decoded.side_chats["/checkout/a"].draft, "unsent");
+        assert_eq!(decoded.side_chats["/checkout/a"].messages.len(), 2);
+        assert_eq!(decoded.side_chats["/checkout/b"].draft, "other");
+        assert!(decoded.fresh_conversation().side_chats.is_empty());
+        let mut old = serde_json::to_value(&session).unwrap();
+        old.as_object_mut().unwrap().remove("side_chats");
+        assert!(serde_json::from_value::<SavedSession>(old)
+            .unwrap()
+            .side_chats
+            .is_empty());
+        let mut actor = actor();
+        actor
+            .action(Action::SideChat {
+                checkout: "/checkout/a".into(),
+                chat: session.side_chats["/checkout/a"].clone(),
+            })
+            .unwrap();
+        assert_eq!(actor.state.saved.side_chats["/checkout/a"].draft, "unsent");
+        actor
+            .action(Action::SideChatDraft {
+                checkout: "/checkout/a".into(),
+                draft: "edited".into(),
+            })
+            .unwrap();
+        assert_eq!(actor.state.saved.side_chats["/checkout/a"].draft, "edited");
+        assert_eq!(
+            actor.state.saved.side_chats["/checkout/a"].messages.len(),
+            2
+        );
+    }
+    #[test]
     fn answer_echo_text_is_only_for_nonsecret_async_questions() {
         let params = serde_json::json!({"questions":[{"id":"scope", "question":"Which scope?"}]});
         let mut request =
@@ -6196,6 +6283,7 @@ mod tests {
         SavedSession {
             claude_subagents: HashMap::default(),
             rich_plans: crate::rich_plan::PlanStore::default(),
+            side_chats: Default::default(),
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,

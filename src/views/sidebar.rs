@@ -8877,6 +8877,7 @@ for line in sys.stdin:
                 });
                 let saved = grove_core::codex::SavedSession {
                     rich_plans: grove_core::rich_plan::PlanStore::default(),
+                    side_chats: Default::default(),
                     claude_resume: None,
                     claude_subagents: std::collections::HashMap::default(),
                     edit_checkpoints: Vec::new(),
@@ -9058,6 +9059,7 @@ for line in sys.stdin:
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
             rich_plans: grove_core::rich_plan::PlanStore::default(),
+            side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
@@ -9861,6 +9863,7 @@ for line in sys.stdin:
         let (_updates, receive) = std::sync::mpsc::channel();
         let saved = grove_core::codex::SavedSession {
             rich_plans: grove_core::rich_plan::PlanStore::default(),
+            side_chats: Default::default(),
             claude_resume: None,
             claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),

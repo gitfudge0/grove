@@ -13,6 +13,7 @@ fn draft(provider: Provider, cwd: &str) -> SavedSession {
     SavedSession {
         claude_subagents: HashMap::default(),
         rich_plans: grove_core::rich_plan::PlanStore::default(),
+        side_chats: Default::default(),
         claude_resume: None,
         edit_checkpoints: Vec::new(),
         pending_edit: None,

@@ -774,6 +774,7 @@ mod tests {
                 ] {
                     let saved = grove_core::codex::SavedSession {
                         rich_plans: Default::default(),
+                        side_chats: Default::default(),
                         claude_resume: None,
                         claude_subagents: Default::default(),
                         edit_checkpoints: Vec::new(),

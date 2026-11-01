@@ -1753,6 +1753,8 @@ impl Actor {
                 Action::Reconnect
                     | Action::Stop { .. }
                     | Action::Draft(_)
+                    | Action::SideChat { .. }
+                    | Action::SideChatDraft { .. }
                     | Action::DraftImages(_)
                     | Action::DraftReference(_)
             )
@@ -1944,6 +1946,17 @@ impl Actor {
                     }
                 }
                 self.state.saved.draft = text;
+            }
+            Action::SideChat { checkout, chat } => {
+                self.state.saved.side_chats.insert(checkout, chat);
+            }
+            Action::SideChatDraft { checkout, draft } => {
+                self.state
+                    .saved
+                    .side_chats
+                    .entry(checkout)
+                    .or_default()
+                    .draft = draft;
             }
             Action::DraftImages(images) => {
                 codex::validate_images(&images)?;
@@ -3491,6 +3504,20 @@ impl Actor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn side_chat_state_is_saved_by_claude_actor() {
+        let mut actor = actor();
+        actor
+            .action(super::Action::SideChat {
+                checkout: "/checkout".into(),
+                chat: crate::codex::SavedSideChat {
+                    draft: "draft".into(),
+                    messages: vec![("user".into(), "question".into())],
+                },
+            })
+            .unwrap();
+        assert_eq!(actor.state.saved.side_chats["/checkout"].draft, "draft");
+    }
     use super::*;
 
     #[test]
