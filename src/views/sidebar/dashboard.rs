@@ -4,7 +4,7 @@ use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 
 const DASHBOARD_RECENT_MAX_W: f32 = CHAT_MAX_W * 0.7;
-const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.4;
+const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.45;
 
 /// Preferences for a fresh dashboard draft after adopting the previous one.
 struct DashboardDefaults {
