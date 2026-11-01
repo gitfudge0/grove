@@ -17,6 +17,7 @@ pub(super) mod projects;
 mod script_preview;
 mod session_diff;
 mod session_history;
+mod side_chat;
 mod task_glance;
 mod worktree_form;
 use super::{motion, rpx, terminal_view::TerminalView, tokens::*};

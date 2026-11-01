@@ -124,7 +124,10 @@ pub(super) struct CheckoutPanel {
     pub(super) hidden: bool,
     pub(super) toggle_available: bool,
     pub(super) toggle_focus: Option<FocusHandle>,
-    chosen_root: Option<String>,
+    pub(super) side_chat_owner: Option<Selection>,
+    pub(super) side_chat_focus: Option<FocusHandle>,
+    pub(super) side_chats: HashMap<(SessionId, String), super::side_chat::SideChat>,
+    pub(super) chosen_root: Option<String>,
     root_owner: Option<Selection>,
     return_focus: Option<FocusHandle>,
     confirmation_focus: Option<FocusHandle>,
@@ -277,7 +280,7 @@ impl CheckoutPanel {
     }
 }
 
-fn selected_checkout(targets: &[(usize, String)], chosen: Option<&str>) -> Option<(usize, String)> {
+pub(super) fn selected_checkout(targets: &[(usize, String)], chosen: Option<&str>) -> Option<(usize, String)> {
     if targets.len() == 1 {
         targets.first().cloned()
     } else {
@@ -325,7 +328,7 @@ impl Sidebar {
         self.checkout_panel.publish.is_some() || self.checkout_panel.pr_merge.is_some()
     }
 
-    fn checkout_targets(&self, cx: &App) -> Vec<(usize, String)> {
+    pub(super) fn checkout_targets(&self, cx: &App) -> Vec<(usize, String)> {
         if let Some(Selection::Session(id)) = self.selection {
             let registry = self.runtime.read(cx).registry.read(cx);
             if let Some(meta) = registry.meta(id) {
@@ -1742,6 +1745,12 @@ impl Sidebar {
     }
 
     pub(super) fn toggle_session_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.checkout_panel.side_chat_owner.take().is_some() {
+            self.checkout_panel.hidden = false;
+            self.checkout_panel.expanded = true;
+            cx.notify();
+            return;
+        }
         let narrow = Self::logical_window_width(window) < WIDE_VIEWPORT;
         if self.checkout_panel.hidden || (narrow && !self.checkout_panel.expanded) {
             self.checkout_panel.hidden = false;
@@ -1825,6 +1834,26 @@ impl Sidebar {
             return self.render_content_body(window, cx);
         }
         self.checkout_panel.toggle_available = !self.is_zen();
+        if self.checkout_panel.side_chat_owner.is_some()
+            && self.checkout_panel.side_chat_owner == self.selection
+            && !self.is_zen()
+        {
+            let wide = Self::logical_window_width(window) >= WIDE_VIEWPORT;
+            let panel = self.render_side_chat(window, cx);
+            if wide {
+                let body = self.render_content_body(window, cx);
+                return div()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .flex()
+                    .child(div().flex_1().min_w_0().min_h_0().child(body))
+                    .child(panel)
+                    .into_any_element();
+            }
+            self.checkout_panel.narrow_content = Some(panel);
+            return self.render_content_body(window, cx);
+        }
         if self.checkout_panel.hidden && !self.is_zen() {
             self.branch_peek = None;
             self.branch_peek_task = None;

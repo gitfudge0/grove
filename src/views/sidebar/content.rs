@@ -783,7 +783,8 @@ impl Sidebar {
             },
         );
         let panel_toggle = if !grid && self.checkout_panel.toggle_available {
-            let hidden = self.checkout_panel.hidden
+            let hidden = self.checkout_panel.side_chat_owner == self.selection
+                || self.checkout_panel.hidden
                 || (Self::logical_window_width(window) < super::checkout_panel::WIDE_VIEWPORT
                     && !self.checkout_panel.expanded);
             let label = if hidden {
@@ -821,6 +822,50 @@ impl Sidebar {
                             cx.stop_propagation();
                         }
                     })),
+            )
+        } else {
+            None
+        };
+        let side_chat_toggle = if !grid && self.checkout_panel.toggle_available && native.is_some()
+        {
+            let active = self.checkout_panel.side_chat_owner == self.selection;
+            let focus = self
+                .checkout_panel
+                .side_chat_focus
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
+            let mouse_focus = focus.clone();
+            Some(
+                header_control(
+                    "side-chat-toggle",
+                    if active {
+                        "Hide side chat"
+                    } else {
+                        "Show side chat"
+                    },
+                )
+                .debug_selector(|| "side-chat-toggle".into())
+                .track_focus(&focus)
+                .tab_index(0)
+                .aria_expanded(active)
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .when(active, |style| style.bg(c::BG_HOVER()))
+                .child(icon("message-circle", ICON_LG, c::FG_DIM()))
+                .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                    mouse_focus.focus(window, cx)
+                })
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_side_chat(window, cx)))
+                .on_key_down(cx.listener(
+                    |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.is_held
+                        {
+                            this.toggle_side_chat(window, cx);
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        }
+                    },
+                )),
             )
         } else {
             None
@@ -1036,6 +1081,7 @@ impl Sidebar {
                     .gap(rpx(SPACE_MD))
                     .when(grid, |actions| actions.child(header_status))
                     .when(grid, |actions| actions.child(close))
+                    .when_some(side_chat_toggle, gpui::ParentElement::child)
                     .when_some(panel_toggle, gpui::ParentElement::child),
             );
         let header = if grid {

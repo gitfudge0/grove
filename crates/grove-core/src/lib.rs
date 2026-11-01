@@ -35,6 +35,7 @@ mod reports;
 pub mod rich_plan;
 pub mod session_meta;
 pub mod session_title;
+pub mod side_chat;
 pub mod storage;
 pub mod tasks;
 pub mod theme;

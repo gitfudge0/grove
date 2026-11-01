@@ -179,6 +179,9 @@ fn svg_for(name: &str) -> String {
         "panel-right" => {
             r#"<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M10 2.5v11"/>"#
         }
+        "message-circle" => {
+            r#"<path d="M13.5 7.5a5.5 5.5 0 0 1-7.9 5l-3.1 1 1-3.1a5.5 5.5 0 1 1 10-2.9Z"/>"#
+        }
         // Chevron pointing into a vertical bar — "collapse panel to the right".
         "sidebar-collapse" => {
             r#"<rect x="2" y="2.5" width="12" height="11" rx="1"/><path d="M6 2.5v11M10 6l-2 2 2 2"/>"#
