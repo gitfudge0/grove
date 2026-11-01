@@ -18604,6 +18604,62 @@ mod tests {
     }
 
     #[gpui::test]
+    fn queueing_with_enter_while_browsing_returns_to_latest(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.status = Status::Working;
+                session.state.turn_id = Some("active-turn".into());
+                session.state.saved.items = vec![
+                    json!({"id":"history", "type":"agentMessage", "text":"Earlier content.\n\n".repeat(80)}),
+                    json!({"id":"grove-plan-t1", "type":"plan", "text":"", "explanation":"Keep working.", "plan":[
+                        {"step":"Inspect","status":"completed"},
+                        {"step":"Implement","status":"inProgress"}]}),
+                    json!({"id":"latest", "type":"agentMessage", "text":"Latest content.\n\n".repeat(30)}),
+                ].into();
+                cx.notify();
+            });
+        }));
+        draw(cx);
+        for _ in 0..120 {
+            cx.executor().advance_clock(std::time::Duration::from_millis(16));
+            draw(cx);
+        }
+        assert!(cx.debug_bounds("codex-task-strip").is_some());
+        cx.update(|window, cx| view.update(cx, |view, cx| {
+            assert!(view.scroll.max_offset().y > gpui::px(100.));
+            view.scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-100.)));
+            view.input.update(cx, |input, cx| input.set_value("follow up", window, cx));
+            view.input.focus_handle(cx).focus(window, cx);
+        }));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let queue_id = actions.try_iter().find_map(|action| match action {
+            Action::SubmitWithMode { id, text, mode: SubmissionMode::Queue, .. } if text == "follow up" => Some(id),
+            _ => None,
+        }).expect("Enter should queue the message");
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.session.update(cx, |session, cx| {
+                session.state.accepted_submission = Some(queue_id);
+                session.state.queued_prompts.push(codex::QueuedPrompt {
+                    id: queue_id, text: "follow up".into(), images: Vec::new(),
+                });
+                cx.notify();
+            });
+        }));
+        for _ in 0..120 {
+            cx.executor().advance_clock(std::time::Duration::from_millis(16));
+            draw(cx);
+        }
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.scroll.offset().y, -view.scroll.max_offset().y);
+        });
+        let latest = cx.debug_bounds("codex-message-anchor-2").unwrap();
+        let transcript = cx.debug_bounds("codex-messages").unwrap();
+        assert!(latest.bottom() <= transcript.bottom());
+    }
+
+    #[gpui::test]
     fn sending_while_browsing_returns_to_latest(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);
         cx.update(|_, cx| view.update(cx, |view, cx| {
