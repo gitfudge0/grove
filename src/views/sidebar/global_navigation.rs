@@ -159,15 +159,18 @@ impl Sidebar {
             .settings_panel
             .as_ref()
             .is_some_and(|panel| panel.read(cx).is_open());
-        for (index, (destination, label, glyph)) in [
-            (Destination::NewSession, "New Session", "plus"),
-            (Destination::Home, "Home", "home"),
-            (Destination::Projects, "Projects", "folder"),
-            (Destination::History, "History", "history"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        let mut lower_nav = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(rpx(SPACE_MD))
+            .p(rpx(SPACE_LG));
+        for (index, destination, label, glyph) in [
+            (1, Destination::Home, "Home", "home"),
+            (0, Destination::NewSession, "New session", "plus"),
+            (3, Destination::History, "History", "history"),
+            (2, Destination::Projects, "Projects", "folder"),
+        ] {
             let selected = !settings
                 && self.destination == destination
                 && (self.selection.is_none()
@@ -177,8 +180,8 @@ impl Sidebar {
                 Destination::Home => "global-nav-home".to_owned(),
                 _ => format!("global-nav-{}", label.to_lowercase()),
             };
-            nav = nav.child(
-                self.control(
+            let row = self
+                .control(
                     SharedString::from(id.clone()),
                     label,
                     Action::Destination(destination),
@@ -216,8 +219,12 @@ impl Sidebar {
                         } else {
                             format!("Ctrl+Shift+{}", index + 1)
                         }),
-                ),
-            );
+                );
+            if matches!(destination, Destination::NewSession | Destination::Home) {
+                nav = nav.child(row);
+            } else {
+                lower_nav = lower_nav.child(row);
+            }
         }
         let showing_history = !settings && self.destination == Destination::History;
         let grouping = SessionGrouping::current(&cx.global::<SettingsState>().store);
@@ -360,6 +367,7 @@ impl Sidebar {
                 sessions.into_any_element()
             })
             .child(terminal_section)
+            .child(lower_nav)
             .when(!self.is_collapsed(cx), |rail| {
                 rail.child(
                     div()
@@ -660,8 +668,8 @@ mod tests {
         assert!(cx.debug_bounds("sidebar-sessions-heading").is_none());
         assert_eq!(cx.debug_bounds("single-terminals-scroll"), Some(terminals));
 
-        let home = cx.debug_bounds("global-nav-home").unwrap();
-        cx.simulate_click(home.center(), gpui::Modifiers::default());
+        let projects = cx.debug_bounds("global-nav-projects").unwrap();
+        cx.simulate_click(projects.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("sidebar-scroll").is_some());
         assert!(cx.debug_bounds("history-list-scroll").is_none());
@@ -686,9 +694,20 @@ mod tests {
             });
             draw(cx);
             let workspace = cx.debug_bounds("header-workspace").unwrap();
-            let destination = cx.debug_bounds("global-nav-home").unwrap();
+            let destination = cx.debug_bounds("global-nav-new-session").unwrap();
             assert_eq!(workspace.left(), destination.left());
             assert_eq!(workspace.right(), destination.right());
+            let heading = cx.debug_bounds("sidebar-sessions-heading").unwrap();
+            let terminals = cx.debug_bounds("single-terminals-scroll").unwrap();
+            let history = cx.debug_bounds("global-nav-history").unwrap();
+            let projects = cx.debug_bounds("global-nav-projects").unwrap();
+            let home = cx.debug_bounds("global-nav-home").unwrap();
+            assert!(workspace.bottom() <= home.top());
+            assert!(home.bottom() <= destination.top());
+            assert!(destination.bottom() <= heading.top());
+            assert!(heading.bottom() <= terminals.top());
+            assert!(terminals.bottom() <= history.top());
+            assert!(history.bottom() <= projects.top());
         }
         let projects = cx.debug_bounds("global-nav-projects").unwrap();
         cx.simulate_click(projects.center(), gpui::Modifiers::default());

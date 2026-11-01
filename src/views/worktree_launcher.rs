@@ -193,7 +193,7 @@ impl WorktreeLauncher {
         cx.notify();
     }
 
-    /// Open the existing New session worktree picker without the command rows.
+    /// Open the New session project picker without the command rows.
     pub(crate) fn open_session_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open(window, cx);
         let rows = self.rows(cx);
@@ -702,10 +702,21 @@ impl WorktreeLauncher {
         }
         let row = self.selected_row(cx);
         if self.mode == PaletteMode::Single && self.selected_project.is_none() {
-            if let Some(PaletteRow::Combo { proj, .. }) = row {
-                self.selected_project = Some(proj);
-                self.load_workspace_worktrees(cx);
-                self.reset_picker_search(window, cx);
+            if let Some(PaletteRow::Combo { proj, wt_path, .. }) = row {
+                let valid = cx
+                    .global::<SettingsState>()
+                    .store
+                    .workspace_projects(cx.global::<SettingsState>().store.workspaces.active)
+                    .any(|(idx, project)| idx == proj && project.path == wt_path);
+                if !valid {
+                    self.error = Some("Project is no longer in this workspace.".into());
+                    cx.notify();
+                    return;
+                }
+                self.close(window, cx);
+                self.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.open_dashboard_for_project(proj, &wt_path, window, cx);
+                });
             }
             return;
         }
@@ -1428,7 +1439,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn picker_keeps_search_ready_and_waits_for_other_projects_cold_worktree_cache(
+    fn project_picker_opens_dashboard_without_waiting_for_cold_worktree_cache(
         cx: &mut gpui::TestAppContext,
     ) {
         let unique = std::time::SystemTime::now()
@@ -1518,14 +1529,12 @@ mod tests {
                     Some(PaletteRow::Combo { proj: 1, .. })
                 ));
                 view.activate(window, cx);
-                assert!(view.loading_worktrees);
-                assert!(view.input.focus_handle(cx).is_focused(window));
-                assert!(view.rows(cx).is_empty());
-                assert!(view.selected_row(cx).is_none());
-                view.update_query("feature-auth".into(), cx);
-                assert!(view.rows(cx).is_empty());
-                view.activate(window, cx);
-                assert!(view.is_open());
+                assert!(!view.is_open());
+                assert!(!view.loading_worktrees);
+                assert_eq!(
+                    view.sidebar.read(cx).dashboard_destination_for_test(cx),
+                    Some((1, api.clone()))
+                );
                 assert!(view.launch_probe.as_ref().is_some_and(Vec::is_empty));
                 tree.update(cx, |tree, _| tree.rebuild_wt_cache());
             });
@@ -1533,13 +1542,6 @@ mod tests {
         draw(cx);
         cx.update(|window, cx| {
             launcher.update(cx, |view, cx| {
-                assert!(!view.loading_worktrees);
-                assert!(view.input.focus_handle(cx).is_focused(window));
-                assert_eq!(view.rows(cx).len(), 1);
-                assert!(matches!(view.selected_row(cx),
-                    Some(PaletteRow::Combo { proj: 1, wt_path, .. }) if wt_path == feature
-                ));
-                view.close(window, cx);
                 view.open(window, cx);
                 enter_picker(view, PaletteRow::NewMultiProjectSession, window, cx);
                 assert!(!view.loading_worktrees);
@@ -1553,7 +1555,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn new_session_keystrokes_keep_search_focused_and_launch_other_project(
+    fn new_session_project_selection_opens_dashboard_without_launching(
         cx: &mut gpui::TestAppContext,
     ) {
         let unique = std::time::SystemTime::now()
@@ -1615,39 +1617,15 @@ mod tests {
         let project_row = cx.debug_bounds("launcher-row-0").expect("project row");
         cx.simulate_click(project_row.center(), gpui::Modifiers::default());
         draw(cx);
-        cx.update(|_, cx| assert!(launcher.read(cx).selected_project.is_some()));
-        cx.simulate_keystrokes("shift-tab");
-        draw(cx);
-        cx.update(|window, cx| assert!(launcher.read(cx).back_focus.is_focused(window)));
-        cx.simulate_keystrokes("enter");
-        draw(cx);
-        cx.update(|_, cx| {
-            let view = launcher.read(cx);
-            assert_eq!(view.mode, PaletteMode::Single);
-            assert!(view.selected_project.is_none());
-            assert!(view.query.is_empty());
-        });
-        cx.simulate_input("API");
-        draw(cx);
-        cx.simulate_keystrokes("enter");
-        draw(cx);
-        cx.simulate_input("feature-auth");
-        draw(cx);
-        cx.update(|window, cx| {
-            let view = launcher.read(cx);
-            assert!(view.input.focus_handle(cx).is_focused(window));
-            assert!(matches!(view.selected_row(cx), Some(PaletteRow::Combo { wt_path, .. }) if wt_path == api));
-            assert_eq!(view.rows(cx).len(), 1);
-        });
-        cx.simulate_keystrokes("enter");
-        draw(cx);
         cx.update(|_, cx| {
             let view = launcher.read(cx);
             assert!(!view.is_open());
+            assert_eq!(view.launch_probe.as_deref(), Some(&[][..]));
             assert_eq!(
-                view.launch_probe.as_deref(),
-                Some(&[(vec![api], Agent::Terminal)][..])
+                view.sidebar.read(cx).dashboard_destination_for_test(cx),
+                Some((3, api))
             );
+            assert_eq!(view.runtime.read(cx).registry.read(cx).len(), 0);
         });
     }
 
@@ -1660,7 +1638,7 @@ mod tests {
                 cx.new(|cx| super::super::sidebar::Sidebar::new(runtime.clone(), window, cx));
             WorktreeLauncher::new(runtime, sidebar, window, cx)
         });
-        let prior = cx.update(|window, cx| {
+        let _prior = cx.update(|window, cx| {
             let prior = cx.focus_handle();
             prior.focus(window, cx);
             launcher.update(cx, |view, cx| {
@@ -1680,33 +1658,15 @@ mod tests {
             assert!(view.query.is_empty());
             assert!(view.input.focus_handle(cx).is_focused(window));
         });
-        let selected_path = cx.update(|window, cx| {
+        cx.update(|window, cx| {
             launcher.update(cx, |view, cx| {
                 enter_picker(view, PaletteRow::NewSession, window, cx);
-                assert_eq!(view.mode, PaletteMode::Single);
                 assert_eq!(view.selected_worktrees.count(), 0);
                 view.activate(window, cx);
-                let RowIdentity::Session { wt_path, .. } =
-                    launcher::row_identity(&view.selected_row(cx).expect("highlighted worktree"))
-                else {
-                    panic!("picker must highlight a worktree");
-                };
-                view.agent_selected = launcher::agent_sel_for(&Agent::ALL, Agent::Terminal);
-                view.activate(window, cx);
-                wt_path
-            })
+                assert!(!view.is_open());
+                assert_eq!(view.launch_probe.as_deref(), Some(&[][..]));
+            });
         });
-        cx.update(|_, cx| {
-            let view = launcher.read(cx);
-            assert_eq!(
-                view.launch_probe.as_deref(),
-                Some(&[(vec![selected_path], Agent::Terminal)][..])
-            );
-        });
-        cx.update(|window, cx| launcher.update(cx, |view, cx| view.open(window, cx)));
-        cx.update(|_, cx| assert_eq!(launcher.read(cx).mode, PaletteMode::Root));
-        cx.simulate_keystrokes("escape");
-        cx.update(|window, _| assert!(prior.is_focused(window)));
     }
 
     #[gpui::test]

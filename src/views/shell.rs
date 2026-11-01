@@ -2254,7 +2254,9 @@ mod tests {
         cx.simulate_keystrokes("escape escape");
         draw(cx);
         assert!(cx.debug_bounds("projects-destination").is_some());
-        cx.simulate_keystrokes(&format!("{}2", k::platform_mod_prefix()));
+        cx.simulate_keystrokes(&format!("{}1", k::platform_mod_prefix()));
+        draw(cx);
+        cx.simulate_keystrokes("enter");
         draw(cx);
         assert!(cx.debug_bounds("dashboard-summary").is_some());
         cx.update(|_, cx| {

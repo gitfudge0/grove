@@ -286,6 +286,46 @@ impl Sidebar {
         self.dashboard_timelines.clear_entrances();
         self.open_dashboard_with_defaults(None, window, cx);
     }
+    #[cfg(test)]
+    pub(crate) fn dashboard_destination_for_test(&self, cx: &App) -> Option<(usize, String)> {
+        self.dashboard.as_ref().map(|dashboard| {
+            let tray = dashboard.tray.read(cx);
+            (tray.project, tray.path.clone())
+        })
+    }
+    /// Select a launch destination without replacing the deferred composer or its draft.
+    pub(crate) fn open_dashboard_for_project(
+        &mut self,
+        project: usize,
+        expected_path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(path) = cx
+            .global::<SettingsState>()
+            .store
+            .workspace_projects(self.active_workspace)
+            .find(|(idx, value)| *idx == project && value.path == expected_path)
+            .map(|(_, value)| value.path.clone())
+        else {
+            return false;
+        };
+        self.open_destination(super::global_navigation::Destination::Home, window, cx);
+        if let Some(dashboard) = &self.dashboard {
+            dashboard.tray.update(cx, |tray, cx| {
+                tray.project = project;
+                tray.path = path;
+                cx.notify();
+            });
+            self.refresh_dashboard_worktrees(cx);
+            self.refresh_dashboard_catalog(cx);
+            if let Some(dashboard) = &self.dashboard {
+                dashboard.view.focus_handle(cx).focus(window, cx);
+            }
+        }
+        cx.notify();
+        true
+    }
     fn open_dashboard_with_defaults(
         &mut self,
         defaults: Option<DashboardDefaults>,
@@ -1114,6 +1154,77 @@ fn seed_activity_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn project_picker_destination_preserves_codex_and_claude_composer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            let mut store = grove_core::storage::Store::default();
+            for (name, path) in [
+                ("First", "/tmp/picker-first"),
+                ("Second", "/tmp/picker-second"),
+            ] {
+                store.projects.push(grove_core::storage::Project {
+                    name: name.into(),
+                    path: path.into(),
+                    scripts: Default::default(),
+                    archived: false,
+                    worktree_dir: None,
+                });
+                store.assign_project_to_active_workspace(path);
+            }
+            cx.set_global(SettingsState::new(store));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.open_dashboard(window, cx);
+                for provider in [
+                    grove_core::codex::Provider::Codex,
+                    grove_core::codex::Provider::Claude,
+                ] {
+                    let dashboard = sidebar.dashboard.as_ref().unwrap();
+                    let session = dashboard.session.clone();
+                    let view = dashboard.view.clone();
+                    session.update(cx, |session, _| {
+                        session.state.saved.provider = provider;
+                        session.state.saved.draft = "Retain literal draft".into();
+                        session.state.saved.composer.model = Some("retained-model".into());
+                        session.state.saved.composer.effort = Some("high".into());
+                        session.state.saved.config_args = vec!["retained-config".into()];
+                    });
+                    assert!(!sidebar.open_dashboard_for_project(1, "/stale", window, cx));
+                    assert!(sidebar.open_dashboard_for_project(
+                        1,
+                        "/tmp/picker-second",
+                        window,
+                        cx
+                    ));
+                    let dashboard = sidebar.dashboard.as_ref().unwrap();
+                    assert_eq!(dashboard.session, session);
+                    assert_eq!(dashboard.view, view);
+                    let saved = &session.read(cx).state.saved;
+                    assert_eq!(saved.provider, provider);
+                    assert_eq!(saved.draft, "Retain literal draft");
+                    assert_eq!(saved.composer.model.as_deref(), Some("retained-model"));
+                    assert_eq!(saved.composer.effort.as_deref(), Some("high"));
+                    assert_eq!(saved.config_args, ["retained-config"]);
+                    assert_eq!(
+                        sidebar.dashboard_destination_for_test(cx),
+                        Some((1, "/tmp/picker-second".into()))
+                    );
+                    assert!(sidebar.dashboard_open);
+                    assert_eq!(sidebar.runtime.read(cx).registry.read(cx).len(), 0);
+                }
+            });
+        });
+    }
 
     struct InsetDashboardFixture(Entity<Sidebar>);
     impl Render for InsetDashboardFixture {
