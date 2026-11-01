@@ -47,7 +47,7 @@ const CODE_COPY_FEEDBACK_MS: u64 = 1200;
 /// Paint Markdown source without replacing text or changing editor mode. Leaf
 /// spans are ordered and disjoint, so nested emphasis composes correctly with
 /// independent picked-file/image decorations and UTF-8 cursor offsets.
-fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
+pub(super) fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
     use markdown::mdast::Node;
     fn visit(node: &Node, mut style: gpui::HighlightStyle, out: &mut Vec<TextDecoration>) {
         match node {
@@ -93,7 +93,7 @@ fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
 }
 
 /// Keep Markdown in the input model while projecting syntax into native text.
-fn composer_markdown_replacements(text: &str) -> Vec<TextReplacement> {
+pub(super) fn composer_markdown_replacements(text: &str) -> Vec<TextReplacement> {
     use markdown::mdast::Node;
     fn hide(range: std::ops::Range<usize>, out: &mut Vec<TextReplacement>) {
         if !range.is_empty() {
@@ -517,7 +517,11 @@ fn action_key(event: &gpui::KeyDownEvent) -> bool {
 }
 
 /// Icon-only control that copies `text` verbatim, by pointer or keyboard.
-fn copy_control(id: &'static str, label: &'static str, text: String) -> gpui::Stateful<gpui::Div> {
+pub(super) fn copy_control(
+    id: &'static str,
+    label: &'static str,
+    text: String,
+) -> gpui::Stateful<gpui::Div> {
     let keyboard = text.clone();
     header_control(id, label)
         .debug_selector(move || id.into())
@@ -535,7 +539,7 @@ fn copy_control(id: &'static str, label: &'static str, text: String) -> gpui::St
         })
 }
 
-fn composer_icon(
+pub(super) fn composer_icon(
     id: &'static str,
     label: &'static str,
     icon: &'static str,
@@ -18622,33 +18626,51 @@ mod tests {
         }));
         draw(cx);
         for _ in 0..120 {
-            cx.executor().advance_clock(std::time::Duration::from_millis(16));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
             draw(cx);
         }
         assert!(cx.debug_bounds("codex-task-strip").is_some());
-        cx.update(|window, cx| view.update(cx, |view, cx| {
-            assert!(view.scroll.max_offset().y > gpui::px(100.));
-            view.scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(-100.)));
-            view.input.update(cx, |input, cx| input.set_value("follow up", window, cx));
-            view.input.focus_handle(cx).focus(window, cx);
-        }));
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                assert!(view.scroll.max_offset().y > gpui::px(100.));
+                view.scroll
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(-100.)));
+                view.input
+                    .update(cx, |input, cx| input.set_value("follow up", window, cx));
+                view.input.focus_handle(cx).focus(window, cx);
+            })
+        });
         cx.simulate_keystrokes("enter");
         draw(cx);
-        let queue_id = actions.try_iter().find_map(|action| match action {
-            Action::SubmitWithMode { id, text, mode: SubmissionMode::Queue, .. } if text == "follow up" => Some(id),
-            _ => None,
-        }).expect("Enter should queue the message");
-        cx.update(|_, cx| view.update(cx, |view, cx| {
-            view.session.update(cx, |session, cx| {
-                session.state.accepted_submission = Some(queue_id);
-                session.state.queued_prompts.push(codex::QueuedPrompt {
-                    id: queue_id, text: "follow up".into(), images: Vec::new(),
+        let queue_id = actions
+            .try_iter()
+            .find_map(|action| match action {
+                Action::SubmitWithMode {
+                    id,
+                    text,
+                    mode: SubmissionMode::Queue,
+                    ..
+                } if text == "follow up" => Some(id),
+                _ => None,
+            })
+            .expect("Enter should queue the message");
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.accepted_submission = Some(queue_id);
+                    session.state.queued_prompts.push(codex::QueuedPrompt {
+                        id: queue_id,
+                        text: "follow up".into(),
+                        images: Vec::new(),
+                    });
+                    cx.notify();
                 });
-                cx.notify();
-            });
-        }));
+            })
+        });
         for _ in 0..120 {
-            cx.executor().advance_clock(std::time::Duration::from_millis(16));
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(16));
             draw(cx);
         }
         view.read_with(cx, |view, _| {

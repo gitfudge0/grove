@@ -128,6 +128,8 @@ pub(super) struct CheckoutPanel {
     pub(super) side_chat_focus: Option<FocusHandle>,
     panel_motion: Option<(Instant, f32, f32, u64)>,
     panel_motion_revision: u64,
+    // Preserve the outgoing panel's width while its empty shell collapses.
+    panel_last_wide_width: f32,
     pub(super) side_chats: HashMap<(SessionId, String), super::side_chat::SideChat>,
     pub(super) chosen_root: Option<String>,
     root_owner: Option<Selection>,
@@ -1869,10 +1871,26 @@ impl Sidebar {
             self.checkout_panel.panel_motion = None;
         }
         let panel = if let Some(id) = revision {
-            motion::fast(div().child(panel), format!("session-panel-enter-{id}"), cx)
+            motion::fast(
+                div().size_full().child(panel),
+                format!("session-panel-enter-{id}"),
+                cx,
+            )
         } else {
             panel
         };
+        let panel_width = if self.checkout_panel.side_chat_owner.is_some()
+            && self.checkout_panel.side_chat_owner == self.selection
+        {
+            super::side_chat::SIDE_CHAT_WIDTH
+        } else if self.checkout_panel.hidden && self.checkout_panel.panel_last_wide_width > 0. {
+            self.checkout_panel.panel_last_wide_width
+        } else {
+            CARD_WIDTH
+        };
+        if !self.checkout_panel.hidden {
+            self.checkout_panel.panel_last_wide_width = panel_width;
+        }
         div()
             .size_full()
             .min_w_0()
@@ -1882,7 +1900,7 @@ impl Sidebar {
             .child(div().flex_1().min_w_0().min_h_0().child(body))
             .child(
                 div()
-                    .w(rpx(CARD_WIDTH * width))
+                    .w(rpx(panel_width * width))
                     .h_full()
                     .flex_shrink_0()
                     .overflow_hidden()
