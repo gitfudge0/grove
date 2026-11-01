@@ -3,8 +3,7 @@ use super::*;
 use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 
-const DASHBOARD_RECENT_MAX_W: f32 = CHAT_MAX_W * 0.7;
-const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.4;
+const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.2;
 
 /// Preferences for a fresh dashboard draft after adopting the previous one.
 struct DashboardDefaults {
@@ -809,8 +808,6 @@ impl Sidebar {
             window.viewport_size().height
         } * DASHBOARD_COMPOSER_TOP_FRACTION;
         let owner = cx.entity().entity_id();
-        // Use the workspace snapshot rather than the current navigation mode: collapsed
-        // projects still contribute to the overview.
         let registry = self.runtime.read(cx).registry.read(cx);
         let activity = self.runtime.read(cx).activity.read(cx);
         let mut sessions: Vec<_> = registry
@@ -835,81 +832,20 @@ impl Sidebar {
             })
             .collect();
         sessions.sort_by_key(|session| std::cmp::Reverse(session.3));
-        let working = sessions
-            .iter()
-            .filter(|(_, status, _, _)| matches!(*status, "Working" | "Starting"))
-            .count();
-        let needs_input = sessions
-            .iter()
-            .filter(|(_, status, _, _)| *status == "Needs you")
-            .count();
-        let projects = self.snapshot.projects.len();
         let summary = div()
             .id("dashboard-summary")
             .debug_selector(|| "dashboard-summary".into())
             .w_full()
             .max_w(rpx(CHAT_MAX_W))
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_LG))
-            .child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("WORKSPACE OVERVIEW"),
-            )
-            .child(
-                div()
-                    .text_size(rpx(TEXT_DISPLAY))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("Your workspace"),
-            )
-            .child(
-                div()
-                    .text_size(rpx(TEXT_BODY))
-                    .text_color(c::FG_DIM())
-                    .child("Start a session or pick up where you left off."),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(rpx(SPACE_3XL))
-                    .pt(rpx(SPACE_LG))
-                    .border_t_1()
-                    .border_color(c::BORDER_SOFT())
-                    .children(
-                        [
-                            (working, "Working"),
-                            (needs_input, "Needs input"),
-                            (projects, "Projects"),
-                        ]
-                        .into_iter()
-                        .map(|(count, label)| {
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(rpx(SPACE_SM))
-                                .child(
-                                    div()
-                                        .text_size(rpx(TEXT_TITLE))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .child(count.to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM())
-                                        .child(label),
-                                )
-                        }),
-                    ),
-            );
+            .text_center()
+            .text_size(rpx(TEXT_DISPLAY_LG))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .child("Let's cook!");
         let mut recent = div()
             .id("dashboard-recent")
             .debug_selector(|| "dashboard-recent".into())
             .w_full()
-            .max_w(rpx(DASHBOARD_RECENT_MAX_W))
+            .max_w(rpx(CHAT_MAX_W))
             .border_1()
             .border_color(c::BORDER_SOFT())
             .rounded(rpx(RADIUS_PANEL))
@@ -1737,7 +1673,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn activity_growth_keeps_overview_and_composer_anchored(cx: &mut gpui::TestAppContext) {
+    fn activity_growth_keeps_heading_and_composer_anchored(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_reduce_motion(true);
@@ -1871,6 +1807,8 @@ mod tests {
         assert!(composer.top() - summary.bottom() < gpui::px(100.));
         assert_eq!(tray.top(), composer.bottom());
         assert!(hints.top() >= tray.bottom());
+        assert_eq!(recent.left(), composer.left());
+        assert_eq!(recent.size.width, composer.size.width);
         assert!(recent.top() >= hints.bottom());
         assert!(
             recent.top() - hints.bottom() < gpui::px(50.),
@@ -1888,7 +1826,16 @@ mod tests {
         let composer = cx.debug_bounds("codex-composer").unwrap();
         assert!(composer.top() >= summary.bottom());
         assert!(composer.size.width > gpui::px(100.));
+        let recent = cx.debug_bounds("dashboard-recent").unwrap();
+        assert_eq!(recent.left(), composer.left());
+        assert_eq!(recent.size.width, composer.size.width);
         assert!(composer.top() - summary.bottom() < gpui::px(100.));
+        // The compact layout fits at 500px; use a short viewport to exercise scrolling.
+        cx.simulate_resize(gpui::size(gpui::px(560.), gpui::px(200.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
         let page = cx.debug_bounds("dashboard-page").unwrap();
         let recent_top = cx.debug_bounds("dashboard-recent").unwrap().top();
         cx.simulate_event(gpui::ScrollWheelEvent {
