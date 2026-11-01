@@ -237,18 +237,6 @@ fn zen_target(
     }
 }
 
-fn home_terminal_status(failed: bool, pending: bool, alive: bool) -> &'static str {
-    if failed {
-        "Failed"
-    } else if pending {
-        "Starting"
-    } else if alive {
-        "Running"
-    } else {
-        "Exited"
-    }
-}
-
 fn managed_session_status(
     failed: bool,
     pending_attach: bool,
@@ -269,15 +257,6 @@ fn managed_session_status(
     }
 }
 
-fn terminal_directory_label(
-    current: Option<&str>,
-    initial: Option<&str>,
-) -> Option<(&'static str, String)> {
-    current
-        .map(|cwd| ("home-current-cwd", format!("Current directory {cwd}")))
-        .or_else(|| initial.map(|cwd| ("home-launch-cwd", format!("Launched in {cwd}"))))
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarEvent {
     NewSessionRequested,
@@ -289,7 +268,6 @@ pub(crate) enum SidebarEvent {
 struct Navigation {
     selection: Option<Selection>,
     scroll: ScrollHandle,
-    terminals_collapsed: bool,
 }
 #[derive(Clone)]
 enum Action {
@@ -353,7 +331,6 @@ enum Action {
     PreviewCliHistory(String),
     ReopenSessionHistory(String),
     OpenWorkspaces,
-    FoldTerminals,
     CloseHome(SessionId),
     ConfirmHome(SessionId),
     Cancel,
@@ -426,7 +403,6 @@ pub struct Sidebar {
     saved: HashMap<u64, Navigation>,
     scroll: ScrollHandle,
     terminal_owners: HashMap<SessionId, u64>,
-    terminals_collapsed: bool,
     project_flyout: Option<SidebarContext>,
     project_flyout_hover_open: bool,
     project_flyout_hover_blocked: bool,
@@ -672,7 +648,6 @@ impl Sidebar {
             saved: HashMap::new(),
             scroll: ScrollHandle::new(),
             terminal_owners: HashMap::new(),
-            terminals_collapsed: false,
             project_flyout: None,
             project_flyout_hover_open: false,
             project_flyout_hover_blocked: false,
@@ -913,13 +888,11 @@ impl Sidebar {
                 Navigation {
                     selection: self.selection.take(),
                     scroll: self.scroll.clone(),
-                    terminals_collapsed: self.terminals_collapsed,
                 },
             );
             let next = self.saved.remove(&active).unwrap_or_default();
             self.selection = next.selection;
             self.scroll = next.scroll;
-            self.terminals_collapsed = next.terminals_collapsed;
             self.active_workspace = active;
             self.menu = None;
             self.pending_close = None;
@@ -1242,13 +1215,10 @@ impl Sidebar {
                 }
             }
         }
-        if !self.terminals_collapsed {
-            for (index, meta) in registry.home_terminals().iter().enumerate() {
-                if self.terminal_owners.get(&meta.id).copied().unwrap_or(1) == self.active_workspace
-                {
-                    if let Some(session) = registry.home_terminal(index) {
-                        observed.push((meta.id, session.clone()));
-                    }
+        for (index, meta) in registry.home_terminals().iter().enumerate() {
+            if self.terminal_owners.get(&meta.id).copied().unwrap_or(1) == self.active_workspace {
+                if let Some(session) = registry.home_terminal(index) {
+                    observed.push((meta.id, session.clone()));
                 }
             }
         }
@@ -2428,7 +2398,6 @@ impl Sidebar {
                 if canvas_visible {
                     self.request_canvas_close(id, true, window, cx);
                 } else {
-                    self.terminals_collapsed = false;
                     self.act(Action::CloseHome(id), window, cx);
                 }
             }
@@ -3592,12 +3561,10 @@ impl Sidebar {
                     self.close_settings_for_session_navigation(window, cx);
                     self.select(Selection::Home(id), cx);
                     self.mode = ViewMode::Project;
-                    self.terminals_collapsed = false;
                     SettingsState::update(cx, |store| store.sidebar_collapsed = false);
                     self.pending_canvas_focus = Some(id);
                 }
             }
-            Action::FoldTerminals => self.terminals_collapsed = !self.terminals_collapsed,
             Action::CloseHome(id) => {
                 self.pending_home_close = Some(id);
                 self.confirmation_return_focus = window.focused(cx);
@@ -5173,166 +5140,97 @@ impl Sidebar {
                 .child(
                     self.control("add-terminal", "Add terminal", Action::AddTerminal, cx)
                         .child(icon("plus", ICON_SM, c::FG_DIM())),
+                ),
+        );
+        for meta in self
+            .runtime
+            .read(cx)
+            .registry
+            .read(cx)
+            .home_terminals()
+            .to_vec()
+        {
+            if self.terminal_owners.get(&meta.id).copied().unwrap_or(1) != self.active_workspace {
+                continue;
+            }
+            let id = meta.id;
+            let terminal = {
+                let registry = self.runtime.read(cx).registry.read(cx);
+                let Some(index) = registry
+                    .home_terminals()
+                    .iter()
+                    .position(|row| row.id == id)
+                else {
+                    continue;
+                };
+                let Some(terminal) = registry.home_terminal(index) else {
+                    continue;
+                };
+                terminal.clone()
+            };
+            let title = terminal.update(cx, |terminal, _| {
+                terminal
+                    .title()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| meta.label.clone())
+            });
+            panel = panel.child(
+                self.row(
+                    format!("home-{}", id.raw()),
+                    title.clone(),
+                    self.selection == Some(Selection::Home(id)),
+                    Action::Select(Selection::Home(id)),
+                    cx,
+                )
+                .w_auto()
+                .mx(rpx(SPACE_LG))
+                .px(rpx(SPACE_LG))
+                .h_auto()
+                .min_h(rpx(ROW_H))
+                .py(rpx(SPACE_SM))
+                .my(rpx(SPACE_XS))
+                .child(
+                    div()
+                        .id(("home-icon", id.raw()))
+                        .debug_selector(move || format!("home-icon-{}", id.raw()))
+                        .child(icon("terminal", ICON_SM, c::FG_DIM())),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .id(("home-title", id.raw()))
+                        .debug_selector(move || format!("home-title-{}", id.raw()))
+                        .truncate()
+                        .child(single_line_session_title(&title)),
                 )
                 .child(
                     self.control(
-                        "fold-terminals",
-                        if self.terminals_collapsed {
-                            "Expand terminals"
-                        } else {
-                            "Collapse terminals"
-                        },
-                        Action::FoldTerminals,
+                        ("close-home", id.raw()),
+                        format!("Close {}", meta.label),
+                        Action::CloseHome(id),
                         cx,
                     )
-                    .debug_selector(|| "sidebar-terminals-fold".into())
-                    .child(motion::fast(
-                        icon(
-                            if self.terminals_collapsed {
-                                "chev-right"
-                            } else {
-                                "chev-down"
-                            },
-                            ICON_SM,
-                            c::FG_DIM(),
-                        ),
-                        format!("terminal-disclosure-{}", self.terminals_collapsed),
-                        cx,
-                    )),
-                ),
-        );
-        if !self.terminals_collapsed {
-            for meta in self
-                .runtime
-                .read(cx)
-                .registry
-                .read(cx)
-                .home_terminals()
-                .to_vec()
-            {
-                if self.terminal_owners.get(&meta.id).copied().unwrap_or(1) != self.active_workspace
-                {
-                    continue;
-                }
-                let id = meta.id;
-                let terminal = {
-                    let registry = self.runtime.read(cx).registry.read(cx);
-                    let Some(index) = registry
-                        .home_terminals()
-                        .iter()
-                        .position(|row| row.id == id)
-                    else {
-                        continue;
-                    };
-                    let Some(terminal) = registry.home_terminal(index) else {
-                        continue;
-                    };
-                    terminal.clone()
-                };
-                let (title, status, directory) = terminal.update(cx, |terminal, _| {
-                    let title = session_display_title(&meta, terminal.title());
-                    let status = home_terminal_status(
-                        terminal.spawn_error().is_some(),
-                        terminal.is_pending_attach(),
-                        terminal.alive(),
-                    );
-                    (
-                        title,
-                        status,
-                        terminal_directory_label(terminal.current_cwd(), terminal.initial_cwd()),
-                    )
-                });
-                panel = panel.child(
-                    self.row(
-                        format!("home-{}", id.raw()),
-                        format!("{title} · {status}"),
-                        self.selection == Some(Selection::Home(id)),
-                        Action::Select(Selection::Home(id)),
-                        cx,
-                    )
-                    .w_auto()
-                    .mx(rpx(SPACE_LG))
-                    .px(rpx(SPACE_LG))
-                    .h_auto()
-                    .min_h(rpx(ROW_H))
-                    .py(rpx(SPACE_SM))
-                    .my(rpx(SPACE_XS))
-                    .child(
-                        div()
-                            .id(("home-icon", id.raw()))
-                            .debug_selector(move || format!("home-icon-{}", id.raw()))
-                            .child(icon("terminal", ICON_SM, c::FG_DIM())),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .id(("home-title", id.raw()))
-                                    .debug_selector(move || format!("home-title-{}", id.raw()))
-                                    .truncate()
-                                    .child(single_line_session_title(&title)),
-                            )
-                            .when_some(directory, |column, (kind, cwd)| {
-                                column.child(
-                                    div()
-                                        .id((kind, id.raw()))
-                                        .debug_selector(move || format!("{kind}-{}", id.raw()))
-                                        .truncate()
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM())
-                                        .child(cwd),
-                                )
-                            }),
-                    )
-                    .child(motion::fast(
-                        div()
-                            .id(("home-status", id.raw()))
-                            .debug_selector(move || format!("home-status-{}", id.raw()))
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(if status == "Running" {
-                                c::GREEN()
-                            } else {
-                                c::FG_DIM()
-                            })
-                            .child(status),
-                        format!("home-status-{}-{status}", id.raw()),
-                        cx,
-                    ))
-                    .child(
-                        self.control(
-                            ("close-home", id.raw()),
-                            format!("Close {}", meta.label),
-                            Action::CloseHome(id),
-                            cx,
-                        )
-                        .debug_selector(move || format!("close-home-{}", id.raw()))
-                        .when_some(
-                            self.home_close_bounds.get(&id).cloned(),
-                            |button, bounds| {
-                                button.child(
-                                    gpui::canvas(
-                                        move |rect, _, _| bounds.set(rect),
-                                        |_, (), _, _| {},
-                                    )
+                    .debug_selector(move || format!("close-home-{}", id.raw()))
+                    .when_some(
+                        self.home_close_bounds.get(&id).cloned(),
+                        |button, bounds| {
+                            button.child(
+                                gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
                                     .absolute()
                                     .inset_0(),
-                                )
-                            },
-                        )
-                        .child(icon("close", ICON_XS, c::FG_DIM())),
-                    ),
-                );
-                if self.pending_home_close == Some(id) && self.canvas_close_anchor.is_none() {
-                    if let Some(bounds) = self.home_close_bounds.get(&id) {
-                        panel = panel.child(gpui::deferred(self.confirmation_popup(
+                            )
+                        },
+                    )
+                    .child(icon("close", ICON_XS, c::FG_DIM())),
+                ),
+            );
+            if self.pending_home_close == Some(id) && self.canvas_close_anchor.is_none() {
+                if let Some(bounds) = self.home_close_bounds.get(&id) {
+                    panel = panel.child(gpui::deferred(self.confirmation_popup(
                             &format!("Close {}? Its shell and running commands will stop. Files remain on disk.", meta.label),
                             Action::ConfirmHome(id), bounds.get(), window, cx,
                         )));
-                    }
                 }
             }
         }
@@ -6359,7 +6257,6 @@ mod tests {
                 sidebar.sync(window, cx);
                 sidebar.act(Action::Mode(sidebar_mode), window, cx);
                 sidebar.selection = Some(Selection::Project(0));
-                sidebar.terminals_collapsed = true;
                 sidebar
                     .scroll
                     .set_offset(gpui::point(gpui::px(0.0), gpui::px(-40.0)));
@@ -6374,7 +6271,6 @@ mod tests {
                 assert_eq!(sidebar.mode, sidebar_mode);
                 assert_eq!(sidebar.last_mode, sidebar_mode);
                 assert_eq!(sidebar.selection, Some(Selection::Project(1)));
-                assert!(!sidebar.terminals_collapsed);
                 assert_eq!(sidebar.scroll.offset().y, gpui::px(0.0));
                 sidebar
                     .scroll
@@ -6408,7 +6304,6 @@ mod tests {
                 assert_eq!(sidebar.mode, ViewMode::Grid);
                 // Grid selects a canvas session; this fixture has no sessions.
                 assert_eq!(sidebar.selection, None);
-                assert!(sidebar.terminals_collapsed);
                 assert_eq!(sidebar.scroll.offset().y, gpui::px(-40.0));
                 assert!(sidebar.is_collapsed(cx));
                 sidebar.toggle_grid(window, cx);
@@ -6427,7 +6322,6 @@ mod tests {
                 assert_eq!(sidebar.mode, ViewMode::Project);
                 assert_eq!(sidebar.last_mode, ViewMode::Project);
                 assert_eq!(sidebar.selection, Some(Selection::Project(2)));
-                assert!(!sidebar.terminals_collapsed);
                 assert!(sidebar.is_collapsed(cx));
             });
             cx.global_mut::<SettingsState>().store.workspaces.select(2);
@@ -6439,7 +6333,6 @@ mod tests {
                 assert_eq!(sidebar.mode, ViewMode::Project);
                 assert_eq!(sidebar.selection, Some(Selection::Project(1)));
                 assert_eq!(sidebar.scroll.offset().y, gpui::px(-80.0));
-                assert!(!sidebar.terminals_collapsed);
             });
         });
     }
@@ -6601,23 +6494,6 @@ mod tests {
         assert_eq!(step_session(&order, Some(ids[0]), false), Some(ids[3]));
         assert_eq!(step_session(&order, Some(ids[2]), true), Some(ids[3]));
         assert_eq!(step_session(&order, None, false), Some(ids[3]));
-    }
-
-    #[test]
-    fn home_terminal_row_uses_live_directory_with_labeled_launch_fallback() {
-        assert_eq!(home_terminal_status(false, true, false), "Starting");
-        assert_eq!(home_terminal_status(false, false, false), "Exited");
-        assert_eq!(home_terminal_status(true, false, false), "Failed");
-        assert_eq!(home_terminal_status(false, false, true), "Running");
-        assert_eq!(
-            terminal_directory_label(Some("/live"), Some("/repo")),
-            Some(("home-current-cwd", "Current directory /live".into()))
-        );
-        assert_eq!(
-            terminal_directory_label(None, Some("/repo")),
-            Some(("home-launch-cwd", "Launched in /repo".into()))
-        );
-        assert_eq!(terminal_directory_label(None, None), None);
     }
 
     #[test]
