@@ -100,6 +100,13 @@ impl PullRequest {
     }
     /// Explanations mirror every gate in can_merge; unavailable facts never pass.
     pub fn readiness_reasons(&self, state: &CheckoutGitState) -> Vec<&'static str> {
+        let mut reasons = self.remote_readiness_reasons();
+        reasons.extend(self.local_readiness_reasons(state));
+        reasons
+    }
+
+    /// GitHub-owned requirements, independent of the inspected checkout.
+    pub fn remote_readiness_reasons(&self) -> Vec<&'static str> {
         let mut reasons = Vec::new();
         if self.state != "OPEN" {
             reasons.push("Pull request is not open");
@@ -129,6 +136,12 @@ impl PullRequest {
         if self.review_requests.as_ref().is_some_and(|r| !r.is_empty()) {
             reasons.push("Outstanding review requests");
         }
+        reasons
+    }
+
+    /// Checkout-owned requirements for merging this exact PR head.
+    pub fn local_readiness_reasons(&self, state: &CheckoutGitState) -> Vec<&'static str> {
+        let mut reasons = Vec::new();
         if state.dirty {
             reasons.push("Local checkout has uncommitted changes");
         }
@@ -938,6 +951,9 @@ else:
                 }
                 assert!(!changed.can_merge(&state));
                 assert!(!changed.readiness_reasons(&state).is_empty());
+                let mut grouped = changed.remote_readiness_reasons();
+                grouped.extend(changed.local_readiness_reasons(&state));
+                assert_eq!(changed.readiness_reasons(&state), grouped);
             }
             for gate in 0..4 {
                 let mut changed = state.clone();
@@ -949,6 +965,11 @@ else:
                 }
                 assert!(!request.can_merge(&changed));
                 assert!(!request.readiness_reasons(&changed).is_empty());
+                assert!(request.remote_readiness_reasons().is_empty());
+                assert_eq!(
+                    request.readiness_reasons(&changed),
+                    request.local_readiness_reasons(&changed)
+                );
             }
             let log = std::env::var("GROVE_PR_FIXTURE_LOG").unwrap();
             let before = fs_err::read_to_string(&log).unwrap().lines().count();
