@@ -210,7 +210,7 @@ impl Sidebar {
             }) && self
                 .history_provider_filter
                 .is_none_or(|filter| filter == agent)
-                && history_matches(&query, title, project, cwd)
+                && (query.is_empty() || history_matches(&query, title, project, cwd))
         };
         let all_native = self
             .session_history
@@ -260,7 +260,19 @@ impl Sidebar {
                     &s.project,
                     &s.cwd,
                     s.provider.agent(),
-                )
+                ) || (!query.is_empty() && transcript_match(s, &query).is_some() && {
+                    let owner =
+                        grove_core::session_meta::project_owner(&store.projects, &s.cwd).ok();
+                    owner.is_some_and(|owner| {
+                        store.project_workspace_id(&owner.path) == self.active_workspace
+                            && self
+                                .history_project_filter
+                                .as_ref()
+                                .is_none_or(|path| path == &owner.path)
+                    }) && self
+                        .history_provider_filter
+                        .is_none_or(|filter| filter == s.provider.agent())
+                })
             })
             .collect::<Vec<_>>();
         let cli_records = all_cli
@@ -372,7 +384,7 @@ impl Sidebar {
             .flex_1()
             .flex()
             .flex_col()
-            .when(!sidebar, |list| {
+            .when(true, |list| {
                 list.child(
                     div()
                         .p(rpx(SPACE_2XL))
@@ -391,36 +403,38 @@ impl Sidebar {
                                         .p_0(),
                                 ),
                         )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .gap(rpx(SPACE_SM))
-                                .child(
-                                    self.control(
-                                        "history-project-filter",
-                                        format!("Filter by project: {project_label}"),
-                                        Action::HistoryFilterMenu(true),
-                                        cx,
+                        .when(!sidebar, |container| {
+                            container.child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap(rpx(SPACE_SM))
+                                    .child(
+                                        self.control(
+                                            "history-project-filter",
+                                            format!("Filter by project: {project_label}"),
+                                            Action::HistoryFilterMenu(true),
+                                            cx,
+                                        )
+                                        .w_auto()
+                                        .px(rpx(SPACE_LG))
+                                        .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                                        .child(project_label),
                                     )
-                                    .w_auto()
-                                    .px(rpx(SPACE_LG))
-                                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                                    .child(project_label),
-                                )
-                                .child(
-                                    self.control(
-                                        "history-provider-filter",
-                                        format!("Filter by provider: {provider_label}"),
-                                        Action::HistoryFilterMenu(false),
-                                        cx,
-                                    )
-                                    .w_auto()
-                                    .px(rpx(SPACE_LG))
-                                    .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                                    .child(provider_label),
-                                ),
-                        ),
+                                    .child(
+                                        self.control(
+                                            "history-provider-filter",
+                                            format!("Filter by provider: {provider_label}"),
+                                            Action::HistoryFilterMenu(false),
+                                            cx,
+                                        )
+                                        .w_auto()
+                                        .px(rpx(SPACE_LG))
+                                        .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                                        .child(provider_label),
+                                    ),
+                            )
+                        }),
                 )
             })
             .when(!sidebar, |list| {
@@ -490,16 +504,15 @@ impl Sidebar {
                 .h_auto()
                 .min_h(rpx(HEAD_H))
                 .justify_start()
-                .p(rpx(SPACE_2XL))
+                .px(rpx(SPACE_LG))
+                .py(rpx(SPACE_SM))
                 .gap(rpx(SPACE_LG))
 
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .child(history_card_content(
-                    s.provider.agent(), &s.project, title, &checkout_names[&s.cwd], false,
-                ));
+                .child(history_card_content(title, &query, transcript_match(s, &query)));
             rows = rows.child(row);
         }
         for s in cli_records.iter() {
@@ -518,16 +531,15 @@ impl Sidebar {
                 .h_auto()
                 .min_h(rpx(HEAD_H))
                 .justify_start()
-                .p(rpx(SPACE_2XL))
+                .px(rpx(SPACE_LG))
+                .py(rpx(SPACE_SM))
                 .gap(rpx(SPACE_LG))
 
                 .when(
                     matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key),
                     |d| d.bg(c::BG_HOVER()),
                 )
-                .child(history_card_content(
-                    s.agent, &s.project, title, &checkout_names[&s.cwd], true,
-                ));
+                .child(history_card_content(title, &query, None));
             rows = rows.child(row);
         }
         list = list.child(rows);
@@ -1012,33 +1024,63 @@ fn history_checkout_name(cwd: &str, project_path: Option<&str>) -> String {
         .to_string()
 }
 
-fn history_card_content(
-    agent: Agent,
-    project: &str,
-    title: &str,
-    checkout: &str,
-    cli: bool,
-) -> Div {
-    div()
+fn transcript_match(saved: &grove_core::codex::SavedSession, query: &str) -> Option<String> {
+    if query.is_empty() {
+        return None;
+    }
+    saved
+        .items
+        .iter()
+        .map(|item| grove_core::codex::item_text(item))
+        .find(|text| text.to_lowercase().contains(query))
+        .map(|text| {
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let position = text.to_lowercase().find(query).unwrap_or(0);
+            let start = text.char_indices().rev().filter(|(i, _)| *i < position).nth(24).map_or(0, |(i, _)| i);
+            format!("{}{}", if start > 0 { "…" } else { "" }, &text[start..])
+        })
+}
+
+fn highlighted_history_text(text: &str, query: &str) -> Div {
+    let mut row = div().flex().min_w_0().overflow_hidden();
+    let lower = text.to_lowercase();
+    if !query.is_empty() {
+        if let Some(start) = lower.find(query) {
+            let end = start + query.len();
+            if text.is_char_boundary(start) && text.is_char_boundary(end) && end <= text.len() {
+                row = row
+                    .child(text[..start].to_string())
+                    .child(
+                        div()
+                            .bg(c::AMBER_ROW_TINT())
+                            .text_color(c::FG())
+                            .child(text[start..end].to_string()),
+                    )
+                    .child(text[end..].to_string());
+                return row;
+            }
+        }
+    }
+    row.child(text.to_string())
+}
+
+fn history_card_content(title: &str, query: &str, excerpt: Option<String>) -> Div {
+    let mut content = div()
         .flex_1()
         .min_w_0()
         .flex()
         .flex_col()
-        .gap(rpx(SPACE_SM))
-        .child(
+        .child(highlighted_history_text(title, query));
+    if let Some(excerpt) = excerpt {
+        content = content.child(
             div()
-                .flex()
-                .items_center()
-                .gap(rpx(SPACE_SM))
+                .min_w_0()
                 .text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG_DIM())
-                .child(icon(agent.icon_name(), ICON_MD, c::FG()))
-                .child(div().min_w_0().truncate().child(project.to_string()))
-                .child(icon("git-branch", ICON_SM, c::FG_DIM()))
-                .child(div().min_w_0().truncate().child(checkout.to_string()))
-                .when(cli, |row| row.child("CLI")),
-        )
-        .child(div().min_w_0().truncate().child(title.to_string()))
+                .child(highlighted_history_text(&excerpt, query)),
+        );
+    }
+    content
 }
 
 fn history_matches(query: &str, title: &str, project: &str, cwd: &str) -> bool {

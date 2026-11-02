@@ -614,7 +614,7 @@ impl Sidebar {
         let projects_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Find a project"));
         let history_search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search titles, projects, or checkouts")
+            InputState::new(window, cx).placeholder("Search sessions and transcripts")
         });
         let mut observers = vec![
             cx.observe(&runtime, |_, _, cx| cx.notify()),

@@ -244,13 +244,13 @@ impl Sidebar {
             );
             let mut group = super::super::components::preference_choices();
             for (choice, label, glyph, key) in [
-                (SessionGrouping::Activity, "Activity", "list", "false"),
                 (
                     SessionGrouping::Worktrees,
                     "Worktree",
                     "git-branch",
                     "worktrees",
                 ),
+                (SessionGrouping::Activity, "Activity", "list", "false"),
             ] {
                 group = group.child(
                     self.control(
