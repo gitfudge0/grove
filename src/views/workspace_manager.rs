@@ -1,6 +1,6 @@
 //! Persistent workspace selection and management.
 use super::status::{self, StatusKind};
-use super::{components::header_control, motion, rpx, tokens::*};
+use super::{components::header_control_with_label_tooltip, motion, rpx, tokens::*};
 use crate::{icons::icon, theme as c};
 use gpui::{
     div, prelude::*, App, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton,
@@ -395,7 +395,7 @@ impl WorkspaceManager {
                     ),
             )
             .child(
-                header_control(
+                header_control_with_label_tooltip(
                     "workspace-submit",
                     if deleting {
                         "Delete workspace"
@@ -633,7 +633,7 @@ impl WorkspaceManager {
                                 }),
                         )
                         .child(
-                            header_control("close-workspace-panel", "Close workspace panel")
+                            header_control_with_label_tooltip("close-workspace-panel", "Close workspace panel")
                                 .tab_index(0)
                                 .focus_visible(|s| s.bg(c::BG_HOVER()))
                                 .child(icon("close", ICON_MD, c::FG_DIM()))

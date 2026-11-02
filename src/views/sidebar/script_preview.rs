@@ -378,7 +378,7 @@ impl Sidebar {
                         run.id + 1
                     )))
                     .child(
-                        super::super::components::header_control(
+                        super::super::components::header_control_with_label_tooltip(
                             "script-peek-close",
                             "Close script preview",
                         )

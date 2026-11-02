@@ -1783,7 +1783,7 @@ impl Render for SettingsPanel {
                                         )
                                     })
                                     .child(
-                                        super::components::header_control(
+                                        super::components::header_control_with_label_tooltip(
                                             "settings-close",
                                             "Close settings",
                                         )

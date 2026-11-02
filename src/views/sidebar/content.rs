@@ -13,7 +13,7 @@ use crate::{
     theme as c,
     views::{
         components::{
-            dense_action_with_colors, form_action, form_field, header_control, project_field_well,
+            dense_action_with_colors, form_action, form_field, header_control_with_label_tooltip, project_field_well,
         },
         motion, rpx,
         terminal_view::TerminalView,
@@ -599,7 +599,7 @@ impl Sidebar {
                 .clone();
             let mouse_focus = focus.clone();
             Some(
-                header_control("session-panel-toggle", label)
+                header_control_with_label_tooltip("session-panel-toggle", label)
                     .debug_selector(|| "session-panel-toggle".into())
                     .track_focus(&focus)
                     .tab_index(0)
@@ -635,7 +635,7 @@ impl Sidebar {
                 .clone();
             let mouse_focus = focus.clone();
             Some(
-                header_control(
+                header_control_with_label_tooltip(
                     "side-chat-toggle",
                     if active {
                         "Hide side chat"

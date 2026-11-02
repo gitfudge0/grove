@@ -1,5 +1,5 @@
 //! Grove's app-owned header and the empty canvas for the UI rebuild.
-use super::components::{form_action, header_control};
+use super::components::{form_action, header_control_with_label_tooltip};
 use super::motion;
 use super::settings_panel::{SettingsPanel, SettingsPanelEvent};
 use super::worktree_launcher::WorktreeLauncherEvent;
@@ -405,7 +405,7 @@ impl Shell {
         let focus = self.header_focus[id].clone();
         let enabled = !matches!(id, "sidebar-toggle" | "header-grid" | "header-settings")
             || !self.shortcut_blocked(cx);
-        header_control(id, label)
+        header_control_with_label_tooltip(id, label)
             .debug_selector(move || id.into())
             .track_focus(&focus)
             .tab_index(if enabled { 0 } else { -1 })

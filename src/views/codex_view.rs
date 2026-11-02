@@ -2,8 +2,8 @@
 use super::status::{self, StatusKind};
 use super::{
     components::{
-        attached_validation, form_action, header_control, header_control_frame,
-        header_control_with_hover, header_control_with_tooltip, preference_choices,
+        attached_validation, form_action, header_control, header_control_with_label_tooltip, header_control_frame,
+        header_control_with_hover_tooltip, header_control_with_tooltip, preference_choices,
         project_field_well, question_choice, question_disclosure, settings_control, shimmer_label,
         task_mark, task_meter, tooltip, tooltip_content, transcript_action,
         truncation_safe_label_width, TaskPhase,
@@ -532,7 +532,7 @@ pub(super) fn copy_control(
     text: String,
 ) -> gpui::Stateful<gpui::Div> {
     let keyboard = text.clone();
-    header_control(id, label)
+    header_control_with_label_tooltip(id, label)
         .debug_selector(move || id.into())
         .tab_index(0)
         .focus_visible(|style| style.bg(c::BG_HOVER()))
@@ -556,7 +556,7 @@ pub(super) fn composer_icon(
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let fill = if icon == "stop" { c::RED() } else { c::FG() };
-    header_control_with_hover(
+    header_control_with_hover_tooltip(
         id,
         label,
         if disabled {
@@ -2105,7 +2105,7 @@ impl CodexView {
                     )
                     .when(!state.status.busy() && count > 0, |header| {
                         header.child(
-                            header_control("codex-resume-queue", "Send next queued message")
+                            header_control_with_label_tooltip("codex-resume-queue", "Send next queued message")
                                 .debug_selector(|| "codex-resume-queue".into())
                                 .when(!resume_enabled, gpui::Styled::cursor_default)
                                 .track_focus(
@@ -2133,7 +2133,7 @@ impl CodexView {
                         )
                     })
                     .child(
-                        header_control(
+                        header_control_with_label_tooltip(
                             "codex-collapse-queue",
                             if collapsed {
                                 "Expand queued messages"
@@ -2253,7 +2253,7 @@ impl CodexView {
                 }
                 row = row
                     .child(
-                        header_control("codex-edit-queued", "Edit queued message")
+                        header_control_with_label_tooltip("codex-edit-queued", "Edit queued message")
                             .tab_index(0)
                             .tab_stop(!locked)
                             .when(locked, gpui::Styled::cursor_default)
@@ -2278,7 +2278,7 @@ impl CodexView {
                             })),
                     )
                     .child(
-                        header_control("codex-steer-queued", STEER_DESCRIPTION)
+                        header_control_with_label_tooltip("codex-steer-queued", STEER_DESCRIPTION)
                             .w_auto()
                             .px(rpx(SPACE_SM))
                             .tab_index(0)
@@ -2314,7 +2314,7 @@ impl CodexView {
                             })),
                     )
                     .child(
-                        header_control("codex-remove-queued", "Remove queued message")
+                        header_control_with_label_tooltip("codex-remove-queued", "Remove queued message")
                             .tab_index(0)
                             .tab_stop(!locked)
                             .when(locked, gpui::Styled::cursor_default)
@@ -2395,7 +2395,7 @@ impl CodexView {
                     .justify_end()
                     .gap(rpx(SPACE_SM))
                     .child(
-                        header_control("codex-cancel-queue-edit", "Cancel queued message edit")
+                        header_control_with_label_tooltip("codex-cancel-queue-edit", "Cancel queued message edit")
                             .debug_selector(|| "codex-cancel-queue-edit".into())
                             .tab_index(0)
                             .tab_stop(!saving)
@@ -2421,7 +2421,7 @@ impl CodexView {
                             })),
                     )
                     .child(
-                        header_control("codex-save-queue-edit", "Save queued message edit")
+                        header_control_with_label_tooltip("codex-save-queue-edit", "Save queued message edit")
                             .debug_selector(|| "codex-save-queue-edit".into())
                             .tab_index(0)
                             .tab_stop(!saving)
@@ -3169,7 +3169,7 @@ impl CodexView {
                     .when(tool || plan_details, |row| {
                         let keyboard_toggle = toggle.clone();
                         row.child(
-                            header_control(
+                            header_control_with_label_tooltip(
                                 "codex-expand",
                                 if expanded {
                                     "Collapse tool call"
@@ -3368,7 +3368,7 @@ impl CodexView {
                                 let keyboard_code = code.clone();
                                 let click_owner = owner.clone();
                                 let click_code = code.clone();
-                                let copy = header_control("codex-copy-code", label)
+                                let copy = header_control_with_label_tooltip("codex-copy-code", label)
                                     .when_some(focus, |this, focus| this.track_focus(&focus))
                                     .debug_selector(move || if copied { "codex-code-copied".into() } else { "codex-copy-code".into() })
                                     .tab_index(0)
@@ -3722,7 +3722,7 @@ impl CodexView {
             if !self.transcript_only() && approval.is_none() {
                 let edit_focus = self.ensure_control_focus(&format!("{key}:edit"), window, cx);
                 actions = actions.child(
-                    header_control("codex-edit-message", "Edit sent message")
+                    header_control_with_label_tooltip("codex-edit-message", "Edit sent message")
                         .track_focus(&edit_focus)
                         .aria_description(
                             unavailable
@@ -3753,7 +3753,7 @@ impl CodexView {
             let mut copy_button = if copied {
                 header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
             } else {
-                header_control("codex-message-copy", "Copy message")
+                header_control_with_label_tooltip("codex-message-copy", "Copy message")
             }
             .track_focus(&copy_focus)
             .relative()
@@ -5488,7 +5488,7 @@ impl Render for CodexView {
                         .debug_selector(move || format!("codex-image-{index}"))
                         .group("codex-image")
                         .child(
-                            header_control("codex-remove-image", "Remove attached image")
+                            header_control_with_label_tooltip("codex-remove-image", "Remove attached image")
                                 .tab_index(0)
                                 .on_key_down(cx.listener(
                                     move |this, event: &gpui::KeyDownEvent, window, cx| {
@@ -6452,7 +6452,7 @@ impl CodexView {
         let mut button = if copied {
             header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
         } else {
-            header_control("codex-message-copy", "Copy entire response")
+            header_control_with_label_tooltip("codex-message-copy", "Copy entire response")
         }
         .track_focus(&copy_focus)
         .relative()
@@ -7463,7 +7463,7 @@ impl CodexView {
                         )),
                     )
                     .child(
-                        header_control(
+                        header_control_with_label_tooltip(
                             "codex-model-effort-reset",
                             "Reset model and effort to configured values",
                         )
@@ -8282,7 +8282,7 @@ impl CodexView {
         let keyboard = snapshot.clone();
         let action_owner = cx.entity_id();
         Some(
-            header_control("codex-selection-reply", "Reply to selection")
+            header_control_with_label_tooltip("codex-selection-reply", "Reply to selection")
                 .debug_selector(|| "codex-selection-reply".into())
                 .absolute()
                 .left(left - pane.left())
@@ -8399,7 +8399,7 @@ impl CodexView {
                                 .child(format!("Replying to {sources}")),
                         )
                         .child(
-                            header_control("codex-remove-reference", "Remove reference")
+                            header_control_with_label_tooltip("codex-remove-reference", "Remove reference")
                                 .debug_selector(|| "codex-remove-reference".into())
                                 .track_focus(
                                     &self

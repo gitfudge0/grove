@@ -87,6 +87,20 @@ pub fn header_control_with_hover(
     hover: gpui::Hsla,
 ) -> Stateful<Div> {
     header_control_frame(id, label, hover)
+}
+
+/// Header action with an explicitly requested text tooltip.
+pub fn header_control_with_label_tooltip(id: &'static str, label: &'static str) -> Stateful<Div> {
+    header_control(id, label).tooltip(move |window, cx| tooltip(label, window).build(window, cx))
+}
+
+/// Header action with an explicit tooltip and custom hover fill.
+pub fn header_control_with_hover_tooltip(
+    id: &'static str,
+    label: &'static str,
+    hover: gpui::Hsla,
+) -> Stateful<Div> {
+    header_control_with_hover(id, label, hover)
         .tooltip(move |window, cx| tooltip(label, window).build(window, cx))
 }
 
@@ -104,12 +118,19 @@ pub(super) fn header_control_frame(
     label: impl Into<gpui::SharedString>,
     hover: gpui::Hsla,
 ) -> Stateful<Div> {
-    inline_disclosure(id, label)
+    inline_disclosure_frame(id, label)
         .hover(move |style| style.bg(hover).text_color(c::FG()))
 }
 
 /// Inline disclosure: foreground-only pointer feedback; owner retains focus/open fills.
 pub fn inline_disclosure(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+) -> Stateful<Div> {
+    inline_disclosure_frame(id, label).hover(|style| style.text_color(c::FG()))
+}
+
+fn inline_disclosure_frame(
     id: impl Into<gpui::ElementId>,
     label: impl Into<gpui::SharedString>,
 ) -> Stateful<Div> {
@@ -126,7 +147,6 @@ pub fn inline_disclosure(
         .rounded(rpx(RADIUS_CONTROL))
         .group("neutral-control")
         .text_color(c::FG_DIM())
-        .hover(|style| style.text_color(c::FG()))
         .on_mouse_down(MouseButton::Left, |_, window, cx| {
             window.prevent_default();
             cx.stop_propagation();
