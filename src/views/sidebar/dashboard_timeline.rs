@@ -8,6 +8,8 @@ use grove_core::{
 use serde_json::Value;
 use std::sync::Arc;
 
+mod task_scope;
+
 const TIMELINE_TASK_LINE_H: f32 = super::SESSION_TITLE_LINE_H;
 const TIMELINE_SPINE_W: f32 = 1.;
 const ACTIVITY_HISTORY_LIMIT: usize = 64;
@@ -126,6 +128,8 @@ pub(super) struct Activity {
 pub(super) struct TimelineData {
     pub list: Option<Arc<TaskList>>,
     pub activity: Vec<Activity>,
+    pub task_scope: Arc<grove_core::tasks::TaskScope>,
+    pub current_turn: Option<String>,
 }
 /// A short excerpt of the provider's own progress prose, never a command or reasoning.
 fn activity_excerpt(text: &str) -> Option<String> {
@@ -220,6 +224,8 @@ pub(super) struct DashboardTimelines {
     task_opened: HashSet<(Scope, String)>,
     task_focus: HashMap<(Scope, String), FocusHandle>,
     task_hovered: HashSet<(Scope, String)>,
+    group_opened: HashSet<(Scope, String)>,
+    group_focus: HashMap<(Scope, String), FocusHandle>,
 }
 impl DashboardTimelines {
     /// Both structured disclosures and terminal navigation rows keep a stable
@@ -310,6 +316,8 @@ impl DashboardTimelines {
         self.task_opened.retain(|(key, _)| keep(key));
         self.task_focus.retain(|(key, _), _| keep(key));
         self.task_hovered.retain(|(key, _)| keep(key));
+        self.group_opened.retain(|(key, _)| keep(key));
+        self.group_focus.retain(|(key, _), _| keep(key));
     }
 }
 #[derive(Default)]
@@ -699,41 +707,24 @@ impl Sidebar {
             )
             .into_any_element()
     }
-    fn render_dashboard_tasks(
+    fn render_dashboard_task_rows(
         &mut self,
         scope: Scope,
         data: &TimelineData,
         status: Status,
-        _window: &mut Window,
+        tasks: &[Task],
+        historical: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = format!("{}-{}", scope.0, scope.1.raw());
-        let Some(list) = &data.list else {
-            return render_body(&key, data, status, cx);
-        };
-        let live_keys: HashSet<_> = list.tasks.iter().map(task_key).collect();
-        self.dashboard_timelines
-            .task_opened
-            .retain(|(owner, task)| *owner != scope || live_keys.contains(task));
-        self.dashboard_timelines
-            .task_focus
-            .retain(|(owner, task), _| *owner != scope || live_keys.contains(task));
-        self.dashboard_timelines
-            .task_hovered
-            .retain(|(owner, task)| *owner != scope || live_keys.contains(task));
-        let mut body = div()
-            .w_full()
-            .pl(rpx(SPACE_20))
-            .py(rpx(SPACE_LG))
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_SM));
+        let mut body = div().w_full().flex().flex_col().gap(rpx(SPACE_SM));
         let shimmer = shimmering_activity(&data.activity, status);
-        for task in &list.tasks {
+        for task in tasks {
             let identity = task_key(task);
             let state_key = (scope, identity.clone());
             let complete = task.status == TaskStatus::Completed;
-            let open = !complete || self.dashboard_timelines.task_opened.contains(&state_key);
+            let open = (!complete && !historical)
+                || self.dashboard_timelines.task_opened.contains(&state_key);
             let hovered = self.dashboard_timelines.task_hovered.contains(&state_key);
             let focus = self
                 .dashboard_timelines
@@ -743,7 +734,7 @@ impl Sidebar {
                 .clone();
             let row_id = format!("dashboard-task-{key}-{identity}");
             let label_id = format!("dashboard-task-label-{key}-{identity}");
-            let disclosure = complete && hovered;
+            let disclosure = (complete || historical) && hovered;
             let mark_selector = format!(
                 "dashboard-task-{}-{key}-{identity}",
                 if disclosure { "chevron" } else { "status" }
@@ -758,6 +749,8 @@ impl Sidebar {
                 .justify_center()
                 .child(if disclosure {
                     icon(task_disclosure_glyph(open), ICON_SM, c::FG_DIM()).into_any_element()
+                } else if historical && !complete {
+                    icon("minus", ICON_SM, c::FG_DIM()).into_any_element()
                 } else if task.status == TaskStatus::InProgress
                     && matches!(status, Status::Working | Status::Starting)
                 {
@@ -794,15 +787,31 @@ impl Sidebar {
                         .flex_1()
                         .min_w_0()
                         .whitespace_normal()
-                        .child(task.step.clone()),
+                        .child(task.step.clone())
+                        .when(historical && !complete, |el| {
+                            el.child(
+                                div()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child("Removed from current scope"),
+                            )
+                        }),
                 );
-            if complete {
+            if complete || historical {
                 let hover_key = state_key.clone();
                 let click_key = state_key.clone();
                 let keyboard_key = state_key.clone();
                 row = row
                     .role(gpui::Role::Button)
-                    .aria_label(format!("Completed task · {}", task.step))
+                    .aria_label(format!(
+                        "{} · {}",
+                        if complete {
+                            "Completed task"
+                        } else {
+                            "Removed from current scope"
+                        },
+                        task.step
+                    ))
                     .aria_expanded(open)
                     .cursor_pointer()
                     .tab_index(0)
@@ -863,34 +872,13 @@ impl Sidebar {
                             &format!("{key}-task-{identity}"),
                             &items,
                             status,
-                            shimmer,
+                            if historical { None } else { shimmer },
                             complete,
                             cx,
                         ),
                     ));
                 }
             }
-        }
-        let unassigned: Vec<_> =
-            data.activity
-                .iter()
-                .filter(|activity| {
-                    activity.task.as_ref().is_none_or(|owner| {
-                        !list.tasks.iter().any(|task| task.owns_activity(owner))
-                    })
-                })
-                .cloned()
-                .collect();
-        if !unassigned.is_empty() {
-            body = body.child(render_activity_with_current(
-                &key,
-                &format!("{key}-unassigned"),
-                &unassigned,
-                status,
-                shimmer,
-                false,
-                cx,
-            ));
         }
         body.into_any_element()
     }
@@ -1383,6 +1371,8 @@ mod tests {
         TimelineData {
             list: Some(Arc::new(grove_core::tasks::current(&items).unwrap())),
             activity,
+            task_scope: Arc::default(),
+            current_turn: None,
         }
     }
     struct TaskProbe {
@@ -1411,6 +1401,12 @@ mod tests {
         let (probe, cx) = cx.add_window_view(|window, cx| {
             let runtime = cx.new(Runtime::new);
             let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+            sidebar.update(cx, |sidebar, _| {
+                sidebar
+                    .dashboard_timelines
+                    .group_opened
+                    .insert(((1, SessionId::from_raw(1)), "completed".into()));
+            });
             TaskProbe {
                 sidebar,
                 data: task_fixture(),
@@ -1550,6 +1546,12 @@ mod tests {
                     window.set_rem_size(gpui::px(rem));
                     let runtime = cx.new(Runtime::new);
                     let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+                    sidebar.update(cx, |sidebar, _| {
+                        sidebar
+                            .dashboard_timelines
+                            .group_opened
+                            .insert(((1, SessionId::from_raw(1)), "completed".into()));
+                    });
                     let view = cx.new(|_| TaskProbe {
                         sidebar,
                         data: task_fixture(),
@@ -2055,6 +2057,8 @@ mod tests {
             HistoryProbe(TimelineData {
                 list: None,
                 activity: recent_activity(&items),
+                task_scope: Arc::default(),
+                current_turn: None,
             })
         });
         for width in [440., 240.] {

@@ -81,6 +81,7 @@ pub(super) fn task_phase(status: Status) -> TaskPhase {
 #[derive(Default)]
 pub(super) struct TaskGlanceCache {
     index: Option<usize>,
+    latest_prompt: Option<usize>,
     item: Value,
     glance: Option<TaskGlance>,
     list: Option<std::sync::Arc<TaskList>>,
@@ -136,14 +137,17 @@ impl TaskGlanceCache {
             }
         }
         let changed = activity != self.timeline.activity || self.dashboard_status != Some(status);
-        if activity != self.timeline.activity {
+        let turn_changed = self.timeline.current_turn.as_deref() != turn;
+        if activity != self.timeline.activity || turn_changed {
             self.timeline = std::sync::Arc::new(super::dashboard_timeline::TimelineData {
                 list: self.list.clone(),
                 activity,
+                task_scope: self.timeline.task_scope.clone(),
+                current_turn: turn.map(str::to_owned),
             });
         }
         self.dashboard_status = Some(status);
-        changed
+        changed || turn_changed
     }
     pub fn glance(&self) -> Option<&TaskGlance> {
         self.glance.as_ref()
@@ -156,6 +160,10 @@ impl TaskGlanceCache {
             .rposition(|item| tasks::is_checklist(item.borrow()));
         let changed =
             self.index != index || index.is_some_and(|at| self.item != *items[at].borrow());
+        let latest_prompt = items
+            .iter()
+            .rposition(|item| item.borrow()["type"] == "userMessage");
+        let prompt_changed = self.latest_prompt != latest_prompt;
         if changed {
             self.item = index.map_or(Value::Null, |at| items[at].borrow().clone());
             self.list = tasks::current(items).map(std::sync::Arc::new);
@@ -163,10 +171,19 @@ impl TaskGlanceCache {
             self.timeline = std::sync::Arc::new(super::dashboard_timeline::TimelineData {
                 list: self.list.clone(),
                 activity: self.timeline.activity.clone(),
+                task_scope: std::sync::Arc::new(tasks::scope(items)),
+                current_turn: self.timeline.current_turn.clone(),
             });
         }
+        if prompt_changed && !changed {
+            let timeline = std::sync::Arc::make_mut(&mut self.timeline);
+            std::sync::Arc::make_mut(&mut timeline.task_scope).awaiting_update =
+                self.list.is_some()
+                    && latest_prompt.is_some_and(|prompt| index.is_some_and(|at| prompt > at));
+        }
+        self.latest_prompt = latest_prompt;
         self.index = index;
-        changed
+        changed || prompt_changed
     }
 }
 
@@ -830,7 +847,8 @@ mod tests {
         // A clarification answer retains the same session summary.
         items.push(json!({"type": "userMessage", "text": "next"}));
         let before = cache.glance().cloned();
-        assert!(!cache.refresh(&items));
+        assert!(cache.refresh(&items));
+        assert!(cache.timeline().task_scope.awaiting_update);
         assert_eq!(cache.glance(), before.as_ref());
         let restored: Vec<Value> =
             serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();

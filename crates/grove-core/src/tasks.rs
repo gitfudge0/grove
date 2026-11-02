@@ -154,6 +154,100 @@ pub fn current<T: Borrow<Value>>(items: &[T]) -> Option<TaskList> {
     })
 }
 
+/// The current checklist and work removed by later checklist revisions.
+/// A user message can make the checklist awaiting an update without changing
+/// its tasks, history or identity. This is a projection of recorded events,
+/// not an inference that old work was completed or superseded.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TaskScope {
+    pub current: Option<TaskList>,
+    pub awaiting_update: bool,
+    /// Actual removals, newest revision first; ordinary edits are not history groups.
+    pub history: Vec<TaskRevision>,
+    /// Changes in the latest checklist relative to the previous checklist.
+    pub changes: Vec<Change>,
+    /// Structural counts for the latest revision; initial publication is zero.
+    pub added: usize,
+    pub removed: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaskRevision {
+    /// Index of the checklist snapshot that removed these tasks.
+    pub item: usize,
+    /// Last recorded state before removal, including continuous identity.
+    /// Incomplete tasks remain incomplete; removal is not a success event.
+    pub tasks: Vec<Task>,
+}
+
+/// Projects the evolving task scope without creating a new scope per message.
+/// Stable provider IDs preserve renames; positional IDs retain the same exact
+/// title matching as `current` and activity ownership.
+pub fn scope<T: Borrow<Value>>(items: &[T]) -> TaskScope {
+    // Keep the first activation separately: `started_at` falls back to first
+    // appearance for a never-started task, then changes on its first activation.
+    let mut previous: Vec<(Task, Option<usize>)> = Vec::new();
+    let mut history = Vec::new();
+    let mut latest_checklist = None;
+    let mut latest_prompt = None;
+    let (mut added_count, mut removed_count) = (0, 0);
+    for (index, item) in items.iter().enumerate() {
+        let item = item.borrow();
+        if item["type"] == "userMessage" {
+            latest_prompt = Some(index);
+        }
+        if !is_checklist(item) {
+            continue;
+        }
+        let is_revision = latest_checklist.is_some();
+        latest_checklist = Some(index);
+        let next: Vec<_> = entries(item)
+            .into_iter()
+            .map(|mut task| {
+                let old = previous.iter().find(|(old, _)| same_task(old, &task));
+                task.identity_at = old.map_or(index, |(old, _)| old.identity_at);
+                let first_started = old
+                    .and_then(|(_, started)| *started)
+                    .or_else(|| (task.status == TaskStatus::InProgress).then_some(index));
+                task.started_at = first_started.unwrap_or(task.identity_at);
+                (task, first_started)
+            })
+            .collect();
+        let removed: Vec<_> = previous
+            .iter()
+            .filter(|(old, _)| !next.iter().any(|(task, _)| same_task(old, task)))
+            .map(|(task, _)| task.clone())
+            .collect();
+        added_count = if is_revision {
+            next.iter()
+                .filter(|(task, _)| !previous.iter().any(|(old, _)| same_task(old, task)))
+                .count()
+        } else {
+            0
+        };
+        removed_count = removed.len();
+        if !removed.is_empty() {
+            history.push(TaskRevision {
+                item: index,
+                tasks: removed,
+            });
+        }
+        previous = next;
+    }
+    history.reverse();
+    let current = current(items);
+    let awaiting_update = current.is_some()
+        && latest_prompt.is_some_and(|prompt| latest_checklist.is_some_and(|at| prompt > at));
+    TaskScope {
+        current,
+        awaiting_update,
+        history,
+        changes: latest_checklist.map_or_else(Vec::new, |at| changes_at(items, at)),
+        added: added_count,
+        removed: removed_count,
+    }
+}
+
 /// Task owning one assistant progress item at the time it was recorded.
 /// Parallel tasks, final answers and legacy overwritten Codex plans provide no
 /// unambiguous ownership. This deliberately does not infer an owner from prose.
@@ -318,6 +412,24 @@ fn task_history<T: Borrow<Value>>(items: &[T], index: usize, task: &Task) -> (us
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn scope_counts_new_running_tasks_and_addition_only_revisions() {
+        let first = json!({"type":"plan","plan":[{"id":"a","step":"Keep","status":"pending"}]});
+        assert_eq!(scope(&[first.clone()]).added, 0);
+        let added = json!({"type":"plan","plan":[
+            {"id":"a","step":"Keep","status":"completed"},
+            {"id":"b","step":"New active task","status":"inProgress"},
+            {"id":"c","step":"New pending task","status":"pending"}
+        ]});
+        let projection = scope(&[first.clone(), added]);
+        assert_eq!((projection.added, projection.removed), (2, 0));
+        assert!(projection.history.is_empty());
+        let replacement =
+            json!({"type":"plan","plan":[{"id":"b","step":"Replacement","status":"inProgress"}]});
+        let projection = scope(&[first, replacement]);
+        assert_eq!((projection.added, projection.removed), (1, 1));
+    }
 
     #[test]
     fn pending_to_active_keeps_identity_but_removal_recreation_does_not() {
@@ -664,6 +776,137 @@ mod tests {
             vec![Change::Completed("New name".into())]
         );
         assert_eq!(current(&items).unwrap().tasks[0].started_at, 0);
+    }
+
+    #[test]
+    fn scope_clarification_waits_for_confirmation_without_archiving_tasks() {
+        let checklist = codex(
+            "t1",
+            json!([{"id":"step-0","step":"Implement","status":"inProgress"}]),
+        );
+        let mut items = vec![user(), checklist.clone()];
+        let before = scope(&items);
+        assert!(!before.awaiting_update);
+        items.push(user());
+        items.push(json!({"type":"agentMessage","text":"Continuing"}));
+        let waiting = scope(&items);
+        assert!(waiting.awaiting_update);
+        assert_eq!(waiting.current, before.current);
+        assert!(waiting.history.is_empty());
+        items.push(checklist);
+        let confirmed = scope(&items);
+        assert!(!confirmed.awaiting_update);
+        assert!(confirmed.changes.is_empty());
+        assert!(confirmed.history.is_empty());
+        assert!(
+            confirmed.current.unwrap().tasks[0].owns_activity(&before.current.unwrap().tasks[0])
+        );
+    }
+
+    #[test]
+    fn scope_positional_reorder_preserves_work_but_rename_records_removal() {
+        for prefix in ["step-", "todo-"] {
+            let mut items = vec![
+                json!({"type":"plan","plan":[
+                    {"id":format!("{prefix}0"),"step":"Inspect","status":"completed"},
+                    {"id":format!("{prefix}1"),"step":"Implement","status":"inProgress"}
+                ]}),
+                user(),
+                json!({"type":"plan","plan":[
+                    {"id":format!("{prefix}0"),"step":"Implement","status":"inProgress"},
+                    {"id":format!("{prefix}1"),"step":"Inspect","status":"completed"},
+                    {"id":format!("{prefix}2"),"step":"Verify","status":"pending"}
+                ]}),
+            ];
+            let reordered = scope(&items);
+            assert!(reordered.history.is_empty());
+            assert_eq!(reordered.current.as_ref().unwrap().tasks[0].identity_at, 0);
+            items.push(json!({"type":"plan","plan":[
+                {"id":format!("{prefix}0"),"step":"Build implementation","status":"inProgress"},
+                {"id":format!("{prefix}1"),"step":"Inspect","status":"completed"},
+                {"id":format!("{prefix}2"),"step":"Verify","status":"pending"}
+            ]}));
+            let renamed = scope(&items);
+            assert_eq!(renamed.history.len(), 1);
+            assert_eq!(renamed.history[0].item, 3);
+            assert_eq!(renamed.history[0].tasks.len(), 1);
+            let removed = &renamed.history[0].tasks[0];
+            assert_eq!(removed.step, "Implement");
+            assert_eq!(removed.status, TaskStatus::InProgress);
+            assert!(removed.owns_activity(&reordered.current.as_ref().unwrap().tasks[0]));
+            assert!(!renamed.current.as_ref().unwrap().tasks[0].owns_activity(removed));
+        }
+    }
+
+    #[test]
+    fn scope_claude_stable_rename_and_delete_keep_last_recorded_state() {
+        let mut items = vec![
+            json!({"type":"plan","plan":[
+                {"id":"7","step":"Original","status":"pending"},
+                {"id":"8","step":"Research","status":"completed"}
+            ]}),
+            json!({"type":"plan","plan":[
+                {"id":"7","step":"Renamed","status":"in_progress"},
+                {"id":"8","step":"Research","status":"completed"}
+            ]}),
+        ];
+        let renamed = scope(&items);
+        assert!(renamed.history.is_empty());
+        let task = &renamed.current.as_ref().unwrap().tasks[0];
+        assert_eq!((task.identity_at, task.started_at), (0, 1));
+        items.push(json!({"type":"plan","plan":[
+            {"id":"8","step":"Research","status":"completed"}
+        ]}));
+        let deleted = scope(&items);
+        assert_eq!(deleted.history[0].tasks, vec![task.clone()]);
+        assert_eq!(deleted.changes, vec![Change::Removed("Renamed".into())]);
+        assert_eq!(deleted.current.unwrap().done(), 1);
+    }
+
+    #[test]
+    fn scope_clear_and_recreation_separate_lifetimes_and_survive_reload() {
+        let items = vec![
+            user(),
+            json!({"type":"plan","plan":[
+                {"id":"7","step":"Implement","status":"pending"},
+                {"id":"8","step":"Research","status":"completed"}
+            ]}),
+            json!({"type":"plan","plan":[
+                {"id":"7","step":"Implement","status":"in_progress"},
+                {"id":"8","step":"Research","status":"completed"}
+            ]}),
+            user(),
+            json!({"type":"plan","plan":[]}),
+            user(),
+            json!({"type":"plan","plan":[
+                {"id":"7","step":"Implement","status":"pending"}
+            ]}),
+            json!({"type":"plan","plan":[]}),
+        ];
+        let cleared = scope(&items[..5]);
+        assert!(cleared.current.is_none());
+        assert!(!cleared.awaiting_update);
+        assert_eq!(cleared.history.len(), 1);
+        assert_eq!(cleared.history[0].tasks[0].status, TaskStatus::InProgress);
+        assert_eq!(cleared.history[0].tasks[1].status, TaskStatus::Completed);
+        let recreated = scope(&items[..7]);
+        assert!(!recreated.current.as_ref().unwrap().tasks[0]
+            .owns_activity(&cleared.history[0].tasks[0]));
+        let all = scope(&items);
+        assert_eq!(
+            all.history
+                .iter()
+                .map(|revision| revision.item)
+                .collect::<Vec<_>>(),
+            vec![7, 4]
+        );
+        assert_eq!(all.history[0].tasks[0].identity_at, 6);
+        assert_eq!(all.history[1].tasks[0].identity_at, 1);
+        let restored: Vec<Value> =
+            serde_json::from_str(&serde_json::to_string(&items).unwrap()).unwrap();
+        assert_eq!(all, scope(&restored));
+        assert_eq!(scope::<Value>(&[]), TaskScope::default());
+        assert_eq!(scope(&[user()]), TaskScope::default());
     }
 
     #[test]
