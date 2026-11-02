@@ -23,6 +23,8 @@ pub(super) struct SideChat {
     hovered_messages: HashSet<usize>,
     entrances: HashMap<usize, Instant>,
     copied_messages: HashMap<usize, Instant>,
+    backend: std::sync::Arc<std::sync::Mutex<grove_core::side_chat::Session>>,
+    provider_session: Option<Box<grove_core::codex::SavedSession>>,
     busy: bool,
     error: Option<String>,
     retryable: bool,
@@ -32,6 +34,14 @@ pub(super) struct SideChat {
     pending_scroll: Option<bool>,
     motion_frame: Option<Instant>,
     motion_frame_pending: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl Drop for SideChat {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
 }
 
 struct MessageView {
@@ -353,14 +363,26 @@ mod tests {
         });
         // Measure the actual main and side surfaces together for both providers
         // and changed rem zoom, rather than comparing isolated panel snapshots.
-        for provider in [grove_core::codex::Provider::Codex, grove_core::codex::Provider::Claude] {
-            for (width, height, rem) in [(1280., 800., 16.), (1100., 760., 16.), (1600., 1000., 20.)] {
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            for (width, height, rem) in
+                [(1280., 800., 16.), (1100., 760., 16.), (1600., 1000., 20.)]
+            {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
                 cx.update(|window, cx| {
                     window.set_rem_size(gpui::px(rem));
                     sidebar.update(cx, |sidebar, cx| {
                         let id = sidebar.checkout_panel.side_chats.keys().next().unwrap().0;
-                        let session = sidebar.runtime.read(cx).registry.read(cx).codex(id).unwrap().clone();
+                        let session = sidebar
+                            .runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .codex(id)
+                            .unwrap()
+                            .clone();
                         session.update(cx, |session, cx| {
                             session.state.saved.provider = provider;
                             cx.notify();
@@ -369,73 +391,20 @@ mod tests {
                 });
                 for _ in 0..3 {
                     cx.run_until_parked();
-                    cx.update(|window, cx| { let _ = window.draw(cx); });
+                    cx.update(|window, cx| {
+                        let _ = window.draw(cx);
+                    });
                 }
                 let main = cx.debug_bounds("codex-composer").unwrap();
                 let side = cx.debug_bounds("side-chat-card").unwrap();
-                assert!((main.bottom() - side.bottom()).abs() <= gpui::px(1.),
-                    "{provider:?} at {width}/{rem}: {main:?} vs {side:?}");
+                assert!(
+                    (main.bottom() - side.bottom()).abs() <= gpui::px(1.),
+                    "{provider:?} at {width}/{rem}: {main:?} vs {side:?}"
+                );
             }
         }
         cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
         cx.update(|window, _| window.set_rem_size(gpui::px(16.)));
-        // Enter must preserve an unavailable Claude draft even though the
-        // disabled send button cannot be activated. This exercises the actual
-        // subscription route without launching Claude in OAuth-only installs.
-        if grove_core::side_chat_claude::ensure_read_only().is_err() {
-            let (key, count) = cx.update(|window, cx| {
-                sidebar.update(cx, |sidebar, cx| {
-                    let key = sidebar
-                        .checkout_panel
-                        .side_chats
-                        .keys()
-                        .next()
-                        .unwrap()
-                        .clone();
-                    let session = sidebar
-                        .runtime
-                        .read(cx)
-                        .registry
-                        .read(cx)
-                        .codex(key.0)
-                        .unwrap()
-                        .clone();
-                    session.update(cx, |session, _| {
-                        session.state.saved.provider = grove_core::codex::Provider::Claude
-                    });
-                    let chat = sidebar.checkout_panel.side_chats.get_mut(&key).unwrap();
-                    chat.busy = false;
-                    chat.retryable = false;
-                    let count = chat.messages.len();
-                    let input = chat.input.clone();
-                    input.update(cx, |input, cx| {
-                        input.set_value("Keep this unavailable Haiku draft", window, cx);
-                        cx.emit(gpui_component::input::InputEvent::PressEnter {
-                            secondary: false,
-                            shift: false,
-                        });
-                    });
-                    (key, count)
-                })
-            });
-            // GPUI delivers entity subscription events after the emitting update.
-            cx.update(|_, cx| {
-                sidebar.update(cx, |sidebar, cx| {
-                    let chat = &sidebar.checkout_panel.side_chats[&key];
-                    assert_eq!(
-                        chat.messages.len(),
-                        count,
-                        "unavailable Enter must not append a question"
-                    );
-                    assert_eq!(
-                        chat.input.read(cx).value().as_ref(),
-                        "Keep this unavailable Haiku draft"
-                    );
-                    assert!(chat.error.as_deref().unwrap().contains("ANTHROPIC_API_KEY"));
-                    assert!(!chat.retryable && !chat.busy);
-                });
-            });
-        }
         // An ambiguous multi-checkout session must not overflow a narrow window.
         let second_path = fixture.path().join("second").to_string_lossy().into_owned();
         cx.update(|_, cx| {
@@ -562,6 +531,7 @@ impl Sidebar {
         let saved = grove_core::codex::SavedSideChat {
             draft: chat.input.read(cx).value().to_string(),
             messages,
+            session: chat.provider_session.clone(),
         };
         let session = self
             .runtime
@@ -638,20 +608,8 @@ impl Sidebar {
             cx.notify();
             return;
         };
-        let saved = &session.read(cx).state.saved;
-        let provider = saved.provider;
-        if provider == grove_core::codex::Provider::Claude {
-            if let Err(error) = grove_core::side_chat_claude::ensure_read_only() {
-                if let Some(chat) = self.checkout_panel.side_chats.get_mut(&key) {
-                    chat.error = Some(error);
-                    chat.retryable = false;
-                }
-                cx.notify();
-                return;
-            }
-        }
+        let parent = session.read(cx).state.saved.clone();
         let cwd = key.1.clone();
-        let context = serde_json::to_string(&saved.items).unwrap_or_default();
         let Some(chat) = self.checkout_panel.side_chats.get_mut(&key) else {
             return;
         };
@@ -672,28 +630,32 @@ impl Sidebar {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         chat.cancel = Some(cancel.clone());
         let conversation = chat.messages.clone();
+        let backend = chat.backend.clone();
         chat.follow_latest = true;
         self.persist_side_chat(&key, cx);
         let answer_index = conversation.len();
         cx.spawn(async move |this, cx| {
             let (updates, mut incoming) = futures::channel::mpsc::unbounded();
             let result = cx.background_executor().spawn(async move {
-                let result = grove_core::side_chat::answer_streaming(
-                    provider,
-                    &cwd,
-                    &context,
-                    &conversation,
-                    &cancel,
-                    |text| {
-                        let _ = updates.unbounded_send(text);
-                    },
-                );
+                let result = match backend.lock() {
+                    Ok(mut backend) => {
+                        backend.answer(&parent, &cwd, &conversation, &cancel, |text, saved| {
+                            let _ = updates.unbounded_send((text, saved));
+                        })
+                    }
+                    Err(_) => Err("Side session is unavailable. Reopen Grove to continue.".into()),
+                };
                 drop(updates);
                 result
             });
-            while let Some(text) = incoming.next().await {
+            while let Some((text, saved)) = incoming.next().await {
                 let _ = this.update(cx, |this, cx| {
                     if let Some(chat) = this.checkout_panel.side_chats.get_mut(&key) {
+                        chat.provider_session = Some(saved);
+                        if text.is_empty() {
+                            this.persist_side_chat(&key, cx);
+                            return;
+                        }
                         if chat.messages.len() == answer_index {
                             chat.messages.push(("assistant".into(), text));
                             if !cx.reduce_motion() {
@@ -704,6 +666,7 @@ impl Sidebar {
                             *answer = text;
                         }
                     }
+                    this.persist_side_chat(&key, cx);
                     cx.notify();
                 });
             }
@@ -882,15 +845,12 @@ impl Sidebar {
             .read(cx)
             .codex(id)
             .map(|session| session.read(cx).state.saved.provider);
-        let claude_unavailable = (provider == Some(grove_core::codex::Provider::Claude))
-            .then(grove_core::side_chat_claude::ensure_read_only)
-            .and_then(Result::err);
-        let supported = available && provider.is_some() && claude_unavailable.is_none();
+        let supported = available && provider.is_some();
         let context_disclosure = match (available, provider) {
-            (false, _) => "Read-only · Context is unavailable; no context is sent.",
-            (true, Some(grove_core::codex::Provider::Codex)) => "Read-only · Each question sends Codex a new, bounded snapshot of this session and worktree. It may omit files or history; answers may become stale as work continues.",
-            (true, Some(grove_core::codex::Provider::Claude)) => "Read-only · Each question sends Haiku a new, bounded snapshot using tool-free bare mode.",
-            (true, None) => "Read-only · Session context is unavailable; no context is sent.",
+            (false, _) => "Context is unavailable; sending is disabled.",
+            (true, Some(grove_core::codex::Provider::Codex)) => "Read-only · Luna · Codex sign-in · Separate resumable session with refreshed context and read-only commands.",
+            (true, Some(grove_core::codex::Provider::Claude)) => "Read-only tools · Haiku · Claude Code sign-in · Normal startup hooks may run.",
+            (true, None) => "Session context is unavailable; sending is disabled.",
         };
         if !self.checkout_panel.side_chats.contains_key(&key) {
             let saved = self
@@ -941,6 +901,12 @@ impl Sidebar {
                     markdown_decorations,
                     markdown_source: None,
                     _input_subscription: subscription,
+                    backend: std::sync::Arc::new(std::sync::Mutex::new(
+                        grove_core::side_chat::Session::restored(
+                            saved.as_ref().and_then(|saved| saved.session.clone()),
+                        ),
+                    )),
+                    provider_session: saved.as_ref().and_then(|saved| saved.session.clone()),
                     messages: saved.map(|saved| saved.messages).unwrap_or_default(),
                     message_views: Vec::new(),
                     hovered_messages: HashSet::new(),
@@ -1046,7 +1012,14 @@ impl Sidebar {
                 ];
                 chat.message_views.push(MessageView {
                     view,
-                    stream_text: (text.clone(), if role == "assistant" && chat.busy && !cx.reduce_motion() { 0 } else { text.len() }),
+                    stream_text: (
+                        text.clone(),
+                        if role == "assistant" && chat.busy && !cx.reduce_motion() {
+                            0
+                        } else {
+                            text.len()
+                        },
+                    ),
                     focus,
                     _subscriptions: subscriptions,
                 });
@@ -1277,7 +1250,7 @@ impl Sidebar {
         }
         let context_label = match provider {
             Some(grove_core::codex::Provider::Codex) => "Read-only · Luna",
-            Some(grove_core::codex::Provider::Claude) => "Read-only · Haiku",
+            Some(grove_core::codex::Provider::Claude) => "Haiku · Read tools only · Startup hooks may run",
             None => "Read-only",
         };
         let input_label = format!("Ask about this session or worktree. {context_disclosure}");
@@ -1290,7 +1263,7 @@ impl Sidebar {
             .child(project_field_well(false, false).debug_selector(|| "side-chat-card".into()).h_full().min_h_0().w_full().p(rpx(SPACE_2XL)).justify_start().gap(rpx(SPACE_LG))
                 .when(!available, |panel| panel.child(div().text_color(c::FG_DIM()).child("This checkout is unavailable. History remains readable; restore the checkout to ask another question.")))
                 .when(!available && recovery_paths.len() > 1, |panel| panel.child(recovery_choices))
-                .when(available && !supported, |panel| panel.child(div().text_color(c::FG_DIM()).child(claude_unavailable.unwrap_or_else(|| "Side chat is unavailable for this provider until read-only access can be enforced.".into()))))
+                .when(available && !supported, |panel| panel.child(div().text_color(c::FG_DIM()).child("Side chat is unavailable for this provider.")))
                 .child(history)
                 .child(div().id("side-chat-composer").debug_selector(|| "side-chat-composer".into())
                   .w_full().min_w_0().flex_shrink_0().flex().flex_col()
@@ -1299,7 +1272,7 @@ impl Sidebar {
                   .child(div().id("side-chat-input").debug_selector(|| "side-chat-input".into()).min_h(rpx(FORM_VALUE_LINE_H * 2.0))
                     .child(Input::new(&input).aria_label(input_label).appearance(false).bordered(false).focus_bordered(false).text_color(c::FG()).p_0()))
                   .child(div().id("side-chat-composer-footer").debug_selector(|| "side-chat-composer-footer".into()).flex().items_center().justify_between().gap(rpx(SPACE_SM))
-                    .child(div().id("side-chat-context").text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(context_label))
+                    .child(div().id("side-chat-context").min_w_0().flex_1().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(context_label))
                     .child(if busy {
                     super::super::codex_view::composer_icon("side-chat-stop", "Stop response", "stop", false, true)
                         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {

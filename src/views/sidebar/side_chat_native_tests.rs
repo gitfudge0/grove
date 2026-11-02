@@ -37,6 +37,7 @@ fn saved(path: &str, provider: grove_core::codex::Provider) -> grove_core::codex
         side_chats: HashMap::from([(
             path.to_owned(),
             grove_core::codex::SavedSideChat {
+                session: None,
                 draft: String::new(),
                 messages: vec![
                     ("user".into(), "So, what are the statuses now?".into()),
@@ -463,59 +464,6 @@ fn verify_keyboard_routing(
         let _ = window.draw(cx);
     })
     .unwrap();
-
-    if provider == grove_core::codex::Provider::Claude
-        && grove_core::side_chat_claude::ensure_read_only().is_err()
-    {
-        let count = cx.update(|cx| {
-            sidebar
-                .read(cx)
-                .checkout_panel
-                .side_chats
-                .values()
-                .next()
-                .unwrap()
-                .messages
-                .len()
-        });
-        let key = gpui::Keystroke::parse("enter").unwrap();
-        cx.update_window(window, |_, window, cx| {
-            window.dispatch_keystroke(key.clone(), cx);
-            window.dispatch_event(
-                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: key }),
-                cx,
-            );
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update(|cx| {
-            let chat = sidebar
-                .read(cx)
-                .checkout_panel
-                .side_chats
-                .values()
-                .next()
-                .unwrap();
-            assert_eq!(
-                chat.messages.len(),
-                count,
-                "unavailable native Enter appended a message"
-            );
-            assert_eq!(
-                chat.input.read(cx).value().as_ref(),
-                DRAFT,
-                "unavailable native Enter changed the draft"
-            );
-            assert!(!chat.busy, "unavailable native Enter launched a request");
-            assert!(
-                chat.error
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("ANTHROPIC_API_KEY"),
-                "unavailable native Enter did not report its capability limit"
-            );
-        });
-    }
 }
 
 /// Run serially on macOS with GROVE_SIDE_CHAT_CAPTURE_OUTPUT set to a directory.
