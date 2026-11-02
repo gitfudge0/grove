@@ -107,7 +107,7 @@ mod tests {
             });
             let saved = grove_core::codex::SavedSession {
                 session_review: Default::default(),
-                rich_plans: Default::default(),
+                        rich_plans: Default::default(),
                 side_chats: Default::default(),
                 claude_resume: None,
                 claude_subagents: Default::default(),
@@ -279,8 +279,10 @@ mod tests {
         );
         let main_composer = cx.debug_bounds("codex-composer").unwrap();
         let card = cx.debug_bounds("side-chat-card").unwrap();
-        assert!((main_composer.bottom() - card.bottom()).abs() <= gpui::px(1.),
-            "side chat must align with the main composer: {main_composer:?} {card:?}");
+        assert!(
+            (main_composer.bottom() - card.bottom()).abs() <= gpui::px(1.),
+            "side chat must align with the main composer: {main_composer:?} {card:?}"
+        );
         let composer = cx.debug_bounds("side-chat-composer").unwrap();
         let input = cx.debug_bounds("side-chat-input").unwrap();
         let footer = cx.debug_bounds("side-chat-composer-footer").unwrap();
@@ -951,7 +953,9 @@ impl Sidebar {
                 && chat.scroll.max_offset().y + chat.scroll.offset().y <= gpui::px(1.);
         }
         let now = cx.background_executor().now();
-        let elapsed = chat.motion_frame.replace(now)
+        let elapsed = chat
+            .motion_frame
+            .replace(now)
             .map_or(0.0, |previous| now.duration_since(previous).as_secs_f32());
         let mut needs_frame = false;
         if chat.follow_latest {
@@ -963,7 +967,8 @@ impl Sidebar {
                 let fraction = 1.0 - (-elapsed / (MOTION_FAST_MS as f32 / 1000.0)).exp();
                 let next = current.y + (target - current.y) * fraction;
                 let settled = (target - next).abs() <= gpui::px(0.5);
-                chat.scroll.set_offset(gpui::point(current.x, if settled { target } else { next }));
+                chat.scroll
+                    .set_offset(gpui::point(current.x, if settled { target } else { next }));
                 needs_frame |= !settled;
             }
         }

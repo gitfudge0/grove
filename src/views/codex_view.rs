@@ -2,11 +2,11 @@
 use super::status::{self, StatusKind};
 use super::{
     components::{
-        attached_validation, form_action, header_control, header_control_with_label_tooltip, header_control_frame,
-        header_control_with_hover_tooltip, header_control_with_tooltip, preference_choices,
-        project_field_well, question_choice, question_disclosure, settings_control, shimmer_label,
-        task_mark, task_meter, tooltip, tooltip_content, transcript_action,
-        truncation_safe_label_width, TaskPhase,
+        attached_validation, form_action, header_control, header_control_frame,
+        header_control_with_hover_tooltip, header_control_with_label_tooltip,
+        header_control_with_tooltip, preference_choices, project_field_well, question_choice,
+        question_disclosure, settings_control, shimmer_label, task_mark, task_meter, tooltip,
+        tooltip_content, transcript_action, truncation_safe_label_width, TaskPhase,
     },
     rpx,
     tokens::*,
@@ -2112,31 +2112,36 @@ impl CodexView {
                     )
                     .when(!state.status.busy() && count > 0, |header| {
                         header.child(
-                            header_control_with_label_tooltip("codex-resume-queue", "Send next queued message")
-                                .debug_selector(|| "codex-resume-queue".into())
-                                .when(!resume_enabled, gpui::Styled::cursor_default)
-                                .track_focus(
-                                    &self
-                                        .queue_resume_focus
-                                        .clone()
-                                        .tab_stop(resume_enabled)
-                                        .tab_index(0),
-                                )
-                                .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                .child(crate::icons::icon("arrow-up", ICON_MD, c::FG_DIM()))
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if resume_enabled && action_key(event) {
-                                            this.queue_action(Action::ResumeQueue, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                            header_control_with_label_tooltip(
+                                "codex-resume-queue",
+                                "Send next queued message",
+                            )
+                            .debug_selector(|| "codex-resume-queue".into())
+                            .when(!resume_enabled, gpui::Styled::cursor_default)
+                            .track_focus(
+                                &self
+                                    .queue_resume_focus
+                                    .clone()
+                                    .tab_stop(resume_enabled)
+                                    .tab_index(0),
+                            )
+                            .focus_visible(|style| style.bg(c::BG_HOVER()))
+                            .child(crate::icons::icon("arrow-up", ICON_MD, c::FG_DIM()))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                    if resume_enabled && action_key(event) {
+                                        this.queue_action(Action::ResumeQueue, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     if resume_enabled {
                                         this.queue_action(Action::ResumeQueue, cx);
                                     }
-                                })),
+                                },
+                            )),
                         )
                     })
                     .child(
@@ -2260,29 +2265,30 @@ impl CodexView {
                 }
                 row = row
                     .child(
-                        header_control_with_label_tooltip("codex-edit-queued", "Edit queued message")
-                            .tab_index(0)
-                            .tab_stop(!locked)
-                            .when(locked, gpui::Styled::cursor_default)
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .child(crate::icons::icon(
-                                "edit",
-                                ICON_MD,
-                                if locked { c::FG_MUTE() } else { c::FG_DIM() },
-                            ))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                    if action_key(event) && !locked {
-                                        this.begin_queue_edit(id, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if !locked {
-                                    this.begin_queue_edit(id, cx);
-                                }
-                            })),
+                        header_control_with_label_tooltip(
+                            "codex-edit-queued",
+                            "Edit queued message",
+                        )
+                        .tab_index(0)
+                        .tab_stop(!locked)
+                        .when(locked, gpui::Styled::cursor_default)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(crate::icons::icon(
+                            "edit",
+                            ICON_MD,
+                            if locked { c::FG_MUTE() } else { c::FG_DIM() },
+                        ))
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if action_key(event) && !locked {
+                                this.begin_queue_edit(id, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !locked {
+                                this.begin_queue_edit(id, cx);
+                            }
+                        })),
                     )
                     .child(
                         header_control_with_label_tooltip("codex-steer-queued", STEER_DESCRIPTION)
@@ -2321,29 +2327,30 @@ impl CodexView {
                             })),
                     )
                     .child(
-                        header_control_with_label_tooltip("codex-remove-queued", "Remove queued message")
-                            .tab_index(0)
-                            .tab_stop(!locked)
-                            .when(locked, gpui::Styled::cursor_default)
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .child(crate::icons::icon(
-                                "close",
-                                ICON_MD,
-                                if locked { c::FG_MUTE() } else { c::FG_DIM() },
-                            ))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                    if action_key(event) && !locked {
-                                        this.queue_action(Action::RemoveQueued(id), cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if !locked {
-                                    this.queue_action(Action::RemoveQueued(id), cx);
-                                }
-                            })),
+                        header_control_with_label_tooltip(
+                            "codex-remove-queued",
+                            "Remove queued message",
+                        )
+                        .tab_index(0)
+                        .tab_stop(!locked)
+                        .when(locked, gpui::Styled::cursor_default)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(crate::icons::icon(
+                            "close",
+                            ICON_MD,
+                            if locked { c::FG_MUTE() } else { c::FG_DIM() },
+                        ))
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if action_key(event) && !locked {
+                                this.queue_action(Action::RemoveQueued(id), cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !locked {
+                                this.queue_action(Action::RemoveQueued(id), cx);
+                            }
+                        })),
                     );
                 let row = div()
                     .id(format!("codex-queued-{id}"))
@@ -2402,56 +2409,62 @@ impl CodexView {
                     .justify_end()
                     .gap(rpx(SPACE_SM))
                     .child(
-                        header_control_with_label_tooltip("codex-cancel-queue-edit", "Cancel queued message edit")
-                            .debug_selector(|| "codex-cancel-queue-edit".into())
-                            .tab_index(0)
-                            .tab_stop(!saving)
-                            .when(saving, gpui::Styled::cursor_default)
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .child(crate::icons::icon(
-                                "close",
-                                ICON_MD,
-                                if saving { c::FG_MUTE() } else { c::FG_DIM() },
-                            ))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                    if action_key(event) && !saving {
-                                        this.cancel_queue_edit(window, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                        header_control_with_label_tooltip(
+                            "codex-cancel-queue-edit",
+                            "Cancel queued message edit",
+                        )
+                        .debug_selector(|| "codex-cancel-queue-edit".into())
+                        .tab_index(0)
+                        .tab_stop(!saving)
+                        .when(saving, gpui::Styled::cursor_default)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(crate::icons::icon(
+                            "close",
+                            ICON_MD,
+                            if saving { c::FG_MUTE() } else { c::FG_DIM() },
+                        ))
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                if action_key(event) && !saving {
+                                    this.cancel_queue_edit(window, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
                                 if !saving {
                                     this.cancel_queue_edit(window, cx);
                                 }
-                            })),
+                            },
+                        )),
                     )
                     .child(
-                        header_control_with_label_tooltip("codex-save-queue-edit", "Save queued message edit")
-                            .debug_selector(|| "codex-save-queue-edit".into())
-                            .tab_index(0)
-                            .tab_stop(!saving)
-                            .when(saving, gpui::Styled::cursor_default)
-                            .focus_visible(|style| style.bg(c::BG_HOVER()))
-                            .child(crate::icons::icon(
-                                "check",
-                                ICON_MD,
-                                if saving { c::FG_MUTE() } else { c::FG_DIM() },
-                            ))
-                            .on_key_down(cx.listener(
-                                move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                    if action_key(event) && !saving {
-                                        this.save_queue_edit(cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if !saving {
-                                    this.save_queue_edit(cx);
-                                }
-                            })),
+                        header_control_with_label_tooltip(
+                            "codex-save-queue-edit",
+                            "Save queued message edit",
+                        )
+                        .debug_selector(|| "codex-save-queue-edit".into())
+                        .tab_index(0)
+                        .tab_stop(!saving)
+                        .when(saving, gpui::Styled::cursor_default)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(crate::icons::icon(
+                            "check",
+                            ICON_MD,
+                            if saving { c::FG_MUTE() } else { c::FG_DIM() },
+                        ))
+                        .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if action_key(event) && !saving {
+                                this.save_queue_edit(cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !saving {
+                                this.save_queue_edit(cx);
+                            }
+                        })),
                     ),
             );
         }
@@ -3183,7 +3196,8 @@ impl CodexView {
                 };
                 (text.clone(), shown)
             });
-            let revealed = super::motion::streamed_text(&text, entry, elapsed, state.status.busy()).to_owned();
+            let revealed =
+                super::motion::streamed_text(&text, entry, elapsed, state.status.busy()).to_owned();
             if entry.1 < text.len() {
                 self.smooth_follow |= near_bottom && !self.composer_collapsed;
                 let owner = cx.entity().downgrade();
@@ -4002,7 +4016,9 @@ impl CodexView {
                 .tab_index(0)
                 .aria_label(format!("Go to message: {}", entry.prompt))
                 .aria_description(format!("Response: {}", entry.response))
-                .when(selected, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+                .when(selected, |style| {
+                    style.bg(c::BG_HOVER()).text_color(c::FG())
+                })
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
                 .child(
                     div()
@@ -5100,8 +5116,14 @@ impl Render for CodexView {
                                         .min_w_0()
                                         .truncate()
                                         .text_size(rpx(TEXT_SMALL))
-                                        .text_color(if tool_expanded { c::FG() } else { c::FG_DIM() })
-                                        .group_hover("neutral-control", |text| text.text_color(c::FG()))
+                                        .text_color(if tool_expanded {
+                                            c::FG()
+                                        } else {
+                                            c::FG_DIM()
+                                        })
+                                        .group_hover("neutral-control", |text| {
+                                            text.text_color(c::FG())
+                                        })
                                         .child(shimmer_label(
                                             ("codex-tool-detail-shimmer", detail_index).into(),
                                             activity,
@@ -5541,35 +5563,40 @@ impl Render for CodexView {
                         .debug_selector(move || format!("codex-image-{index}"))
                         .group("codex-image")
                         .child(
-                            header_control_with_label_tooltip("codex-remove-image", "Remove attached image")
-                                .tab_index(0)
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, window, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                            && this.submitted.is_none()
-                                            && !event.is_held
-                                        {
-                                            this.remove_image(index, window, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .absolute()
-                                .top_0()
-                                .right_0()
-                                .size(rpx(CHROME_CONTROL_H))
-                                .p_0()
-                                .bg(c::SURFACE_RAISED())
-                                .opacity(0.0)
-                                .group_hover("codex-image", |style| style.opacity(1.0))
-                                .focus_visible(|style| style.opacity(1.0))
-                                .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
-                                .on_click(cx.listener(move |this, _, window, cx| {
+                            header_control_with_label_tooltip(
+                                "codex-remove-image",
+                                "Remove attached image",
+                            )
+                            .tab_index(0)
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                        && this.submitted.is_none()
+                                        && !event.is_held
+                                    {
+                                        this.remove_image(index, window, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .size(rpx(CHROME_CONTROL_H))
+                            .p_0()
+                            .bg(c::SURFACE_RAISED())
+                            .opacity(0.0)
+                            .group_hover("codex-image", |style| style.opacity(1.0))
+                            .focus_visible(|style| style.opacity(1.0))
+                            .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
                                     if this.submitted.is_some() {
                                         return;
                                     }
                                     this.remove_image(index, window, cx);
-                                })),
+                                },
+                            )),
                         ),
                 );
             }
@@ -8115,61 +8142,75 @@ impl CodexView {
                 |(name, description)| (name.to_string(), Some(description.to_string())),
             );
             rows = rows.child(
-                header_control_frame("codex-composer-option", "Select composer option", c::BG_HOVER())
-                    .id(("codex-composer-option", index))
-                    .aria_label(label.clone())
-                    .aria_description("Tab to insert this option")
-                    .when(index == self.suggestion_index, |row| row.bg(c::BG_HOVER()).text_color(c::FG()))
-                    .debug_selector(move || format!("codex-composer-option-{index}"))
-                    .w_full()
-                    .h_auto()
-                    .min_h(rpx(CONTROL_H))
-                    .justify_start()
-                    .gap(rpx(SPACE_LG))
-                    .px(rpx(SPACE_LG))
-                    .py(rpx(SPACE_SM))
-                    .tab_index(0)
-                    .focus_visible(|style| style.bg(c::BG_HOVER()))
-                    .child(
+                header_control_frame(
+                    "codex-composer-option",
+                    "Select composer option",
+                    c::BG_HOVER(),
+                )
+                .id(("codex-composer-option", index))
+                .aria_label(label.clone())
+                .aria_description("Tab to insert this option")
+                .when(index == self.suggestion_index, |row| {
+                    row.bg(c::BG_HOVER()).text_color(c::FG())
+                })
+                .debug_selector(move || format!("codex-composer-option-{index}"))
+                .w_full()
+                .h_auto()
+                .min_h(rpx(CONTROL_H))
+                .justify_start()
+                .gap(rpx(SPACE_LG))
+                .px(rpx(SPACE_LG))
+                .py(rpx(SPACE_SM))
+                .tab_index(0)
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .child(
+                    div()
+                        .min_w_0()
+                        .max_w_full()
+                        .flex_shrink_0()
+                        .whitespace_normal()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(if index == self.suggestion_index {
+                            c::FG()
+                        } else {
+                            c::FG_DIM()
+                        })
+                        .group_hover("neutral-control", |text| text.text_color(c::FG()))
+                        .child(name),
+                )
+                .when_some(description, |row, description| {
+                    row.child(
                         div()
+                            .flex_1()
                             .min_w_0()
-                            .max_w_full()
-                            .flex_shrink_0()
-                            .whitespace_normal()
+                            .truncate()
                             .text_size(rpx(TEXT_SMALL))
-                            .text_color(if index == self.suggestion_index { c::FG() } else { c::FG_DIM() })
+                            .text_color(if index == self.suggestion_index {
+                                c::FG()
+                            } else {
+                                c::FG_DIM()
+                            })
                             .group_hover("neutral-control", |text| text.text_color(c::FG()))
-                            .child(name),
+                            .child(description),
                     )
-                    .when_some(description, |row, description| {
-                        row.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(if index == self.suggestion_index { c::FG() } else { c::FG_DIM() })
-                                .group_hover("neutral-control", |text| text.text_color(c::FG()))
-                                .child(description),
-                        )
-                    })
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                && !event.is_held
-                            {
-                                this.choose_option(&keyboard_value, window, cx);
-                                cx.stop_propagation();
-                            } else if event.keystroke.key == "escape" {
-                                this.menu = None;
-                                this.input.focus_handle(cx).focus(window, cx);
-                                cx.notify();
-                            }
-                        },
-                    ))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.choose_option(&value, window, cx);
-                    })),
+                })
+                .on_key_down(
+                    cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            && !event.is_held
+                        {
+                            this.choose_option(&keyboard_value, window, cx);
+                            cx.stop_propagation();
+                        } else if event.keystroke.key == "escape" {
+                            this.menu = None;
+                            this.input.focus_handle(cx).focus(window, cx);
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.choose_option(&value, window, cx);
+                })),
             );
         }
         composer_tray(window)
@@ -8492,29 +8533,34 @@ impl CodexView {
                                 .child(format!("Replying to {sources}")),
                         )
                         .child(
-                            header_control_with_label_tooltip("codex-remove-reference", "Remove reference")
-                                .debug_selector(|| "codex-remove-reference".into())
-                                .track_focus(
-                                    &self
-                                        .reference_remove_focus
-                                        .clone()
-                                        .tab_index(0)
-                                        .tab_stop(true),
-                                )
-                                .tab_index(0)
-                                .focus_visible(|style| style.bg(c::SURFACE_RAISED()))
-                                .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
-                                .on_key_down(cx.listener(
-                                    |this, event: &gpui::KeyDownEvent, window, cx| {
-                                        if action_key(event) {
-                                            this.remove_reference(window, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(|this, _, window, cx| {
+                            header_control_with_label_tooltip(
+                                "codex-remove-reference",
+                                "Remove reference",
+                            )
+                            .debug_selector(|| "codex-remove-reference".into())
+                            .track_focus(
+                                &self
+                                    .reference_remove_focus
+                                    .clone()
+                                    .tab_index(0)
+                                    .tab_stop(true),
+                            )
+                            .tab_index(0)
+                            .focus_visible(|style| style.bg(c::SURFACE_RAISED()))
+                            .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui::KeyDownEvent, window, cx| {
+                                    if action_key(event) {
+                                        this.remove_reference(window, cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
                                     this.remove_reference(window, cx);
-                                })),
+                                },
+                            )),
                         ),
                 )
                 .child(

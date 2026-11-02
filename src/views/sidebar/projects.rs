@@ -456,7 +456,11 @@ impl ProjectPanel {
             .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
             .focus_visible(|s| s.bg(c::BG_HOVER()));
         if let Some(glyph) = glyph {
-            row = row.child(icon(glyph, ICON_MD, if expanded { c::FG() } else { c::FG_DIM() }));
+            row = row.child(icon(
+                glyph,
+                ICON_MD,
+                if expanded { c::FG() } else { c::FG_DIM() },
+            ));
         }
         let copy = div()
             .flex_1()
@@ -862,7 +866,11 @@ fn project_action(
             ButtonCustomVariant::new(cx)
                 .color(fill)
                 .foreground(fg)
-                .hover_foreground(if matches!(style, ProjectActionStyle::Quiet) { c::FG() } else { fg })
+                .hover_foreground(if matches!(style, ProjectActionStyle::Quiet) {
+                    c::FG()
+                } else {
+                    fg
+                })
                 .hover(hover)
                 .active(hover)
                 .shadow(false),

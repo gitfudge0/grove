@@ -5598,6 +5598,53 @@ mod tests {
     }
 
     #[test]
+    fn claude_review_waits_for_authoritative_idle_and_rejects_stale_receipts() {
+        let mut actor = actor();
+        actor.tracks_session_state = true;
+        actor.session_idle = false;
+        actor.state.turn_id = Some("turn".into());
+        actor.state.begin_work();
+        actor
+            .message(json!({"type":"result","subtype":"success","is_error":false}))
+            .unwrap();
+        assert_eq!(actor.state.review_completion(), None);
+        assert_eq!(actor.state.session_status(), "Waiting");
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
+            .unwrap();
+        assert_eq!(actor.state.session_status(), "Review");
+        let receipt = actor.state.review_completion().unwrap();
+        assert!(actor
+            .action(Action::MarkReviewed {
+                work_period: receipt + 1
+            })
+            .is_err());
+        actor
+            .action(Action::MarkReviewed {
+                work_period: receipt,
+            })
+            .unwrap();
+        assert_eq!(actor.state.session_status(), "Ready");
+        actor.state.begin_work();
+        actor.state.status = Status::Working;
+        actor
+            .message(json!({"type":"result","subtype":"error_during_execution","is_error":true}))
+            .unwrap();
+        assert_eq!(actor.state.review_completion(), None);
+    }
+    #[test]
+    fn claude_task_output_wait_is_not_inferred_from_background_tools() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.state.status = Status::Working;
+        actor.block("output", &json!({"type":"tool_use","id":"output","name":"TaskOutput","input":{"task_id":"task","block":false}}));
+        assert_eq!(actor.state.session_status(), "Working");
+        actor.state.saved.items[0]["arguments"]["block"] = json!(true);
+        assert_eq!(actor.state.session_status(), "Waiting");
+        actor.state.saved.items[0]["status"] = json!("completed");
+        assert_eq!(actor.state.session_status(), "Working");
+    }
+    #[test]
     fn work_period_waits_for_claude_idle_and_closes_on_disconnect() {
         let mut actor = actor();
         actor.tracks_session_state = true;
@@ -5737,53 +5784,6 @@ mod tests {
         assert!(actor.state.queued_prompts.is_empty());
     }
 
-    #[test]
-    fn claude_review_waits_for_authoritative_idle_and_rejects_stale_receipts() {
-        let mut actor = actor();
-        actor.tracks_session_state = true;
-        actor.session_idle = false;
-        actor.state.turn_id = Some("turn".into());
-        actor.state.begin_work();
-        actor
-            .message(json!({"type":"result","subtype":"success","is_error":false}))
-            .unwrap();
-        assert_eq!(actor.state.review_completion(), None);
-        assert_eq!(actor.state.session_status(), "Waiting");
-        actor
-            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
-            .unwrap();
-        assert_eq!(actor.state.session_status(), "Review");
-        let receipt = actor.state.review_completion().unwrap();
-        assert!(actor
-            .action(Action::MarkReviewed {
-                work_period: receipt + 1
-            })
-            .is_err());
-        actor
-            .action(Action::MarkReviewed {
-                work_period: receipt,
-            })
-            .unwrap();
-        assert_eq!(actor.state.session_status(), "Ready");
-        actor.state.begin_work();
-        actor.state.status = Status::Working;
-        actor
-            .message(json!({"type":"result","subtype":"error_during_execution","is_error":true}))
-            .unwrap();
-        assert_eq!(actor.state.review_completion(), None);
-    }
-    #[test]
-    fn claude_task_output_wait_is_not_inferred_from_background_tools() {
-        let mut actor = actor();
-        actor.state.begin_work();
-        actor.state.status = Status::Working;
-        actor.block("output", &json!({"type":"tool_use","id":"output","name":"TaskOutput","input":{"task_id":"task","block":false}}));
-        assert_eq!(actor.state.session_status(), "Working");
-        actor.state.saved.items[0]["arguments"]["block"] = json!(true);
-        assert_eq!(actor.state.session_status(), "Waiting");
-        actor.state.saved.items[0]["status"] = json!("completed");
-        assert_eq!(actor.state.session_status(), "Working");
-    }
     #[test]
     fn clear_conversation_drops_resume_identity_and_old_event_receiver() {
         let mut actor = actor();

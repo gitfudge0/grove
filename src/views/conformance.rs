@@ -753,18 +753,30 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
         .split("let keyboard_key = key.clone();")
         .next()
         .unwrap();
-    assert!(guarded_edit.contains("header_control_with_label_tooltip(\"codex-edit-message\", \"Edit sent message\")"));
+    assert!(guarded_edit.contains(
+        "header_control_with_label_tooltip(\"codex-edit-message\", \"Edit sent message\")"
+    ));
 }
 
 #[test]
 fn highlight_recipes_share_geometry_and_keep_pointer_treatments_distinct() {
     let components = source("src/views/components.rs");
-    let bounded = components.split("pub(super) fn header_control_frame(").nth(1).unwrap()
-        .split("\npub ").next().unwrap();
+    let bounded = components
+        .split("pub(super) fn header_control_frame(")
+        .nth(1)
+        .unwrap()
+        .split("\npub ")
+        .next()
+        .unwrap();
     assert!(bounded.contains("inline_disclosure_frame(id, label)"));
     assert!(bounded.contains("style.bg(hover).text_color(c::FG())"));
-    let inline = components.split("pub fn inline_disclosure(").nth(1).unwrap()
-        .split("\npub ").next().unwrap();
+    let inline = components
+        .split("pub fn inline_disclosure(")
+        .nth(1)
+        .unwrap()
+        .split("\npub ")
+        .next()
+        .unwrap();
     assert!(inline.contains(".hover(|style| style.text_color(c::FG()))"));
     assert!(!inline.contains(".bg("));
 }
@@ -772,26 +784,51 @@ fn highlight_recipes_share_geometry_and_keep_pointer_treatments_distinct() {
 #[test]
 fn generic_controls_do_not_attach_tooltips_by_default() {
     let components = source("src/views/components.rs");
-    let header = components.split("pub fn header_control_with_hover(").nth(1).unwrap()
-        .split("\n}").next().unwrap();
+    let header = components
+        .split("pub fn header_control_with_hover(")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
     assert!(!header.contains(".tooltip("));
     let sidebar = source("src/views/sidebar.rs");
-    let control = sidebar.split("    fn control(").nth(1).unwrap()
-        .split("    fn control_with_tooltip(").next().unwrap();
+    let control = sidebar
+        .split("    fn control(")
+        .nth(1)
+        .unwrap()
+        .split("    fn control_with_tooltip(")
+        .next()
+        .unwrap();
     assert!(!control.contains(".tooltip("));
-    let done = sidebar.split("format!(\"Done: close {} in {}\"").nth(1).unwrap()
-        .split(".child(\"Done\")").next().unwrap();
+    let done = sidebar
+        .split("format!(\"Done: close {} in {}\"")
+        .nth(1)
+        .unwrap()
+        .split(".child(\"Done\")")
+        .next()
+        .unwrap();
     assert!(!done.contains(".tooltip("));
 }
 
 #[test]
 fn inline_transcript_disclosures_do_not_fill_when_expanded() {
     let transcript = source("src/views/codex_view.rs");
-    let tasks = transcript.split("fn task_strip(").nth(1).unwrap()
-        .split("fn render_work_header(").next().unwrap();
+    let tasks = transcript
+        .split("fn task_strip(")
+        .nth(1)
+        .unwrap()
+        .split("fn render_work_header(")
+        .next()
+        .unwrap();
     assert!(!tasks.contains(".when(expanded, |style| style.bg("));
-    let tools = transcript.split("let keyboard_group = group_id.clone();").nth(1).unwrap()
-        .split("let mut detail_row").next().unwrap();
+    let tools = transcript
+        .split("let keyboard_group = group_id.clone();")
+        .nth(1)
+        .unwrap()
+        .split("let mut detail_row")
+        .next()
+        .unwrap();
     assert!(tools.contains("super::components::inline_disclosure("));
     assert!(!tools.contains(".when(expanded, |style| style.bg("));
     assert!(!transcript.contains(".when(tool_expanded, |style| style.bg("));

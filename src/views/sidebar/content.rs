@@ -13,7 +13,8 @@ use crate::{
     theme as c,
     views::{
         components::{
-            dense_action_with_colors, form_action, form_field, header_control_with_label_tooltip, project_field_well,
+            dense_action_with_colors, form_action, form_field, header_control_with_label_tooltip,
+            project_field_well,
         },
         motion, rpx,
         terminal_view::TerminalView,

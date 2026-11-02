@@ -467,7 +467,13 @@ impl Render for ModelPicker {
                         .child(
                             div()
                                 .id(("model-picker-name", i))
-                                .text_color(if selected || (search_navigation && i == self.cursor) { c::FG() } else { c::FG_DIM() })
+                                .text_color(
+                                    if selected || (search_navigation && i == self.cursor) {
+                                        c::FG()
+                                    } else {
+                                        c::FG_DIM()
+                                    },
+                                )
                                 .group_hover("neutral-control", |name| name.text_color(c::FG()))
                                 .text_size(rpx(TEXT_BODY))
                                 .line_height(rpx(MODEL_NAME_LINE_H))
@@ -695,34 +701,40 @@ impl Render for ModelPicker {
             && self.search.read(cx).value().is_empty()
         {
             rows = rows.child(
-                header_control_frame("model-picker-legacy", "Show or hide legacy models", c::BG_HOVER())
-                    .w_full()
-                    .h_auto()
-                    .min_h(rpx(MODEL_ROW_H))
-                    .track_focus(&self.legacy_focus)
-                    .tab_index(0)
-                    .gap(rpx(SPACE_SM))
-                    .child(crate::icons::icon(
-                        if self.legacy_open {
-                            "chev-down"
-                        } else {
-                            "chev-right"
-                        },
-                        ICON_SM,
-                        c::FG_DIM(),
-                    ))
-                    .child(format!("Legacy models · {legacy_count}"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.legacy_open = !this.legacy_open;
-                        cx.notify();
-                    }))
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                header_control_frame(
+                    "model-picker-legacy",
+                    "Show or hide legacy models",
+                    c::BG_HOVER(),
+                )
+                .w_full()
+                .h_auto()
+                .min_h(rpx(MODEL_ROW_H))
+                .track_focus(&self.legacy_focus)
+                .tab_index(0)
+                .gap(rpx(SPACE_SM))
+                .child(crate::icons::icon(
+                    if self.legacy_open {
+                        "chev-down"
+                    } else {
+                        "chev-right"
+                    },
+                    ICON_SM,
+                    c::FG_DIM(),
+                ))
+                .child(format!("Legacy models · {legacy_count}"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.legacy_open = !this.legacy_open;
+                    cx.notify();
+                }))
+                .on_key_down(cx.listener(
+                    |this, event: &gpui::KeyDownEvent, _, cx| {
                         if action_key(event) {
                             this.legacy_open = !this.legacy_open;
                             cx.stop_propagation();
                             cx.notify();
                         }
-                    })),
+                    },
+                )),
             );
         }
         div()

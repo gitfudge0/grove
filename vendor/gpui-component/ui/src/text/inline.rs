@@ -290,7 +290,11 @@ impl Element for Inline {
         let hovered = self.state.lock().ok().and_then(|state| state.hovered_index);
         for (range, highlight) in self.highlights.iter() {
             let mut highlight = *highlight;
-            if self.links.iter().any(|(link, _)| hovered.is_some_and(|i| link.contains(&i)) && link.start <= range.start && link.end >= range.end) {
+            if self.links.iter().any(|(link, _)| {
+                hovered.is_some_and(|i| link.contains(&i))
+                    && link.start <= range.start
+                    && link.end >= range.end
+            }) {
                 highlight.color = Some(cx.theme().foreground);
             }
             if ix < range.start {
@@ -346,8 +350,18 @@ impl Element for Inline {
         let text_layout = self.styled_text.layout().clone();
         if let Some(index) = state.hovered_index {
             if let Some((range, _)) = self.links.iter().find(|(range, _)| range.contains(&index)) {
-                let selection = Selection { start: range.start, end: range.end };
-                Self::paint_selection(&selection, &text_layout, &bounds, window, cx, *cx.theme().tokens.list_hover);
+                let selection = Selection {
+                    start: range.start,
+                    end: range.end,
+                };
+                Self::paint_selection(
+                    &selection,
+                    &text_layout,
+                    &bounds,
+                    window,
+                    cx,
+                    *cx.theme().tokens.list_hover,
+                );
             }
         }
         self.styled_text
@@ -370,7 +384,14 @@ impl Element for Inline {
         }
 
         if let Some(selection) = &state.selection {
-            Self::paint_selection(selection, &text_layout, &bounds, window, cx, cx.theme().selection);
+            Self::paint_selection(
+                selection,
+                &text_layout,
+                &bounds,
+                window,
+                cx,
+                cx.theme().selection,
+            );
         }
 
         if is_selectable {
@@ -441,10 +462,18 @@ impl Element for Inline {
             let text_layout = text_layout.clone();
             let inline_state = self.state.clone();
             move |event: &MouseMoveEvent, phase, window, cx| {
-                if !phase.bubble() { return; }
-                let Ok(mut state) = inline_state.lock() else { return; };
+                if !phase.bubble() {
+                    return;
+                }
+                let Ok(mut state) = inline_state.lock() else {
+                    return;
+                };
                 let current = state.hovered_index;
-                let updated = if hitbox.is_hovered(window) { text_layout.index_for_position(event.position).ok() } else { None };
+                let updated = if hitbox.is_hovered(window) {
+                    text_layout.index_for_position(event.position).ok()
+                } else {
+                    None
+                };
                 //  notify update when hovering over different links
                 if current != updated {
                     state.hovered_index = updated;

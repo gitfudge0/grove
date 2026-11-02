@@ -343,7 +343,10 @@ impl Element for InlineFlow {
                             text: source,
                             ..
                         } if source_range == (0..source.len())
-                            && Arc::ptr_eq(state, &self.paragraph_state) => state.clone(),
+                            && Arc::ptr_eq(state, &self.paragraph_state) =>
+                        {
+                            state.clone()
+                        }
                         _ => self
                             .fragment_states
                             .lock()

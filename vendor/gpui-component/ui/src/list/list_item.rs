@@ -176,7 +176,11 @@ impl RenderOnce for ListItem {
             .py_1()
             .px_3()
             .text_base()
-            .text_color(if is_active { cx.theme().foreground } else { cx.theme().muted_foreground })
+            .text_color(if is_active {
+                cx.theme().foreground
+            } else {
+                cx.theme().muted_foreground
+            })
             .relative()
             .items_center()
             .justify_between()
@@ -196,7 +200,10 @@ impl RenderOnce for ListItem {
                             })
                     })
                     .when(!is_active, |this| {
-                        this.hover(|this| this.bg(cx.theme().tokens.list_hover).text_color(cx.theme().foreground))
+                        this.hover(|this| {
+                            this.bg(cx.theme().tokens.list_hover)
+                                .text_color(cx.theme().foreground)
+                        })
                     })
             })
             .when(!is_selectable, |this| {
@@ -229,8 +236,9 @@ impl RenderOnce for ListItem {
                         cx.theme().accent
                     };
 
-                    this.bg(bg).text_color(cx.theme().foreground)
-                        .when(cx.theme().list.active_highlight, |this| {
+                    this.bg(bg).text_color(cx.theme().foreground).when(
+                        cx.theme().list.active_highlight,
+                        |this| {
                             this.child(
                                 div()
                                     .absolute()
@@ -242,7 +250,8 @@ impl RenderOnce for ListItem {
                                     .border_color(cx.theme().list_active_border)
                                     .refine_style(&selected_style),
                             )
-                        })
+                        },
+                    )
                 } else {
                     this
                 }

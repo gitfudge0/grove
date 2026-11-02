@@ -894,55 +894,54 @@ impl Sidebar {
                 );
                 for index in indices {
                     let (meta, status, title, since) = sessions[index].clone();
-                let id = meta.id;
-                let age = session_age_label(since, Instant::now());
-                let label = format!(
-                    "{title} · {} · {} · {status} · {age} · {}",
-                    meta.project,
-                    meta.agent.label(),
-                    meta.wt_path
-                );
-                let structured = self
-                    .runtime
-                    .read(cx)
-                    .registry
-                    .read(cx)
-                    .codex(id)
-                    .map(|session| {
-                        let state = &session.read(cx).state;
-                        (
-                            state.status,
+                    let id = meta.id;
+                    let age = session_age_label(since, Instant::now());
+                    let label = format!(
+                        "{title} · {} · {} · {status} · {age} · {}",
+                        meta.project,
+                        meta.agent.label(),
+                        meta.wt_path
+                    );
+                    let structured =
+                        self.runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .codex(id)
+                            .map(|session| {
+                                let state = &session.read(cx).state;
+                                (
+                                    state.status,
                                     state.review_completion(),
-                            state.saved.provider,
-                            super::super::codex_view::composer_model_name(state),
-                            state
-                                .effort
-                                .as_deref()
-                                .filter(|effort| !effort.trim().is_empty())
-                                .or(state
-                                    .resolved_effort
-                                    .as_deref()
-                                    .filter(|effort| !effort.trim().is_empty()))
-                                .or(state
-                                    .saved
-                                    .composer
-                                    .effort
-                                    .as_deref()
-                                    .filter(|effort| !effort.trim().is_empty()))
-                                .map(str::to_owned),
-                        )
-                    });
+                                    state.saved.provider,
+                                    super::super::codex_view::composer_model_name(state),
+                                    state
+                                        .effort
+                                        .as_deref()
+                                        .filter(|effort| !effort.trim().is_empty())
+                                        .or(state
+                                            .resolved_effort
+                                            .as_deref()
+                                            .filter(|effort| !effort.trim().is_empty()))
+                                        .or(state
+                                            .saved
+                                            .composer
+                                            .effort
+                                            .as_deref()
+                                            .filter(|effort| !effort.trim().is_empty()))
+                                        .map(str::to_owned),
+                                )
+                            });
                     if let Some((structured_status, review_completion, provider, model, effort)) =
                         structured
                     {
-                    let worktree = self
-                        .snapshot
-                        .projects
-                        .iter()
-                        .flat_map(|project| &project.worktrees)
-                        .find(|worktree| worktree.path == meta.wt_path);
-                    let worktree =
-                        worktree.map_or_else(
+                        let worktree = self
+                            .snapshot
+                            .projects
+                            .iter()
+                            .flat_map(|project| &project.worktrees)
+                            .find(|worktree| worktree.path == meta.wt_path);
+                        let worktree = worktree.map_or_else(
                             || {
                                 let main = cx.global::<SettingsState>().store.projects.iter().any(
                                     |project| {
@@ -964,69 +963,69 @@ impl Sidebar {
                                 sidebar_worktree_name(&worktree.name, worktree.is_main).to_owned()
                             },
                         );
-                    let metadata = super::dashboard_timeline::RowMetadata {
-                        project: meta.project.clone(),
-                        worktree,
-                        provider,
-                        model,
-                        effort,
-                        context: label,
-                        status: structured_status,
+                        let metadata = super::dashboard_timeline::RowMetadata {
+                            project: meta.project.clone(),
+                            worktree,
+                            provider,
+                            model,
+                            effort,
+                            context: label,
+                            status: structured_status,
                             display_status: status,
                             review_completion,
-                        age,
-                    };
+                            age,
+                        };
                         recent = recent.child(
                             self.render_dashboard_progress(id, &title, &metadata, window, cx),
                         );
-                    continue;
-                }
+                        continue;
+                    }
                     let row_focus =
                         self.dashboard_timelines
                             .session_focus(self.active_workspace, id, cx);
-                recent = recent.child(
-                    self.row(
-                        format!("dashboard-session-{}", id.raw()),
-                        label,
-                        false,
-                        Action::Select(Selection::Session(id)),
-                        cx,
-                    )
+                    recent = recent.child(
+                        self.row(
+                            format!("dashboard-session-{}", id.raw()),
+                            label,
+                            false,
+                            Action::Select(Selection::Session(id)),
+                            cx,
+                        )
                         .track_focus(&row_focus)
                         .focus_visible(|row| row.bg(c::BG_HOVER()))
                         .debug_selector(move || format!("dashboard-terminal-session-{}", id.raw()))
-                    .h_auto()
-                    .min_h(rpx(ROW_H))
-                    .py(rpx(SPACE_SM))
-                    .border_t_1()
-                    .border_color(c::BORDER_SOFT())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rpx(TEXT_BODY))
-                            .child(single_line_session_title(&title)),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(super::super::status::session_kind(status).color())
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_SM))
-                            .child(session_status_icon_sized(id, status, ICON_SM, cx))
-                            .child(status),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(age),
-                    ),
-                );
+                        .h_auto()
+                        .min_h(rpx(ROW_H))
+                        .py(rpx(SPACE_SM))
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rpx(TEXT_BODY))
+                                .child(single_line_session_title(&title)),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(super::super::status::session_kind(status).color())
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(session_status_icon_sized(id, status, ICON_SM, cx))
+                                .child(status),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(age),
+                        ),
+                    );
                     if matches!(status, "Review" | "Review · unread") {
                         if let Some(completion) =
                             self.runtime.read(cx).activity.read(cx).terminal_review(id)

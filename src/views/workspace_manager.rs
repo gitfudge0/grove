@@ -633,13 +633,14 @@ impl WorkspaceManager {
                                 }),
                         )
                         .child(
-                            header_control_with_label_tooltip("close-workspace-panel", "Close workspace panel")
-                                .tab_index(0)
-                                .focus_visible(|s| s.bg(c::BG_HOVER()))
-                                .child(icon("close", ICON_MD, c::FG_DIM()))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.close(window, cx)),
-                                ),
+                            header_control_with_label_tooltip(
+                                "close-workspace-panel",
+                                "Close workspace panel",
+                            )
+                            .tab_index(0)
+                            .focus_visible(|s| s.bg(c::BG_HOVER()))
+                            .child(icon("close", ICON_MD, c::FG_DIM()))
+                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
                         ),
                 );
             let mut body = div()
