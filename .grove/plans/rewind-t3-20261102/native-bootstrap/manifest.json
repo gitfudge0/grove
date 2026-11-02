@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "render_mode": "bootstrap",
+  "generator_version": "grove-reference-1",
+  "reference_hash": "99954803e9101697138e2be46282b05eb53ac82a11e22f060125a249edbb18de",
+  "layout_hash": "6234fceb386244c74152811f761b1782558accd1c75aad3dcef8805491033708",
+  "contract_hash": "0706cf99cf030411532c8615af305f3f7f6d81f7cda066477be7c162cd6e4ba5",
+  "node_to_native_selector_map": {
+    "action-disabled": {
+      "owner_selector": "ui-reference-action-disabled",
+      "measurement": "first-child-bounds"
+    },
+    "action-disabled-icon": {
+      "owner_selector": "ui-reference-action-disabled",
+      "measurement": "vendor-content-child-bounds",
+      "native_slot": "leading-icon"
+    },
+    "action-disabled-label": {
+      "owner_selector": "ui-reference-action-disabled",
+      "measurement": "vendor-label-text-layout",
+      "native_slot": "label"
+    },
+    "action-loading": {
+      "owner_selector": "ui-reference-action-loading",
+      "measurement": "first-child-bounds"
+    },
+    "action-loading-icon": {
+      "owner_selector": "ui-reference-action-loading",
+      "measurement": "vendor-content-child-bounds",
+      "native_slot": "leading-icon"
+    },
+    "action-loading-label": {
+      "owner_selector": "ui-reference-action-loading",
+      "measurement": "vendor-label-text-layout",
+      "native_slot": "label"
+    },
+    "action-rest": {
+      "owner_selector": "ui-reference-action-rest",
+      "measurement": "first-child-bounds"
+    },
+    "action-rest-icon": {
+      "owner_selector": "ui-reference-action-rest",
+      "measurement": "vendor-content-child-bounds",
+      "native_slot": "leading-icon"
+    },
+    "action-rest-label": {
+      "owner_selector": "ui-reference-action-rest",
+      "measurement": "vendor-label-text-layout",
+      "native_slot": "label"
+    },
+    "pilot": {
+      "owner_selector": "ui-reference-pilot",
+      "measurement": "first-child-bounds"
+    },
+    "row-disabled": {
+      "owner_selector": "ui-reference-row-disabled",
+      "measurement": "first-child-bounds"
+    },
+    "row-disabled-icon": {
+      "owner_selector": "ui-reference-row-disabled-icon",
+      "measurement": "first-child-bounds"
+    },
+    "row-disabled-label": {
+      "owner_selector": "ui-reference-row-disabled-label",
+      "measurement": "allocated-label-container-and-shaped-inner-text"
+    },
+    "row-loading": {
+      "owner_selector": "ui-reference-row-loading",
+      "measurement": "first-child-bounds"
+    },
+    "row-loading-icon": {
+      "owner_selector": "ui-reference-row-loading-icon",
+      "measurement": "first-child-bounds"
+    },
+    "row-loading-label": {
+      "owner_selector": "ui-reference-row-loading-label",
+      "measurement": "allocated-label-container-and-shaped-inner-text"
+    },
+    "row-rest": {
+      "owner_selector": "ui-reference-row-rest",
+      "measurement": "first-child-bounds"
+    },
+    "row-rest-icon": {
+      "owner_selector": "ui-reference-row-rest-icon",
+      "measurement": "first-child-bounds"
+    },
+    "row-rest-label": {
+      "owner_selector": "ui-reference-row-rest-label",
+      "measurement": "allocated-label-container-and-shaped-inner-text"
+    }
+  },
+  "outputs": {
+    "document.json": "5d48e0eb9ae209083a6afd6482329b958a31a0cdd5b508d2df0bb4f52d7572b9",
+    "generated.rs": "9d010d207ca27746f66108cd64feac891d66605658a6c2a32dac133daf60f391",
+    "snapshot.json": "73070c36e69ab931ef1b49628218d09019920bf109f9d7a4c1ddb317330d6f3e"
+  }
+}
