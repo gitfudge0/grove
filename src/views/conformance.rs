@@ -292,7 +292,7 @@ fn icon_guards_detect_conditional_glyphs_and_missing_assets() {
 #[test]
 fn r8_dense_controls_share_geometry() {
     let components = source("src/views/components.rs");
-    for name in ["header_control_frame", "settings_control"] {
+    for name in ["inline_disclosure", "settings_control"] {
         let body = components
             .split(&format!("fn {name}("))
             .nth(1)
@@ -351,7 +351,7 @@ fn r8_dense_controls_share_geometry() {
 fn button_cursor_policy_covers_shared_recipes_and_vendor_states() {
     let components = source("src/views/components.rs");
     for name in [
-        "header_control_frame",
+        "inline_disclosure",
         "question_choice",
         "question_disclosure",
     ] {
@@ -754,4 +754,17 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
         .next()
         .unwrap();
     assert!(guarded_edit.contains("header_control(\"codex-edit-message\", \"Edit sent message\")"));
+}
+
+#[test]
+fn highlight_recipes_share_geometry_and_keep_pointer_treatments_distinct() {
+    let components = source("src/views/components.rs");
+    let bounded = components.split("pub(super) fn header_control_frame(").nth(1).unwrap()
+        .split("\npub ").next().unwrap();
+    assert!(bounded.contains("inline_disclosure(id, label)"));
+    assert!(bounded.contains("style.bg(hover).text_color(c::FG())"));
+    let inline = components.split("pub fn inline_disclosure(").nth(1).unwrap()
+        .split("\npub ").next().unwrap();
+    assert!(inline.contains(".hover(|style| style.text_color(c::FG()))"));
+    assert!(!inline.contains(".bg("));
 }

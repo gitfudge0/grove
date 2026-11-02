@@ -104,6 +104,15 @@ pub(super) fn header_control_frame(
     label: impl Into<gpui::SharedString>,
     hover: gpui::Hsla,
 ) -> Stateful<Div> {
+    inline_disclosure(id, label)
+        .hover(move |style| style.bg(hover).text_color(c::FG()))
+}
+
+/// Inline disclosure: foreground-only pointer feedback; owner retains focus/open fills.
+pub fn inline_disclosure(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+) -> Stateful<Div> {
     div()
         .id(id)
         .role(gpui::Role::Button)
@@ -117,7 +126,7 @@ pub(super) fn header_control_frame(
         .rounded(rpx(RADIUS_CONTROL))
         .group("neutral-control")
         .text_color(c::FG_DIM())
-        .hover(move |s| s.bg(hover).text_color(c::FG()))
+        .hover(|style| style.text_color(c::FG()))
         .on_mouse_down(MouseButton::Left, |_, window, cx| {
             window.prevent_default();
             cx.stop_propagation();

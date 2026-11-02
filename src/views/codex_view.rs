@@ -2830,7 +2830,7 @@ impl CodexView {
             .text_color(c::FG_DIM())
             .whitespace_nowrap()
             .when(expanded, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
-            .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+            .hover(|style| style.text_color(c::FG()))
             .focus_visible(|style| style.bg(c::MENU_HOVER()))
             .child(crate::icons::icon(
                 if expanded { "chev-down" } else { "chev-right" },
@@ -2993,7 +2993,7 @@ impl CodexView {
             .border_b_1()
             .border_color(c::BORDER_SOFT())
             .child(
-                header_control_frame("codex-work-header", "Show work activity", c::BG_HOVER())
+                super::components::inline_disclosure("codex-work-header", "Show work activity")
                     .id(("codex-work-header", index))
                     .track_focus(focus)
                     .aria_expanded(expanded)
@@ -4981,7 +4981,7 @@ impl Render for CodexView {
                             .flex_col()
                             .gap(rpx(SPACE_SM))
                             .child(
-                                header_control(
+                                super::components::inline_disclosure(
                                     "codex-toggle-tool",
                                     if tool_expanded {
                                         "Collapse tool call"

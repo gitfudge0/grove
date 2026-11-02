@@ -427,7 +427,7 @@ impl Sidebar {
             .py(rpx(SPACE_SM))
             .text_color(if open { c::FG() } else { c::FG_DIM() })
             .when(open, |style| style.bg(c::BG_HOVER()))
-            .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+            .hover(|style| style.text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .on_mouse_down(gpui::MouseButton::Left, {
                 let focus = focus.clone();
@@ -745,7 +745,7 @@ impl Sidebar {
                     .tab_stop(true)
                     .track_focus(&focus)
                     .text_color(c::FG_DIM())
-                    .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+                    .hover(|style| style.text_color(c::FG()))
                     .focus_visible(|style| style.bg(c::BG_HOVER()))
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         if *hovered {
