@@ -159,15 +159,8 @@ impl Sidebar {
             .settings_panel
             .as_ref()
             .is_some_and(|panel| panel.read(cx).is_open());
-        let mut lower_nav = div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .gap(rpx(SPACE_MD))
-            .p(rpx(SPACE_LG));
         for (index, destination, label, glyph) in [
             (1, Destination::Home, "Home", "home"),
-            (0, Destination::NewSession, "New session", "plus"),
             (3, Destination::History, "History", "history"),
             (2, Destination::Projects, "Projects", "folder"),
         ] {
@@ -220,11 +213,7 @@ impl Sidebar {
                             format!("Ctrl+Shift+{}", index + 1)
                         }),
                 );
-            if matches!(destination, Destination::NewSession | Destination::Home) {
-                nav = nav.child(row);
-            } else {
-                lower_nav = lower_nav.child(row);
-            }
+            nav = nav.child(row);
         }
         let showing_history = !settings && self.destination == Destination::History;
         let grouping = SessionGrouping::current(&cx.global::<SettingsState>().store);
@@ -278,7 +267,21 @@ impl Sidebar {
                 );
             }
             if !showing_history {
-                heading = heading.child(group);
+                heading = heading.child(group).child(
+                    self.control(
+                        "global-nav-new-session",
+                        if cfg!(target_os = "macos") {
+                            "New session (⌘1)"
+                        } else {
+                            "New session (Ctrl+Shift+1)"
+                        },
+                        Action::Destination(Destination::NewSession),
+                        cx,
+                    )
+                    .debug_selector(|| "global-nav-new-session".into())
+                    .track_focus(&self.navigation_focus[0])
+                    .child(icon("plus", ICON_SM, c::FG_DIM())),
+                );
             }
         }
         let mut sessions = div()
@@ -369,7 +372,6 @@ impl Sidebar {
                 sessions.into_any_element()
             })
             .child(terminal_section)
-            .child(lower_nav)
             .when(!self.is_collapsed(cx), |rail| {
                 rail.child(
                     div()
@@ -697,18 +699,20 @@ mod tests {
             draw(cx);
             let workspace = cx.debug_bounds("header-workspace").unwrap();
             let destination = cx.debug_bounds("global-nav-new-session").unwrap();
-            assert_eq!(workspace.left(), destination.left());
-            assert_eq!(workspace.right(), destination.right());
             let heading = cx.debug_bounds("sidebar-sessions-heading").unwrap();
             let terminals = cx.debug_bounds("single-terminals-scroll").unwrap();
             let history = cx.debug_bounds("global-nav-history").unwrap();
             let projects = cx.debug_bounds("global-nav-projects").unwrap();
             let home = cx.debug_bounds("global-nav-home").unwrap();
             assert!(workspace.bottom() <= home.top());
-            assert!(home.bottom() <= destination.top());
-            assert!(destination.bottom() <= heading.top());
+            assert!(home.bottom() <= history.top());
+            assert!(history.bottom() <= projects.top());
+            assert!(projects.bottom() <= heading.top());
+            assert!(destination.left() >= heading.left());
+            assert!(destination.right() <= heading.right());
+            assert!(destination.top() >= heading.top());
+            assert!(destination.bottom() <= heading.bottom());
             assert!(heading.bottom() <= terminals.top());
-            assert!(terminals.bottom() <= history.top());
             assert!(history.bottom() <= projects.top());
         }
         let projects = cx.debug_bounds("global-nav-projects").unwrap();
