@@ -1525,7 +1525,6 @@ impl CodexView {
                         .filter(|(_, value)| !value.is_empty())
                         .enumerate()
                         .map(|(index, (glyph, value))| {
-                            let full_value = value.clone();
                             div()
                                 .id(("codex-launch-identity", index))
                                 .min_w_0()
@@ -1541,9 +1540,6 @@ impl CodexView {
                                         .border_l_1()
                                         .border_color(c::BORDER_SOFT())
                                         .pl(rpx(SPACE_2XL))
-                                })
-                                .tooltip(move |window, cx| {
-                                    tooltip(full_value.clone(), window).build(window, cx)
                                 })
                                 .child(crate::icons::icon(glyph, ICON_SM, c::FG_DIM()))
                                 .child(value)
@@ -1592,7 +1588,7 @@ impl CodexView {
             ),
         ] {
             starters = starters.child(
-                header_control(id, title)
+                header_control_frame(id, title, c::BG_HOVER())
                     .debug_selector(move || id.into())
                     .tab_index(0)
                     .flex_1()
@@ -2234,7 +2230,7 @@ impl CodexView {
                         div()
                             .text_size(rpx(TEXT_MICRO))
                             .text_color(c::FG_DIM())
-                            .child("Delivery unconfirmed"),
+                            .child("Delivery unconfirmed · Dismiss will not resend"),
                     );
                     row = row.child(
                         form_action("codex-dismiss-uncertain", "Dismiss", false, window, cx).icon(gpui_component::Icon::default().path("icons/close.svg").size(rpx(ICON_SM)))
@@ -2997,7 +2993,7 @@ impl CodexView {
             .border_b_1()
             .border_color(c::BORDER_SOFT())
             .child(
-                header_control("codex-work-header", "Show work activity")
+                header_control_frame("codex-work-header", "Show work activity", c::BG_HOVER())
                     .id(("codex-work-header", index))
                     .track_focus(focus)
                     .aria_expanded(expanded)
@@ -7616,9 +7612,7 @@ impl CodexView {
             } else if menu == ComposerMenu::Access {
                 access.clone()
             } else {
-                format!(
-                    "{name}. Speed is your next-turn preference; provider availability applies."
-                )
+                format!("{label}. Speed applies to the next turn; provider availability applies.")
             };
             let control = header_control_with_tooltip(id, name, move |window, cx| {
                 tooltip(detail.clone(), window).build(window, cx)
@@ -8027,7 +8021,7 @@ impl CodexView {
                 |(name, description)| (name.to_string(), Some(description.to_string())),
             );
             rows = rows.child(
-                header_control("codex-composer-option", "Select composer option")
+                header_control_frame("codex-composer-option", "Select composer option", c::BG_HOVER())
                     .id(("codex-composer-option", index))
                     .aria_label(label.clone())
                     .aria_description("Tab to insert this option")

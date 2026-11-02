@@ -695,7 +695,7 @@ impl Render for ModelPicker {
             && self.search.read(cx).value().is_empty()
         {
             rows = rows.child(
-                header_control("model-picker-legacy", "Show or hide legacy models")
+                header_control_frame("model-picker-legacy", "Show or hide legacy models", c::BG_HOVER())
                     .w_full()
                     .h_auto()
                     .min_h(rpx(MODEL_ROW_H))

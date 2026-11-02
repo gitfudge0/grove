@@ -2376,7 +2376,6 @@ impl Sidebar {
                                     .w_full()
                                     .h(rpx(CARD_LINE_SM_H))
                                     .px(rpx(SPACE_2XL))
-                                    .tooltip(label.clone())
                                     .child(
                                         div()
                                             .flex_1()
