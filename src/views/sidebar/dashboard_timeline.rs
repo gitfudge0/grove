@@ -65,7 +65,8 @@ fn metadata_group(glyph: &str, text: String, window: &Window) -> AnyElement {
         .role(gpui::Role::Group)
         .aria_label(text.clone())
         .min_w_0()
-        .w(text_width + rpx(ICON_SM + SPACE_SM).to_pixels(window.rem_size()))
+        // Reserve a physical pixel for fractional layout rounding at changed zoom.
+        .w(text_width + rpx(ICON_SM + SPACE_SM).to_pixels(window.rem_size()) + gpui::px(1.))
         .max_w(gpui::relative(1.))
         .flex()
         .items_start()
@@ -1786,15 +1787,24 @@ mod tests {
         }
         cx.update(gpui_component::init);
         let (_, cx) = cx.add_window_view(|_, _| MetadataProbe);
-        for width in [440., 110.] {
+        for (width, zoom) in [(440., 1.0), (440., 0.7), (110., 1.0)] {
+            cx.update(|window, _| window.set_rem_size(gpui::px(crate::zoom::REM_BASE * zoom)));
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(500.)));
             cx.run_until_parked();
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
             });
             let label = cx.debug_bounds("dashboard-meta-label-codex").unwrap();
+            let checkout = cx.debug_bounds("dashboard-meta-label-git-branch").unwrap();
             assert!(label.right() <= gpui::px(width));
             if width > 200. {
+                assert!(
+                    checkout.size.height
+                        <= rpx(SESSION_META_LINE_H)
+                            .to_pixels(gpui::px(crate::zoom::REM_BASE * zoom))
+                            .ceil(),
+                    "zoom {zoom}: {checkout:?}"
+                );
                 cx.update(|window, _| {
                     let text = "GPT-6.1 Terra High";
                     let mut run = window.text_style().to_run(text.len());
