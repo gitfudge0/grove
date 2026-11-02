@@ -340,6 +340,19 @@ impl Runtime {
         temp_bundle_path: Option<String>,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(error) = crate::entities::codex_session::workspace_restore_error(
+            &std::iter::once(std::path::PathBuf::from(&cwd))
+                .chain(context_roots.iter().map(|root| root.wt_path.clone().into()))
+                .collect::<Vec<_>>(),
+            None,
+        ) {
+            self.toast
+                .update(cx, |toast, cx| toast.set_error(error, cx));
+            if let Some(path) = temp_bundle_path.as_deref() {
+                grove_core::multi_root::cleanup_path(std::path::Path::new(path));
+            }
+            return false;
+        }
         if self.provider_updates.read(cx).is_updating(agent) {
             if let Some(path) = temp_bundle_path.as_deref() {
                 grove_core::multi_root::cleanup_path(std::path::Path::new(path));
@@ -576,6 +589,14 @@ impl Runtime {
         {
             return Err("This provider is updating. Try again when verification finishes.".into());
         }
+        if let Some(error) = crate::entities::codex_session::workspace_restore_error(
+            &std::iter::once(std::path::PathBuf::from(&saved.cwd))
+                .chain(saved.roots.iter().map(|root| root.wt_path.clone().into()))
+                .collect::<Vec<_>>(),
+            Some(&saved.key),
+        ) {
+            return Err(error);
+        }
         saved.project.clone_from(&owner.name);
         grove_core::codex::prepare_history_reopen(&saved)?;
         let key = saved.key.clone();
@@ -690,6 +711,7 @@ impl Runtime {
             claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),
             pending_edit: None,
+            rewind_drafts: Vec::new(),
             provider,
             composer: grove_core::codex::ComposerSettings::default(),
             context: None,
@@ -1004,6 +1026,22 @@ impl Runtime {
         };
         let dims = self.last_pty_dims;
         for entry in plan {
+            if crate::entities::codex_session::workspace_restore_error(
+                &std::iter::once(std::path::PathBuf::from(&entry.session.wt_path))
+                    .chain(
+                        entry
+                            .session
+                            .context_roots
+                            .iter()
+                            .map(|root| root.wt_path.clone().into()),
+                    )
+                    .collect::<Vec<_>>(),
+                None,
+            )
+            .is_some()
+            {
+                continue;
+            }
             if self
                 .provider_updates
                 .read(cx)
@@ -1148,6 +1186,12 @@ impl Runtime {
         cx: &mut Context<Self>,
     ) -> bool {
         let target = (|| -> Result<Option<(String, String, String)>, String> {
+            if let Some(error) = crate::entities::codex_session::workspace_restore_error(
+                &[std::path::PathBuf::from(wt_path)],
+                None,
+            ) {
+                return Err(error);
+            }
             let projects = &cx.global::<SettingsState>().store.projects;
             let project = projects
                 .iter()
@@ -1530,6 +1574,32 @@ mod tests {
             temp_bundle_path: None,
             record_recent: false,
         }
+    }
+
+    #[gpui::test]
+    fn rewind_reservation_blocks_new_sessions_before_provider_dispatch(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = git_fixture();
+        let root = repo.path().canonicalize().unwrap();
+        let path = root.to_string_lossy().into_owned();
+        let reservation = grove_core::checkpoint::acquire_restore(&[root]).unwrap();
+        cx.update(|cx| {
+            let runtime = init_script_runtime(cx, script_project(&path, "true"));
+            runtime.update(cx, |runtime, cx| {
+                assert!(!runtime.spawn_session_in(
+                    "script fixture".into(),
+                    path,
+                    Agent::Terminal,
+                    cx
+                ));
+                assert!(runtime.registry.read(cx).is_empty());
+            });
+        });
+        drop(reservation);
+        assert!(!grove_core::checkpoint::restore_blocked(&[repo
+            .path()
+            .into()]));
     }
 
     #[gpui::test]
@@ -1942,6 +2012,7 @@ mod tests {
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
+                rewind_drafts: Vec::new(),
                 provider: grove_core::codex::Provider::Codex,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,

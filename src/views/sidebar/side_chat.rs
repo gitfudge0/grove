@@ -102,6 +102,7 @@ mod tests {
                 claude_subagents: Default::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
+            rewind_drafts: Vec::new(),
                 provider: grove_core::codex::Provider::Codex,
                 composer: Default::default(),
                 context: None,

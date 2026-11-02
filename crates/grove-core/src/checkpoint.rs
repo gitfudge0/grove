@@ -2,6 +2,78 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+static RESTORE_RESERVATIONS: OnceLock<Mutex<Vec<(u64, Vec<PathBuf>)>>> = OnceLock::new();
+static NEXT_RESERVATION: AtomicU64 = AtomicU64::new(1);
+fn reservations() -> &'static Mutex<Vec<(u64, Vec<PathBuf>)>> {
+    RESTORE_RESERVATIONS.get_or_init(|| Mutex::new(Vec::new()))
+}
+fn overlap(a: &Path, b: &Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+#[derive(Debug)]
+struct RestoreReservationInner {
+    id: u64,
+    roots: Vec<PathBuf>,
+}
+impl Drop for RestoreReservationInner {
+    fn drop(&mut self) {
+        reservations()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(id, _)| *id != self.id);
+    }
+}
+/// Held by the view until dispatch and by the provider actor through recovery.
+/// Clones share one reservation; the last owner releases its roots.
+#[derive(Clone, Debug)]
+pub struct RestoreReservation(Arc<RestoreReservationInner>);
+impl RestoreReservation {
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.0.roots.clone()
+    }
+}
+pub fn acquire_restore(roots: &[PathBuf]) -> Result<RestoreReservation, String> {
+    if roots.is_empty() {
+        return Err("No worktrees were selected for restoration.".into());
+    }
+    let mut canonical = roots
+        .iter()
+        .map(|path| path.canonicalize().map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    canonical.sort();
+    canonical.dedup();
+    let mut reservations = reservations()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if reservations
+        .iter()
+        .any(|(_, held)| held.iter().any(|a| canonical.iter().any(|b| overlap(a, b))))
+    {
+        return Err(
+            "A workspace restoration is already in progress for an overlapping worktree.".into(),
+        );
+    }
+    let id = NEXT_RESERVATION.fetch_add(1, Ordering::Relaxed);
+    reservations.push((id, canonical.clone()));
+    Ok(RestoreReservation(Arc::new(RestoreReservationInner {
+        id,
+        roots: canonical,
+    })))
+}
+pub fn restore_blocked(roots: &[PathBuf]) -> bool {
+    let canonical = roots
+        .iter()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .collect::<Vec<_>>();
+    reservations()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|(_, held)| held.iter().any(|a| canonical.iter().any(|b| overlap(a, b))))
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -31,9 +103,15 @@ fn git(root: &Path, index: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, Stri
     let output = command.output().map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(format!(
-            "Git checkpoint in {}: {}",
+            "Git checkpoint in {} (git {}, {}): {}",
             root.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
+            args.join(" "),
+            output.status,
+            if output.stderr.is_empty() {
+                String::from_utf8_lossy(&output.stdout).trim().to_owned()
+            } else {
+                String::from_utf8_lossy(&output.stderr).trim().to_owned()
+            }
         ));
     }
     Ok(output.stdout)
@@ -72,6 +150,19 @@ fn snapshot(path: PathBuf) -> Result<Root, String> {
     );
     if real.exists() {
         fs_err::copy(real, &index).map_err(|e| e.to_string())?;
+        // The copied index is a membership seed, not a trustworthy stat cache.
+        // Its fresh timestamp can otherwise hide same-size writes from Git.
+        // Git disables racy-entry verification for a zero index timestamp, so
+        // use the earliest nonzero timestamp instead of the epoch itself.
+        fs_err::File::options()
+            .write(true)
+            .open(&index)
+            .map_err(|e| e.to_string())?
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+            )
+            .map_err(|e| e.to_string())?;
     } else {
         git(&path, Some(&index), &["read-tree", "--empty"])?;
     }
@@ -216,6 +307,34 @@ fn apply(target: &Root, current: &Root) -> Result<(), String> {
 }
 
 impl Checkpoint {
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.roots.iter().map(|root| root.path.clone()).collect()
+    }
+    /// File rewind is restricted to isolated linked worktrees. The main checkout
+    /// remains conversation-only, even when Git can snapshot it.
+    pub fn validate_linked_worktrees(&self) -> Result<(), String> {
+        for root in &self.roots {
+            validate_root(&root.path)?;
+            if !root.path.join(".git").is_file() {
+                return Err("File restoration is available only in a linked worktree. You can rewind and keep the files.".into());
+            }
+            let common = git(
+                &root.path,
+                None,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )?;
+            let common = PathBuf::from(
+                String::from_utf8(common)
+                    .map_err(|e| e.to_string())?
+                    .trim_end(),
+            );
+            if common.canonicalize().map_err(|e| e.to_string())? == root.git_dir {
+                return Err("File restoration is unavailable in the project checkout. You can rewind and keep the files.".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Restore files, retaining HEAD, staging state, and ignored files. On failure,
     /// attempt to put every affected worktree back before returning the error.
     pub fn restore(&self) -> Result<(), String> {
@@ -291,6 +410,55 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+    #[test]
+    fn restore_reservation_blocks_overlaps_until_the_last_owner_releases() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("worktree");
+        let nested = root.join("nested");
+        let other = directory.path().join("other");
+        fs_err::create_dir_all(&nested).unwrap();
+        fs_err::create_dir(&other).unwrap();
+        let guard = acquire_restore(std::slice::from_ref(&root)).unwrap();
+        let clone = guard.clone();
+        assert!(restore_blocked(std::slice::from_ref(&nested)));
+        assert!(restore_blocked(&[directory.path().to_owned()]));
+        assert!(!restore_blocked(std::slice::from_ref(&other)));
+        assert!(acquire_restore(std::slice::from_ref(&nested)).is_err());
+        assert!(acquire_restore(&[directory.path().to_owned()]).is_err());
+        drop(guard);
+        assert!(restore_blocked(std::slice::from_ref(&root)));
+        drop(clone);
+        assert!(!restore_blocked(std::slice::from_ref(&root)));
+        assert!(acquire_restore(std::slice::from_ref(&nested)).is_ok());
+    }
+    #[test]
+    fn snapshot_reads_same_size_changes_even_when_git_trusts_the_index_stat_cache() {
+        let dir = repo();
+        let root = dir.path();
+        git(root, None, &["config", "core.trustctime", "false"]).unwrap();
+        git(root, None, &["config", "core.checkStat", "minimal"]).unwrap();
+        // Same-size writes inside one timestamp interval can match copied index
+        // metadata even though their bytes differ. A workspace snapshot must
+        // capture bytes rather than use that cache as its source of truth.
+        let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(3600);
+        fs_err::File::options()
+            .write(true)
+            .open(root.join("tracked"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        git(root, None, &["update-index", "--refresh"]).unwrap();
+        fs_err::write(root.join("tracked"), "changed").unwrap();
+        fs_err::File::options()
+            .write(true)
+            .open(root.join("tracked"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let snapshot = capture(&[root.to_owned()]).unwrap();
+        let blob = format!("{}:tracked", snapshot.roots[0].tree);
+        assert_eq!(git(root, None, &["show", &blob]).unwrap(), b"changed");
     }
     #[test]
     fn restores_files_and_preserves_git_and_ignored_state() {

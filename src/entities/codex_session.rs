@@ -8,6 +8,23 @@ use std::{
     time::Duration,
 };
 
+/// Keep launch/recovery boundaries out of worktrees with an in-flight or durable restore.
+pub(crate) fn workspace_restore_error(
+    paths: &[std::path::PathBuf],
+    excluding_owner: Option<&str>,
+) -> Option<String> {
+    if grove_core::checkpoint::restore_blocked(paths) {
+        return Some(
+            "Wait for workspace restoration to finish before starting another session here.".into(),
+        );
+    }
+    match codex::workspace_recovery_blocked(paths, excluding_owner) {
+        Ok(false) => None,
+        Ok(true) => Some("An interrupted rewind needs recovery in this worktree. Reopen that conversation before starting new work here.".into()),
+        Err(error) => Some(error),
+    }
+}
+
 /// UI readers share a stable snapshot. Any local mutation forks it immediately,
 /// including writes made before GPUI delivers observer notifications.
 pub struct SessionSnapshot(Rc<Snapshot>);
@@ -325,6 +342,18 @@ impl CodexSession {
             return Err("This session has already been launched.".into());
         }
         self.state.saved.provider.launch_options(&args)?;
+        let paths = std::iter::once(std::path::PathBuf::from(&cwd))
+            .chain(
+                self.state
+                    .saved
+                    .roots
+                    .iter()
+                    .map(|root| root.wt_path.clone().into()),
+            )
+            .collect::<Vec<_>>();
+        if let Some(error) = workspace_restore_error(&paths, None) {
+            return Err(error);
+        }
         if !std::path::Path::new(&cwd).is_dir() {
             return Err("The selected checkout is no longer available.".into());
         }
@@ -742,6 +771,7 @@ mod dashboard_tests {
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,
+            rewind_drafts: Vec::new(),
             provider,
             key: "dashboard-deferred-test".into(),
             project: "before".into(),

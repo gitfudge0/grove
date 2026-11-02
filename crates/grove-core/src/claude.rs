@@ -274,7 +274,9 @@ fn launch_command(args: &[String], saved: &SavedSession) -> Result<Command, Stri
         ),
         assistant_uuid: saved
             .items
-            .get(edit.target)
+            .iter()
+            .skip(edit.target)
+            .find(|item| item["type"] == "userMessage")
             .and_then(|item| item["claudePreviousAssistantUuid"].as_str())
             .map(str::to_owned),
         human_uuid: edit.turn_id.clone(),
@@ -869,6 +871,7 @@ struct Actor {
     interrupting: bool,
     control_id: u64,
     pending: HashMap<String, String>,
+    restore_reservation: Option<crate::checkpoint::RestoreReservation>,
     blocks: HashMap<u64, String>,
     subagent_tasks: HashMap<String, String>,
     child_transcripts: HashMap<String, ChildTranscript>,
@@ -964,6 +967,7 @@ impl Actor {
             interrupting: false,
             control_id: 0,
             pending: HashMap::new(),
+            restore_reservation: None,
             blocks: HashMap::new(),
             subagent_tasks,
             child_transcripts,
@@ -1222,6 +1226,34 @@ impl Actor {
         self.write(json!({"type":"control_request","request_id":id,"request":request}))
     }
     fn start(&mut self) -> Result<(), String> {
+        // Every startup attempt retires steering state, including an early stop.
+        self.redirect_pending = false;
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err("Claude Code session is stopping".into());
+        }
+        let mut roots = vec![std::path::PathBuf::from(&self.state.saved.cwd)];
+        roots.extend(
+            self.state
+                .saved
+                .roots
+                .iter()
+                .map(|root| std::path::PathBuf::from(&root.wt_path)),
+        );
+        if codex::workspace_recovery_blocked(&roots, Some(&self.state.saved.key))? {
+            return Err("Another conversation has unresolved workspace recovery in this directory. Reconnect to that conversation before starting work here.".into());
+        }
+        if self.restore_reservation.is_none() {
+            if let Some(recovery) = self
+                .state
+                .saved
+                .pending_edit
+                .as_ref()
+                .and_then(|edit| edit.recovery.as_ref())
+            {
+                self.restore_reservation =
+                    Some(crate::checkpoint::acquire_restore(&recovery.roots())?);
+            }
+        }
         self.state.saved.activity_reporting = true;
         self.started = Instant::now();
         self.first_output = false;
@@ -1346,15 +1378,18 @@ impl Actor {
                 .iter()
                 .map(|root| std::path::PathBuf::from(&root.wt_path)),
         );
-        if let Ok(files) = crate::checkpoint::repository_roots(&roots)
+        let files = crate::checkpoint::repository_roots(&roots)
             .and_then(|roots| crate::checkpoint::capture(&roots))
-        {
-            self.state.saved.edit_checkpoints.push(EditCheckpoint {
-                start_item: self.state.saved.items.len(),
-                turn_id: None,
-                files,
-            });
-        }
+            .ok();
+        self.state
+            .saved
+            .edit_checkpoints
+            .retain(|record| record.turn_id.is_some());
+        self.state.saved.edit_checkpoints.push(EditCheckpoint {
+            start_item: self.state.saved.items.len(),
+            turn_id: None,
+            files,
+        });
     }
     fn redirect(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
         codex::validate_prompt(&text, &images)?;
@@ -1399,7 +1434,25 @@ impl Actor {
         message_id: String,
         composer_draft: Option<(String, Vec<String>)>,
     ) -> Result<(), String> {
-        let checkpoint = self.state.editable_message(index)?.clone();
+        self.edit_message_with_options(index, message_id, composer_draft, true, false)
+    }
+    fn edit_message_with_options(
+        &mut self,
+        index: usize,
+        message_id: String,
+        composer_draft: Option<(String, Vec<String>)>,
+        restore_files: bool,
+        rewind: bool,
+    ) -> Result<(), String> {
+        let checkpoint = self.state.rewind_target(index)?;
+        if restore_files && checkpoint.files.is_none() {
+            return Err("The workspace checkpoint is missing.".into());
+        }
+        if rewind && restore_files {
+            if let Some(reason) = self.state.rewind_files_unavailable(index) {
+                return Err(reason);
+            }
+        }
         if self.process.is_none()
             || !self.pending.is_empty()
             || self.in_flight.is_some()
@@ -1408,6 +1461,7 @@ impl Actor {
         {
             return Err("Wait for Claude Code to finish reconnecting before editing.".into());
         }
+        let args = launch_options(&self.args)?.0;
         let item = &self.state.saved.items[index];
         if item["id"] != message_id {
             return Err("This message changed; select Edit again.".into());
@@ -1420,6 +1474,14 @@ impl Actor {
             .filter(|part| part["type"] == "image")
             .filter_map(|part| part["url"].as_str().map(str::to_owned))
             .collect();
+        if rewind && restore_files && self.restore_reservation.is_none() {
+            let roots = checkpoint
+                .files
+                .as_ref()
+                .ok_or("The workspace checkpoint is missing.")?
+                .roots();
+            self.restore_reservation = Some(crate::checkpoint::acquire_restore(&roots)?);
+        }
         let mut roots = vec![std::path::PathBuf::from(&self.state.saved.cwd)];
         roots.extend(
             self.state
@@ -1428,31 +1490,46 @@ impl Actor {
                 .iter()
                 .map(|root| std::path::PathBuf::from(&root.wt_path)),
         );
-        let recovery = crate::checkpoint::capture(&crate::checkpoint::repository_roots(&roots)?)?;
+        let recovery = if restore_files {
+            Some(crate::checkpoint::capture(
+                &crate::checkpoint::repository_roots(&roots)?,
+            )?)
+        } else {
+            None
+        };
         self.state.saved.pending_edit = Some(PendingEdit {
             target: checkpoint.start_item,
             turn_id: checkpoint.turn_id.ok_or("Missing human turn identity")?,
             text,
             images,
             recovery,
+            rewind,
             composer_draft,
             claude_fork_id: Some(nonce()),
         });
         // Persist the complete original transcript and recovery snapshot before
         // touching files. Fork failure cannot destroy the original conversation.
         codex::persist(&self.state.saved)?;
-        if let Err(error) = checkpoint.files.restore() {
-            self.recover_edit()?;
-            return Err(error);
+        if restore_files {
+            if let Err(error) = checkpoint
+                .files
+                .as_ref()
+                .ok_or("The workspace checkpoint is missing.")?
+                .restore()
+            {
+                self.recover_edit()?;
+                return Err(error);
+            }
         }
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
-        let args = launch_options(&self.args)?.0;
         let process = match spawn(&args, &self.state.saved) {
             Ok(process) => process,
             Err(error) => {
+                self.state.status = Status::Disconnected;
+                self.initialized = false;
                 self.recover_edit()?;
-                return Err(error);
+                return Err(format!("Claude rewind failed; reconnect to continue the original conversation: {error}"));
             }
         };
         self.pid.store(process.child.id(), Ordering::SeqCst);
@@ -1469,17 +1546,39 @@ impl Actor {
         self.pending_completion = None;
         self.session_idle = true;
         self.state.status = Status::Starting;
-        self.control(json!({"subtype":"initialize","hooks":null}))?;
+        if let Err(error) = self.control(json!({"subtype":"initialize","hooks":null})) {
+            self.process.take();
+            self.pid.store(0, Ordering::SeqCst);
+            self.state.status = Status::Disconnected;
+            return Err(format!("Claude rewind startup is uncertain. Reconnect to recover the original conversation: {error}"));
+        }
         Ok(())
     }
     fn recover_edit(&mut self) -> Result<(), String> {
-        if let Some(edit) = &self.state.saved.pending_edit {
-            edit.recovery.restore()?;
+        if let Some(recovery) = self
+            .state
+            .saved
+            .pending_edit
+            .as_ref()
+            .and_then(|edit| edit.recovery.as_ref())
+        {
+            if let Err(error) = recovery.restore() {
+                self.state.status = Status::Disconnected;
+                return Err(format!(
+                    "Workspace recovery needs attention. Reconnect to retry: {error}"
+                ));
+            }
         }
         let mut saved = self.state.saved.clone();
         saved.pending_edit = None;
-        codex::persist(&saved)?;
+        if let Err(error) = codex::persist(&saved) {
+            self.state.status = Status::Disconnected;
+            return Err(format!(
+                "Edit recovery could not be saved. Reconnect to reconcile: {error}"
+            ));
+        }
         self.state.saved = saved;
+        self.restore_reservation = None;
         Ok(())
     }
     fn finish_edit(&mut self) -> Result<(), String> {
@@ -1494,7 +1593,9 @@ impl Actor {
             ),
             assistant_uuid: saved
                 .items
-                .get(edit.target)
+                .iter()
+                .skip(edit.target)
+                .find(|item| item["type"] == "userMessage")
                 .and_then(|item| item["claudePreviousAssistantUuid"].as_str())
                 .map(str::to_owned),
             human_uuid: edit.turn_id.clone(),
@@ -1513,13 +1614,23 @@ impl Actor {
             .work_periods
             .retain(|period| period.start_item < edit.target);
         saved.retain_claude_subagents();
-        let (text, images) = edit.composer_draft.unwrap_or((edit.text, edit.images));
-        saved.draft = text;
-        saved.draft_images = images;
+        if edit.rewind {
+            saved.finish_rewind_draft(edit.text, edit.images);
+        } else {
+            let (text, images) = edit.composer_draft.unwrap_or((edit.text, edit.images));
+            saved.draft = text;
+            saved.draft_images = images;
+        }
         saved.pending_edit = None;
         saved.context = None;
-        codex::persist(&saved)?;
+        if let Err(error) = codex::persist(&saved) {
+            self.state.status = Status::Disconnected;
+            return Err(format!(
+                "Edit recovery could not be saved. Reconnect to reconcile: {error}"
+            ));
+        }
         self.state.saved = saved;
+        self.restore_reservation = None;
         self.subagent_tasks
             .retain(|_, id| self.state.saved.claude_subagents.contains_key(id));
         self.child_transcripts
@@ -1747,6 +1858,14 @@ impl Actor {
         Ok(())
     }
     fn action(&mut self, action: Action) -> Result<(), String> {
+        if matches!(
+            &action,
+            Action::RewindMessage { .. }
+                | Action::RewindMessageReserved { .. }
+                | Action::RestoreRewindDraft { .. }
+        ) {
+            self.state.rewind_attempts = self.state.rewind_attempts.saturating_add(1);
+        }
         if self.state.saved.pending_edit.is_some()
             && !matches!(
                 action,
@@ -1791,6 +1910,54 @@ impl Actor {
                 plan_id,
                 revision_id,
             } => self.send_plan_response(&plan_id, &revision_id, codex::persist)?,
+            Action::RewindMessageReserved {
+                index,
+                message_id,
+                reservation,
+            } => {
+                let target = self.state.rewind_target(index)?;
+                let files = target
+                    .files
+                    .as_ref()
+                    .ok_or("The workspace checkpoint is missing.")?;
+                let mut reserved = reservation.roots();
+                let mut expected = files.roots();
+                reserved.sort();
+                expected.sort();
+                if reserved != expected {
+                    return Err("The reserved worktrees no longer match this rewind target.".into());
+                }
+                self.restore_reservation = Some(reservation);
+                if let Err(error) =
+                    self.edit_message_with_options(index, message_id, None, true, true)
+                {
+                    if self.state.saved.pending_edit.is_none() {
+                        self.restore_reservation = None;
+                    }
+                    return Err(error);
+                }
+            }
+            Action::RewindMessage {
+                index,
+                message_id,
+                restore_files,
+            } => {
+                if let Err(error) =
+                    self.edit_message_with_options(index, message_id, None, restore_files, true)
+                {
+                    if self.state.saved.pending_edit.is_none() {
+                        self.restore_reservation = None;
+                    }
+                    return Err(error);
+                }
+            }
+            Action::RestoreRewindDraft { id } => {
+                let mut saved = self.state.saved.clone();
+                saved.restore_rewind_draft(&id)?;
+                codex::persist(&saved)?;
+                self.state.saved = saved;
+                self.state.edited_messages += 1;
+            }
             Action::EditMessage { index, message_id } => {
                 self.edit_message(index, message_id, None)?;
             }
@@ -4774,7 +4941,8 @@ mod tests {
             turn_id: "human".into(),
             text: "original prompt".into(),
             images: vec![],
-            recovery: recovery.clone(),
+            recovery: Some(recovery.clone()),
+            rewind: false,
             composer_draft: Some(("independent draft".into(), vec![])),
             claude_fork_id: Some("fork".into()),
         });
@@ -4806,7 +4974,8 @@ mod tests {
             turn_id: "human".into(),
             text: "original prompt".into(),
             images: vec![],
-            recovery,
+            recovery: Some(recovery),
+            rewind: false,
             composer_draft: Some(("independent draft".into(), vec![])),
             claude_fork_id: Some("fork".into()),
         });
@@ -4841,7 +5010,8 @@ mod tests {
             turn_id: "older-human".into(),
             text: "older".into(),
             images: vec![],
-            recovery: crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap(),
+            recovery: Some(crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap()),
+            rewind: false,
             composer_draft: None,
             claude_fork_id: Some("second-fork".into()),
         });
@@ -4872,6 +5042,97 @@ mod tests {
         fs_err::remove_file(journal).unwrap();
     }
 
+    #[test]
+    fn rewind_keep_files_handoff_and_recovery_preserve_claude_history_and_drafts() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut actor = actor();
+        actor.state.saved.key = format!("test-claude-rewind-{}", nonce());
+        actor.state.saved.cwd = directory.path().to_string_lossy().into_owned();
+        actor.state.saved.thread_id = Some("original".into());
+        actor.state.saved.draft = "independent".into();
+        actor.state.saved.draft_images = vec!["independent-image".into()];
+        actor.state.saved.items = vec![
+            json!({"id":"assistant","type":"agentMessage","claudeAssistantUuid":"anchor","text":"retained"}),
+            json!({"id":"activity","type":"groveActivity","text":"turn metadata"}),
+            json!({"id":"human","type":"userMessage","claudeHumanUuid":"human-uuid","claudePreviousAssistantUuid":"anchor","content":[{"type":"text","text":"original prompt"}]}),
+        ].into();
+        actor.state.saved.edit_checkpoints.push(EditCheckpoint {
+            start_item: 1,
+            turn_id: Some("human-uuid".into()),
+            files: None,
+        });
+        actor.state.status = Status::Idle;
+        actor.state.turn_id = None;
+        assert!(actor.state.rewind_target(2).is_ok());
+        assert!(actor
+            .state
+            .rewind_files_unavailable(2)
+            .unwrap()
+            .contains("No workspace checkpoint"));
+        let journal = codex::recovery_dir()
+            .unwrap()
+            .join(format!("{}.json", actor.state.saved.key));
+        let pending = PendingEdit {
+            target: 1,
+            turn_id: "human-uuid".into(),
+            text: "original prompt".into(),
+            images: vec!["target-image".into()],
+            recovery: None,
+            rewind: true,
+            composer_draft: None,
+            claude_fork_id: Some("fork".into()),
+        };
+        actor.state.saved.pending_edit = Some(pending.clone());
+        let command = launch_command(&[], &actor.state.saved).unwrap();
+        let args = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--resume-session-at", "anchor"]),
+            "scaffolding before the human must not drop retained context"
+        );
+        actor.recover_edit().unwrap();
+        assert_eq!(actor.state.saved.items.len(), 3);
+        assert_eq!(actor.state.saved.draft, "independent");
+        actor.state.saved.pending_edit = Some(pending);
+        actor.finish_edit().unwrap();
+        assert_eq!(actor.state.saved.items.len(), 1);
+        assert_eq!(actor.state.saved.draft, "original prompt");
+        assert_eq!(actor.state.saved.draft_images, ["target-image"]);
+        assert_eq!(actor.state.saved.rewind_drafts[0].text, "independent");
+        assert_eq!(actor.state.saved.thread_id.as_deref(), Some("fork"));
+        assert!(actor.in_flight.is_none());
+        let durable: SavedSession =
+            serde_json::from_slice(&fs_err::read(&journal).unwrap()).unwrap();
+        assert_eq!(durable.draft, "original prompt");
+        assert_eq!(
+            durable.claude_resume.unwrap().assistant_uuid.as_deref(),
+            Some("anchor")
+        );
+        let id = actor.state.saved.rewind_drafts[0].id.clone();
+        actor.action(Action::RestoreRewindDraft { id }).unwrap();
+        assert_eq!(actor.state.saved.draft, "independent");
+        assert_eq!(actor.state.saved.draft_images, ["independent-image"]);
+        fs_err::remove_file(journal).unwrap();
+    }
+    #[test]
+    fn rewind_checkpoint_captures_claude_turn_identity_without_git_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Idle;
+        actor.state.saved.cwd = directory.path().to_string_lossy().into_owned();
+        actor
+            .submit_inner(1, "non-git turn".into(), vec![])
+            .unwrap();
+        let sent = read(&mut reader);
+        let checkpoint = actor.state.saved.edit_checkpoints.last().unwrap();
+        assert_eq!(checkpoint.turn_id.as_deref(), sent["uuid"].as_str());
+        assert!(checkpoint.files.is_none());
+    }
     #[test]
     fn naturally_completed_redirect_keeps_the_correction_until_its_echo() {
         let mut actor = actor();

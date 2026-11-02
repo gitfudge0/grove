@@ -410,6 +410,7 @@ impl Sidebar {
                 claude_subagents: HashMap::default(),
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
+                rewind_drafts: Vec::new(),
                 provider,
                 composer: defaults
                     .as_ref()

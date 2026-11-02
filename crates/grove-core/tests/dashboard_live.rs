@@ -17,6 +17,7 @@ fn draft(provider: Provider, cwd: &str) -> SavedSession {
         claude_resume: None,
         edit_checkpoints: Vec::new(),
         pending_edit: None,
+            rewind_drafts: Vec::new(),
         provider,
         key: grove_core::identity::random_id().unwrap(),
         project: "Dashboard live QA".into(),

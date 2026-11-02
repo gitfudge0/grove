@@ -730,7 +730,7 @@ fn subagents_stay_in_session_right_panel_and_preview_is_read_only() {
         .split("if self.transcript_only() {\n            self.message_slots.clear();")
         .nth(1)
         .expect("child preview and retained History use the common transcript rendering path")
-        .split("if let Some(editor) = self")
+        .split("        messages =\n            messages.children(self.question_blocks_at")
         .next()
         .expect("preview returns before editable conversation controls");
     assert!(preview_return.contains("if self.preview_follow_latest {"));

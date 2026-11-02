@@ -50,6 +50,7 @@ fn saved(path: &str, provider: grove_core::codex::Provider) -> grove_core::codex
         claude_subagents: Default::default(),
         edit_checkpoints: Vec::new(),
         pending_edit: None,
+            rewind_drafts: Vec::new(),
         provider,
         composer: Default::default(),
         context: None,

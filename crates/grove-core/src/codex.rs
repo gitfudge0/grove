@@ -332,6 +332,8 @@ pub struct SavedSession {
     #[serde(default)]
     pub pending_edit: Option<PendingEdit>,
     #[serde(default)]
+    pub rewind_drafts: Vec<SavedComposerDraft>,
+    #[serde(default)]
     pub provider: Provider,
     pub key: String,
     pub project: String,
@@ -380,7 +382,8 @@ pub struct ClaudeResume {
 pub struct EditCheckpoint {
     pub start_item: usize,
     pub turn_id: Option<String>,
-    pub files: crate::checkpoint::Checkpoint,
+    #[serde(default)]
+    pub files: Option<crate::checkpoint::Checkpoint>,
 }
 /// Durable recovery journal: no provider request is replayed automatically.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -389,13 +392,76 @@ pub struct PendingEdit {
     pub turn_id: String,
     pub text: String,
     pub images: Vec<String>,
-    pub recovery: crate::checkpoint::Checkpoint,
+    #[serde(default)]
+    pub recovery: Option<crate::checkpoint::Checkpoint>,
+    /// Rewind-first handoff, distinct from the legacy inline editor.
+    #[serde(default)]
+    pub rewind: bool,
     #[serde(default)]
     pub composer_draft: Option<(String, Vec<String>)>,
     #[serde(default)]
     pub claude_fork_id: Option<String>,
 }
+/// A complete composer retained separately when rewinding a conversation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SavedComposerDraft {
+    pub id: String,
+    pub text: String,
+    pub images: Vec<String>,
+    pub reference: Option<ReferenceDraft>,
+}
 impl SavedSession {
+    pub(crate) fn finish_rewind_draft(&mut self, text: String, images: Vec<String>) {
+        if !self.draft.is_empty() || !self.draft_images.is_empty() || self.draft_reference.is_some()
+        {
+            let id = format!(
+                "rewind-{}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos(),
+                self.rewind_drafts.len()
+            );
+            self.rewind_drafts.push(SavedComposerDraft {
+                id,
+                text: std::mem::take(&mut self.draft),
+                images: std::mem::take(&mut self.draft_images),
+                reference: self.draft_reference.take(),
+            });
+        }
+        self.draft_reference = None;
+        if ReferenceDraft::is_canonical_prompt(&text) {
+            let parsed = text
+                .strip_prefix("Referenced transcript selection (quoted data):\n")
+                .and_then(|body| body.split_once("\n\nUser reply:\n"));
+            if let Some((encoded, reply)) = parsed {
+                self.draft_reference = serde_json::from_str(encoded).ok();
+                self.draft = reply.to_owned();
+            } else {
+                self.draft = text;
+            }
+        } else {
+            self.draft = text;
+        }
+        self.draft_images = images;
+    }
+    pub(crate) fn restore_rewind_draft(&mut self, id: &str) -> Result<(), String> {
+        let index = self
+            .rewind_drafts
+            .iter()
+            .position(|draft| draft.id == id)
+            .ok_or("This saved draft is no longer available.")?;
+        let mut draft = self.rewind_drafts.remove(index);
+        std::mem::swap(&mut self.draft, &mut draft.text);
+        std::mem::swap(&mut self.draft_images, &mut draft.images);
+        std::mem::swap(&mut self.draft_reference, &mut draft.reference);
+        if !draft.text.is_empty() || !draft.images.is_empty() || draft.reference.is_some() {
+            self.rewind_drafts.insert(index, draft);
+        }
+        Ok(())
+    }
+
     pub(crate) fn retain_claude_subagents(&mut self) {
         let children: HashSet<&str> = self
             .work_periods
@@ -900,6 +966,8 @@ pub struct Snapshot {
     pub accepted_prompts: u64,
     pub cleared_conversations: u64,
     pub edited_messages: u64,
+    /// Acknowledges rewind/draft-swap dispatch, including rejected attempts.
+    pub rewind_attempts: u64,
     pub edit_supported: bool,
     pub can_redirect: bool,
     pub accepted_submission: Option<u64>,
@@ -1220,7 +1288,7 @@ impl Snapshot {
         Ok(())
     }
 
-    pub fn editable_message(&self, index: usize) -> Result<&EditCheckpoint, String> {
+    fn rewind_checkpoint(&self, index: usize) -> Result<&EditCheckpoint, String> {
         if !self.edit_supported {
             return Err("Editing requires a conversation with rewind support. Older legacy conversations cannot be edited.".into());
         }
@@ -1231,7 +1299,9 @@ impl Snapshot {
                 .get(index)
                 .ok_or("This message is no longer available.")?;
             if item["claudeHumanUuid"].as_str().is_none()
-                || (index > 0 && item["claudePreviousAssistantUuid"].as_str().is_none())
+                || (self.saved.items[..index].iter().any(|item| {
+                    matches!(item["type"].as_str(), Some("userMessage" | "agentMessage"))
+                }) && item["claudePreviousAssistantUuid"].as_str().is_none())
             {
                 return Err("No Claude conversation anchor is available. Only newly captured turns can be edited.".into());
             }
@@ -1261,7 +1331,53 @@ impl Snapshot {
             checkpoint.turn_id.is_some() && self.saved.items.iter().enumerate()
                 .skip(checkpoint.start_item).find(|(_, item)| item["type"] == "userMessage")
                 .is_some_and(|(first, _)| first == index)
-        }).ok_or_else(|| "No workspace checkpoint is available for this message. Only new turns with a saved checkpoint can be edited.".into())
+        }).ok_or_else(|| "No conversation checkpoint is available for this message. Only captured turn boundaries can be rewound.".into())
+    }
+    pub fn rewind_target(&self, index: usize) -> Result<EditCheckpoint, String> {
+        self.rewind_checkpoint(index).cloned()
+    }
+    pub fn rewind_files_unavailable(&self, index: usize) -> Option<String> {
+        let target = match self.rewind_checkpoint(index) {
+            Ok(target) => target,
+            Err(error) => return Some(error),
+        };
+        let Some(files) = &target.files else {
+            return Some("No workspace checkpoint is available for this message. You can rewind and keep the files.".into());
+        };
+        let mut current = vec![PathBuf::from(&self.saved.cwd)];
+        current.extend(
+            self.saved
+                .roots
+                .iter()
+                .map(|root| PathBuf::from(&root.wt_path)),
+        );
+        let mut current = match crate::checkpoint::repository_roots(&current) {
+            Ok(roots) => roots,
+            Err(error) => return Some(error),
+        };
+        let mut captured = files.roots();
+        current.sort();
+        captured.sort();
+        if current != captured {
+            return Some("The session’s worktrees changed after this checkpoint. You can rewind and keep the files.".into());
+        }
+        if let Err(error) = files.validate_linked_worktrees() {
+            return Some(error);
+        }
+        match workspace_recovery_blocked(&current, Some(&self.saved.key)) {
+            Ok(true) => return Some("Another conversation has unresolved workspace recovery in these worktrees. You can rewind and keep the files.".into()),
+            Err(error) => return Some(error),
+            Ok(false) => {}
+        }
+        None
+    }
+    pub fn editable_message(&self, index: usize) -> Result<&EditCheckpoint, String> {
+        let checkpoint = self.rewind_checkpoint(index)?;
+        checkpoint
+            .files
+            .as_ref()
+            .ok_or("No workspace checkpoint is available for this message.")?;
+        Ok(checkpoint)
     }
     pub fn queue_editable(&self, id: u64) -> bool {
         self.queued_prompts.iter().any(|p| p.id == id)
@@ -1465,6 +1581,7 @@ impl Snapshot {
             accepted_prompts: 0,
             cleared_conversations: 0,
             edited_messages: 0,
+            rewind_attempts: 0,
             edit_supported: false,
             can_redirect: false,
             accepted_submission: None,
@@ -2885,6 +3002,19 @@ pub enum Action {
         index: usize,
         message_id: String,
     },
+    RewindMessage {
+        index: usize,
+        message_id: String,
+        restore_files: bool,
+    },
+    RewindMessageReserved {
+        index: usize,
+        message_id: String,
+        reservation: crate::checkpoint::RestoreReservation,
+    },
+    RestoreRewindDraft {
+        id: String,
+    },
     EditMessageInline {
         index: usize,
         message_id: String,
@@ -3077,6 +3207,88 @@ pub fn session_history_dir() -> Result<PathBuf, String> {
     crate::storage::config_dir()
         .map(|p| p.join("session-history"))
         .map_err(|e| e.to_string())
+}
+
+/// Unresolved filesystem recovery remains an owner even after its actor closes.
+/// Only an explicit reconnect/reopen may exclude its own journal identity.
+pub fn workspace_recovery_blocked(
+    paths: &[PathBuf],
+    excluding_owner: Option<&str>,
+) -> Result<bool, String> {
+    workspace_recovery_blocked_in_dirs(
+        paths,
+        excluding_owner,
+        &[recovery_dir()?, session_history_dir()?],
+    )
+}
+fn workspace_recovery_blocked_in_dirs(
+    paths: &[PathBuf],
+    excluding_owner: Option<&str>,
+    dirs: &[PathBuf],
+) -> Result<bool, String> {
+    #[derive(Deserialize)]
+    struct Summary {
+        #[serde(default)]
+        pending_edit: Option<PendingSummary>,
+    }
+    #[derive(Deserialize)]
+    struct PendingSummary {
+        #[serde(default)]
+        recovery: Option<crate::checkpoint::Checkpoint>,
+    }
+    let paths = paths
+        .iter()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .collect::<Vec<_>>();
+    for dir in dirs {
+        let entries = match fs_err::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Workspace recovery ownership could not be checked: {error}"
+                ))
+            }
+        };
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            if excluding_owner
+                .is_some_and(|owner| path.file_stem().and_then(|stem| stem.to_str()) == Some(owner))
+            {
+                continue;
+            }
+            let file = match fs_err::File::open(&path) {
+                Ok(file) => file,
+                // Atomic archival/recovery can remove an entry after read_dir.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "Workspace recovery journal could not be read: {error}"
+                    ))
+                }
+            };
+            let summary: Summary =
+                serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| {
+                    format!(
+                        "Workspace recovery journal {} needs attention: {e}",
+                        path.display()
+                    )
+                })?;
+            if let Some(recovery) = summary.pending_edit.and_then(|pending| pending.recovery) {
+                if recovery.roots().iter().any(|root| {
+                    paths
+                        .iter()
+                        .any(|path| root.starts_with(path) || path.starts_with(root))
+                }) {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 pub fn load_session_history() -> Result<Recovery, String> {
@@ -3507,6 +3719,7 @@ struct Actor {
     updates: crate::latest::Sender<Snapshot>,
     process: Option<Process>,
     pending: HashMap<u64, Request>,
+    restore_reservation: Option<crate::checkpoint::RestoreReservation>,
     seq: u64,
     args: Vec<String>,
     initial: Option<String>,
@@ -3542,6 +3755,7 @@ impl Actor {
             updates,
             process: None,
             pending: HashMap::new(),
+            restore_reservation: None,
             seq: 0,
             args,
             initial: None,
@@ -3600,6 +3814,32 @@ impl Actor {
         Ok(())
     }
     fn start(&mut self) -> Result<(), String> {
+        if self.stopping.load(Ordering::SeqCst) {
+            return Err("Codex session is closing".into());
+        }
+        let mut roots = vec![PathBuf::from(&self.state.saved.cwd)];
+        roots.extend(
+            self.state
+                .saved
+                .roots
+                .iter()
+                .map(|root| PathBuf::from(&root.wt_path)),
+        );
+        if workspace_recovery_blocked(&roots, Some(&self.state.saved.key))? {
+            return Err("Another conversation has unresolved workspace recovery in this directory. Reconnect to that conversation before starting work here.".into());
+        }
+        if self.restore_reservation.is_none() {
+            if let Some(recovery) = self
+                .state
+                .saved
+                .pending_edit
+                .as_ref()
+                .and_then(|edit| edit.recovery.as_ref())
+            {
+                self.restore_reservation =
+                    Some(crate::checkpoint::acquire_restore(&recovery.roots())?);
+            }
+        }
         if self.stopping.load(Ordering::SeqCst) {
             return Err("Codex session is closing".into());
         }
@@ -3776,20 +4016,19 @@ impl Actor {
         );
         roots.sort();
         roots.dedup();
-        // Checkpoint errors never prevent ordinary chat; Edit explains unavailable turns.
-        if let Ok(files) = crate::checkpoint::repository_roots(&roots)
+        // Conversation identity remains usable even when files cannot be captured.
+        let files = crate::checkpoint::repository_roots(&roots)
             .and_then(|roots| crate::checkpoint::capture(&roots))
-        {
-            self.state
-                .saved
-                .edit_checkpoints
-                .retain(|record| record.turn_id.is_some());
-            self.state.saved.edit_checkpoints.push(EditCheckpoint {
-                start_item: self.state.saved.items.len(),
-                turn_id: None,
-                files,
-            });
-        }
+            .ok();
+        self.state
+            .saved
+            .edit_checkpoints
+            .retain(|record| record.turn_id.is_some());
+        self.state.saved.edit_checkpoints.push(EditCheckpoint {
+            start_item: self.state.saved.items.len(),
+            turn_id: None,
+            files,
+        });
     }
     fn bind_edit_checkpoint(&mut self, result: &Value) {
         if let Some(turn) = result["turn"]["id"].as_str() {
@@ -3813,7 +4052,25 @@ impl Actor {
         message_id: String,
         composer_draft: Option<(String, Vec<String>)>,
     ) -> Result<(), String> {
-        let record = self.state.editable_message(index)?.clone();
+        self.edit_message_with_options(index, message_id, composer_draft, true, false)
+    }
+    fn edit_message_with_options(
+        &mut self,
+        index: usize,
+        message_id: String,
+        composer_draft: Option<(String, Vec<String>)>,
+        restore_files: bool,
+        rewind: bool,
+    ) -> Result<(), String> {
+        let record = self.state.rewind_target(index)?;
+        if restore_files && record.files.is_none() {
+            return Err("The workspace checkpoint is missing.".into());
+        }
+        if rewind && restore_files {
+            if let Some(reason) = self.state.rewind_files_unavailable(index) {
+                return Err(reason);
+            }
+        }
         if self.process.is_none() || !self.pending.is_empty() {
             return Err("Wait for the provider to finish reconnecting before editing.".into());
         }
@@ -3833,6 +4090,14 @@ impl Actor {
                     .map(str::to_owned)
             })
             .collect();
+        if rewind && restore_files && self.restore_reservation.is_none() {
+            let roots = record
+                .files
+                .as_ref()
+                .ok_or("The workspace checkpoint is missing.")?
+                .roots();
+            self.restore_reservation = Some(crate::checkpoint::acquire_restore(&roots)?);
+        }
         let mut roots = vec![PathBuf::from(&self.state.saved.cwd)];
         roots.extend(
             self.state
@@ -3843,8 +4108,12 @@ impl Actor {
         );
         roots.sort();
         roots.dedup();
-        let roots = crate::checkpoint::repository_roots(&roots)?;
-        let recovery = crate::checkpoint::capture(&roots)?;
+        let recovery = if restore_files {
+            let roots = crate::checkpoint::repository_roots(&roots)?;
+            Some(crate::checkpoint::capture(&roots)?)
+        } else {
+            None
+        };
         let turn_id = record.turn_id.ok_or("Missing turn identity")?;
         self.state.saved.pending_edit = Some(PendingEdit {
             target: record.start_item,
@@ -3852,14 +4121,22 @@ impl Actor {
             text,
             images,
             recovery,
+            rewind,
             composer_draft,
             claude_fork_id: None,
         });
         // Persist recovery before the first filesystem mutation or provider request.
         persist(&self.state.saved)?;
-        if let Err(error) = record.files.restore() {
-            self.recover_failed_edit()?;
-            return Err(error);
+        if restore_files {
+            let result = record
+                .files
+                .as_ref()
+                .ok_or("The workspace checkpoint is missing.")?
+                .restore();
+            if let Err(error) = result {
+                self.recover_failed_edit()?;
+                return Err(error);
+            }
         }
         if let Err(error) = self.request(
             "thread/revert",
@@ -3880,15 +4157,28 @@ impl Actor {
         Ok(())
     }
     fn recover_failed_edit(&mut self) -> Result<(), String> {
-        if let Some(edit) = &self.state.saved.pending_edit {
-            edit.recovery.restore().map_err(|error| {
-                format!("Edit failed and workspace recovery needs attention: {error}")
-            })?;
+        if let Some(recovery) = self
+            .state
+            .saved
+            .pending_edit
+            .as_ref()
+            .and_then(|edit| edit.recovery.as_ref())
+        {
+            if let Err(error) = recovery.restore() {
+                self.state.status = Status::Disconnected;
+                return Err(format!("Edit failed and workspace recovery needs attention. Reconnect to retry: {error}"));
+            }
         }
         let mut saved = self.state.saved.clone();
         saved.pending_edit = None;
-        persist(&saved)?;
+        if let Err(error) = persist(&saved) {
+            self.state.status = Status::Disconnected;
+            return Err(format!(
+                "Edit recovery could not be saved. Reconnect to reconcile: {error}"
+            ));
+        }
         self.state.saved = saved;
+        self.restore_reservation = None;
         self.state.status = Status::Idle;
         Ok(())
     }
@@ -3906,12 +4196,22 @@ impl Actor {
             .work_periods
             .retain(|period| period.start_item < edit.target);
         saved.rich_plans.retain_messages(&saved.items);
-        let (text, images) = edit.composer_draft.unwrap_or((edit.text, edit.images));
-        saved.draft = text;
-        saved.draft_images = images;
+        if edit.rewind {
+            saved.finish_rewind_draft(edit.text, edit.images);
+        } else {
+            let (text, images) = edit.composer_draft.unwrap_or((edit.text, edit.images));
+            saved.draft = text;
+            saved.draft_images = images;
+        }
         saved.context = None;
-        persist(&saved)?;
+        if let Err(error) = persist(&saved) {
+            self.state.status = Status::Disconnected;
+            return Err(format!(
+                "Edit recovery could not be saved. Reconnect to reconcile: {error}"
+            ));
+        }
         self.state.saved = saved;
+        self.restore_reservation = None;
         self.state.context_tokens = None;
         self.state.turn_id = None;
         self.state.status = Status::Idle;
@@ -4213,6 +4513,14 @@ impl Actor {
         Ok(())
     }
     fn action(&mut self, action: Action) -> Result<bool, String> {
+        if matches!(
+            &action,
+            Action::RewindMessage { .. }
+                | Action::RewindMessageReserved { .. }
+                | Action::RestoreRewindDraft { .. }
+        ) {
+            self.state.rewind_attempts = self.state.rewind_attempts.saturating_add(1);
+        }
         if self.stop_tracking.stopping
             && matches!(
                 &action,
@@ -4228,6 +4536,8 @@ impl Actor {
                     | Action::Reconnect
                     | Action::ApprovePlan { .. }
                     | Action::SendPlanResponse { .. }
+                    | Action::RewindMessage { .. }
+                    | Action::RewindMessageReserved { .. }
                     | Action::EditMessage { .. }
                     | Action::EditMessageInline { .. }
             )
@@ -4290,6 +4600,54 @@ impl Actor {
                 plan_id,
                 revision_id,
             } => self.send_plan_response(&plan_id, &revision_id, persist)?,
+            Action::RewindMessageReserved {
+                index,
+                message_id,
+                reservation,
+            } => {
+                let target = self.state.rewind_target(index)?;
+                let files = target
+                    .files
+                    .as_ref()
+                    .ok_or("The workspace checkpoint is missing.")?;
+                let mut reserved = reservation.roots();
+                let mut expected = files.roots();
+                reserved.sort();
+                expected.sort();
+                if reserved != expected {
+                    return Err("The reserved worktrees no longer match this rewind target.".into());
+                }
+                self.restore_reservation = Some(reservation);
+                if let Err(error) =
+                    self.edit_message_with_options(index, message_id, None, true, true)
+                {
+                    if self.state.saved.pending_edit.is_none() {
+                        self.restore_reservation = None;
+                    }
+                    return Err(error);
+                }
+            }
+            Action::RewindMessage {
+                index,
+                message_id,
+                restore_files,
+            } => {
+                if let Err(error) =
+                    self.edit_message_with_options(index, message_id, None, restore_files, true)
+                {
+                    if self.state.saved.pending_edit.is_none() {
+                        self.restore_reservation = None;
+                    }
+                    return Err(error);
+                }
+            }
+            Action::RestoreRewindDraft { id } => {
+                let mut saved = self.state.saved.clone();
+                saved.restore_rewind_draft(&id)?;
+                persist(&saved)?;
+                self.state.saved = saved;
+                self.state.edited_messages += 1;
+            }
             Action::EditMessage { index, message_id } => self.edit_message(index, message_id)?,
             Action::EditMessageInline { index, message_id } => {
                 let draft = (
@@ -5801,7 +6159,15 @@ impl Actor {
                         .iter()
                         .find(|record| record.turn_id.as_deref() == Some(&edit.turn_id))
                         .ok_or("The edit checkpoint is missing; recovery remains blocked.")?;
-                    record.files.restore()?;
+                    if edit.recovery.is_some() {
+                        record
+                            .files
+                            .as_ref()
+                            .ok_or(
+                                "The workspace checkpoint is missing; recovery remains blocked.",
+                            )?
+                            .restore()?;
+                    }
                     self.finish_edit()?;
                     self.state.error = Some(
                         "The interrupted edit completed; the restored message is ready to edit."
@@ -6287,6 +6653,7 @@ mod tests {
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,
+            rewind_drafts: Vec::new(),
             provider: Provider::Codex,
             key: "test-native-1".into(),
             project: "Project".into(),
@@ -10299,6 +10666,9 @@ mod tests {
         actor: Actor,
         repo: tempfile::TempDir,
         journal: PathBuf,
+        // Reads/writes use the process-wide config override. Keep it stable
+        // against storage/session-meta environment tests for this fixture.
+        _config_lock: std::sync::MutexGuard<'static, ()>,
     }
     #[cfg(unix)]
     impl Drop for EditFixture {
@@ -10308,6 +10678,9 @@ mod tests {
     }
     #[cfg(unix)]
     fn edit_fixture() -> EditFixture {
+        let config_lock = crate::storage::tests::CONFIG_DIR_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let repo = tempfile::tempdir().unwrap();
         assert!(Command::new("git")
             .args(["init", "-q"])
@@ -10343,7 +10716,7 @@ mod tests {
             actor.state.saved.edit_checkpoints.push(EditCheckpoint {
                 start_item: start,
                 turn_id: Some(turn.into()),
-                files: crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap(),
+                files: Some(crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap()),
             });
         }
         fs_err::write(&file, "latest workspace").unwrap();
@@ -10358,6 +10731,7 @@ mod tests {
             actor,
             repo,
             journal,
+            _config_lock: config_lock,
         }
     }
     #[cfg(unix)]
@@ -10611,13 +10985,393 @@ mod tests {
             "before target"
         );
         assert_eq!(fixture.actor.state.edited_messages, 0);
-        durable.pending_edit.unwrap().recovery.restore().unwrap();
+        durable
+            .pending_edit
+            .unwrap()
+            .recovery
+            .unwrap()
+            .restore()
+            .unwrap();
         assert_eq!(
             fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
             "latest workspace"
         );
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn rewind_without_files_works_without_git_and_preserves_complete_drafts_durably() {
+        let mut fixture = edit_fixture();
+        fixture.actor.state.saved.edit_checkpoints[1].files = None;
+        let non_git = tempfile::tempdir().unwrap();
+        fixture.actor.state.saved.cwd = non_git.path().to_string_lossy().into_owned();
+        let reference = ReferenceDraft {
+            id: "quote".into(),
+            thread_id: Some("thread-1".into()),
+            sources: vec![ReferenceSource {
+                message_id: "earlier-answer".into(),
+                role: "assistant".into(),
+            }],
+            text: "literal quote".into(),
+        };
+        fixture.actor.state.saved.draft = "Unrelated draft".into();
+        fixture.actor.state.saved.draft_images = vec!["original-image".into()];
+        fixture.actor.state.saved.draft_reference = Some(reference.clone());
+        fixture
+            .actor
+            .action(Action::RewindMessage {
+                index: 2,
+                message_id: "target".into(),
+                restore_files: false,
+            })
+            .unwrap();
+        let durable = edit_disk(&fixture);
+        assert!(durable.pending_edit.as_ref().unwrap().rewind);
+        assert!(durable.pending_edit.as_ref().unwrap().recovery.is_none());
+        let id = edit_pending(&fixture.actor);
+        fixture
+            .actor
+            .message(json!({"id":id,"result":{"thread":{"id":"thread-1"}}}))
+            .unwrap();
+        assert_eq!(fixture.actor.state.saved.draft, "target prompt");
+        assert_eq!(fixture.actor.state.saved.items.len(), 2);
+        assert!(
+            fixture.actor.pending.is_empty(),
+            "rewind must never submit a turn"
+        );
+        assert_eq!(
+            fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            "latest workspace"
+        );
+        let durable = edit_disk(&fixture);
+        assert_eq!(durable.rewind_drafts.len(), 1);
+        let saved_id = durable.rewind_drafts[0].id.clone();
+        fixture.actor.state = Snapshot::new(durable);
+        fixture
+            .actor
+            .action(Action::RestoreRewindDraft {
+                id: saved_id.clone(),
+            })
+            .unwrap();
+        assert_eq!(fixture.actor.state.saved.draft, "Unrelated draft");
+        assert_eq!(fixture.actor.state.saved.draft_images, ["original-image"]);
+        assert_eq!(fixture.actor.state.saved.draft_reference, Some(reference));
+        assert_eq!(
+            fixture.actor.state.saved.rewind_drafts[0].text,
+            "target prompt"
+        );
+        fixture
+            .actor
+            .action(Action::RestoreRewindDraft { id: saved_id })
+            .unwrap();
+        assert_eq!(fixture.actor.state.saved.draft, "target prompt");
+        assert_eq!(
+            fixture.actor.state.saved.draft_images,
+            ["data:image/png;base64,aGVsbG8="]
+        );
+        assert!(fixture.actor.state.saved.draft_reference.is_none());
+    }
+    #[test]
+    #[cfg(unix)]
+    fn rewind_restore_rejects_main_checkout_and_stale_identity_before_mutation() {
+        let mut fixture = edit_fixture();
+        assert!(fixture.actor.state.rewind_target(2).is_ok());
+        assert!(fixture
+            .actor
+            .state
+            .rewind_files_unavailable(2)
+            .unwrap()
+            .contains("linked worktree"));
+        let error = fixture
+            .actor
+            .action(Action::RewindMessage {
+                index: 2,
+                message_id: "target".into(),
+                restore_files: true,
+            })
+            .unwrap_err();
+        assert!(error.contains("linked worktree"), "{error}");
+        assert_eq!(
+            fixture.actor.state.rewind_attempts, 1,
+            "rejected dispatch must be acknowledged"
+        );
+        assert!(fixture.actor.state.saved.pending_edit.is_none());
+        assert!(fixture
+            .actor
+            .action(Action::RewindMessage {
+                index: 2,
+                message_id: "stale".into(),
+                restore_files: false
+            })
+            .is_err());
+        assert!(!fixture.journal.exists());
+        assert_eq!(fixture.actor.state.rewind_attempts, 2);
+        assert_eq!(
+            fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
+            "latest workspace"
+        );
+    }
+    #[test]
+    #[cfg(unix)]
+    fn rewind_linked_worktree_restores_files_and_recovers_provider_rejection() {
+        let mut fixture = edit_fixture();
+        let main = fixture.repo.path();
+        for args in [
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "initial",
+            ],
+        ] {
+            assert!(Command::new("git")
+                .arg("-C")
+                .arg(main)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let linked = main.join("linked");
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(main)
+            .args(["worktree", "add", "-qb", "rewind-test"])
+            .arg(&linked)
+            .status()
+            .unwrap()
+            .success());
+        let root = linked.canonicalize().unwrap();
+        fixture.actor.state.saved.cwd = root.to_string_lossy().into_owned();
+        fs_err::write(root.join("work"), "before target").unwrap();
+        fixture.actor.state.saved.edit_checkpoints[1].files =
+            Some(crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap());
+        fs_err::write(root.join("work"), "later unrelated edit").unwrap();
+        assert!(fixture.actor.state.rewind_files_unavailable(2).is_none());
+        // A checkpoint must never mutate a root no longer owned by this session.
+        fixture.actor.state.saved.cwd = main.to_string_lossy().into_owned();
+        assert!(fixture
+            .actor
+            .state
+            .rewind_files_unavailable(2)
+            .unwrap()
+            .contains("worktrees changed"));
+        assert!(fixture
+            .actor
+            .action(Action::RewindMessage {
+                index: 2,
+                message_id: "target".into(),
+                restore_files: true
+            })
+            .unwrap_err()
+            .contains("worktrees changed"));
+        assert_eq!(
+            fs_err::read_to_string(root.join("work")).unwrap(),
+            "later unrelated edit"
+        );
+        assert!(fixture.actor.state.saved.pending_edit.is_none());
+        fixture.actor.state.saved.cwd = root.to_string_lossy().into_owned();
+        let reservation = crate::checkpoint::acquire_restore(std::slice::from_ref(&root)).unwrap();
+        fixture
+            .actor
+            .action(Action::RewindMessageReserved {
+                index: 2,
+                message_id: "target".into(),
+                reservation: reservation.clone(),
+            })
+            .unwrap();
+        assert!(crate::checkpoint::restore_blocked(std::slice::from_ref(
+            &root
+        )));
+        drop(reservation); // The actor now owns the final guard through recovery.
+        assert_eq!(
+            fs_err::read_to_string(root.join("work")).unwrap(),
+            "before target"
+        );
+        let id = edit_pending(&fixture.actor);
+        fixture
+            .actor
+            .message(json!({"id":id,"error":{"message":"provider rejected rewind"}}))
+            .unwrap();
+        assert_eq!(
+            fs_err::read_to_string(root.join("work")).unwrap(),
+            "later unrelated edit"
+        );
+        assert_eq!(fixture.actor.state.saved.items.len(), 5);
+        assert!(fixture.actor.state.saved.pending_edit.is_none());
+        assert!(!crate::checkpoint::restore_blocked(std::slice::from_ref(
+            &root
+        )));
+        fixture
+            .actor
+            .action(Action::RewindMessage {
+                index: 2,
+                message_id: "target".into(),
+                restore_files: true,
+            })
+            .unwrap();
+        let id = edit_pending(&fixture.actor);
+        fixture
+            .actor
+            .message(json!({"id":id,"result":{"thread":{"id":"thread-1"}}}))
+            .unwrap();
+        assert_eq!(
+            fs_err::read_to_string(root.join("work")).unwrap(),
+            "before target"
+        );
+        assert_eq!(fixture.actor.state.saved.draft, "target prompt");
+        assert!(fixture.actor.pending.is_empty());
+        assert!(!crate::checkpoint::restore_blocked(std::slice::from_ref(
+            &root
+        )));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn rewind_keep_files_reconciles_uncertain_delivery_without_a_workspace_snapshot() {
+        for provider_kept_target in [true, false] {
+            let mut fixture = edit_fixture();
+            fixture.actor.state.saved.edit_checkpoints[1].files = None;
+            fixture.actor.state.saved.draft = "independent".into();
+            fixture
+                .actor
+                .action(Action::RewindMessage {
+                    index: 2,
+                    message_id: "target".into(),
+                    restore_files: false,
+                })
+                .unwrap();
+            fixture.actor.state = Snapshot::new(edit_disk(&fixture));
+            fixture.actor.pending.clear();
+            fixture.actor.pending.insert(
+                800,
+                Request {
+                    kind: Pending::Thread,
+                    deadline: Instant::now(),
+                },
+            );
+            fixture
+                .actor
+                .message(json!({"id":800,"result":{"thread":{"id":"thread-1","turns":[]}}}))
+                .unwrap();
+            let id = edit_pending(&fixture.actor);
+            let turns = if provider_kept_target {
+                json!([{"id":"target-turn"}])
+            } else {
+                json!([{"id":"earlier-turn"}])
+            };
+            fixture
+                .actor
+                .message(json!({"id":id,"result":{"data":turns,"nextCursor":null}}))
+                .unwrap();
+            assert!(fixture.actor.state.saved.pending_edit.is_none());
+            assert_eq!(
+                fs_err::read_to_string(fixture.repo.path().join("work")).unwrap(),
+                "latest workspace"
+            );
+            assert!(fixture.actor.pending.is_empty());
+            if provider_kept_target {
+                assert_eq!(fixture.actor.state.saved.items.len(), 5);
+                assert_eq!(fixture.actor.state.saved.draft, "independent");
+                assert!(fixture.actor.state.saved.rewind_drafts.is_empty());
+            } else {
+                assert_eq!(fixture.actor.state.saved.items.len(), 2);
+                assert_eq!(fixture.actor.state.saved.draft, "target prompt");
+                assert_eq!(
+                    fixture.actor.state.saved.rewind_drafts[0].text,
+                    "independent"
+                );
+            }
+        }
+    }
+    #[test]
+    fn rewind_durable_recovery_ownership_survives_archiving_and_allows_only_owner_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("repo");
+        let nested = root.join("nested");
+        let other = directory.path().join("other");
+        fs_err::create_dir_all(&nested).unwrap();
+        fs_err::create_dir(&other).unwrap();
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .arg(&root)
+            .status()
+            .unwrap()
+            .success());
+        fs_err::write(root.join("work"), "before recovery").unwrap();
+        let recovery = crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap();
+        let active = directory.path().join("active");
+        let archived = directory.path().join("archived");
+        fs_err::create_dir(&active).unwrap();
+        fs_err::create_dir(&archived).unwrap();
+        let dirs = [active.clone(), archived.clone()];
+        let mut session = saved();
+        session.key = "durable-owner".into();
+        session.pending_edit = Some(PendingEdit {
+            target: 0,
+            turn_id: "turn".into(),
+            text: "prompt".into(),
+            images: vec![],
+            recovery: Some(recovery),
+            rewind: true,
+            composer_draft: None,
+            claude_fork_id: None,
+        });
+        persist_in_dir(&session, &active).unwrap();
+        assert!(
+            workspace_recovery_blocked_in_dirs(std::slice::from_ref(&root), None, &dirs).unwrap()
+        );
+        assert!(
+            workspace_recovery_blocked_in_dirs(std::slice::from_ref(&nested), None, &dirs).unwrap()
+        );
+        assert!(
+            !workspace_recovery_blocked_in_dirs(std::slice::from_ref(&other), None, &dirs).unwrap()
+        );
+        assert!(!workspace_recovery_blocked_in_dirs(
+            std::slice::from_ref(&root),
+            Some("durable-owner"),
+            &dirs
+        )
+        .unwrap());
+        archive_closed_in_dirs(&session, &active, &archived).unwrap();
+        assert!(
+            workspace_recovery_blocked_in_dirs(std::slice::from_ref(&root), None, &dirs).unwrap()
+        );
+        assert!(!workspace_recovery_blocked_in_dirs(
+            std::slice::from_ref(&root),
+            Some("durable-owner"),
+            &dirs
+        )
+        .unwrap());
+        session.pending_edit = None;
+        persist_in_dir(&session, &archived).unwrap();
+        assert!(
+            !workspace_recovery_blocked_in_dirs(std::slice::from_ref(&root), None, &dirs).unwrap()
+        );
+        fs_err::write(active.join("corrupt.json"), "not json").unwrap();
+        assert!(
+            workspace_recovery_blocked_in_dirs(std::slice::from_ref(&root), None, &dirs).is_err()
+        );
+    }
+    #[test]
+    fn rewind_restores_reference_envelope_as_a_literal_composer_reference() {
+        let mut saved = saved();
+        let reference = ReferenceDraft {
+            id: "r".into(),
+            thread_id: Some("old-thread".into()),
+            sources: vec![ReferenceSource {
+                message_id: "m".into(),
+                role: "assistant".into(),
+            }],
+            text: "/clear is quoted data".into(),
+        };
+        saved.finish_rewind_draft(reference.serialize("reply"), vec![]);
+        assert_eq!(saved.draft, "reply");
+        assert_eq!(saved.draft_reference, Some(reference));
+    }
     #[test]
     fn edit_capability_tracks_paginated_and_legacy_thread_responses() {
         let mut actor = actor();

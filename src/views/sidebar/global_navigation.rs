@@ -567,6 +567,7 @@ mod tests {
                         claude_subagents: Default::default(),
                         edit_checkpoints: Vec::new(),
                         pending_edit: None,
+                        rewind_drafts: Vec::new(),
                         provider,
                         composer: Default::default(),
                         context: None,

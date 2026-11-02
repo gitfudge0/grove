@@ -411,7 +411,6 @@ const QUEUED_PROMPTS_MAX_H: f32 = 144.0;
 const QUESTION_PANEL_MAX_H: f32 = 360.0;
 /// Leave room for the transcript and composer even when permission forms are long.
 const APPROVAL_TRAY_VIEWPORT_SHARE: f32 = 0.45;
-const INLINE_REFERENCE_MAX_H: f32 = 80.0;
 const REFERENCE_PREVIEW_H: f32 = 60.0;
 const REFERENCE_EXPANDED_H: f32 = 200.0;
 const REFERENCE_PREVIEW_CHARS: usize = 240;
@@ -988,18 +987,15 @@ struct QueueMotionRow {
     exiting: bool,
 }
 
-struct MessageEditor {
-    _subscription: Subscription,
+#[derive(Clone)]
+struct RewindConfirmation {
     index: usize,
     message_id: String,
-    reference: Option<codex::ReferenceDraft>,
-    input: Entity<InputState>,
-    images: Vec<String>,
-    restored: bool,
-    accepted_prompts: Option<u64>,
     thread_id: Option<String>,
-    send_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    source_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
     source_anchor: gpui::ScrollAnchor,
+    source_focus: FocusHandle,
+    files_unavailable: Option<String>,
 }
 
 fn closed_shell_fence(fence: &str) -> bool {
@@ -1097,12 +1093,14 @@ pub struct CodexView {
     submitted: Option<String>,
     submitted_ack: Option<u64>,
     pending_clear: Option<(u64, String, Vec<String>)>,
-    message_editor: Option<MessageEditor>,
-    edit_confirmation: Option<(usize, String)>,
+    edit_confirmation: Option<RewindConfirmation>,
+    message_action_bounds: HashMap<String, Rc<Cell<gpui::Bounds<gpui::Pixels>>>>,
     edit_request_pending: bool,
+    rewind_attempt: Option<u64>,
     edited_messages: u64,
     edit_cancel_focus: FocusHandle,
     edit_confirm_focus: FocusHandle,
+    edit_keep_focus: FocusHandle,
     queue_resume_focus: FocusHandle,
     queue_selected: Option<u64>,
     queue_collapsed: bool,
@@ -1114,6 +1112,7 @@ pub struct CodexView {
     images: Vec<String>,
     previews: HashMap<String, Arc<gpui::Image>>,
     pending_image_pastes: usize,
+    pending_attachment_picker: bool,
     scroll: gpui::ScrollHandle,
     preview_follow_latest: bool,
     last_content: Option<[u64; 2]>,
@@ -1304,7 +1303,11 @@ impl CodexView {
                     InputEvent::Change => {
                         this.set_composer_collapsed(false, cx);
                         let text = this.input.read(cx).value().to_string();
-                        if !this.transcript_only() && this.queue_editor.is_none() {
+                        if !this.transcript_only()
+                            && this.queue_editor.is_none()
+                            && !this.edit_request_pending
+                            && this.session.read(cx).state.saved.pending_edit.is_none()
+                        {
                             this.queue_selected = None;
                             this.session
                                 .update(cx, |session, cx| session.send(Action::Draft(text), cx));
@@ -1391,12 +1394,14 @@ impl CodexView {
             submitted: None,
             submitted_ack: None,
             pending_clear: None,
-            message_editor: None,
+            message_action_bounds: HashMap::new(),
             edit_confirmation: None,
             edit_request_pending: false,
+            rewind_attempt: None,
             edited_messages: 0,
             edit_cancel_focus: cx.focus_handle(),
             edit_confirm_focus: cx.focus_handle(),
+            edit_keep_focus: cx.focus_handle(),
             queue_resume_focus: cx.focus_handle().tab_stop(true),
             queue_selected: None,
             queue_collapsed: false,
@@ -1408,6 +1413,7 @@ impl CodexView {
             images,
             previews,
             pending_image_pastes: 0,
+            pending_attachment_picker: false,
             scroll,
             preview_follow_latest: true,
             last_content: None,
@@ -1815,6 +1821,7 @@ impl CodexView {
         if self.queue_editor.is_some()
             || self.submitted.is_some()
             || self.pending_image_pastes > 0
+            || self.pending_attachment_picker
             || !self.session.read(cx).state.queue_editable(id)
         {
             return;
@@ -2454,6 +2461,7 @@ impl CodexView {
         let state = &self.session.read(cx).state;
         self.submitted.is_some()
             || self.pending_image_pastes > 0
+            || self.pending_attachment_picker
             || (self.dashboard_tray.is_none() && state.status == codex::Status::Disconnected)
             || (self.dashboard_tray.is_none()
                 && state.status == codex::Status::Starting
@@ -3308,10 +3316,6 @@ impl CodexView {
                     );
                 }
                 row = row.child(receipt);
-            } else if let Some(editor) = self.message_editor.as_ref().filter(|editor| {
-                editor.index == index && editor.message_id == item["id"].as_str().unwrap_or("")
-            }) {
-                row = row.child(self.render_inline_editor(editor, window, cx));
             } else {
                 row = row.child(
                 div()
@@ -3718,20 +3722,33 @@ impl CodexView {
                         .child(relative_message_time(timestamp)),
                 );
             }
-            let unavailable = state.editable_message(index).err();
+            let unavailable = state.rewind_target(index).err();
             if !self.transcript_only() && approval.is_none() {
                 let edit_focus = self.ensure_control_focus(&format!("{key}:edit"), window, cx);
+                let bounds = self
+                    .message_action_bounds
+                    .entry(key.clone())
+                    .or_default()
+                    .clone();
                 actions = actions.child(
                     header_control_with_label_tooltip("codex-edit-message", "Edit sent message")
+                        .relative()
                         .track_focus(&edit_focus)
-                        .aria_description(
-                            unavailable
-                                .unwrap_or_else(|| "Edit message and restore workspace".into()),
-                        )
+                        .aria_description(unavailable.unwrap_or_else(|| "Edit from here".into()))
                         .debug_selector(move || format!("codex-edit-message-{index}"))
                         .tab_index(0)
                         .focus_visible(|style| style.bg(c::BG_HOVER()))
                         .child(crate::icons::icon("edit", ICON_MD, c::FG_DIM()))
+                        .child(
+                            gpui::canvas(
+                                move |bounds_now, _, _| {
+                                    bounds.set(bounds_now);
+                                },
+                                |_, (), _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
+                        )
                         .on_key_down(cx.listener(
                             move |this, event: &gpui::KeyDownEvent, window, cx| {
                                 if action_key(event) {
@@ -4021,8 +4038,7 @@ impl CodexView {
             }
             return;
         }
-        if self.message_editor.is_some()
-            || self.edit_confirmation.is_some()
+        if self.edit_confirmation.is_some()
             || self.edit_request_pending
             || self.session.read(cx).state.saved.pending_edit.is_some()
         {
@@ -4075,8 +4091,7 @@ impl CodexView {
         if self.transcript_only() {
             return;
         }
-        if self.message_editor.is_some()
-            || self.edit_confirmation.is_some()
+        if self.edit_confirmation.is_some()
             || self.edit_request_pending
             || self.session.read(cx).state.saved.pending_edit.is_some()
         {
@@ -4208,14 +4223,14 @@ impl Render for CodexView {
         } else {
             self.session.read(cx).state.shared()
         };
-        // Source geometry belongs to one editor in one conversation, never to a
-        // subsequently connected thread or another message at the same index.
-        if self
-            .message_editor
-            .as_ref()
-            .is_some_and(|editor| editor.thread_id != state.saved.thread_id)
-        {
-            self.message_editor = None;
+        if self.edit_confirmation.as_ref().is_some_and(|target| {
+            target.thread_id != state.saved.thread_id
+                || state
+                    .saved
+                    .items
+                    .get(target.index)
+                    .is_none_or(|item| item["id"].as_str() != Some(&target.message_id))
+        }) {
             self.edit_confirmation = None;
         }
         if self
@@ -4250,30 +4265,22 @@ impl Render for CodexView {
         if state.edited_messages != self.edited_messages {
             self.edited_messages = state.edited_messages;
             self.edit_request_pending = false;
-            if let Some(editor) = &mut self.message_editor {
-                editor.restored = true;
-            }
-            self.send_inline_edit(cx);
+            self.rewind_attempt = None;
+            self.edit_confirmation = None;
+            self.load_restored_composer(&state, window, cx);
             self.bubble_entrances.clear();
             self.animating_bubbles.clear();
             self.stream_text.clear();
             self.set_composer_collapsed(false, cx);
         }
 
-        if state.error.is_some() {
-            self.edit_request_pending = false;
-            if let Some(editor) = &mut self.message_editor {
-                editor.accepted_prompts = None;
-            }
-        }
         if self
-            .message_editor
-            .as_ref()
-            .and_then(|editor| editor.accepted_prompts)
-            .is_some_and(|accepted| state.accepted_prompts > accepted)
+            .rewind_attempt
+            .is_some_and(|attempt| state.rewind_attempts > attempt)
+            && (state.error.is_some() || state.saved.pending_edit.is_none())
         {
-            self.message_editor = None;
-            window.focus(&self.input.focus_handle(cx), cx);
+            self.edit_request_pending = false;
+            self.rewind_attempt = None;
         }
         // checkout_context contains chrome labels such as “Main checkout”, not
         // filesystem paths. Resolve document links against the saved worktree.
@@ -5119,10 +5126,7 @@ impl Render for CodexView {
                     .rich_plans
                     .approval_for_payload(&codex::item_text(item))
                     .is_some();
-            let editing = self.message_editor.as_ref().is_some_and(|editor| {
-                editor.index == index && editor.message_id == item["id"].as_str().unwrap_or("")
-            });
-            if !tool && !receipt && !editing {
+            if !tool && !receipt {
                 rendered_selection_keys.insert(owner_key.clone());
             }
             let slot_key = format!("{owner_key}:{index}");
@@ -5140,7 +5144,6 @@ impl Render for CodexView {
                 });
             let row = if matches!(kind, "userMessage" | "agentMessage")
                 && !receipt
-                && !editing
                 && !tail_stream
                 && !entrance
                 && !self.transcript_only()
@@ -5197,18 +5200,6 @@ impl Render for CodexView {
                 .text_color(c::FG())
                 .child(messages.px(rpx(SPACE_SM)))
                 .into_any_element();
-        }
-        if let Some(editor) = self
-            .message_editor
-            .as_ref()
-            .filter(|editor| editor.restored)
-        {
-            messages = messages.child(
-                div()
-                    .w_full()
-                    .max_w(rpx(CHAT_MAX_W))
-                    .child(self.render_inline_editor(editor, window, cx)),
-            );
         }
         messages =
             messages.children(self.question_blocks_at(state.saved.items.len(), &state, window, cx));
@@ -5529,8 +5520,7 @@ impl Render for CodexView {
         }
         let busy = state.status.busy();
         let stopping = busy && self.interrupt_requested_for_turn.is_some();
-        let draft_disabled = self.message_editor.is_some()
-            || self.edit_confirmation.is_some()
+        let draft_disabled = self.edit_confirmation.is_some()
             || self.edit_request_pending
             || state.saved.pending_edit.is_some()
             || state.status == codex::Status::Disconnected
@@ -5538,6 +5528,7 @@ impl Render for CodexView {
                 && state.saved.provider != codex::Provider::Claude)
             || self.submitted.is_some()
             || self.pending_image_pastes > 0
+            || self.pending_attachment_picker
             || stopping
             || (self.input.read(cx).value().trim().is_empty()
                 && self.images.is_empty()
@@ -5568,6 +5559,96 @@ impl Render for CodexView {
             "Send · Enter · Start a new turn · Shift+Enter for a new line"
         };
         // An absent menu must not leave an empty flex child and an extra rail gap.
+        let rewind_drafts = (!state.saved.rewind_drafts.is_empty()).then(|| {
+            div()
+                .id("codex-saved-rewind-drafts")
+                .debug_selector(|| "codex-saved-rewind-drafts".into())
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_MD))
+                .children(state.saved.rewind_drafts.iter().map(|draft| {
+                    let id = draft.id.clone();
+                    let disabled = self.edit_request_pending
+                        || self.pending_image_pastes > 0
+                        || self.pending_attachment_picker
+                        || state.saved.pending_edit.is_some()
+                        || state.status.busy()
+                        || self.queue_editor.is_some()
+                        || self.submitted.is_some();
+                    div()
+                        .id(gpui::SharedString::from(format!(
+                            "saved-rewind-{}",
+                            draft.id
+                        )))
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .p(rpx(SPACE_LG))
+                        .rounded(rpx(RADIUS_GROUP))
+                        .border_1()
+                        .border_color(c::BORDER_SOFT())
+                        .bg(c::BG_RAIL())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().text_size(rpx(TEXT_SMALL)).child("Saved draft"))
+                                .child(
+                                    div()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM())
+                                        .truncate()
+                                        .child(if draft.text.is_empty() {
+                                            "Attachments or referenced selection".into()
+                                        } else {
+                                            draft.text.clone()
+                                        }),
+                                ),
+                        )
+                        .child(
+                            form_action(
+                                format!("restore-rewind-{}", draft.id),
+                                "Restore draft",
+                                false,
+                                window,
+                                cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/restore.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .disabled(disabled)
+                            .debug_selector(|| "codex-restore-rewind-draft".into())
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if disabled
+                                        || this.edit_request_pending
+                                        || this.pending_image_pastes > 0
+                                        || this.pending_attachment_picker
+                                    {
+                                        return;
+                                    }
+                                    this.sync_composer_before_rewind(cx);
+                                    this.edit_request_pending = true;
+                                    this.rewind_attempt =
+                                        Some(this.session.read(cx).state.rewind_attempts);
+                                    this.session.update(cx, |session, cx| {
+                                        session.state.clear_error();
+                                        session.send(
+                                            Action::RestoreRewindDraft { id: id.clone() },
+                                            cx,
+                                        );
+                                    });
+                                },
+                            )),
+                        )
+                }))
+        });
         let choices = (!self.composer_collapsed && self.suggestion_choices(&state, cx).is_some())
             .then(|| self.composer_choices(&state, window, cx));
         let collapsed = self.composer_collapsed;
@@ -5667,6 +5748,9 @@ impl Render for CodexView {
                                 Input::new(&self.input)
                                     .disabled(
                                         self.submitted.is_some()
+                                            || self.edit_request_pending
+                                            || self.edit_confirmation.is_some()
+                                            || state.saved.pending_edit.is_some()
                                             || self.queue_editor.as_ref().is_some_and(|editor| {
                                                 !editor.loaded || editor.saving
                                             }),
@@ -5769,6 +5853,7 @@ impl Render for CodexView {
                             .when_some(notice_above, gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
+                            .when_some(rewind_drafts, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
                             .child(div().w_full().flex().flex_col().flex_shrink_0()
@@ -5807,7 +5892,7 @@ impl Render for CodexView {
                                     .child(
                                         div().flex().items_center().gap(rpx(SPACE_LG)).flex_shrink_0().ml_auto()
                                             .child(
-                                                composer_icon("codex-attach", "Attach files or images", "paperclip", self.submitted.is_some(), false)
+                                                composer_icon("codex-attach", "Attach files or images", "paperclip", self.submitted.is_some() || self.edit_request_pending || state.saved.pending_edit.is_some(), false)
                                                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                                                         if action_key(event) { this.attach_files(window, cx); cx.stop_propagation(); }
                                                     }))
@@ -5946,7 +6031,7 @@ fn paint_confirmation_veil(
     window.paint_quad(outline);
 }
 
-/// Deferred after the editor's canvas, so resize and scrolling use this frame's
+/// Deferred after the message action's canvas, so resize and scrolling use this frame's
 /// source geometry. The independently constrained panel cannot leave the pane.
 struct EditConfirmationTray {
     panel: Option<gpui::AnyElement>,
@@ -6080,186 +6165,150 @@ impl CodexView {
     pub(super) fn edit_confirmation_open(&self) -> bool {
         self.edit_confirmation.is_some()
     }
-    fn focus_inline_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = &self.message_editor {
-            window.focus(&editor.input.focus_handle(cx), cx);
-        }
-    }
-    fn confirm_inline_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = &self.message_editor else {
-            return;
-        };
-        if self.edit_request_pending
-            || editor.accepted_prompts.is_some()
-            || (editor.input.read(cx).value().trim().is_empty()
-                && editor.images.is_empty()
-                && editor.reference.is_none())
-        {
-            return;
-        }
-        if editor.restored {
-            self.send_inline_edit(cx);
-            return;
-        }
-        self.smooth_follow = false;
-        if !self
-            .scroll
-            .bounds()
-            .contains(&editor.send_bounds.get().center())
-        {
-            editor.source_anchor.scroll_to(window, cx);
-        }
-        self.edit_confirmation = Some((editor.index, editor.message_id.clone()));
-        window.focus(&self.edit_cancel_focus, cx);
-        cx.notify();
-    }
-    fn send_inline_edit(&mut self, cx: &mut Context<Self>) {
-        let Some(editor) = &mut self.message_editor else {
-            return;
-        };
-        let draft = editor.input.read(cx).value().to_string();
-        let text = editor
-            .reference
-            .as_ref()
-            .map_or_else(|| draft.clone(), |reference| reference.serialize(&draft));
-        let images = editor.images.clone();
-        editor.accepted_prompts = Some(self.session.read(cx).state.accepted_prompts);
+    fn sync_composer_before_rewind(&self, cx: &mut Context<Self>) {
+        let text = self.input.read(cx).value().to_string();
+        let images = self.images.clone();
+        let reference = self.reference.clone();
         self.session.update(cx, |session, cx| {
-            session.state.clear_error();
-            session.send(Action::PromptInline { text, images }, cx);
+            session.send(Action::Draft(text), cx);
+            session.send(Action::DraftImages(images), cx);
+            session.send(Action::DraftReference(reference), cx);
         });
     }
-    fn render_inline_editor(
-        &self,
-        editor: &MessageEditor,
+
+    fn load_restored_composer(
+        &mut self,
+        state: &codex::Snapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let disabled = self.edit_request_pending
-            || editor.accepted_prompts.is_some()
-            || self.edit_confirmation.is_some();
-        let send_bounds = editor.send_bounds.clone();
-        let send_disabled = disabled
-            || (editor.input.read(cx).value().trim().is_empty()
-                && editor.images.is_empty()
-                && editor.reference.is_none());
-        div()
-            .id("codex-inline-editor")
-            .debug_selector(|| "codex-inline-editor".into())
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_LG))
-            .capture_action(cx.listener(
-                |this, action: &gpui_component::input::Enter, window, cx| {
-                    if action.shift {
-                        cx.propagate();
-                    } else {
-                        // Handle submit before InputState's propagating Enter action:
-                        // the editor remains mounted, so fallback text insertion must stop.
-                        this.confirm_inline_edit(window, cx);
-                        cx.stop_propagation();
-                    }
-                },
-            ))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape"
-                    && !this.edit_request_pending
-                    && this
-                        .message_editor
-                        .as_ref()
-                        .is_some_and(|editor| editor.accepted_prompts.is_none())
-                {
-                    if this.edit_confirmation.take().is_none() {
-                        this.message_editor = None;
-                        window.focus(&this.input.focus_handle(cx), cx);
-                    } else {
-                        this.focus_inline_editor(window, cx);
-                    }
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
-            .when_some(editor.reference.as_ref(), |column, reference| {
-                column.child(
-                    div()
-                        .id("codex-inline-reference")
-                        .max_h(rpx(INLINE_REFERENCE_MAX_H))
-                        .overflow_y_scroll()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .children(
-                            std::iter::once(div().child("Referenced selection")).chain(
-                                reference
-                                    .text
-                                    .lines()
-                                    .map(|line| div().child(line.to_owned())),
-                            ),
-                        ),
-                )
-            })
-            .child(
-                Input::new(&editor.input)
-                    .disabled(disabled)
-                    .aria_label("Edit sent message")
-                    .p_0()
-                    .appearance(false)
-                    .bordered(false)
-                    .focus_bordered(false)
-                    .text_color(c::FG()),
-            )
-            .child(
-                div()
-                    .id("codex-inline-editor-actions")
-                    .flex()
-                    .justify_end()
-                    .anchor_scroll(Some(editor.source_anchor.clone()))
-                    .gap(rpx(SPACE_LG))
-                    .child(
-                        form_action("codex-cancel-message-edit", "Cancel", false, window, cx)
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path("icons/close.svg")
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .disabled(disabled)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.message_editor = None;
-                                this.edit_confirmation = None;
-                                window.focus(&this.input.focus_handle(cx), cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .flex_shrink_0()
-                            .child(
-                                form_action("codex-send-message-edit", "Send", true, window, cx)
-                                    .relative()
-                                    .debug_selector(|| "codex-send-message-edit".into())
-                                    .icon(
-                                        gpui_component::Icon::default()
-                                            .path("icons/arrow-up.svg")
-                                            .size(rpx(ICON_SM)),
-                                    )
-                                    .disabled(send_disabled)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.confirm_inline_edit(window, cx);
-                                    })),
-                            )
-                            .child(
-                                gpui::canvas(
-                                    move |bounds, _, _| send_bounds.set(bounds),
-                                    |_, (), _, _| {},
-                                )
-                                .absolute()
-                                .inset_0(),
-                            ),
-                    ),
-            )
-            .into_any_element()
+    ) {
+        self.images = state.saved.draft_images.clone();
+        self.previews = self
+            .images
+            .iter()
+            .filter_map(|url| image_from_url(url).map(|image| (url.clone(), image)))
+            .collect();
+        self.reference = state.saved.draft_reference.clone();
+        self.reference_expanded = false;
+        self.picked_tokens.clear();
+        self.input.update(cx, |input, cx| {
+            input.set_value(state.saved.draft.clone(), window, cx)
+        });
+        self.input.focus_handle(cx).focus(window, cx);
     }
+
+    fn cancel_rewind(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(target) = self.edit_confirmation.take() {
+            window.focus(&target.source_focus, cx);
+        }
+        cx.notify();
+    }
+
+    fn rewind_files_unavailable(&self, index: usize, cx: &App) -> Option<String> {
+        let state = &self.session.read(cx).state;
+        if let Some(reason) = state.rewind_files_unavailable(index) {
+            return Some(reason);
+        }
+        let Some(runtime) = &self.script_runtime else {
+            return Some(
+                "Workspace ownership is unavailable. You can rewind and keep the files.".into(),
+            );
+        };
+        let registry = runtime.read(cx).registry.read(cx);
+        let roots = state.rewind_target(index).ok()?.files?.roots().to_vec();
+        for other in registry.all() {
+            if registry
+                .codex(other.id)
+                .is_some_and(|session| *session == self.session)
+            {
+                continue;
+            }
+            for path in std::iter::once(other.wt_path.as_str())
+                .chain(other.context_roots.iter().map(|root| root.wt_path.as_str()))
+            {
+                let Ok(path) = std::path::Path::new(path).canonicalize() else {
+                    continue;
+                };
+                let other_roots = grove_core::checkpoint::repository_roots(&[path.clone()])
+                    .unwrap_or_else(|_| vec![path]);
+                if roots.iter().any(|root| {
+                    other_roots
+                        .iter()
+                        .any(|path| path.starts_with(root) || root.starts_with(path))
+                }) {
+                    return Some(
+                        "Another session uses this worktree. You can rewind and keep the files."
+                            .into(),
+                    );
+                }
+            }
+        }
+        None
+    }
+
+    fn commit_rewind(&mut self, restore_files: bool, cx: &mut Context<Self>) {
+        let Some(target) = self.edit_confirmation.as_ref() else {
+            return;
+        };
+        let state = &self.session.read(cx).state;
+        let error = if target.thread_id != state.saved.thread_id {
+            Some("This conversation changed; select Edit again.".to_string())
+        } else if restore_files {
+            self.rewind_files_unavailable(target.index, cx)
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.session.update(cx, |session, cx| {
+                session.state.error = Some(error);
+                cx.notify();
+            });
+            return;
+        }
+        let reservation = if restore_files {
+            let roots = state
+                .rewind_target(target.index)
+                .ok()
+                .and_then(|target| target.files)
+                .map(|files| files.roots())
+                .unwrap_or_default();
+            match grove_core::checkpoint::acquire_restore(&roots) {
+                Ok(reservation) => Some(reservation),
+                Err(error) => {
+                    self.session.update(cx, |session, cx| {
+                        session.state.error = Some(error);
+                        cx.notify();
+                    });
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let target = self.edit_confirmation.take().unwrap();
+        self.sync_composer_before_rewind(cx);
+        self.edit_request_pending = true;
+        self.rewind_attempt = Some(self.session.read(cx).state.rewind_attempts);
+        self.session.update(cx, |session, cx| {
+            session.state.clear_error();
+            let action = if let Some(reservation) = reservation {
+                Action::RewindMessageReserved {
+                    index: target.index,
+                    message_id: target.message_id,
+                    reservation,
+                }
+            } else {
+                Action::RewindMessage {
+                    index: target.index,
+                    message_id: target.message_id,
+                    restore_files: false,
+                }
+            };
+            session.send(action, cx);
+        });
+        cx.notify();
+    }
+
     fn render_edit_confirmation(
         &self,
         window: &mut Window,
@@ -6267,65 +6316,62 @@ impl CodexView {
     ) -> impl IntoElement {
         let pane = Rc::new(Cell::new(gpui::Bounds::default()));
         let measure_pane = pane.clone();
-        let Some((index, message_id)) = self.edit_confirmation.clone() else {
+        let Some(target) = self.edit_confirmation.as_ref() else {
             return div().into_any_element();
         };
-        let Some(editor) = self
-            .message_editor
-            .as_ref()
-            .filter(|editor| editor.index == index && editor.message_id == message_id)
-        else {
-            return div().into_any_element();
-        };
-        let source = editor.send_bounds.clone();
+        let source = target.source_bounds.clone();
         let paint_source = source.clone();
         let source_viewport = self.scroll.clone();
-        let dialog =
-                    div()
-                        .id("codex-edit-confirmation")
-                        .debug_selector(|| "codex-edit-confirmation".into())
-                        .role(gpui::Role::Dialog)
-                        .aria_label("edit and restore changes?")
-                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                            if event.keystroke.key == "escape" {
-                                this.edit_confirmation = None;
-                                this.focus_inline_editor(window, cx);
-                                cx.stop_propagation(); cx.notify();
-                            } else if event.keystroke.key == "tab" {
-                                let next = if this.edit_cancel_focus.is_focused(window) { &this.edit_confirm_focus } else { &this.edit_cancel_focus };
-                                window.focus(next, cx); cx.stop_propagation();
-                            }
-                        }))
-                        .flex().flex_col().gap(rpx(SPACE_LG))
-                        .p(rpx(SPACE_2XL))
-                        .rounded(rpx(RADIUS_GROUP))
-                        .border_1().border_color(c::BORDER()).bg(c::SURFACE_RAISED())
-                        .child(div().text_size(rpx(TEXT_TITLE)).child("edit and restore changes?"))
-                        .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(
-                            "Restore tracked and untracked files in this session’s repositories to before this message. This message and all later replies will be removed. Ignored files, commits, and staged changes stay as they are."
-                        ))
-                        .child(div().flex().flex_wrap().justify_end().gap(rpx(SPACE_LG))
-                            .child(form_action("codex-cancel-edit", "Cancel", false, window, cx).icon(gpui_component::Icon::default().path("icons/close.svg").size(rpx(ICON_SM)))
-                                .with_focus_handle(self.edit_cancel_focus.clone())
-                                .debug_selector(|| "codex-cancel-edit".into())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.edit_confirmation = None;
-                                    this.focus_inline_editor(window, cx); cx.notify();
-                                })))
-                            .child(form_action("codex-confirm-edit", "Edit and restore", true, window, cx).icon(gpui_component::Icon::default().path("icons/restore.svg").size(rpx(ICON_SM)))
-                                .with_focus_handle(self.edit_confirm_focus.clone())
-                                .debug_selector(|| "codex-confirm-edit".into())
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if this.edit_confirmation.take().is_some() {
-                                        this.edit_request_pending = true;
-                                        this.session.update(cx, |session, cx| {
-                                            session.state.clear_error();
-                                            session.send(Action::EditMessageInline {index, message_id:message_id.clone()}, cx);
-                                        });
-                                    }
-                                    cx.notify();
-                                })))
-                        ).into_any_element();
+        let unavailable = target.files_unavailable.clone();
+        let restore_disabled = unavailable.is_some();
+        let dialog = div()
+            .id("codex-edit-confirmation")
+            .debug_selector(|| "codex-edit-confirmation".into())
+            .role(gpui::Role::Dialog)
+            .aria_label("edit from here?")
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.cancel_rewind(window, cx);
+                    cx.stop_propagation();
+                } else if event.keystroke.key == "tab" {
+                    let mut handles = vec![&this.edit_cancel_focus, &this.edit_keep_focus];
+                    if this.edit_confirmation.as_ref().is_some_and(|target| target.files_unavailable.is_none()) {
+                        handles.push(&this.edit_confirm_focus);
+                    }
+                    let current = handles.iter().position(|handle| handle.is_focused(window)).unwrap_or(0);
+                    let next = if event.keystroke.modifiers.shift { (current + handles.len() - 1) % handles.len() } else { (current + 1) % handles.len() };
+                    window.focus(handles[next], cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .flex().flex_col().gap(rpx(SPACE_LG))
+            .p(rpx(SPACE_2XL)).rounded(rpx(RADIUS_GROUP))
+            .border_1().border_color(c::BORDER()).bg(c::SURFACE_RAISED())
+            .child(div().text_size(rpx(TEXT_TITLE)).child("edit from here?"))
+            .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(
+                "This message and all later replies will be removed. The message returns to the composer for editing and sending. Your current draft will be saved separately."
+            ))
+            .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(unavailable.unwrap_or_else(||
+                "Restoring files also removes later changes you made in these worktrees. Ignored files, commits, and staged changes stay as they are.".into()
+            )))
+            .child(div().flex().flex_wrap().justify_end().gap(rpx(SPACE_LG))
+                .child(form_action("codex-cancel-edit", "Cancel", false, window, cx)
+                    .icon(gpui_component::Icon::default().path("icons/close.svg").size(rpx(ICON_SM)))
+                    .with_focus_handle(self.edit_cancel_focus.clone())
+                    .debug_selector(|| "codex-cancel-edit".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.cancel_rewind(window, cx))))
+                .child(form_action("codex-keep-files", "Keep files", false, window, cx)
+                    .icon(gpui_component::Icon::default().path("icons/restore.svg").size(rpx(ICON_SM)))
+                    .with_focus_handle(self.edit_keep_focus.clone())
+                    .debug_selector(|| "codex-keep-files".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.commit_rewind(false, cx))))
+                .child(form_action("codex-confirm-edit", "Restore files", true, window, cx)
+                    .icon(gpui_component::Icon::default().path("icons/restore.svg").size(rpx(ICON_SM)))
+                    .disabled(restore_disabled)
+                    .with_focus_handle(self.edit_confirm_focus.clone())
+                    .debug_selector(|| "codex-confirm-edit".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.commit_rewind(true, cx)))))
+            .into_any_element();
         gpui::deferred(
             div()
                 .id("codex-edit-confirmation-overlay")
@@ -6357,7 +6403,7 @@ impl CodexView {
                     pane,
                     source,
                     scroll: self.scroll.clone(),
-                    source_anchor: editor.source_anchor.clone(),
+                    source_anchor: target.source_anchor.clone(),
                     owner: cx.entity().downgrade(),
                 })),
         )
@@ -6548,65 +6594,49 @@ impl CodexView {
     }
 
     fn request_edit(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.transcript_only() {
+        if self.transcript_only()
+            || self.edit_request_pending
+            || self.queue_editor.is_some()
+            || self.submitted.is_some()
+            || self.pending_image_pastes > 0
+            || self.pending_attachment_picker
+        {
             return;
         }
         let state = &self.session.read(cx).state;
-        match state.editable_message(index) {
+        match state.rewind_target(index) {
             Ok(_) => {
-                if self.edit_request_pending || self.queue_editor.is_some() {
-                    return;
-                }
-                let item = &state.saved.items[index];
-                let id = item["id"].as_str().unwrap_or("").to_owned();
-                let canonical = codex::item_text(item);
-                let (reference, text) =
-                    if let Some((reference, reply)) = reference_prompt(&canonical) {
-                        (Some(reference), reply.to_owned())
-                    } else {
-                        (None, canonical)
-                    };
-                let images = item["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|part| {
-                        part["url"]
-                            .as_str()
-                            .filter(|_| part["type"] == "image")
-                            .map(str::to_owned)
-                    })
-                    .collect();
-                let thread_id = state.saved.thread_id.clone();
-                let input = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .auto_grow(3, 10)
-                        .submit_on_enter(true)
-                        .default_value(text)
-                });
-                let subscription = cx.subscribe_in(&input, window, |this, _, event, window, cx| {
-                    if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
-                        this.confirm_inline_edit(window, cx);
-                    } else if matches!(event, InputEvent::Change) {
-                        cx.notify();
-                    }
-                });
-                self.message_editor = Some(MessageEditor {
-                    _subscription: subscription,
+                let id = state.saved.items[index]["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
+                let key = format!(
+                    "{}:{id}",
+                    state.saved.thread_id.as_deref().unwrap_or_default()
+                );
+                let source_bounds = self
+                    .message_action_bounds
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default();
+                let source_focus = self
+                    .message_focus
+                    .get(&format!("{key}:edit"))
+                    .cloned()
+                    .unwrap_or_else(|| self.input.focus_handle(cx));
+                let files_unavailable = self.rewind_files_unavailable(index, cx);
+                self.edit_confirmation = Some(RewindConfirmation {
                     index,
                     message_id: id,
-                    reference,
-                    input,
-                    images,
-                    restored: false,
-                    accepted_prompts: None,
-                    thread_id,
-                    send_bounds: Rc::default(),
+                    thread_id: state.saved.thread_id.clone(),
+                    source_bounds,
                     source_anchor: gpui::ScrollAnchor::for_handle(self.scroll.clone()),
+                    source_focus,
+                    files_unavailable,
                 });
-                self.edit_confirmation = None;
+                self.smooth_follow = false;
                 self.close_menu(cx);
-                self.focus_inline_editor(window, cx);
+                window.focus(&self.edit_cancel_focus, cx);
                 cx.notify();
             }
             Err(error) => self.session.update(cx, |session, cx| {
@@ -8174,7 +8204,6 @@ impl CodexView {
         if snapshot.is_selecting
             || snapshot.text.trim().is_empty()
             || snapshot.spans.is_empty()
-            || self.message_editor.is_some()
             || self.queue_editor.is_some()
             || self.edit_confirmation.is_some()
             || self.menu.is_some()
@@ -8599,9 +8628,15 @@ impl CodexView {
         .detach();
     }
     fn attach_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.submitted.is_some() {
+        if self.submitted.is_some()
+            || self.pending_attachment_picker
+            || self.edit_request_pending
+            || self.session.read(cx).state.saved.pending_edit.is_some()
+        {
             return;
         }
+        self.pending_attachment_picker = true;
+        cx.notify();
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
             directories: true,
@@ -8610,6 +8645,10 @@ impl CodexView {
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = paths.await else {
+                let _ = this.update_in(cx, |this, _, cx| {
+                    this.pending_attachment_picker = false;
+                    cx.notify();
+                });
                 return;
             };
             let attachments = cx
@@ -8642,6 +8681,7 @@ impl CodexView {
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                this.pending_attachment_picker = false;
                 if this.submitted.is_some() {
                     return;
                 }
@@ -13056,6 +13096,7 @@ mod tests {
             claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),
             pending_edit: None,
+            rewind_drafts: Vec::new(),
             provider: grove_core::codex::Provider::Codex,
             composer: grove_core::codex::ComposerSettings::default(),
             context: None,
@@ -15484,219 +15525,187 @@ mod tests {
     }
 
     #[gpui::test]
-    fn edit_confirmation_blocks_background_and_preserves_editor_and_composer(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn rewind_confirmation_blocks_background_and_preserves_composer(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);
-        cx.simulate_resize(gpui::size(gpui::px(1000.0), gpui::px(1000.0)));
-        cx.update(|window, cx| {
-            view.update(cx, |view, cx| {
-                view.input.update(cx, |input, cx| input.set_value("Unrelated composer draft", window, cx));
-                view.session.update(cx, |session, cx| {
-                    session.state.edit_supported = true;
-                    session.state.saved.draft = "Unrelated composer draft".into();
-                    session.state.saved.items = vec![
-                        json!({"id":"original-user", "type":"userMessage", "content":[{"type":"text", "text":"Original sent request"}]}),
-                        json!({"id":"original-answer", "type":"agentMessage", "text":"Original answer"}),
-                    ].into();
-                    session.state.saved.edit_checkpoints.push(codex::EditCheckpoint {
-                        start_item: 0,
-                        turn_id: Some("original-turn".into()),
-                        // Eligibility needs the checkpoint identity only; this test
-                        // never confirms restoration or accesses the filesystem.
-                        files: serde_json::from_value(json!({"roots":[]})).unwrap(),
-                    });
-                    cx.notify();
+        cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(800.)));
+        cx.update(|window, cx| view.update(cx, |view, cx| {
+            view.input.update(cx, |input, cx| input.set_value("Unrelated composer draft", window, cx));
+            view.session.update(cx, |session, cx| {
+                session.state.edit_supported = true;
+                session.state.saved.draft = "Unrelated composer draft".into();
+                session.state.saved.items = vec![
+                    json!({"id":"original-user", "type":"userMessage", "content":[{"type":"text", "text":"Original request"}]}),
+                    json!({"id":"answer", "type":"agentMessage", "text":"Original answer"}),
+                ].into();
+                session.state.saved.edit_checkpoints.push(codex::EditCheckpoint {
+                    start_item: 0, turn_id: Some("original-turn".into()), files: None,
                 });
+                cx.notify();
             });
-        });
+        }));
         draw(cx);
         let edit = cx.debug_bounds("codex-edit-message-0").unwrap();
         cx.simulate_click(edit.center(), gpui::Modifiers::default());
         draw(cx);
-        let editor = cx.debug_bounds("codex-inline-editor").unwrap();
-        let message = cx.debug_bounds("codex-message-anchor-0").unwrap();
-        let composer = cx.debug_bounds("codex-composer").unwrap();
-        assert!(editor.top() >= message.top());
-        assert!(editor.bottom() <= message.bottom());
-        assert!(editor.bottom() <= composer.top());
-        assert!(cx.debug_bounds("codex-message-body-0").is_none());
-        cx.update(|window, cx| {
-            view.update(cx, |view, cx| {
-                view.message_editor
-                    .as_ref()
-                    .unwrap()
-                    .input
-                    .update(cx, |input, cx| {
-                        input.set_value("Edited inline request", window, cx);
-                    });
-            });
-        });
-        cx.simulate_keystrokes("enter");
-        draw(cx);
-        let confirmation = cx.debug_bounds("codex-edit-confirmation").unwrap();
-        let source = cx.debug_bounds("codex-send-message-edit").unwrap();
-        let overlay = cx.debug_bounds("codex-edit-confirmation-overlay").unwrap();
-        assert!(
-            (confirmation.right() - source.right()).abs() < gpui::px(1.),
-            "tray={confirmation:?}, source={source:?}"
-        );
-        assert!(
-            (confirmation.top() - source.bottom()).abs() < gpui::px(1.)
-                || (confirmation.bottom() - source.top()).abs() < gpui::px(1.)
-        );
-        assert!(confirmation.top() >= overlay.top());
-        assert!(confirmation.bottom() <= overlay.bottom());
-        // Resizing moves the initiating action; attachment must follow this
-        // frame's source instead of a captured window position or pane bottom.
+        assert!(cx.debug_bounds("codex-inline-editor").is_none());
+        let tray = cx.debug_bounds("codex-edit-confirmation").unwrap();
+        assert!((tray.right() - edit.right()).abs() < gpui::px(1.));
         cx.simulate_resize(gpui::size(gpui::px(420.), gpui::px(700.)));
         draw(cx);
-        let moved_source = cx.debug_bounds("codex-send-message-edit").unwrap();
-        let moved_confirmation = cx.debug_bounds("codex-edit-confirmation").unwrap();
-        assert!((moved_source.right() - source.right()).abs() > gpui::px(100.));
-        assert!((moved_confirmation.right() - moved_source.right()).abs() < gpui::px(1.));
-        assert!(
-            (moved_confirmation.top() - moved_source.bottom()).abs() < gpui::px(1.)
-                || (moved_confirmation.bottom() - moved_source.top()).abs() < gpui::px(1.)
-        );
-        assert!(moved_confirmation.left() >= gpui::px(0.));
-        // A source scrolled entirely out of view is revealed before its tray
-        // is painted; it never borrows a previous source's cached position.
-        cx.update(|_, cx| {
-            view.update(cx, |view, cx| {
-                view.smooth_follow = false;
-                view.session.update(cx, |session, cx| {
-                    session.state.saved.items[1]["text"] =
-                        json!("Long reply below the edited source.\n\n".repeat(50));
-                    cx.notify();
-                });
-            });
-        });
+        let moved_source = cx.debug_bounds("codex-edit-message-0").unwrap();
+        let moved_tray = cx.debug_bounds("codex-edit-confirmation").unwrap();
+        let overlay = cx.debug_bounds("codex-edit-confirmation-overlay").unwrap();
+        assert!((moved_tray.right() - moved_source.right()).abs() < gpui::px(1.));
+        assert!(moved_tray.top() >= overlay.top() && moved_tray.bottom() <= overlay.bottom());
+        cx.update(|_, cx| view.update(cx, |view, cx| view.session.update(cx, |session, cx| {
+            session.state.saved.items.push(json!({"id":"later-answer", "type":"agentMessage", "text":"Incoming update"}));
+            cx.notify();
+        })));
         draw(cx);
-        assert!(
-            !view.read_with(cx, |view, _| view.smooth_follow),
-            "content updates cannot restart following behind a source-owned confirmation"
-        );
-        cx.update(|_, cx| {
-            view.update(cx, |view, cx| {
-                view.scroll.scroll_to_bottom();
-                cx.notify();
-            });
-        });
-        draw(cx);
-        // Unlike a platform window, this fixture has no automatic display-frame
-        // loop. Deliver the scheduled ScrollAnchor and notification callbacks.
-        for _ in 0..3 {
-            if cx.debug_bounds("codex-edit-confirmation").is_some() {
-                break;
-            }
-            cx.update(gpui::Window::simulate_next_frame);
-            draw(cx);
-        }
-        let revealed_source = cx.debug_bounds("codex-send-message-edit").unwrap();
-        let revealed_tray = cx.debug_bounds("codex-edit-confirmation").unwrap();
-        let viewport = view.read_with(cx, |view, _| view.scroll.bounds());
-        assert!(revealed_source.intersects(&viewport));
-        assert!((revealed_tray.right() - revealed_source.right()).abs() < gpui::px(1.));
-        assert!(
-            (revealed_tray.top() - revealed_source.bottom()).abs() < gpui::px(1.)
-                || (revealed_tray.bottom() - revealed_source.top()).abs() < gpui::px(1.)
-        );
-        // A pointer click on the veiled source cannot return ownership to an
-        // editor behind the dialog, and Tab stays on the two dialog actions.
+        assert!(cx.debug_bounds("codex-edit-confirmation").is_some());
         let composer = cx.debug_bounds("codex-composer").unwrap();
         cx.simulate_click(composer.center(), gpui::Modifiers::default());
         cx.simulate_keystrokes("tab");
-        view.read_with(cx, |view, _| {
-            assert!(view.edit_confirmation.is_some());
-        });
-        view.read_with(cx, |view, cx| {
-            assert_eq!(
-                view.input.read(cx).value().as_ref(),
-                "Unrelated composer draft"
-            );
-            assert_eq!(
-                view.session.read(cx).state.saved.draft,
-                "Unrelated composer draft"
-            );
-            assert_eq!(
-                view.message_editor
-                    .as_ref()
-                    .unwrap()
-                    .input
-                    .read(cx)
-                    .value()
-                    .as_ref(),
-                "Edited inline request"
-            );
-        });
-        cx.update(|window, cx| {
-            view.read_with(cx, |view, _| {
-                assert!(view.edit_confirm_focus.is_focused(window));
-            });
-        });
-        let cancel = cx.debug_bounds("codex-cancel-edit").unwrap();
-        cx.simulate_click(cancel.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("codex-edit-confirmation").is_none());
-        assert!(cx.debug_bounds("codex-inline-editor").is_some());
         cx.update(|window, cx| {
             view.read_with(cx, |view, cx| {
-                assert!(view
-                    .message_editor
-                    .as_ref()
-                    .unwrap()
-                    .input
-                    .focus_handle(cx)
-                    .is_focused(window));
-            });
+                assert!(view.edit_keep_focus.is_focused(window));
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    "Unrelated composer draft"
+                );
+            })
         });
         cx.simulate_keystrokes("escape");
         draw(cx);
-        assert!(cx.debug_bounds("codex-inline-editor").is_none());
-        let source = cx.debug_bounds("codex-message-anchor-0").unwrap();
-        let viewport = view.read_with(cx, |view, _| view.scroll.bounds());
-        let owner_bounds = view.read_with(cx, |view, cx| {
-            view.selection_views
-                .values()
-                .find(|owner| owner.read(cx).source().as_ref() == "Original sent request")
-                .expect("canceling edit must restore the complete original selectable source")
-                .read(cx)
-                .layout_bounds()
-        });
-        if cx.debug_bounds("codex-message-body-0").is_none() {
-            assert!(!owner_bounds.intersects(&viewport),
-                "a visible restored source must materialize: anchor={source:?}, owner={owner_bounds:?}, viewport={viewport:?}");
-            eprintln!("restored source is correctly culled outside viewport: anchor={source:?}, owner={owner_bounds:?}, viewport={viewport:?}");
-        }
-        // Exercise the actual transcript navigation path, rather than requiring
-        // the editor's old offscreen body subtree to remain materialized.
-        cx.update(|window, cx| view.update(cx, |view, cx| view.jump_to_message(0, window, cx)));
-        for _ in 0..4 {
-            cx.update(gpui::Window::simulate_next_frame);
-            draw(cx);
-        }
-        let body = cx
-            .debug_bounds("codex-message-body-0")
-            .expect("navigating to the restored source reifies its body");
-        assert!(body.intersects(&view.read_with(cx, |view, _| view.scroll.bounds())));
-        view.read_with(cx, |view, cx| {
-            assert_eq!(
-                view.input.read(cx).value().as_ref(),
-                "Unrelated composer draft"
-            );
-            assert_eq!(
-                view.session.read(cx).state.saved.items[0]["content"][0]["text"],
-                "Original sent request"
-            );
-            assert_eq!(view.session.read(cx).state.saved.items.len(), 2);
-        });
+        assert!(cx.debug_bounds("codex-edit-confirmation").is_none());
+        assert!(cx.debug_bounds("codex-message-body-0").is_some());
         assert!(!actions.try_iter().any(|action| matches!(
             action,
-            Action::EditMessage { .. }
-                | Action::EditMessageInline { .. }
-                | Action::PromptInline { .. }
+            Action::RewindMessage { .. } | Action::PromptInline { .. }
         )));
+        let source = cx.debug_bounds("codex-edit-message-0").unwrap();
+        cx.simulate_click(source.center(), gpui::Modifiers::default());
+        draw(cx);
+        let keep = cx.debug_bounds("codex-keep-files").unwrap();
+        cx.simulate_click(keep.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions.try_iter().any(|action| matches!(
+            action,
+            Action::RewindMessage {
+                index: 0,
+                restore_files: false,
+                ..
+            }
+        )));
+    }
+
+    #[gpui::test]
+    fn successful_rewind_loads_composer_without_automatic_send(cx: &mut gpui::TestAppContext) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, actions, _) = fixture(cx);
+            draw(cx);
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        if provider == codex::Provider::Claude {
+                            session.state.saved.thread_id = Some("claude-fork".into());
+                        }
+                        session.state.saved.draft = "Restored request".into();
+                        session.state.edited_messages += 1;
+                        cx.notify();
+                    });
+                })
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.input.read(cx).value().as_ref(), "Restored request")
+            });
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::PromptInline { .. } | Action::Prompt(_))));
+        }
+    }
+
+    #[gpui::test]
+    fn saved_rewind_draft_handoff_blocks_stale_edits_until_acknowledged(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                view.input.update(cx, |input, cx| {
+                    input.set_value("Restored prompt", window, cx)
+                });
+                view.session.update(cx, |session, cx| {
+                    session
+                        .state
+                        .saved
+                        .rewind_drafts
+                        .push(codex::SavedComposerDraft {
+                            id: "saved".into(),
+                            text: "Existing draft".into(),
+                            images: vec![],
+                            reference: None,
+                        });
+                    cx.notify();
+                });
+            })
+        });
+        draw(cx);
+        for picker in [false, true] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.pending_image_pastes = usize::from(!picker);
+                    view.pending_attachment_picker = picker;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            let restore = cx.debug_bounds("codex-restore-rewind-draft").unwrap();
+            cx.simulate_click(restore.center(), gpui::Modifiers::default());
+            draw(cx);
+            assert!(!actions
+                .try_iter()
+                .any(|action| matches!(action, Action::RestoreRewindDraft { .. })));
+        }
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.pending_image_pastes = 0;
+                view.pending_attachment_picker = false;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let restore = cx.debug_bounds("codex-restore-rewind-draft").unwrap();
+        cx.simulate_click(restore.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(actions
+            .try_iter()
+            .any(|action| matches!(action, Action::RestoreRewindDraft { id } if id == "saved")));
+        let input = cx.debug_bounds("codex-composer-input").unwrap();
+        cx.simulate_click(input.center(), gpui::Modifiers::default());
+        cx.simulate_keystrokes("x");
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(view.edit_request_pending);
+            assert_eq!(view.input.read(cx).value().as_ref(), "Restored prompt");
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.draft = "Existing draft".into();
+                    session.state.rewind_attempts += 1;
+                    session.state.edited_messages += 1;
+                    cx.notify();
+                })
+            })
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(!view.edit_request_pending);
+            assert_eq!(view.input.read(cx).value().as_ref(), "Existing draft");
+        });
     }
 
     #[gpui::test]
