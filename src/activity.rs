@@ -176,13 +176,8 @@ impl Tracker {
     /// Acknowledge pending attention: called when the user focuses the
     /// session. Completed work is acknowledged; an unanswered prompt stays waiting.
     ///
-    /// Acknowledgment also stamps `last_active`: that clock means "last worked
-    /// on **or** last interacted with", so the session the user just opened is
-    /// the most recent thing in the rail rather than sinking below sessions the
-    /// agent happened to touch more recently. The deliberate consequence: an
-    /// acknowledged `Done` session lands at the *top* of `WORKING` (fresh
-    /// `last_active`, non-`Working`, inside `IDLE_DWELL`) — correct, because
-    /// the user is working in it right now.
+    /// Focus updates recency but never establishes agent work. Explicit review
+    /// lives independently of this unread acknowledgment in ActivityStore.
     pub fn acknowledge(&mut self) {
         self.last_active = Instant::now();
         if self.state == ActivityState::WaitingForInput {

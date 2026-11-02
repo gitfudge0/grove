@@ -766,6 +766,7 @@ mod dashboard_tests {
     fn saved(provider: codex::Provider) -> SavedSession {
         SavedSession {
             claude_subagents: std::collections::HashMap::default(),
+            session_review: Default::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             side_chats: Default::default(),
             claude_resume: None,

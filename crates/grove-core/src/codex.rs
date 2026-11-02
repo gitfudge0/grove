@@ -319,6 +319,9 @@ pub struct SavedSideChat {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedSession {
+    /// App-owned review receipt; independent of focus/unread acknowledgment.
+    #[serde(default)]
+    pub session_review: SessionReview,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub claude_subagents: HashMap<String, SavedClaudeSubagent>,
     #[serde(default)]
@@ -367,6 +370,21 @@ pub struct SavedSession {
     /// Last known context-window occupancy, so a reopened session shows its meter.
     #[serde(default)]
     pub context: Option<ContextUsage>,
+}
+/// A monotonic receipt protects newer results from stale review actions.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SessionReview {
+    #[serde(default)]
+    pub sequence: usize,
+    #[serde(default)]
+    pub last_completed_period: Option<usize>,
+    #[serde(default)]
+    pub pending: Option<ReviewCompletion>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReviewCompletion {
+    pub id: usize,
+    pub period: usize,
 }
 /// A Claude fork is not persisted by the CLI until its first prompt. Retain the
 /// exact launch recipe across that window so reconnect cannot lose prior context.
@@ -536,6 +554,8 @@ impl SavedSession {
         saved.rich_plans = crate::rich_plan::PlanStore::default();
         saved.side_chats.clear();
         saved.work_periods.clear();
+        saved.session_review.pending = None;
+        saved.session_review.last_completed_period = None;
         saved.draft.clear();
         saved.draft_images.clear();
         saved.draft_reference = None;
@@ -928,6 +948,8 @@ pub struct SessionNotice {
 }
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    /// Explicit reconnect attempt, while the underlying runtime is Starting.
+    pub reconnecting: bool,
     restored_subagents: HashSet<String>,
     pub saved: SavedSession,
     /// A title request is running before any generated title; never persisted across reconnects.
@@ -1020,6 +1042,144 @@ pub(crate) fn next_interaction_epoch() -> u64 {
     EPOCH.fetch_add(1, Ordering::Relaxed)
 }
 impl Snapshot {
+    /// Pending successful result identity. This is deliberately not an unread flag.
+    pub fn review_completion(&self) -> Option<usize> {
+        if self.reconnecting || !matches!(self.status, Status::Done | Status::Idle) {
+            return None;
+        }
+        let receipt = self.saved.session_review.pending.as_ref()?;
+        let period = self.saved.work_periods.get(receipt.period)?;
+        (receipt.period + 1 == self.saved.work_periods.len()
+            && period
+                .end_item
+                .is_some_and(|end| end <= self.saved.items.len()))
+        .then_some(receipt.id)
+    }
+    pub fn mark_reviewed(&mut self, work_period: usize) -> Result<(), String> {
+        if self.plan_ready() {
+            return Err("Review the proposed plan before marking this result reviewed".into());
+        }
+        if self.review_completion() != Some(work_period) {
+            return Err("This review belongs to a previous result".into());
+        }
+        self.saved.session_review.pending = None;
+        Ok(())
+    }
+    /// Called only after a provider's successful foreground completion boundary.
+    pub(crate) fn completed_for_review(&mut self) {
+        let Some(period) = self.saved.work_periods.len().checked_sub(1) else {
+            return;
+        };
+        if self.saved.work_periods[period].end_item.is_none() {
+            return;
+        }
+        if self.saved.session_review.last_completed_period == Some(period) {
+            return;
+        }
+        self.saved.session_review.last_completed_period = Some(period);
+        self.saved.session_review.sequence = self.saved.session_review.sequence.saturating_add(1);
+        self.saved.session_review.pending = Some(ReviewCompletion {
+            id: self.saved.session_review.sequence,
+            period,
+        });
+    }
+    pub fn plan_ready(&self) -> bool {
+        if self.review_completion().is_none() {
+            return false;
+        }
+        let Some(receipt) = self.saved.session_review.pending.as_ref() else {
+            return false;
+        };
+        let Some(period) = self.saved.work_periods.get(receipt.period) else {
+            return false;
+        };
+        let mut latest = HashSet::new();
+        self.saved.rich_plans.revisions.iter().rev().any(|plan| {
+            if !latest.insert(&plan.document.plan_id) {
+                return false;
+            }
+            let actionable = matches!(
+                plan.review.delivery,
+                crate::rich_plan::ResponseDelivery::Draft
+                    | crate::rich_plan::ResponseDelivery::Failed { .. }
+            ) && matches!(
+                plan.review.approval,
+                crate::rich_plan::ResponseDelivery::Draft
+                    | crate::rich_plan::ResponseDelivery::Failed { .. }
+            );
+            actionable
+                && self.saved.items.iter().enumerate().any(|(index, item)| {
+                    index >= period.start_item
+                        && index < period.end_item.unwrap_or(0)
+                        && item["id"].as_str() == Some(plan.message_id.as_str())
+                })
+        })
+    }
+    /// Waiting is proven by an open parent wait tool, never by a child roster.
+    pub fn waiting_on_work(&self) -> bool {
+        if self.status != Status::Working {
+            return false;
+        }
+        if self.saved.provider == Provider::Claude
+            && self.turn_id.as_deref() == Some("awaiting-session-idle")
+        {
+            return true;
+        }
+        let Some(period) = self.saved.work_periods.last() else {
+            return false;
+        };
+        self.saved.items.iter().skip(period.start_item).any(|item| {
+            if item["status"] != "inProgress" {
+                return false;
+            }
+            let tool = item["tool"].as_str().unwrap_or_default();
+            match item["type"].as_str() {
+                Some("collabAgentToolCall") => matches!(tool, "wait" | "waitAgent" | "waitAgents"),
+                Some("mcpToolCall") => {
+                    tool == "mcp__collaboration__wait_agent"
+                        || (tool == "wait_agent" && item["server"] == "collaboration")
+                        || (tool == "TaskOutput"
+                            && item["server"] == "Claude Code"
+                            && item["arguments"]["block"] == true)
+                }
+                _ => false,
+            }
+        })
+    }
+    /// One semantic projection for all session navigation surfaces.
+    pub fn session_status(&self) -> &'static str {
+        if self.reconnecting && self.status == Status::Starting {
+            return "Reconnecting";
+        }
+        if !self.approvals.is_empty() {
+            return "Approval needed";
+        }
+        if !self.questions.is_empty() || !self.elicitations.is_empty() {
+            return "Answer needed";
+        }
+        if matches!(
+            self.status,
+            Status::Failed | Status::Interrupted | Status::Done
+        ) && self
+            .effective_notice()
+            .is_some_and(|notice| notice.kind == SessionNoticeKind::UsageLimit)
+        {
+            return "Usage limit";
+        }
+        if self.waiting_on_work() {
+            return "Waiting";
+        }
+        if self.plan_ready() {
+            return "Plan ready";
+        }
+        if self.review_completion().is_some() {
+            return "Review";
+        }
+        match self.status {
+            Status::Idle | Status::Done => "Ready",
+            status => status.label(),
+        }
+    }
     pub fn subagent_transcript_availability(&self, id: &str) -> SubagentTranscriptAvailability {
         if let Some(activity) = self
             .subagent_activity
@@ -1552,6 +1712,7 @@ impl Snapshot {
         Self {
             saved,
             title_generation_pending: false,
+            reconnecting: false,
             status: Status::Starting,
             turn_id: None,
             work_started: None,
@@ -1607,6 +1768,7 @@ impl Snapshot {
             return;
         }
         self.work_started = Some(Instant::now());
+        self.saved.session_review.pending = None;
         self.saved.work_periods.push(WorkPeriod {
             start_item: self.saved.items.len(),
             end_item: None,
@@ -1708,6 +1870,8 @@ impl Snapshot {
             .unwrap_or_default();
         saved.thread_id = Some(id.into());
         saved.work_periods.clear();
+        saved.session_review.pending = None;
+        saved.session_review.last_completed_period = None;
         saved.claude_subagents.clear();
         saved.rich_plans = crate::rich_plan::PlanStore::default();
         saved.draft.clear();
@@ -2339,6 +2503,12 @@ impl Snapshot {
                 self.clear_error();
             }
             "turn/completed" => {
+                // Completion carries its identity inside `turn`, unlike item
+                // events' top-level turnId. A late result must never finish the
+                // newer period, or recreate Review after rewind/reconnect.
+                if self.turn_id.is_none() || p["turn"]["id"].as_str() != self.turn_id.as_deref() {
+                    return false;
+                }
                 self.finish_work();
                 if let Some(turn) = p["turn"]["id"].as_str() {
                     self.settled_turns.push(turn.to_owned());
@@ -2368,6 +2538,9 @@ impl Snapshot {
                     Some("interrupted") => Status::Interrupted,
                     _ => Status::Done,
                 };
+                if p["turn"]["status"] == "completed" {
+                    self.completed_for_review();
+                }
                 if !self.elicitations.is_empty()
                     || !self.questions.is_empty()
                     || !self.approvals.is_empty()
@@ -2719,6 +2892,7 @@ impl Snapshot {
         self.finish_work();
         self.error = Some(error);
         self.status = Status::Disconnected;
+        self.reconnecting = false;
         self.turn_id = None;
         self.compacting = false;
         self.compact_requested = false;
@@ -2974,6 +3148,10 @@ fn prompt_input(text: &str, images: Vec<String>) -> Vec<Value> {
     input
 }
 pub enum Action {
+    /// A receipt for the exact completed result displayed by the native UI.
+    MarkReviewed {
+        work_period: usize,
+    },
     /// UI responses are bound to the connection that rendered the interaction.
     Interaction {
         epoch: u64,
@@ -4148,6 +4326,7 @@ impl Actor {
             self.pid.store(0, Ordering::SeqCst);
             self.process = None;
             self.state.status = Status::Disconnected;
+            self.state.reconnecting = false;
             return Err(format!(
                 "Edit delivery is uncertain. Reconnect to recover the workspace and conversation: {error}"
             ));
@@ -4166,6 +4345,7 @@ impl Actor {
         {
             if let Err(error) = recovery.restore() {
                 self.state.status = Status::Disconnected;
+                self.state.reconnecting = false;
                 return Err(format!("Edit failed and workspace recovery needs attention. Reconnect to retry: {error}"));
             }
         }
@@ -4173,6 +4353,7 @@ impl Actor {
         saved.pending_edit = None;
         if let Err(error) = persist(&saved) {
             self.state.status = Status::Disconnected;
+            self.state.reconnecting = false;
             return Err(format!(
                 "Edit recovery could not be saved. Reconnect to reconcile: {error}"
             ));
@@ -4180,6 +4361,7 @@ impl Actor {
         self.state.saved = saved;
         self.restore_reservation = None;
         self.state.status = Status::Idle;
+        self.state.reconnecting = false;
         Ok(())
     }
     fn finish_edit(&mut self) -> Result<(), String> {
@@ -4195,6 +4377,8 @@ impl Actor {
         saved
             .work_periods
             .retain(|period| period.start_item < edit.target);
+        saved.session_review.pending = None;
+        saved.session_review.last_completed_period = None;
         saved.rich_plans.retain_messages(&saved.items);
         if edit.rewind {
             saved.finish_rewind_draft(edit.text, edit.images);
@@ -4206,6 +4390,7 @@ impl Actor {
         saved.context = None;
         if let Err(error) = persist(&saved) {
             self.state.status = Status::Disconnected;
+            self.state.reconnecting = false;
             return Err(format!(
                 "Edit recovery could not be saved. Reconnect to reconcile: {error}"
             ));
@@ -4215,6 +4400,7 @@ impl Actor {
         self.state.context_tokens = None;
         self.state.turn_id = None;
         self.state.status = Status::Idle;
+        self.state.reconnecting = false;
         self.state.edited_messages += 1;
         Ok(())
     }
@@ -4571,6 +4757,9 @@ impl Actor {
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
         }
         match action {
+            Action::MarkReviewed { work_period } => {
+                self.state.mark_reviewed(work_period)?;
+            }
             Action::Interaction { epoch, action } => {
                 if epoch != self.state.interaction_epoch {
                     return Err("This interaction belongs to a previous connection".into());
@@ -4898,6 +5087,7 @@ impl Actor {
                 }
                 self.pid.store(0, Ordering::SeqCst);
                 self.process = None;
+                self.state.reconnecting = true;
                 if let Err(error) = self.start() {
                     self.state.fail(error);
                     self.pid.store(0, Ordering::SeqCst);
@@ -5831,6 +6021,7 @@ impl Actor {
             self.state.error = Some(message);
             if !matches!(self.state.status, Status::Done | Status::Interrupted) {
                 self.state.status = Status::Failed;
+                self.state.reconnecting = false;
             }
             return Ok(());
         }
@@ -6066,6 +6257,8 @@ impl Actor {
                                 .any(|(old, new)| old["id"] != new["id"])
                         {
                             self.state.saved.work_periods.clear();
+                            self.state.saved.session_review.pending = None;
+                            self.state.saved.session_review.last_completed_period = None;
                             self.state.saved.edit_checkpoints.clear();
                             self.state.work_started = None;
                         }
@@ -6075,6 +6268,7 @@ impl Actor {
                 self.state
                     .set_provider_title(result["thread"]["name"].as_str());
                 self.state.status = Status::Idle;
+                self.state.reconnecting = false;
                 if let Some(turns) = result["thread"]["turns"].as_array() {
                     if let Some(turn) = turns
                         .iter()
@@ -6084,6 +6278,7 @@ impl Actor {
                         if result["thread"]["status"]["type"] == "active" {
                             self.state.turn_id = turn["id"].as_str().map(str::to_owned);
                             self.state.status = Status::Working;
+                            self.state.begin_work();
                         } else {
                             self.state.turn_id = None;
                             self.state.status = Status::Interrupted;
@@ -6240,6 +6435,7 @@ impl Actor {
                     self.state.error = Some("Codex returned no queued turn identity; inspect the conversation before resuming".into());
                     if self.state.turn_id.is_none() {
                         self.state.status = Status::Failed;
+                        self.state.reconnecting = false;
                     }
                     return Ok(());
                 };
@@ -6647,6 +6843,7 @@ mod tests {
     use super::*;
     fn saved() -> SavedSession {
         SavedSession {
+            session_review: SessionReview::default(),
             claude_subagents: HashMap::default(),
             rich_plans: crate::rich_plan::PlanStore::default(),
             side_chats: Default::default(),
@@ -6674,6 +6871,178 @@ mod tests {
             composer: ComposerSettings::default(),
             context: None,
         }
+    }
+    #[test]
+    fn session_review_receipts_survive_restore_and_reject_stale_turn_actions() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut session = saved();
+            session.provider = provider;
+            let mut snapshot = Snapshot::new(session);
+            snapshot.apply(&json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"first"}}}));
+            snapshot.apply(&json!({"method":"item/completed","params":{"threadId":"thread-1","item":{"id":"reply","type":"agentMessage","text":"Finished"}}}));
+            snapshot.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"first","status":"completed"}}}));
+            assert_eq!(snapshot.session_status(), "Review");
+            let first = snapshot.review_completion().unwrap();
+            let mut restored = Snapshot::new(
+                serde_json::from_value(serde_json::to_value(&snapshot.saved).unwrap()).unwrap(),
+            );
+            restored.status = Status::Idle;
+            assert_eq!(restored.review_completion(), Some(first));
+            restored.mark_reviewed(first).unwrap();
+            restored.completed_for_review();
+            assert_eq!(
+                restored.session_status(),
+                "Ready",
+                "duplicate completion must not re-open review"
+            );
+            restored.begin_work();
+            restored.status = Status::Working;
+            assert!(restored.mark_reviewed(first).is_err());
+            restored.finish_work();
+            restored.status = Status::Done;
+            restored.completed_for_review();
+            let second = restored.review_completion().unwrap();
+            assert_ne!(first, second);
+            assert!(restored.mark_reviewed(first).is_err());
+            assert_eq!(restored.review_completion(), Some(second));
+            let mut fresh = Snapshot::new(restored.saved.fresh_conversation());
+            fresh.status = Status::Idle;
+            assert_eq!(fresh.review_completion(), None);
+            fresh.begin_work();
+            fresh.finish_work();
+            fresh.status = Status::Done;
+            fresh.completed_for_review();
+            assert_ne!(fresh.review_completion(), Some(first));
+        }
+    }
+    #[test]
+    fn stale_completion_cannot_finish_new_work_or_recreate_review() {
+        let mut snapshot = Snapshot::new(saved());
+        assert!(snapshot.apply(
+            &json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"first"}}})
+        ));
+        assert!(snapshot.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"first","status":"completed"}}})));
+        let first = snapshot.review_completion().unwrap();
+        snapshot.mark_reviewed(first).unwrap();
+        assert!(!snapshot.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"first","status":"completed"}}})));
+        assert_eq!(snapshot.session_status(), "Ready");
+        assert!(snapshot.apply(&json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"second"}}})));
+        assert!(!snapshot.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"first","status":"completed"}}})));
+        assert_eq!(snapshot.session_status(), "Working");
+        assert_eq!(snapshot.turn_id.as_deref(), Some("second"));
+        assert!(snapshot.work_started.is_some());
+        assert!(snapshot.saved.work_periods[1].end_item.is_none());
+        assert_eq!(snapshot.review_completion(), None);
+        assert!(snapshot.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"second","status":"completed"}}})));
+        assert_eq!(snapshot.session_status(), "Review");
+        assert_ne!(snapshot.review_completion(), Some(first));
+        // No active identity after reconnect/rewind cannot be proof of success.
+        snapshot.saved.session_review.pending = None;
+        snapshot.saved.session_review.last_completed_period = None;
+        snapshot.status = Status::Idle;
+        assert!(!snapshot.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"second","status":"completed"}}})));
+        assert_eq!(snapshot.review_completion(), None);
+    }
+    #[test]
+    fn failed_and_interrupted_periods_never_become_review_results() {
+        for status in ["failed", "interrupted"] {
+            let mut snapshot = Snapshot::new(saved());
+            snapshot.apply(&json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn"}}}));
+            snapshot.apply(
+                &json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn","status":status}}}),
+            );
+            assert_eq!(
+                snapshot.status,
+                if status == "failed" {
+                    Status::Failed
+                } else {
+                    Status::Interrupted
+                }
+            );
+            assert_eq!(snapshot.saved.work_periods.len(), 1);
+            assert_eq!(snapshot.review_completion(), None);
+            let mut restored = Snapshot::new(snapshot.saved);
+            restored.status = Status::Idle;
+            assert_eq!(restored.review_completion(), None);
+        }
+    }
+    #[test]
+    fn session_waiting_requires_explicit_open_parent_wait_tool() {
+        let mut snapshot = Snapshot::new(saved());
+        snapshot.begin_work();
+        snapshot.status = Status::Working;
+        snapshot.saved.work_periods[0].subagents.push(Subagent {
+            id: "child".into(),
+            name: "Child".into(),
+            activity: "Working".into(),
+            role: None,
+            task: None,
+            status: SubagentStatus::Working,
+        });
+        snapshot.saved.items.push(json!({"id":"server","type":"commandExecution","command":"npm run dev","status":"inProgress"}));
+        assert_eq!(snapshot.session_status(), "Working");
+        snapshot.saved.items.push(
+            json!({"id":"wait","type":"collabAgentToolCall","tool":"wait","status":"inProgress"}),
+        );
+        assert_eq!(snapshot.session_status(), "Waiting");
+        snapshot.saved.items[1]["status"] = json!("completed");
+        assert_eq!(snapshot.session_status(), "Working");
+        snapshot.reconnecting = true;
+        snapshot.status = Status::Starting;
+        assert_eq!(snapshot.session_status(), "Reconnecting");
+        snapshot.fail("connection failed".into());
+        assert_eq!(snapshot.session_status(), "Disconnected");
+        assert!(!snapshot.reconnecting);
+    }
+    #[test]
+    fn plan_ready_uses_latest_actionable_revision_in_the_completed_turn() {
+        let mut snapshot = Snapshot::new(saved());
+        snapshot.begin_work();
+        snapshot
+            .saved
+            .items
+            .push(json!({"id":"plan-message","type":"agentMessage","text":"Plan"}));
+        snapshot.finish_work();
+        snapshot.status = Status::Done;
+        snapshot.completed_for_review();
+        let plan: crate::rich_plan::PlanRevision = serde_json::from_value(json!({
+            "message_id":"plan-message","source":"plan.grove-plan.json","assets":[],
+            "document":{"schema_version":1,"plan_id":"status-plan","revision_id":"r1","title":"Plan","claims":[{"id":"result","text":"Implement status"}]}
+        })).unwrap();
+        snapshot.saved.rich_plans.revisions.push(plan.clone());
+        assert_eq!(snapshot.session_status(), "Plan ready");
+        assert!(snapshot
+            .mark_reviewed(snapshot.review_completion().unwrap())
+            .is_err());
+        let mut latest = plan;
+        latest.document.revision_id = "r2".into();
+        latest.review.delivery = crate::rich_plan::ResponseDelivery::Sent { id: 1 };
+        snapshot.saved.rich_plans.revisions.push(latest);
+        assert_eq!(
+            snapshot.session_status(),
+            "Review",
+            "superseded draft must not keep Plan ready alive"
+        );
+    }
+    #[test]
+    fn codex_review_action_updates_only_its_current_completed_result() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.state.finish_work();
+        actor.state.status = Status::Done;
+        actor.state.completed_for_review();
+        let receipt = actor.state.review_completion().unwrap();
+        assert!(actor
+            .action(Action::MarkReviewed {
+                work_period: receipt + 1
+            })
+            .is_err());
+        actor
+            .action(Action::MarkReviewed {
+                work_period: receipt,
+            })
+            .unwrap();
+        assert_eq!(actor.state.session_status(), "Ready");
     }
     #[test]
     fn session_history_close_preserves_codex_and_claude_transcripts_separately_from_recovery() {
@@ -7413,6 +7782,8 @@ mod tests {
             }
             if clear_periods {
                 saved.work_periods.clear();
+                saved.session_review.pending = None;
+                saved.session_review.last_completed_period = None;
             }
             let restored = Snapshot::new(saved);
             let agent = &restored.saved.work_periods[0].subagents[0];
@@ -10075,6 +10446,7 @@ mod tests {
         actor.args = vec!["--unsupported".into()];
         actor.action(Action::Reconnect).unwrap();
         assert_eq!(actor.state.status, Status::Disconnected);
+        assert!(!actor.state.reconnecting);
         assert!(actor.process.is_none());
         assert!(actor.state.error.is_some());
     }

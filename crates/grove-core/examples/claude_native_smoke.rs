@@ -47,6 +47,7 @@ fn main() -> Result<(), String> {
     let key = grove_core::identity::random_id()?;
     let saved = SavedSession {
         claude_subagents: std::collections::HashMap::default(),
+        session_review: Default::default(),
         rich_plans: grove_core::rich_plan::PlanStore::default(),
         side_chats: Default::default(),
         claude_resume: None,

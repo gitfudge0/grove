@@ -23,6 +23,8 @@ pub(super) struct RowMetadata {
     pub effort: Option<String>,
     pub context: String,
     pub status: Status,
+    pub display_status: &'static str,
+    pub review_completion: Option<usize>,
     pub age: String,
 }
 impl RowMetadata {
@@ -47,6 +49,11 @@ impl RowMetadata {
                 },
             )
     }
+}
+fn dashboard_review_completion(metadata: &RowMetadata) -> Option<usize> {
+    matches!(metadata.display_status, "Review" | "Review · unread")
+        .then_some(metadata.review_completion)
+        .flatten()
 }
 fn metadata_group(glyph: &str, text: String, window: &Window) -> AnyElement {
     let selector = format!("dashboard-meta-label-{glyph}");
@@ -215,6 +222,32 @@ pub(super) struct DashboardTimelines {
     task_hovered: HashSet<(Scope, String)>,
 }
 impl DashboardTimelines {
+    /// Both structured disclosures and terminal navigation rows keep a stable
+    /// session focus target when their transient review action disappears.
+    pub(super) fn session_focus(
+        &mut self,
+        workspace: u64,
+        id: SessionId,
+        cx: &mut App,
+    ) -> FocusHandle {
+        self.focus
+            .entry((workspace, id))
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+    /// Review acknowledgment removes its action; return keyboard focus to the
+    /// surviving row for the same session rather than a different row.
+    pub(super) fn restore_review_focus(
+        &self,
+        workspace: u64,
+        id: SessionId,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(focus) = self.focus.get(&(workspace, id)) {
+            focus.focus(window, cx);
+        }
+    }
     pub(super) fn clear_entrances(&mut self) {
         self.entrances.clear();
     }
@@ -494,11 +527,14 @@ impl Sidebar {
                             .child(
                                 super::super::status::label(
                                     format!("dashboard-session-{}", id.raw()),
-                                    super::super::status::codex_kind(status),
-                                    status.label(),
+                                    super::super::status::session_kind(metadata.display_status),
+                                    metadata.display_status,
                                     TEXT_SMALL,
                                     cx,
                                 )
+                                .debug_selector(move || {
+                                    format!("dashboard-session-status-{}", id.raw())
+                                })
                                 .flex_shrink_0()
                                 .text_size(rpx(TEXT_SMALL)),
                             )
@@ -512,9 +548,14 @@ impl Sidebar {
                     )
                     .child(render_metadata(metadata, window)),
             );
+        let open_label = if metadata.display_status == "Plan ready" {
+            "Review plan"
+        } else {
+            "Open session"
+        };
         let open_button = super::super::components::header_control_frame(
             ("dashboard-open-session", id.raw()),
-            format!("Open session · {}", metadata.context),
+            format!("{open_label} · {}", metadata.context),
             c::BG_HOVER(),
         )
         .debug_selector(move || format!("dashboard-open-session-{}", id.raw()))
@@ -536,12 +577,27 @@ impl Sidebar {
                 }
             }),
         )
-        .tooltip(|window, cx| {
-            super::super::components::tooltip("Open session", window).build(window, cx)
+        .tooltip(move |window, cx| {
+            super::super::components::tooltip(open_label, window).build(window, cx)
         })
         .child(icon("arrow-right", ICON_SM, c::FG_DIM()));
         let body = self.render_dashboard_tasks(key, &data, status, window, cx);
         let detail = self.dashboard_progress_reveal(key, open, body, cx);
+        let review_action = dashboard_review_completion(metadata).map(|receipt| {
+            self.control(
+                ("dashboard-mark-reviewed", id.raw()),
+                "Mark reviewed",
+                Action::MarkReviewed(id, receipt),
+                cx,
+            )
+            .debug_selector(move || format!("dashboard-mark-reviewed-{}", id.raw()))
+            .w_auto()
+            .px(rpx(SPACE_LG))
+            .gap(rpx(SPACE_SM))
+            .text_size(rpx(TEXT_SMALL))
+            .child(icon("check", ICON_SM, c::FG_DIM()))
+            .child("Mark reviewed")
+        });
         let row = div()
             .id(("dashboard-progress", id.raw()))
             .w_full()
@@ -558,6 +614,14 @@ impl Sidebar {
                     .child(toggle)
                     .child(open_button),
             )
+            .when_some(review_action, |row, action| {
+                row.child(
+                    div()
+                        .pl(rpx(ICON_LG + SPACE_LG))
+                        .pt(rpx(SPACE_SM))
+                        .child(action),
+                )
+            })
             .child(detail)
             .into_any_element();
         self.dashboard_session_entrance(key, row, cx)
@@ -1742,6 +1806,133 @@ mod tests {
             });
         });
     }
+    fn session_status_metadata(
+        provider: grove_core::codex::Provider,
+        label: &'static str,
+    ) -> RowMetadata {
+        RowMetadata {
+            project: "Grove".into(),
+            worktree: "Main checkout".into(),
+            provider,
+            model: "Fixture model".into(),
+            effort: None,
+            context: "Session state fixture".into(),
+            // Deliberately differs from presentation: old raw runtime labels must
+            // not hide review, reconnecting, plan-ready or explicit wait states.
+            status: Status::Idle,
+            display_status: label,
+            review_completion: Some(7),
+            age: "now".into(),
+        }
+    }
+    #[test]
+    fn dashboard_review_action_requires_current_review_state_for_both_providers() {
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            for label in [
+                "Plan ready",
+                "Reconnecting",
+                "Waiting",
+                "Ready",
+                "Approval needed",
+                "Failed",
+            ] {
+                assert_eq!(
+                    dashboard_review_completion(&session_status_metadata(provider, label)),
+                    None,
+                    "{provider:?} {label}"
+                );
+            }
+            for label in ["Review", "Review · unread"] {
+                let mut metadata = session_status_metadata(provider, label);
+                assert_eq!(dashboard_review_completion(&metadata), Some(7));
+                metadata.review_completion = None;
+                assert_eq!(dashboard_review_completion(&metadata), None);
+            }
+        }
+    }
+
+    struct SessionStateProbe {
+        sidebar: Entity<Sidebar>,
+        metadata: RowMetadata,
+    }
+    impl gpui::Render for SessionStateProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.render_dashboard_progress(
+                    SessionId::from_raw(41),
+                    "A long session title that yields to status and available actions",
+                    &self.metadata,
+                    window,
+                    cx,
+                )
+            })
+        }
+    }
+    #[gpui::test]
+    fn dashboard_codex_and_claude_session_states_preserve_review_and_narrow_layout(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init_task_fixture);
+        let (probe, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let sidebar = cx.new(|cx| Sidebar::new(runtime, window, cx));
+            SessionStateProbe {
+                sidebar,
+                metadata: session_status_metadata(grove_core::codex::Provider::Codex, "Ready"),
+            }
+        });
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            for label in [
+                "Plan ready",
+                "Reconnecting",
+                "Waiting",
+                "Review",
+                "Review · unread",
+                "Ready",
+            ] {
+                for (width, rem) in [(620., crate::zoom::REM_BASE), (280., 20.)] {
+                    cx.update(|window, cx| {
+                        window.set_rem_size(gpui::px(rem));
+                        probe.update(cx, |probe, cx| {
+                            probe.metadata = session_status_metadata(provider, label);
+                            cx.notify();
+                        });
+                    });
+                    cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.)));
+                    cx.run_until_parked();
+                    cx.update(|window, cx| {
+                        let _ = window.draw(cx);
+                    });
+                    let status = cx.debug_bounds("dashboard-session-status-41").unwrap();
+                    let open = cx.debug_bounds("dashboard-open-session-41").unwrap();
+                    assert!(
+                        status.right() <= open.left(),
+                        "{provider:?} {label}: status overlaps open action"
+                    );
+                    assert!(
+                        open.right() <= gpui::px(width),
+                        "{provider:?} {label}: open action overflows"
+                    );
+                    let review = cx.debug_bounds("dashboard-mark-reviewed-41");
+                    assert_eq!(
+                        review.is_some(),
+                        matches!(label, "Review" | "Review · unread"),
+                        "{provider:?} {label}"
+                    );
+                    if let Some(review) = review {
+                        assert!(review.right() <= gpui::px(width));
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn metadata_shows_model_and_formats_only_actual_effort() {
         let mut metadata = RowMetadata {
@@ -1752,6 +1943,8 @@ mod tests {
             effort: None,
             context: String::new(),
             status: Status::Idle,
+            display_status: "Ready",
+            review_completion: None,
             age: String::new(),
         };
         assert_eq!(metadata.worktree, "Main checkout");
@@ -1779,6 +1972,8 @@ mod tests {
                         effort: Some("high".into()),
                         context: String::new(),
                         status: Status::Idle,
+                        display_status: "Ready",
+                        review_completion: None,
                         age: String::new(),
                     },
                     window,

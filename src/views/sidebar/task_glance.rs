@@ -87,11 +87,18 @@ pub(super) struct TaskGlanceCache {
     timeline: std::sync::Arc<super::dashboard_timeline::TimelineData>,
     dashboard_status: Option<Status>,
     lifecycle_status: Option<Status>,
+    presentation: Option<(&'static str, Option<usize>)>,
     title_generation_pending: bool,
 }
 
 impl TaskGlanceCache {
     /// Connection and lifecycle controls are visible even with Dashboard closed.
+    fn refresh_presentation(&mut self, state: &grove_core::codex::Snapshot) -> bool {
+        let next = Some((state.session_status(), state.review_completion()));
+        let changed = self.presentation != next;
+        self.presentation = next;
+        changed
+    }
     fn refresh_lifecycle(&mut self, status: Status) -> bool {
         let changed = self.lifecycle_status != Some(status);
         self.lifecycle_status = Some(status);
@@ -216,6 +223,7 @@ impl Sidebar {
                 let state = &session.read(cx).state;
                 let cache = this.task_glances.entry(id).or_default();
                 let changed = cache.refresh(&state.saved.items);
+                let presentation_changed = cache.refresh_presentation(state);
                 let lifecycle_changed = cache.refresh_lifecycle(state.status);
                 let title_pending_changed =
                     cache.title_generation_pending != state.title_generation_pending;
@@ -227,7 +235,12 @@ impl Sidebar {
                         state.turn_id.as_deref(),
                         state.saved.activity_reporting,
                     );
-                if changed || lifecycle_changed || activity_changed || title_pending_changed {
+                if changed
+                    || lifecycle_changed
+                    || activity_changed
+                    || title_pending_changed
+                    || presentation_changed
+                {
                     cx.notify();
                 }
             });

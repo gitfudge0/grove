@@ -404,6 +404,7 @@ impl Sidebar {
                 }
             };
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
                 claude_resume: None,
@@ -811,7 +812,7 @@ impl Sidebar {
         let owner = cx.entity().entity_id();
         let registry = self.runtime.read(cx).registry.read(cx);
         let activity = self.runtime.read(cx).activity.read(cx);
-        let mut sessions: Vec<_> = registry
+        let sessions: Vec<_> = registry
             .all()
             .iter()
             .filter(|meta| {
@@ -832,7 +833,17 @@ impl Sidebar {
                 (meta.clone(), status, title, since)
             })
             .collect();
-        sessions.sort_by_key(|session| std::cmp::Reverse(session.3));
+        let grouping_entries = sessions
+            .iter()
+            .map(|(meta, status, _, since)| super::SessionListEntry {
+                id: meta.id,
+                state: activity.state_of(meta.id),
+                status,
+                since: Some(*since),
+                active: activity.active_of(meta.id),
+            })
+            .collect::<Vec<_>>();
+        let groups = super::group_sessions_for_list(&grouping_entries, Instant::now());
         let summary = div()
             .id("dashboard-summary")
             .debug_selector(|| "dashboard-summary".into())
@@ -868,7 +879,21 @@ impl Sidebar {
                     .child("Your sessions will appear here."),
             );
         } else {
-            for (meta, status, title, since) in sessions {
+            for (section, indices) in groups {
+                recent = recent.child(
+                    div()
+                        .id(gpui::SharedString::from(format!(
+                            "dashboard-section-{section}"
+                        )))
+                        .debug_selector(move || format!("dashboard-section-{section}"))
+                        .pt(rpx(SPACE_2XL))
+                        .pb(rpx(SPACE_SM))
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(format!("{section} · {}", indices.len())),
+                );
+                for index in indices {
+                    let (meta, status, title, since) = sessions[index].clone();
                 let id = meta.id;
                 let age = session_age_label(since, Instant::now());
                 let label = format!(
@@ -887,6 +912,7 @@ impl Sidebar {
                         let state = &session.read(cx).state;
                         (
                             state.status,
+                                    state.review_completion(),
                             state.saved.provider,
                             super::super::codex_view::composer_model_name(state),
                             state
@@ -906,7 +932,9 @@ impl Sidebar {
                                 .map(str::to_owned),
                         )
                     });
-                if let Some((structured_status, provider, model, effort)) = structured {
+                    if let Some((structured_status, review_completion, provider, model, effort)) =
+                        structured
+                    {
                     let worktree = self
                         .snapshot
                         .projects
@@ -944,12 +972,18 @@ impl Sidebar {
                         effort,
                         context: label,
                         status: structured_status,
+                            display_status: status,
+                            review_completion,
                         age,
                     };
-                    recent = recent
-                        .child(self.render_dashboard_progress(id, &title, &metadata, window, cx));
+                        recent = recent.child(
+                            self.render_dashboard_progress(id, &title, &metadata, window, cx),
+                        );
                     continue;
                 }
+                    let row_focus =
+                        self.dashboard_timelines
+                            .session_focus(self.active_workspace, id, cx);
                 recent = recent.child(
                     self.row(
                         format!("dashboard-session-{}", id.raw()),
@@ -958,6 +992,9 @@ impl Sidebar {
                         Action::Select(Selection::Session(id)),
                         cx,
                     )
+                        .track_focus(&row_focus)
+                        .focus_visible(|row| row.bg(c::BG_HOVER()))
+                        .debug_selector(move || format!("dashboard-terminal-session-{}", id.raw()))
                     .h_auto()
                     .min_h(rpx(ROW_H))
                     .py(rpx(SPACE_SM))
@@ -990,6 +1027,29 @@ impl Sidebar {
                             .child(age),
                     ),
                 );
+                    if matches!(status, "Review" | "Review · unread") {
+                        if let Some(completion) =
+                            self.runtime.read(cx).activity.read(cx).terminal_review(id)
+                        {
+                            recent = recent.child(
+                                div().pb(rpx(SPACE_LG)).child(
+                                    self.control(
+                                        ("dashboard-terminal-mark-reviewed", id.raw()),
+                                        "Mark reviewed",
+                                        Action::MarkTerminalReviewed(id, completion),
+                                        cx,
+                                    )
+                                    .w_auto()
+                                    .px(rpx(SPACE_LG))
+                                    .gap(rpx(SPACE_SM))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .child(icon("check", ICON_SM, c::FG_DIM()))
+                                    .child("Mark reviewed"),
+                                ),
+                            );
+                        }
+                    }
+                }
             }
         }
         div()

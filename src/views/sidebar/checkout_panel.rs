@@ -3276,6 +3276,7 @@ mod tests {
             let (handle, actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
                 claude_resume: None,
@@ -3369,6 +3370,7 @@ mod tests {
             let (handle, actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
                 claude_resume: None,
@@ -4171,6 +4173,7 @@ mod tests {
                 let (handle, _actions) = grove_core::codex::Handle::channel();
                 let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
                 claude_resume: None,
@@ -4340,6 +4343,7 @@ mod tests {
             grove_core::codex::Provider::Claude,
         ] {
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
                 claude_resume: None,
@@ -4661,6 +4665,7 @@ mod tests {
             let (handle, _actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
                 claude_resume: None,

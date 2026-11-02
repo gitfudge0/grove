@@ -817,7 +817,12 @@ impl Sidebar {
         );
         let agent = agent_name(meta.agent);
         let grid = self.mode == ViewMode::Grid;
-        let accessible_label = format!("{agent} · {task} · {context} · {}", state.label());
+        let status_label = if home || (native.is_none() && state == CanvasState::Starting) {
+            state.label()
+        } else {
+            self.status(&meta, cx).0
+        };
+        let accessible_label = format!("{agent} · {task} · {context} · {status_label}");
         let mut view = None;
         if let Some(session) = session {
             if !self.canvas_observers.contains_key(&id) {
@@ -981,33 +986,40 @@ impl Sidebar {
             .items_center()
             .justify_center()
             .child(icon(meta.agent.icon_name(), ICON_LG, c::FG()));
+        let status_kind = super::super::status::session_kind(status_label);
         let status = div()
             .id(("header-status", id.raw()))
             .role(gpui::Role::Status)
-            .aria_label(state.label())
+            .aria_label(status_label)
             .flex_shrink_0()
             .flex()
             .items_center()
             .gap(rpx(SPACE_SM))
             .text_size(rpx(TEXT_MICRO))
-            .text_color(state.color())
+            .text_color(status_kind.color())
             .whitespace_nowrap()
             .child(super::super::status::mark(
                 format!("canvas-status-{}", id.raw()),
-                super::super::status::session_kind(state.label()),
+                status_kind,
                 ICON_SM,
                 cx,
             ))
-            .when(!compact_status, |status| status.child(state.label()));
+            .when(!compact_status, |status| status.child(status_label));
         let status = motion::fast(
             status,
-            format!("canvas-session-status-{}-{}", id.raw(), state.label()),
+            format!("canvas-session-status-{}-{}", id.raw(), status_label),
             cx,
         );
-        let task_progress = native.as_ref().and_then(|native| {
+        let task_progress = native.as_ref().filter(|_| grid).and_then(|native| {
             self.header_task_progress(id, native.read(cx).state.status, window, cx)
         });
-        let header_status = task_progress.unwrap_or(status);
+        let header_status = div()
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_MD))
+            .child(status)
+            .when_some(task_progress, gpui::ParentElement::child)
+            .into_any_element();
         header = header
             .h(rpx(if grid { SESSION_HEADER_H } else { APPBAR_H }))
             .child(
@@ -1117,7 +1129,7 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_MD))
-                    .when(grid, |actions| actions.child(header_status))
+                    .child(header_status)
                     .when(grid, |actions| actions.child(close))
                     .when_some(panel_controls, gpui::ParentElement::child),
             );
@@ -1182,6 +1194,53 @@ impl Sidebar {
                 self.checkout_panel.narrow_content.take(),
                 gpui::ParentElement::child,
             );
+        let terminal_review = native
+            .is_none()
+            .then(|| self.runtime.read(cx).activity.read(cx).terminal_review(id))
+            .flatten();
+        if let Some(completion) =
+            terminal_review.filter(|_| matches!(status_label, "Review" | "Review · unread"))
+        {
+            pane = pane.child(
+                div()
+                    .id(("terminal-review", id.raw()))
+                    .role(gpui::Role::Status)
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
+                    .p(rpx(SPACE_LG))
+                    .border_b_1()
+                    .border_color(c::BORDER())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .text_color(c::STATUS_SUCCESS())
+                            .child(super::super::status::mark(
+                                format!("terminal-review-mark-{}", id.raw()),
+                                super::super::status::StatusKind::Success,
+                                ICON_SM,
+                                cx,
+                            ))
+                            .child(status_label),
+                    )
+                    .child(
+                        self.control(
+                            ("terminal-mark-reviewed", id.raw()),
+                            "Mark reviewed",
+                            Action::MarkTerminalReviewed(id, completion),
+                            cx,
+                        )
+                        .w_auto()
+                        .px(rpx(SPACE_LG))
+                        .gap(rpx(SPACE_SM))
+                        .child(icon("check", ICON_SM, c::FG_DIM()))
+                        .child("Mark reviewed"),
+                    ),
+            );
+        }
         if let Some(message) = state.message(error.as_deref()).filter(|_| native.is_none()) {
             let mut banner = div()
                 .id(gpui::SharedString::from(format!(
@@ -2765,6 +2824,7 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
                 claude_resume: None,
@@ -2932,6 +2992,7 @@ mod tests {
                 )
             });
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
                 claude_resume: None,

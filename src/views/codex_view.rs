@@ -2519,6 +2519,68 @@ impl CodexView {
     }
 
     /// Current session feedback shares the task dock’s exact horizontal inset.
+    fn session_review(
+        &self,
+        state: &codex::Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if self.transcript_only() || state.session_status() != "Review" {
+            return None;
+        }
+        let work_period = state.review_completion()?;
+        Some(
+            div()
+                .id("session-review")
+                .debug_selector(|| "session-review".into())
+                .role(gpui::Role::Status)
+                .min_w_0()
+                .flex_shrink_0()
+                .border_1()
+                .border_color(c::BORDER())
+                .rounded(rpx(RADIUS_GROUP))
+                .p(rpx(SPACE_LG))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(rpx(SPACE_LG))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(rpx(TEXT_SMALL))
+                        .child(status::label(
+                            "session-review-status",
+                            StatusKind::Success,
+                            "Ready for review",
+                            ICON_SM,
+                            cx,
+                        )),
+                )
+                .child(
+                    form_action("session-mark-reviewed", "Mark reviewed", false, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/check.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .debug_selector(|| "session-mark-reviewed".into())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let current = &this.session.read(cx).state;
+                            if current.session_status() == "Review"
+                                && current.review_completion() == Some(work_period)
+                            {
+                                this.session.update(cx, |session, cx| {
+                                    session.send(Action::MarkReviewed { work_period }, cx)
+                                });
+                                this.input.focus_handle(cx).focus(window, cx);
+                            }
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn session_notice(
         &self,
         state: &codex::Snapshot,
@@ -5819,6 +5881,7 @@ impl Render for CodexView {
         } else {
             body.into_any_element()
         };
+        let session_review = self.session_review(&state, window, cx);
         let session_notice = self.session_notice(&state, window, cx);
         let (notice_above, notice_below) = if self.dashboard_tray.is_some() {
             (None, session_notice)
@@ -5852,6 +5915,7 @@ impl Render for CodexView {
                             .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_intro(&state)))
                             .when_some(notice_above, gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
+                            .when_some(session_review, gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
                             .when_some(rewind_drafts, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
@@ -13090,6 +13154,7 @@ mod tests {
     }
     pub(super) fn snapshot() -> Snapshot {
         let mut state = Snapshot::new(SavedSession {
+            session_review: Default::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             side_chats: Default::default(),
             claude_resume: None,
@@ -13241,6 +13306,54 @@ mod tests {
             );
         }
     }
+    #[gpui::test]
+    fn codex_and_claude_review_control_dispatches_only_current_receipt(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.saved.items = vec![
+                            json!({"id":"result","type":"agentMessage","text":"Completed result"}),
+                        ]
+                        .into();
+                        session.state.saved.work_periods = vec![codex::WorkPeriod {
+                            start_item: 0,
+                            end_item: Some(1),
+                            duration_ms: Some(1),
+                            subagents: Vec::new(),
+                        }];
+                        session.state.saved.session_review = codex::SessionReview {
+                            sequence: 7,
+                            last_completed_period: Some(0),
+                            pending: Some(codex::ReviewCompletion { id: 7, period: 0 }),
+                        };
+                        session.state.status = Status::Done;
+                        cx.notify();
+                    });
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            let action = cx
+                .debug_bounds("session-mark-reviewed")
+                .expect("review action must be visible");
+            cx.simulate_click(action.center(), gpui::Modifiers::default());
+            assert!(
+                actions
+                    .try_iter()
+                    .any(|action| matches!(action, Action::MarkReviewed { work_period: 7 })),
+                "{provider:?}"
+            );
+            cx.update(|window, cx| {
+                assert!(view.read(cx).input.focus_handle(cx).is_focused(window))
+            });
+        }
+    }
+
     fn fixture(
         cx: &mut gpui::TestAppContext,
     ) -> (

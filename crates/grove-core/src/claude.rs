@@ -1181,6 +1181,7 @@ impl Actor {
         self.initialized = false;
         self.queue_ready = false;
         self.state.status = Status::Disconnected;
+        self.state.reconnecting = false;
         self.state.turn_id = None;
         self.state.compacting = false;
         self.compact_pending = false;
@@ -1613,6 +1614,8 @@ impl Actor {
         saved
             .work_periods
             .retain(|period| period.start_item < edit.target);
+        saved.session_review.pending = None;
+        saved.session_review.last_completed_period = None;
         saved.retain_claude_subagents();
         if edit.rewind {
             saved.finish_rewind_draft(edit.text, edit.images);
@@ -1881,6 +1884,9 @@ impl Actor {
             return Err("An interrupted edit needs recovery. Reconnect before continuing.".into());
         }
         match action {
+            Action::MarkReviewed { work_period } => {
+                self.state.mark_reviewed(work_period)?;
+            }
             Action::Interaction { epoch, action } => {
                 if epoch != self.state.interaction_epoch {
                     return Err("This interaction belongs to a previous connection".into());
@@ -2370,7 +2376,11 @@ impl Actor {
             }
             Action::Reconnect => {
                 self.queue_ready = false;
-                self.start()?;
+                self.state.reconnecting = true;
+                if let Err(error) = self.start() {
+                    self.state.reconnecting = false;
+                    return Err(error);
+                }
             }
             Action::Stop { .. } => unreachable!("Stop handled by run loop"),
         }
@@ -2924,6 +2934,7 @@ impl Actor {
                 if pending.as_deref() == Some("initialize") {
                     self.finish_edit()?;
                     self.initialized = true;
+                    self.state.reconnecting = false;
                     tracing::info!(
                         stage = "initialized",
                         elapsed_ms = self.started.elapsed().as_millis() as u64,
@@ -2970,6 +2981,9 @@ impl Actor {
                         if let Some(status) = self.pending_completion.take() {
                             self.state.finish_work();
                             self.state.status = status;
+                            if status == Status::Done {
+                                self.state.completed_for_review();
+                            }
                             self.state.turn_id = None;
                             let root = self.state.saved.thread_id.clone().unwrap_or_default();
                             self.state.expire_interactions(&root);
@@ -3452,6 +3466,9 @@ impl Actor {
                     self.state.turn_id = Some("awaiting-session-idle".into());
                 } else {
                     self.state.finish_work();
+                    if self.state.status == Status::Done {
+                        self.state.completed_for_review();
+                    }
                     self.pending_completion = None;
                     self.interrupting = false;
                 }
@@ -5564,6 +5581,53 @@ mod tests {
         assert!(actor.state.queued_prompts.is_empty());
     }
 
+    #[test]
+    fn claude_review_waits_for_authoritative_idle_and_rejects_stale_receipts() {
+        let mut actor = actor();
+        actor.tracks_session_state = true;
+        actor.session_idle = false;
+        actor.state.turn_id = Some("turn".into());
+        actor.state.begin_work();
+        actor
+            .message(json!({"type":"result","subtype":"success","is_error":false}))
+            .unwrap();
+        assert_eq!(actor.state.review_completion(), None);
+        assert_eq!(actor.state.session_status(), "Waiting");
+        actor
+            .message(json!({"type":"system","subtype":"session_state_changed","state":"idle"}))
+            .unwrap();
+        assert_eq!(actor.state.session_status(), "Review");
+        let receipt = actor.state.review_completion().unwrap();
+        assert!(actor
+            .action(Action::MarkReviewed {
+                work_period: receipt + 1
+            })
+            .is_err());
+        actor
+            .action(Action::MarkReviewed {
+                work_period: receipt,
+            })
+            .unwrap();
+        assert_eq!(actor.state.session_status(), "Ready");
+        actor.state.begin_work();
+        actor.state.status = Status::Working;
+        actor
+            .message(json!({"type":"result","subtype":"error_during_execution","is_error":true}))
+            .unwrap();
+        assert_eq!(actor.state.review_completion(), None);
+    }
+    #[test]
+    fn claude_task_output_wait_is_not_inferred_from_background_tools() {
+        let mut actor = actor();
+        actor.state.begin_work();
+        actor.state.status = Status::Working;
+        actor.block("output", &json!({"type":"tool_use","id":"output","name":"TaskOutput","input":{"task_id":"task","block":false}}));
+        assert_eq!(actor.state.session_status(), "Working");
+        actor.state.saved.items[0]["arguments"]["block"] = json!(true);
+        assert_eq!(actor.state.session_status(), "Waiting");
+        actor.state.saved.items[0]["status"] = json!("completed");
+        assert_eq!(actor.state.session_status(), "Working");
+    }
     #[test]
     fn clear_conversation_drops_resume_identity_and_old_event_receiver() {
         let mut actor = actor();

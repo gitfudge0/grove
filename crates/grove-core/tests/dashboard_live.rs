@@ -12,6 +12,7 @@ use std::{
 fn draft(provider: Provider, cwd: &str) -> SavedSession {
     SavedSession {
         claude_subagents: HashMap::default(),
+        session_review: Default::default(),
         rich_plans: grove_core::rich_plan::PlanStore::default(),
         side_chats: Default::default(),
         claude_resume: None,
@@ -130,6 +131,38 @@ fn dashboard_live_provider_catalog_and_selected_checkout() {
                         .iter()
                         .any(|item| item["type"] == "agentMessage")
             })?;
+            if completed.session_status() != "Review" {
+                return Err(format!(
+                    "Successful result was not Review: {}",
+                    completed.session_status()
+                ));
+            }
+            let receipt = completed
+                .review_completion()
+                .ok_or("Missing review receipt")?;
+            connection.handle.send(codex::Action::Reconnect)?;
+            let reconnecting = await_state(&connection, 30, |state| state.reconnecting)?;
+            if reconnecting.session_status() != "Reconnecting" {
+                return Err("Reconnect attempt did not expose Reconnecting".into());
+            }
+            let restored = await_state(&connection, 75, |state| {
+                state.status == Status::Idle && !state.reconnecting
+            })?;
+            if restored.review_completion() != Some(receipt)
+                || restored.session_status() != "Review"
+            {
+                return Err("Reconnect lost the pending review result".into());
+            }
+            connection.handle.send(codex::Action::MarkReviewed {
+                work_period: receipt,
+            })?;
+            await_state(&connection, 15, |state| {
+                state.session_status() == "Ready" && state.review_completion().is_none()
+            })?;
+            println!(
+                "{} VERIFIED live Review → Reconnecting → Review → Ready; no resend",
+                provider.label()
+            );
             let response = completed
                 .saved
                 .items

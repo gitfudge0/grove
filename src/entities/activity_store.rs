@@ -156,6 +156,7 @@ impl NativeAttention {
 pub struct ActivityStore {
     trackers: HashMap<SessionId, Tracker>,
     native_attention: HashMap<SessionId, NativeAttention>,
+    terminal_reviews: HashMap<SessionId, Instant>,
     /// Waiting sessions in `visible_session_order`, resolved once per pass.
     waiting: Vec<SessionId>,
     /// `Some(t)` while `waiting` is non-empty — the pulse's phase origin.
@@ -188,6 +189,7 @@ impl ActivityStore {
         Self {
             trackers: HashMap::new(),
             native_attention: HashMap::new(),
+            terminal_reviews: HashMap::new(),
             waiting: Vec::new(),
             pulse_since: None,
             last_badge: 0,
@@ -209,6 +211,7 @@ impl ActivityStore {
         Self {
             trackers: HashMap::new(),
             native_attention: HashMap::new(),
+            terminal_reviews: HashMap::new(),
             waiting: Vec::new(),
             pulse_since: None,
             last_badge: 0,
@@ -226,6 +229,24 @@ impl ActivityStore {
         self.trackers
             .get(&id)
             .map_or(ActivityState::Idle, |t| t.state)
+    }
+
+    /// Terminal completion is retained independently of focus acknowledgment.
+    pub fn terminal_review(&self, id: SessionId) -> Option<Instant> {
+        self.terminal_reviews.get(&id).copied()
+    }
+
+    pub fn mark_terminal_reviewed(
+        &mut self,
+        id: SessionId,
+        completion: Instant,
+        cx: &mut Context<Self>,
+    ) {
+        if self.terminal_review(id) == Some(completion) {
+            self.terminal_reviews.remove(&id);
+            self.acknowledge(id, cx);
+            cx.notify();
+        }
     }
 
     #[cfg(test)]
@@ -285,10 +306,12 @@ impl ActivityStore {
             .and_then(|w| w.registry.read(cx).codex(id).cloned())
         {
             let snapshot = &session.read(cx).state;
-            if snapshot.status == grove_core::codex::Status::Done {
+            if snapshot.review_completion().is_some() {
                 self.native_attention.entry(id).or_default().acknowledged = Some(CompletionKey {
                     conversation: snapshot.cleared_conversations,
-                    work_periods: snapshot.saved.work_periods.len(),
+                    work_periods: snapshot
+                        .review_completion()
+                        .unwrap_or(snapshot.saved.work_periods.len()),
                 });
             }
         }
@@ -376,10 +399,18 @@ impl ActivityStore {
                 if let Some(session) = registry.read(cx).codex(*id) {
                     let snapshot = &session.read(cx).state;
                     let next = self.native_attention.entry(*id).or_default().classify(
-                        snapshot.status,
+                        if snapshot.review_completion().is_some() {
+                            grove_core::codex::Status::Done
+                        } else if snapshot.status == grove_core::codex::Status::Done {
+                            grove_core::codex::Status::Idle
+                        } else {
+                            snapshot.status
+                        },
                         CompletionKey {
                             conversation: snapshot.cleared_conversations,
-                            work_periods: snapshot.saved.work_periods.len(),
+                            work_periods: snapshot
+                                .review_completion()
+                                .unwrap_or(snapshot.saved.work_periods.len()),
                         },
                         active_session == Some(*id) && window_focused,
                     );
@@ -468,7 +499,13 @@ impl ActivityStore {
             };
 
             let tracker = self.trackers.entry(*id).or_default();
+            if new_state == ActivityState::Done && tracker.state != ActivityState::Done {
+                self.terminal_reviews
+                    .entry(*id)
+                    .or_insert_with(Instant::now);
+            }
             if new_state == ActivityState::Working {
+                self.terminal_reviews.remove(id);
                 tracker.was_working = true;
                 // Unconditional, so a session that stays Working every tick keeps advancing last-active, not just on entry.
                 tracker.last_active = Instant::now();
@@ -490,6 +527,13 @@ impl ActivityStore {
                 tracker.state = new_state;
                 tracker.state_since = Instant::now();
             }
+            if focused && new_state == ActivityState::Done {
+                // A result finishing in view is seen, but still requires explicit review.
+                tracker.acknowledge();
+                if let Some(path) = state_file {
+                    attention::acknowledge(path);
+                }
+            }
         }
 
         if let Some(poller) = self.poller.as_ref() {
@@ -502,6 +546,8 @@ impl ActivityStore {
             .retain(|id, _| sessions.iter().any(|(live, ..)| live == id));
         changed |= self.trackers.len() != before;
         self.native_attention
+            .retain(|id, _| sessions.iter().any(|(live, ..)| live == id));
+        self.terminal_reviews
             .retain(|id, _| sessions.iter().any(|(live, ..)| live == id));
 
         // Tree order, not HashMap order (`update/mod.rs:728-740`); before the first rail paint it's empty, so fall back.
@@ -542,6 +588,28 @@ impl ActivityStore {
 mod tests {
     use super::*;
     use gpui::AppContext as _;
+
+    #[gpui::test]
+    fn terminal_review_survives_focus_and_rejects_stale_acknowledgment(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let id = SessionId::from_raw(1);
+        let first = Instant::now();
+        let store = cx.new(|_| ActivityStore::new());
+        store.update(cx, |store, cx| {
+            store.set_state_for_test(id, ActivityState::Done);
+            store.terminal_reviews.insert(id, first);
+            store.acknowledge(id, cx);
+            assert_eq!(store.state_of(id), ActivityState::Idle);
+            assert_eq!(store.terminal_review(id), Some(first));
+            let next = first + Duration::from_secs(1);
+            store.terminal_reviews.insert(id, next);
+            store.mark_terminal_reviewed(id, first, cx);
+            assert_eq!(store.terminal_review(id), Some(next));
+            store.mark_terminal_reviewed(id, next, cx);
+            assert_eq!(store.terminal_review(id), None);
+        });
+    }
 
     #[test]
     fn native_completion_acknowledgment_survives_repeated_done_snapshots() {

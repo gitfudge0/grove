@@ -57,10 +57,11 @@ impl StatusKind {
 /// Explicit adapter for the existing session/child lifecycle vocabulary.
 pub fn session_kind(label: &str) -> StatusKind {
     match label {
-        "Working" | "Starting" => StatusKind::Working,
+        "Working" | "Starting" | "Reconnecting" => StatusKind::Working,
         "Running" => StatusKind::Running,
-        "Done" => StatusKind::Success,
-        "Needs you" | "Waiting" => StatusKind::NeedsInput,
+        "Done" | "Review" | "Review · unread" | "Plan ready" => StatusKind::Success,
+        "Needs you" => StatusKind::NeedsInput,
+        "Waiting" => StatusKind::Pending,
         "Approval needed" => StatusKind::Approval,
         "Answer needed" => StatusKind::Answer,
         "Usage limit" => StatusKind::Limited,
@@ -247,6 +248,11 @@ mod tests {
             ("Usage limit", "status-limited", c::STATUS_WARNING()),
             ("Disconnected", "status-disconnected", c::STATUS_ERROR()),
             ("Ready", "status-idle", c::STATUS_NEUTRAL()),
+            ("Review", "status-success", c::STATUS_SUCCESS()),
+            ("Review · unread", "status-success", c::STATUS_SUCCESS()),
+            ("Plan ready", "status-success", c::STATUS_SUCCESS()),
+            ("Reconnecting", "status-working", c::STATUS_INFO()),
+            ("Waiting", "task-pending", c::STATUS_NEUTRAL()),
         ] {
             assert_eq!(session_kind(text).icon_name(), glyph);
             assert_eq!(session_kind(text).color(), color);

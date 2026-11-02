@@ -561,6 +561,7 @@ mod tests {
                     ("claude-record", grove_core::codex::Provider::Claude),
                 ] {
                     let saved = grove_core::codex::SavedSession {
+                        session_review: Default::default(),
                         rich_plans: Default::default(),
                         side_chats: Default::default(),
                         claude_resume: None,

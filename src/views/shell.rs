@@ -714,7 +714,10 @@ impl Shell {
                 continue;
             }
             let status = if let Some(session) = registry.codex(id) {
-                (session.read(cx).state.status.label(), c::FG_DIM())
+                {
+                    let label = session.read(cx).state.session_status();
+                    (label, super::status::session_kind(label).color())
+                }
             } else if registry
                 .session(id)
                 .is_some_and(|session| session.read(cx).spawn_error().is_some())

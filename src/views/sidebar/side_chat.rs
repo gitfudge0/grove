@@ -96,6 +96,7 @@ mod tests {
                 );
             });
             let saved = grove_core::codex::SavedSession {
+                session_review: Default::default(),
                 rich_plans: Default::default(),
                 side_chats: Default::default(),
                 claude_resume: None,

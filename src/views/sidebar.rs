@@ -145,34 +145,15 @@ fn group_sessions_for_list(
     entries: &[SessionListEntry],
     now: Instant,
 ) -> Vec<(&'static str, Vec<usize>)> {
+    let _ = now; // Activity clocks order rows; they never establish running work.
     let mut groups: [Vec<usize>; 4] = std::array::from_fn(|_| Vec::new());
     for (index, entry) in entries.iter().enumerate() {
-        let section = if matches!(
-            entry.status,
-            "Approval needed"
-                | "Answer needed"
-                | "Needs you"
-                | "Failed"
-                | "Disconnected"
-                | "Usage limit"
-        ) || (entry.status != "Starting"
-            && entry.state == ActivityState::WaitingForInput)
-        {
-            0
-        } else if entry.status == "Done" && entry.state == ActivityState::Done {
-            1
-        } else if matches!(entry.status, "Interrupted" | "Exited") {
-            3
-        } else if entry.status == "Starting"
-            || entry.state == ActivityState::Working
-            || (entry.state != ActivityState::Exited
-                && entry.active.is_some_and(|active| {
-                    now.saturating_duration_since(active) < crate::activity::IDLE_DWELL
-                }))
-        {
-            2
-        } else {
-            3
+        let section = match entry.status {
+            "Approval needed" | "Answer needed" | "Needs you" | "Failed" | "Disconnected"
+            | "Reconnecting" | "Usage limit" | "Unknown" => 0,
+            "Done" | "Review" | "Review · unread" | "Plan ready" => 1,
+            "Starting" | "Working" | "Waiting" => 2,
+            _ => 3,
         };
         groups[section].push(index);
     }
@@ -192,7 +173,7 @@ fn group_sessions_for_list(
                 .then_with(|| entries[*b].id.cmp(&entries[*a].id))
         });
     }
-    ["Needs you", "Review", "Working", "Idle"]
+    ["Needs you", "Review", "Working", "Ready"]
         .into_iter()
         .zip(groups)
         .filter(|(_, group)| !group.is_empty())
@@ -263,7 +244,7 @@ fn managed_session_status(
         ActivityState::WaitingForInput => ("Needs you", c::AMBER()),
         ActivityState::Working => ("Working", c::BLUE()),
         ActivityState::Done => ("Done", c::GREEN()),
-        ActivityState::Idle => ("Idle", c::FG_DIM()),
+        ActivityState::Idle => ("Ready", c::FG_DIM()),
         ActivityState::Exited => ("Exited", c::FG_DIM()),
     }
 }
@@ -274,25 +255,9 @@ fn structured_session_status(
     state: &grove_core::codex::Snapshot,
     activity: ActivityState,
 ) -> &'static str {
-    use grove_core::codex::{SessionNoticeKind, Status};
-    if !state.approvals.is_empty() {
-        return "Approval needed";
-    }
-    if !state.questions.is_empty() || !state.elicitations.is_empty() {
-        return "Answer needed";
-    }
-    if matches!(
-        state.status,
-        Status::Failed | Status::Interrupted | Status::Done
-    ) && state
-        .effective_notice()
-        .is_some_and(|notice| notice.kind == SessionNoticeKind::UsageLimit)
-    {
-        return "Usage limit";
-    }
-    match state.status {
-        Status::Done if activity != ActivityState::Done => "Ready",
-        status => status.label(),
+    match state.session_status() {
+        "Review" if activity == ActivityState::Done => "Review · unread",
+        label => label,
     }
 }
 
@@ -337,6 +302,8 @@ enum Action {
     RunNamedScript(String, String, String),
     Close(SessionId),
     FinishSession(SessionId),
+    MarkTerminalReviewed(SessionId, Instant),
+    MarkReviewed(SessionId, usize),
     ConfirmClose(SessionId),
     Retry(SessionId),
     OpenDiff(SessionId),
@@ -3386,9 +3353,46 @@ impl Sidebar {
                 self.confirmation_return_focus = window.focused(cx);
                 self.cancel_focus.focus(window, cx);
             }
+            Action::MarkReviewed(id, work_period) => {
+                let session = self.runtime.read(cx).registry.read(cx).codex(id).cloned();
+                if let Some(session) = session {
+                    session.update(cx, |session, cx| {
+                        if session.state.session_status() == "Review"
+                            && session.state.review_completion() == Some(work_period)
+                        {
+                            session
+                                .send(grove_core::codex::Action::MarkReviewed { work_period }, cx);
+                        }
+                    });
+                }
+                self.dashboard_timelines.restore_review_focus(
+                    self.active_workspace,
+                    id,
+                    window,
+                    cx,
+                );
+                cx.notify();
+            }
+            Action::MarkTerminalReviewed(id, completion) => {
+                self.runtime
+                    .read(cx)
+                    .activity
+                    .clone()
+                    .update(cx, |activity, cx| {
+                        activity.mark_terminal_reviewed(id, completion, cx);
+                    });
+                self.dashboard_timelines.restore_review_focus(
+                    self.active_workspace,
+                    id,
+                    window,
+                    cx,
+                );
+                cx.notify();
+            }
             Action::FinishSession(id) => {
                 let selected = self.selection == Some(Selection::Session(id));
-                self.runtime.update(cx, |runtime, cx| runtime.kill_session(id, cx));
+                self.runtime
+                    .update(cx, |runtime, cx| runtime.kill_session(id, cx));
                 if selected {
                     self.open_landing_page(window, cx);
                 }
@@ -3749,11 +3753,21 @@ impl Sidebar {
         let pending_attach = registry
             .session(meta.id)
             .is_some_and(|t| t.read(cx).is_pending_attach());
-        managed_session_status(
-            failed,
-            pending_attach,
-            runtime.activity.read(cx).state_of(meta.id),
-        )
+        let activity = runtime.activity.read(cx);
+        let status = managed_session_status(failed, pending_attach, activity.state_of(meta.id));
+        if !failed
+            && !pending_attach
+            && activity.terminal_review(meta.id).is_some()
+            && matches!(status.0, "Ready" | "Done")
+        {
+            let label = if activity.state_of(meta.id) == ActivityState::Done {
+                "Review · unread"
+            } else {
+                "Review"
+            };
+            return (label, super::status::session_kind(label).color());
+        }
+        status
     }
     fn confirmation(&self, label: &str, action: Action, cx: &mut Context<Self>) -> AnyElement {
         let session_close = matches!(&action, Action::ConfirmClose(_));
@@ -7111,7 +7125,7 @@ mod tests {
             state.status = Status::Done;
             assert_eq!(
                 structured_session_status(&state, ActivityState::Done),
-                "Done"
+                "Ready"
             );
             assert_eq!(
                 structured_session_status(&state, ActivityState::Idle),
@@ -7144,7 +7158,7 @@ mod tests {
         .collect();
         assert_eq!(
             group_sessions_for_list(&rows, now),
-            vec![("Needs you", vec![0, 1, 2, 3, 4]), ("Idle", vec![6, 5])]
+            vec![("Needs you", vec![0, 1, 2, 3, 4]), ("Ready", vec![6, 5])]
         );
     }
 
@@ -7180,8 +7194,8 @@ mod tests {
             vec![
                 ("Needs you", vec![4, 3]),
                 ("Review", vec![5, 2]),
-                ("Working", vec![7, 6, 1]),
-                ("Idle", vec![0, 8]),
+                ("Working", vec![7, 1]),
+                ("Ready", vec![6, 0, 8]),
             ]
         );
     }
@@ -7244,8 +7258,8 @@ mod tests {
             group_sessions_for_list(&rows, now),
             vec![
                 ("Needs you", vec![1, 0]),
-                ("Working", vec![2, 4]),
-                ("Idle", vec![3, 5]),
+                ("Working", vec![4]),
+                ("Ready", vec![2, 3, 5]),
             ]
         );
     }
@@ -8745,6 +8759,7 @@ for line in sys.stdin:
                     registry.insert_meta("demo".into(), path.into(), agent)
                 });
                 let saved = grove_core::codex::SavedSession {
+                    session_review: Default::default(),
                     rich_plans: grove_core::rich_plan::PlanStore::default(),
                     side_chats: Default::default(),
                     claude_resume: None,
@@ -8928,6 +8943,7 @@ for line in sys.stdin:
             let (handle, _actions) = grove_core::codex::Handle::channel();
             let (_updates, receive) = std::sync::mpsc::channel();
             let saved = grove_core::codex::SavedSession {
+            session_review: Default::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             side_chats: Default::default(),
                 claude_resume: None,
@@ -9733,6 +9749,7 @@ for line in sys.stdin:
         let (handle, _actions) = grove_core::codex::Handle::channel();
         let (_updates, receive) = std::sync::mpsc::channel();
         let saved = grove_core::codex::SavedSession {
+            session_review: Default::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             side_chats: Default::default(),
             claude_resume: None,
