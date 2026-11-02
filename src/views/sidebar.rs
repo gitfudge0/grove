@@ -1994,7 +1994,9 @@ impl Sidebar {
                 |control| control.group("neutral-control"),
             )
             .hover(move |s| {
-                if danger {
+                if confirming && !decision {
+                    s
+                } else if danger {
                     s.text_color(c::RED())
                 } else if primary {
                     s.text_color(c::BG())

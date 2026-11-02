@@ -2829,7 +2829,7 @@ impl CodexView {
             .text_size(rpx(TEXT_SMALL))
             .text_color(c::FG_DIM())
             .whitespace_nowrap()
-            .when(expanded, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+            .when(expanded, |style| style.text_color(c::FG()))
             .hover(|style| style.text_color(c::FG()))
             .focus_visible(|style| style.bg(c::MENU_HOVER()))
             .child(crate::icons::icon(
@@ -4914,7 +4914,7 @@ impl Render for CodexView {
                 let keyboard_group = group_id.clone();
                 if tools.len() > 1 {
                     group = group.child(
-                        header_control(
+                        super::components::inline_disclosure(
                             "codex-toggle-tools",
                             if expanded {
                                 "Collapse tool calls"
@@ -4931,7 +4931,7 @@ impl Render for CodexView {
                         .focus_visible(|style| style.bg(c::BG_HOVER()))
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_DIM())
-                        .when(expanded, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+                        .when(expanded, |style| style.text_color(c::FG()))
                         .aria_label(label)
                         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space")
@@ -4996,7 +4996,7 @@ impl Render for CodexView {
                                 .gap(rpx(SPACE_SM))
                                 .tab_index(0)
                                 .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                .when(tool_expanded, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+                                .when(tool_expanded, |style| style.text_color(c::FG()))
                                 .aria_label(tool_activity_summary(
                                     tool,
                                     tool_is_running(&state, detail_index),

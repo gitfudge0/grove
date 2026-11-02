@@ -768,3 +768,16 @@ fn highlight_recipes_share_geometry_and_keep_pointer_treatments_distinct() {
     assert!(inline.contains(".hover(|style| style.text_color(c::FG()))"));
     assert!(!inline.contains(".bg("));
 }
+
+#[test]
+fn inline_transcript_disclosures_do_not_fill_when_expanded() {
+    let transcript = source("src/views/codex_view.rs");
+    let tasks = transcript.split("fn task_strip(").nth(1).unwrap()
+        .split("fn render_work_header(").next().unwrap();
+    assert!(!tasks.contains(".when(expanded, |style| style.bg("));
+    let tools = transcript.split("let keyboard_group = group_id.clone();").nth(1).unwrap()
+        .split("let mut detail_row").next().unwrap();
+    assert!(tools.contains("super::components::inline_disclosure("));
+    assert!(!tools.contains(".when(expanded, |style| style.bg("));
+    assert!(!transcript.contains(".when(tool_expanded, |style| style.bg("));
+}
