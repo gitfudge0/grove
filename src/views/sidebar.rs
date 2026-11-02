@@ -2109,7 +2109,7 @@ impl Sidebar {
     }
     #[cfg(test)]
     pub(crate) fn new_session_focus_for_test(&self) -> FocusHandle {
-        self.navigation_focus[0].clone()
+        self.navigation_focus[3].clone()
     }
 
     #[cfg(test)]

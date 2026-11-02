@@ -36,6 +36,12 @@ impl From<LandingPage> for Destination {
         }
     }
 }
+const NAVIGATION_ITEMS: [(Destination, &str, &str); 3] = [
+    (Destination::Home, "Home", "home"),
+    (Destination::History, "History", "history"),
+    (Destination::Projects, "Projects", "folder"),
+];
+
 impl Sidebar {
     pub(crate) fn open_numbered_destination(
         &mut self,
@@ -43,13 +49,13 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let destination = match index {
-            1 => Destination::NewSession,
-            2 => Destination::Home,
-            3 => Destination::Projects,
-            4 => Destination::History,
-            _ => return,
+        let Some((destination, _, _)) = index
+            .checked_sub(1)
+            .and_then(|index| NAVIGATION_ITEMS.get(index))
+        else {
+            return;
         };
+        let destination = *destination;
         self.open_destination(destination, window, cx);
     }
     pub(crate) fn open_landing_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -159,11 +165,7 @@ impl Sidebar {
             .settings_panel
             .as_ref()
             .is_some_and(|panel| panel.read(cx).is_open());
-        for (index, destination, label, glyph) in [
-            (1, Destination::Home, "Home", "home"),
-            (3, Destination::History, "History", "history"),
-            (2, Destination::Projects, "Projects", "folder"),
-        ] {
+        for (index, (destination, label, glyph)) in NAVIGATION_ITEMS.into_iter().enumerate() {
             let selected = !settings
                 && self.destination == destination
                 && (self.selection.is_none()
@@ -270,16 +272,13 @@ impl Sidebar {
                 heading = heading.child(group).child(
                     self.control(
                         "global-nav-new-session",
-                        if cfg!(target_os = "macos") {
-                            "New session (⌘1)"
-                        } else {
-                            "New session (Ctrl+Shift+1)"
-                        },
+                        "New session",
                         Action::Destination(Destination::NewSession),
                         cx,
                     )
                     .debug_selector(|| "global-nav-new-session".into())
-                    .track_focus(&self.navigation_focus[0])
+                    .track_focus(&self.navigation_focus[3])
+                    .mr(-rpx(SPACE_LG))
                     .child(icon("plus", ICON_SM, c::FG_DIM())),
                 );
             }
@@ -313,8 +312,7 @@ impl Sidebar {
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .child(div().flex_1().min_w_0().truncate().child(label))
-                        .child(ids.len().to_string()),
+                        .child(div().flex_1().min_w_0().truncate().child(label)),
                 );
             }
             for id in ids {
@@ -488,11 +486,6 @@ impl Sidebar {
                             .text_color(c::FG_MUTE())
                             .child("· Workspace"),
                     ),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .child(icon("chev-down", ICON_SM, c::FG_DIM())),
             );
         if let Some(trigger) = trigger {
             row = row.child(
@@ -709,7 +702,11 @@ mod tests {
             assert!(history.bottom() <= projects.top());
             assert!(projects.bottom() <= heading.top());
             assert!(destination.left() >= heading.left());
-            assert!(destination.right() <= heading.right());
+            assert!(
+                destination.right()
+                    <= heading.right()
+                        + rpx(SPACE_LG).to_pixels(cx.update(|window, _| window.rem_size()))
+            );
             assert!(destination.top() >= heading.top());
             assert!(destination.bottom() <= heading.bottom());
             assert!(heading.bottom() <= terminals.top());

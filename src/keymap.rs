@@ -33,10 +33,9 @@ pub fn platform_mod_label() -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlobalShortcut {
     NewSession,
-    OpenNewSession,
-    OpenHome,
-    OpenProjects,
-    OpenHistory,
+    OpenNavigation1,
+    OpenNavigation2,
+    OpenNavigation3,
     NewSessionInWorktree,
     Settings,
     ToggleZen,
@@ -162,37 +161,28 @@ pub const SHORTCUTS: &[ShortcutDef] = &[
         literal: false,
     },
     ShortcutDef {
-        action: Some(GlobalShortcut::OpenNewSession),
+        action: Some(GlobalShortcut::OpenNavigation1),
         triggers: &["1"],
         display_keys: "1",
-        description: "New Session",
+        description: "First navigation item",
         scopes: G,
         requires_alt: false,
         literal: false,
     },
     ShortcutDef {
-        action: Some(GlobalShortcut::OpenHome),
+        action: Some(GlobalShortcut::OpenNavigation2),
         triggers: &["2"],
         display_keys: "2",
-        description: "Home",
+        description: "Second navigation item",
         scopes: G,
         requires_alt: false,
         literal: false,
     },
     ShortcutDef {
-        action: Some(GlobalShortcut::OpenProjects),
+        action: Some(GlobalShortcut::OpenNavigation3),
         triggers: &["3"],
         display_keys: "3",
-        description: "Projects",
-        scopes: G,
-        requires_alt: false,
-        literal: false,
-    },
-    ShortcutDef {
-        action: Some(GlobalShortcut::OpenHistory),
-        triggers: &["4"],
-        display_keys: "4",
-        description: "History",
+        description: "Third navigation item",
         scopes: G,
         requires_alt: false,
         literal: false,
@@ -577,10 +567,9 @@ actions!(
     grove,
     [
         NewSession,
-        OpenNewSession,
-        OpenHome,
-        OpenProjects,
-        OpenHistory,
+        OpenNavigation1,
+        OpenNavigation2,
+        OpenNavigation3,
         NewSessionInWorktree,
         SwitchSession,
         NextSession,
@@ -796,10 +785,9 @@ fn binding_for(keystroke: &str, sc: GlobalShortcut, ctx: Option<&str>) -> Option
     use GlobalShortcut as S;
     Some(match sc {
         S::NewSession => KeyBinding::new(keystroke, NewSession, ctx),
-        S::OpenNewSession => KeyBinding::new(keystroke, OpenNewSession, ctx),
-        S::OpenHome => KeyBinding::new(keystroke, OpenHome, ctx),
-        S::OpenProjects => KeyBinding::new(keystroke, OpenProjects, ctx),
-        S::OpenHistory => KeyBinding::new(keystroke, OpenHistory, ctx),
+        S::OpenNavigation1 => KeyBinding::new(keystroke, OpenNavigation1, ctx),
+        S::OpenNavigation2 => KeyBinding::new(keystroke, OpenNavigation2, ctx),
+        S::OpenNavigation3 => KeyBinding::new(keystroke, OpenNavigation3, ctx),
         S::NewSessionInWorktree => KeyBinding::new(keystroke, NewSessionInWorktree, ctx),
         S::SwitchSession => KeyBinding::new(keystroke, SwitchSession, ctx),
         S::NextSession => KeyBinding::new(keystroke, NextSession, ctx),
@@ -856,10 +844,9 @@ pub fn shell_bindings() -> Vec<KeyBinding> {
         matches!(
             action,
             S::NewSession
-                | S::OpenNewSession
-                | S::OpenHome
-                | S::OpenProjects
-                | S::OpenHistory
+                | S::OpenNavigation1
+                | S::OpenNavigation2
+                | S::OpenNavigation3
                 | S::NewSessionInWorktree
                 | S::SwitchSession
                 | S::NextSession

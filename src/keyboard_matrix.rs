@@ -122,10 +122,9 @@ fn dispatch_on_screen(def: &ShortcutDef, screen: Screen) -> Target {
     if allowed {
         Target::Action(match action {
             GlobalShortcut::NewSession => "NewSession",
-            GlobalShortcut::OpenNewSession => "OpenNewSession",
-            GlobalShortcut::OpenHome => "OpenHome",
-            GlobalShortcut::OpenProjects => "OpenProjects",
-            GlobalShortcut::OpenHistory => "OpenHistory",
+            GlobalShortcut::OpenNavigation1 => "OpenNavigation1",
+            GlobalShortcut::OpenNavigation2 => "OpenNavigation2",
+            GlobalShortcut::OpenNavigation3 => "OpenNavigation3",
             GlobalShortcut::NewSessionInWorktree => "NewSessionInWorktree",
             GlobalShortcut::Settings => "Settings",
             GlobalShortcut::ToggleZen => "ToggleZen",

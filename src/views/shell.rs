@@ -1726,31 +1726,24 @@ impl Render for Shell {
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &k::OpenNewSession, window, cx| {
+            .on_action(cx.listener(|this, _: &k::OpenNavigation1, window, cx| {
                 if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.open_numbered_destination(1, window, cx);
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &k::OpenHome, window, cx| {
+            .on_action(cx.listener(|this, _: &k::OpenNavigation2, window, cx| {
                 if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.open_numbered_destination(2, window, cx);
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &k::OpenProjects, window, cx| {
+            .on_action(cx.listener(|this, _: &k::OpenNavigation3, window, cx| {
                 if !this.shortcut_blocked_in(window, cx) {
                     this.sidebar.update(cx, |sidebar, cx| {
                         sidebar.open_numbered_destination(3, window, cx);
-                    });
-                }
-            }))
-            .on_action(cx.listener(|this, _: &k::OpenHistory, window, cx| {
-                if !this.shortcut_blocked_in(window, cx) {
-                    this.sidebar.update(cx, |sidebar, cx| {
-                        sidebar.open_numbered_destination(4, window, cx);
                     });
                 }
             }))
@@ -2166,7 +2159,7 @@ mod tests {
         cx.simulate_click(composer.center(), gpui::Modifiers::default());
         cx.simulate_input("Keep my Home overview draft");
         draw(cx);
-        for source in ["sidebar", "numbered", "new-session"] {
+        for source in ["sidebar", "new-session"] {
             let before = cx.update(|window, cx| {
                 if source == "sidebar" {
                     Some(shell.read(cx).sidebar.read(cx).new_session_focus_for_test())
@@ -2248,13 +2241,15 @@ mod tests {
         cx.simulate_keystrokes(&format!("{}3", k::platform_mod_prefix()));
         draw(cx);
         assert!(cx.debug_bounds("projects-destination").is_some());
-        cx.simulate_keystrokes(&format!("{}1", k::platform_mod_prefix()));
+        let plus = cx.debug_bounds("global-nav-new-session").unwrap();
+        cx.simulate_click(plus.center(), gpui::Modifiers::default());
         draw(cx);
         assert!(cx.debug_bounds("worktree-launcher-panel").is_some());
         cx.simulate_keystrokes("escape escape");
         draw(cx);
         assert!(cx.debug_bounds("projects-destination").is_some());
-        cx.simulate_keystrokes(&format!("{}1", k::platform_mod_prefix()));
+        let plus = cx.debug_bounds("global-nav-new-session").unwrap();
+        cx.simulate_click(plus.center(), gpui::Modifiers::default());
         draw(cx);
         cx.simulate_keystrokes("enter");
         draw(cx);
@@ -2306,9 +2301,8 @@ mod tests {
         draw(cx);
         for (key, destination) in [
             ("3", "projects-destination"),
-            ("4", "history-list-scroll"),
-            ("2", "dashboard-page"),
-            ("1", "worktree-launcher-panel"),
+            ("2", "history-list-scroll"),
+            ("1", "dashboard-page"),
         ] {
             cx.update(|window, cx| {
                 let focus = shell.read(cx).focus.clone();
