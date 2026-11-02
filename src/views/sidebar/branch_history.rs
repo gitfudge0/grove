@@ -649,7 +649,7 @@ impl Sidebar {
                     .justify_start()
                     .rounded_none()
                     .gap_0()
-                    .when(selected, |row| row.bg(c::BG_HL()))
+                    .when(selected, |row| row.bg(c::BG_HL()).text_color(c::FG()))
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         this.commit_row_hover(hover_id.clone(), *hovered, cx);
                     }))
@@ -1191,7 +1191,7 @@ impl Sidebar {
                 .px(rpx(SPACE_SM))
                 .py(rpx(SPACE_SM))
                 .when(state.selected_file.as_ref() == Some(&file.path), |row| {
-                    row.bg(c::BG_HL())
+                    row.bg(c::BG_HL()).text_color(c::FG())
                 })
                 .child(
                     div()

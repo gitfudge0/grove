@@ -298,7 +298,6 @@ pub struct WorkspaceState {
     tree_expand: TreeExpand,
     tree_touched: bool,
     rail_mode: RailMode,
-    terminals_collapsed: bool,
     hovered_wt: Option<(usize, usize)>,
     open_agent_menu: Option<(usize, usize)>,
     pending_kill: Option<SessionId>,
@@ -342,7 +341,6 @@ impl Default for WorkspaceState {
             tree_expand: TreeExpand::default(),
             tree_touched: false,
             rail_mode: RailMode::default(),
-            terminals_collapsed: false,
             hovered_wt: None,
             open_agent_menu: None,
             pending_kill: None,
@@ -417,9 +415,6 @@ impl WorkspaceState {
     }
     pub fn tree_expand(&self) -> TreeExpand {
         self.tree_expand
-    }
-    pub fn terminals_collapsed(&self) -> bool {
-        self.terminals_collapsed
     }
     pub fn rail_mode(&self) -> RailMode {
         self.rail_mode
@@ -845,9 +840,6 @@ impl WorkspaceState {
         self.hovered_wt = None;
         self.rail_mode = self.rail_mode.toggled();
         self.rail_mode
-    }
-    pub fn toggle_terminals_collapsed(&mut self) {
-        self.terminals_collapsed = !self.terminals_collapsed;
     }
     pub fn set_sidebar_width(&mut self, width: f32, logical_win_w: f32) {
         self.sidebar_width = clamp_sidebar_width(width, logical_win_w);

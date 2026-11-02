@@ -76,6 +76,35 @@ where
     }
 }
 
+/// Reveal only the appended UTF-8 suffix over the shared fast interval.
+/// Both transcript surfaces keep the full source separately for copy/persistence.
+pub(super) fn streamed_text<'a>(
+    text: &'a str,
+    entry: &mut (String, usize),
+    elapsed: f32,
+    streaming: bool,
+) -> &'a str {
+    if !text.starts_with(&entry.0[..entry.1.min(entry.0.len())]) || !streaming {
+        entry.1 = text.len();
+    }
+    entry.0.clear();
+    entry.0.push_str(text);
+    // Parsing a prefix notifies its owner and can redraw at the same frame
+    // timestamp. Only elapsed animation time may consume more of the suffix.
+    if entry.1 < text.len() && elapsed > 0.0 {
+        let remaining = text[entry.1..].chars().count();
+        let advance = ((remaining as f32
+            * (elapsed.min(1.0 / 30.0) / (MOTION_FAST_MS as f32 / 1000.0)).min(1.0))
+        .ceil() as usize)
+            .max(1);
+        entry.1 = text[entry.1..]
+            .char_indices()
+            .nth(advance)
+            .map_or(text.len(), |(offset, _)| entry.1 + offset);
+    }
+    &text[..entry.1]
+}
+
 /// CSS cubic-bezier(.2,.8,.2,1), solved on x so progress follows elapsed time.
 pub(super) fn ease_standard(progress: f32) -> f32 {
     cubic_bezier(progress, 0.2, 0.8, 0.2, 1.0)
@@ -176,5 +205,25 @@ impl Presence {
                 move |el, t| el.opacity(from + (to - from) * t),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn streamed_text_waits_for_elapsed_frame_time() {
+        let text = "Saved prefix with Unicode 界🙂 and a streamed continuation";
+        let mut entry = ("Saved prefix".to_owned(), "Saved prefix".len());
+        for _ in 0..20 {
+            assert_eq!(
+                super::streamed_text(text, &mut entry, 0.0, true),
+                "Saved prefix"
+            );
+        }
+        let shown = super::streamed_text(text, &mut entry, 0.016, true).to_owned();
+        assert!(shown.len() > "Saved prefix".len() && shown.len() < text.len());
+        assert!(text.starts_with(&shown));
+        assert_eq!(super::streamed_text(text, &mut entry, 0.0, true), shown);
+        assert_eq!(super::streamed_text(text, &mut entry, 0.0, false), text);
     }
 }

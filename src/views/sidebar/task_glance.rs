@@ -428,7 +428,7 @@ impl Sidebar {
                 .text_size(rpx(TEXT_MICRO))
                 .text_color(lifecycle_color(status))
                 .whitespace_nowrap()
-                .hover(|style| style.text_color(c::FG()))
+                .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
                 .when(self.header_tasks.open == Some(id), |el| {
                     el.bg(c::BG_HOVER())

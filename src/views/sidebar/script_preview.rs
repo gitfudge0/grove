@@ -190,7 +190,7 @@ impl Sidebar {
             .items_center()
             .gap(rpx(SPACE_SM))
             .text_size(rpx(TEXT_SMALL))
-            .hover(|style| style.text_color(c::FG()))
+            .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .child(
                 gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})

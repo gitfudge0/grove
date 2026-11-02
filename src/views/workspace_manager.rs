@@ -503,7 +503,7 @@ impl WorkspaceManager {
                             el.bg(c::MENU_HOVER())
                         })
                         .when(!self.keyboard_navigation, |el| {
-                            el.hover(|s| s.text_color(c::FG()))
+                            el.hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                         })
                         .on_mouse_move(cx.listener(move |this, _, _, cx| {
                             if this.panel == Panel::Menu
@@ -584,7 +584,7 @@ impl WorkspaceManager {
                             |el| el.bg(c::MENU_HOVER()),
                         )
                         .when(!self.keyboard_navigation, |el| {
-                            el.hover(|s| s.text_color(c::FG()))
+                            el.hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                         })
                         .on_mouse_move(cx.listener(move |this, _, _, cx| {
                             let index = this.state.rows.len() + offset;
@@ -688,7 +688,7 @@ impl WorkspaceManager {
                                 .items_center()
                                 .justify_center()
                                 .rounded(rpx(RADIUS_CONTROL))
-                                .hover(|s| s.text_color(c::FG()))
+                                .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                                 .on_mouse_down(MouseButton::Left, |_, window, cx| {
                                     window.prevent_default();
                                     cx.stop_propagation();
@@ -787,7 +787,7 @@ impl WorkspaceManager {
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .hover(|s| s.text_color(c::FG()))
+                        .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                         .on_mouse_down(MouseButton::Left, |_, window, cx| {
                             window.prevent_default();
                             cx.stop_propagation();
@@ -906,7 +906,7 @@ impl Render for WorkspaceManager {
                         .items_center()
                         .gap(rpx(SPACE_MD))
                         .rounded(rpx(RADIUS_PANEL))
-                        .hover(|s| s.text_color(c::FG()))
+                        .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                         .focus_visible(|s| s.bg(c::BG_HOVER()))
                         .when(self.panel != Panel::Closed, |el| el.bg(c::BG_HOVER()))
                         .on_mouse_down(MouseButton::Left, |_, window, cx| {

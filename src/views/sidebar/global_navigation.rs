@@ -206,7 +206,7 @@ impl Sidebar {
                 .when(destination == Destination::NewSession, |row| {
                     row.mb(rpx(SPACE_MD))
                 })
-                .when(selected, |row| row.bg(c::BG_HOVER()))
+                .when(selected, |row| row.bg(c::BG_HOVER()).text_color(c::FG()))
                 .child(crate::icons::action_icon(glyph, ICON_LG))
                 .child(div().flex_1().min_w_0().truncate().child(label))
                 .child(
@@ -271,7 +271,9 @@ impl Sidebar {
                     .size(rpx(STEPPER_BTN_W))
                     .justify_center()
                     .aria_selected(choice == grouping)
-                    .when(choice == grouping, |row| row.bg(c::BG_HOVER()))
+                    .when(choice == grouping, |row| {
+                        row.bg(c::BG_HOVER()).text_color(c::FG())
+                    })
                     .child(icon(glyph, ICON_SM, c::FG_DIM())),
                 );
             }

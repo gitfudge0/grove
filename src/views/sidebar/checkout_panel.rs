@@ -2334,6 +2334,7 @@ impl Sidebar {
                                     .truncate()
                                     .text_size(rpx(TEXT_SMALL))
                                     .text_color(c::FG_DIM())
+                                    .group_hover("neutral-control", |text| text.text_color(c::FG()))
                                     .child(group.label()),
                             )
                             .child(change_stat_counts(added, removed, stat_widths))
@@ -2384,6 +2385,7 @@ impl Sidebar {
                                             .truncate()
                                             .text_size(rpx(TEXT_SMALL))
                                             .text_color(c::FG_DIM())
+                                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
                                             .child(label),
                                     )
                                     .child(change_stat_counts(*added, *removed, stat_widths))
@@ -2816,9 +2818,10 @@ pub(super) fn checkout_agent_row(
     div()
         .id(SharedString::from(format!("checkout-agent-{}", agent.id)))
         .role(gpui::Role::Button)
+        .group("neutral-control")
         .tab_index(0)
         .focus_visible(|style| style.bg(c::BG_HOVER()))
-        .hover(|style| style.text_color(c::FG()))
+        .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
         .aria_label(detail.clone())
         .px(rpx(SPACE_2XL))
         .py(rpx(SPACE_SM))
@@ -2827,7 +2830,7 @@ pub(super) fn checkout_agent_row(
         .min_w_0()
         .text_size(rpx(TEXT_BODY))
         .font_weight(gpui::FontWeight::NORMAL)
-        .text_color(c::FG())
+        .text_color(c::FG_DIM())
         .line_height(rpx(AGENT_LINE_H))
         .child(
             div()
@@ -2875,6 +2878,7 @@ pub(super) fn checkout_agent_row(
                 .truncate()
                 .text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG_DIM())
+                .group_hover("neutral-control", |text| text.text_color(c::FG()))
                 .child(presentation.activity.unwrap_or_default()),
         )
 }

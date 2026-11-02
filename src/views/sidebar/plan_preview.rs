@@ -213,7 +213,7 @@ impl Sidebar {
                     .items_start()
                     .gap(rpx(SPACE_SM))
                     .min_w_0()
-                    .hover(|s| s.text_color(c::FG()))
+                    .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
                     .focus_visible(|s| s.bg(c::BG_HOVER()))
                     .child(
                         gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})

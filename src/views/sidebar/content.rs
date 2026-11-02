@@ -1342,7 +1342,7 @@ impl Sidebar {
             .cursor_pointer()
             .min_w_0()
             .truncate()
-            .hover(|style| style.text_color(c::FG()))
+            .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                 focus.focus(window, cx);
@@ -1412,7 +1412,7 @@ impl Sidebar {
             .items_center()
             .justify_center()
             .rounded(rpx(RADIUS_CONTROL))
-            .hover(|style| style.text_color(c::FG()))
+            .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .tooltip(move |window, cx| {
                 crate::views::components::tooltip(label.clone(), window).build(window, cx)

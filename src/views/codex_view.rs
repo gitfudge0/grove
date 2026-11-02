@@ -387,6 +387,15 @@ impl TranscriptRenderCache {
 }
 
 const STOP_HOVER_OPACITY: f32 = 0.8;
+/// Bottom of the session composer, including its canvas inset and hint row.
+/// The wide side conversation shares this baseline rather than the pane edge.
+pub(super) fn composer_bottom_inset(window: &Window) -> gpui::Pixels {
+    rpx(SPACE_3XL * 2.0 + SPACE_MD).to_pixels(window.rem_size())
+        + gpui::phi()
+            .to_pixels(rpx(TEXT_MICRO).into(), window.rem_size())
+            .round()
+}
+
 pub(super) const CHAT_MAX_W: f32 = 760.0;
 const COMPOSER_MENU_W: f32 = 320.0;
 /// Compact reference card, kept local rather than adding a one-use scale tier.
@@ -1607,13 +1616,15 @@ impl CodexView {
                         div()
                             .id(gpui::SharedString::from(format!("{id}-title")))
                             .debug_selector(move || format!("{id}-title"))
-                            .text_color(c::FG())
+                            .text_color(c::FG_DIM())
+                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
                             .child(title),
                     )
                     .child(
                         div()
                             .whitespace_normal()
                             .text_color(c::FG_DIM())
+                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
                             .child(description),
                     )
                     .on_key_down(cx.listener(
@@ -2201,6 +2212,7 @@ impl CodexView {
                     .gap(rpx(SPACE_LG))
                     .pl(rpx(SPACE_LG))
                     .rounded(rpx(RADIUS_CONTROL))
+                    .text_color(if selected { c::FG() } else { c::FG_DIM() })
                     .when(selected, |row| row.bg(c::MENU_HOVER()))
                     .child(
                         div()
@@ -2790,7 +2802,8 @@ impl CodexView {
                 div()
                     .debug_selector(|| "codex-task-header-label".into())
                     .flex_shrink_0()
-                    .text_color(c::FG_DIM())
+                    .text_color(if expanded { c::FG() } else { c::FG_DIM() })
+                    .group_hover("neutral-control", |text| text.text_color(c::FG()))
                     .child("Tasks"),
             )
             .child(
@@ -2806,6 +2819,7 @@ impl CodexView {
             .debug_selector(|| "codex-task-strip".into())
             .role(gpui::Role::Button)
             .cursor_pointer()
+            .group("neutral-control")
             .aria_label(format!("Tasks, {progress}"))
             .aria_description(summary.text())
             .aria_expanded(expanded)
@@ -2819,11 +2833,13 @@ impl CodexView {
             .text_size(rpx(TEXT_SMALL))
             .text_color(c::FG_DIM())
             .whitespace_nowrap()
+            .when(expanded, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
+            .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
             .focus_visible(|style| style.bg(c::MENU_HOVER()))
             .child(crate::icons::icon(
                 if expanded { "chev-down" } else { "chev-right" },
                 ICON_MD,
-                c::FG_MUTE(),
+                if expanded { c::FG() } else { c::FG_DIM() },
             ))
             .child(cluster)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
@@ -2885,7 +2901,7 @@ impl CodexView {
                         .pr(rpx(SPACE_LG))
                         .rounded(rpx(RADIUS_CONTROL))
                         .text_size(rpx(TEXT_SMALL))
-                        .hover(|style| style.text_color(c::FG()))
+                        .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                         .focus_visible(|style| style.bg(c::MENU_HOVER()))
                         .child(animated_task_mark(
                             ("codex-task-row-mark", task_index),
@@ -3101,25 +3117,9 @@ impl CodexView {
                 };
                 (text.clone(), shown)
             });
-            if !text.starts_with(&entry.0[..entry.1.min(entry.0.len())]) {
-                entry.1 = text.len();
-            }
-            entry.0.clone_from(&text);
-            if !state.status.busy() {
-                entry.1 = text.len();
-            }
+            let revealed = super::motion::streamed_text(&text, entry, elapsed, state.status.busy()).to_owned();
             if entry.1 < text.len() {
                 self.smooth_follow |= near_bottom && !self.composer_collapsed;
-                // Catch up over a short interval without replaying the existing prefix.
-                let remaining = text[entry.1..].chars().count();
-                let advance = ((remaining as f32
-                    * (elapsed.min(1.0 / 30.0) / (MOTION_FAST_MS as f32 / 1000.0)).min(1.0))
-                .ceil() as usize)
-                    .max(1);
-                entry.1 = text[entry.1..]
-                    .char_indices()
-                    .nth(advance)
-                    .map_or(text.len(), |(offset, _)| entry.1 + offset);
                 let owner = cx.entity().downgrade();
                 let pending = self.motion_frame_pending.clone();
                 if !pending.replace(true) {
@@ -3129,7 +3129,7 @@ impl CodexView {
                     });
                 }
             }
-            text[..entry.1].to_owned()
+            revealed
         } else {
             if kind == "agentMessage" {
                 let key = item["id"]
@@ -3927,12 +3927,14 @@ impl CodexView {
                 .tab_index(0)
                 .aria_label(format!("Go to message: {}", entry.prompt))
                 .aria_description(format!("Response: {}", entry.response))
+                .when(selected, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
                 .child(
                     div()
                         .w(rpx(if selected { SPACE_3XL } else { SPACE_LG }))
                         .h(rpx(SPACE_XS))
-                        .bg(if selected { c::FG() } else { c::FG_MUTE() }),
+                        .bg(if selected { c::FG() } else { c::FG_DIM() })
+                        .group_hover("neutral-control", |style| style.bg(c::FG())),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.jump_to_message(child, window, cx);
@@ -4933,6 +4935,7 @@ impl Render for CodexView {
                         .focus_visible(|style| style.bg(c::BG_HOVER()))
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_DIM())
+                        .when(expanded, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                         .aria_label(label)
                         .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space")
@@ -4997,6 +5000,7 @@ impl Render for CodexView {
                                 .gap(rpx(SPACE_SM))
                                 .tab_index(0)
                                 .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                .when(tool_expanded, |style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                                 .aria_label(tool_activity_summary(
                                     tool,
                                     tool_is_running(&state, detail_index),
@@ -5031,7 +5035,8 @@ impl Render for CodexView {
                                         .min_w_0()
                                         .truncate()
                                         .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM())
+                                        .text_color(if tool_expanded { c::FG() } else { c::FG_DIM() })
+                                        .group_hover("neutral-control", |text| text.text_color(c::FG()))
                                         .child(shimmer_label(
                                             ("codex-tool-detail-shimmer", detail_index).into(),
                                             activity,
@@ -5849,6 +5854,7 @@ impl Render for CodexView {
                                     .whitespace_normal()
                                     .gap(rpx(SPACE_SM))
                                     .text_size(rpx(TEXT_MICRO))
+                                    .line_height(gpui::phi())
                                     .text_color(c::FG_DIM())
                                     .child(if stopping {
                                         "Stopping…"
@@ -7421,7 +7427,8 @@ impl CodexView {
                                 .id("codex-card-effort-label")
                                 .debug_selector(|| "codex-card-effort-label".into())
                                 .text_size(rpx(TEXT_TITLE))
-                                .text_color(c::FG())
+                                .text_color(c::FG_DIM())
+                                .group_hover("neutral-control", |text| text.text_color(c::FG()))
                                 .child(effort),
                         )
                         .child(
@@ -7635,7 +7642,7 @@ impl CodexView {
                     .when(
                         self.menu == Some(menu)
                             || (menu == ComposerMenu::Settings && self.model_from_card),
-                        |button| button.bg(c::BG_HOVER()),
+                        |button| button.bg(c::BG_HOVER()).text_color(c::FG()),
                     )
                     .focus_visible(|style| style.bg(c::BG_HOVER()))
                     .child(
@@ -8024,7 +8031,7 @@ impl CodexView {
                     .id(("codex-composer-option", index))
                     .aria_label(label.clone())
                     .aria_description("Tab to insert this option")
-                    .when(index == self.suggestion_index, |row| row.bg(c::BG_HOVER()))
+                    .when(index == self.suggestion_index, |row| row.bg(c::BG_HOVER()).text_color(c::FG()))
                     .debug_selector(move || format!("codex-composer-option-{index}"))
                     .w_full()
                     .h_auto()
@@ -8042,7 +8049,8 @@ impl CodexView {
                             .flex_shrink_0()
                             .whitespace_normal()
                             .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG())
+                            .text_color(if index == self.suggestion_index { c::FG() } else { c::FG_DIM() })
+                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
                             .child(name),
                     )
                     .when_some(description, |row, description| {
@@ -8052,7 +8060,8 @@ impl CodexView {
                                 .min_w_0()
                                 .truncate()
                                 .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
+                                .text_color(if index == self.suggestion_index { c::FG() } else { c::FG_DIM() })
+                                .group_hover("neutral-control", |text| text.text_color(c::FG()))
                                 .child(description),
                         )
                     })

@@ -842,11 +842,7 @@ impl HtmlSession {
                                             cx,
                                         )
                                         .icon_only()
-                                        .child(crate::icons::icon(
-                                            "external-link",
-                                            ICON_MD,
-                                            c::FG_DIM(),
-                                        ))
+                                        .child(crate::icons::action_icon("external-link", ICON_MD))
                                         .tooltip("Open in browser")
                                         .on_click(
                                             move |_, _, cx| {
@@ -1346,7 +1342,7 @@ fn document_action(
         .tooltip(label)
         .w(rpx(CONTROL_H))
         .px_0()
-        .child(crate::icons::icon(glyph, ICON_MD, c::FG_DIM()))
+        .child(crate::icons::action_icon(glyph, ICON_MD))
 }
 
 impl Render for HtmlArtifact {

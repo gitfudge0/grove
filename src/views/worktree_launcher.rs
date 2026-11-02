@@ -866,11 +866,11 @@ impl WorktreeLauncher {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .when(selected && self.agent_focus, |button| button.bg(c::BG_HL()))
+                            .when(selected, |button| button.bg(c::BG_HL()).text_color(c::FG()))
                             .when(selected, |button| {
                                 button.border_1().border_color(c::BORDER_STRONG())
                             })
-                            .hover(|button| button.text_color(c::FG()))
+                            .hover(|button| button.bg(c::BG_HOVER()).text_color(c::FG()))
                             .tooltip(move |window, cx| {
                                 crate::views::components::tooltip(label.clone(), window)
                                     .build(window, cx)
@@ -1149,8 +1149,9 @@ impl Render for WorktreeLauncher {
                                     .items_center()
                                     .justify_between()
                                     .gap(rpx(SPACE_LG))
-                                    .when(index == self.selected, |row| row.bg(c::BG_HL()))
-                                    .hover(|row| row.text_color(c::FG()))
+                                    .text_color(c::FG_DIM())
+                                    .when(index == self.selected, |row| row.bg(c::BG_HL()).text_color(c::FG()))
+                                    .hover(|row| row.bg(c::BG_HOVER()).text_color(c::FG()))
                                     .child(
                                         div().flex().flex_1().items_start().gap(rpx(SPACE_2XL)).min_w_0()
                                             .child(
@@ -1242,7 +1243,7 @@ impl Render for WorktreeLauncher {
                                 .text_size(rpx(TEXT_SMALL))
                                 .text_color(c::FG())
                                 .when(selected_count == 0, |button| button.opacity(OPACITY_DISABLED))
-                                .when(selected_count > 0, |button| button.hover(|button| button.text_color(c::FG())))
+                                .when(selected_count > 0, |button| button.hover(|button| button.bg(c::BG_HOVER()).text_color(c::FG())))
                                 .focus_visible(|button| button.border_1().border_color(c::FG()))
                                 .child(div().w(rpx(ICON_SM)).flex_shrink_0().child(icon("play", ICON_SM, c::FG())))
                                 .child("Launch selected")

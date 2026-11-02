@@ -1833,7 +1833,7 @@ impl Render for SettingsPanel {
                                         })
                                         .text_color(if selected { c::FG() } else { c::FG_DIM() })
                                         .cursor_pointer()
-                                        .hover(|style| style.text_color(c::FG()))
+                                        .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                                         .focus_visible(|style| style.bg(c::BG_HOVER()))
                                         .debug_selector(move || {
                                             format!("settings-category-{}", category.label())

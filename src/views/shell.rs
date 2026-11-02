@@ -1032,7 +1032,7 @@ impl Shell {
                     } else {
                         c::FIELD_FILL()
                     })
-                    .hover(|style| style.text_color(c::FG()))
+                    .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                     .on_mouse_down(MouseButton::Left, |_, window, cx| {
                         window.prevent_default();
                         cx.stop_propagation();
@@ -1170,9 +1170,9 @@ impl Shell {
             .items_center()
             .gap(rpx(SPACE_2XL))
             .rounded(rpx(RADIUS_GROUP))
-            .text_color(c::FG())
+            .text_color(if selected { c::FG() } else { c::FG_DIM() })
             .when(selected, |item| item.bg(c::BG_HL()))
-            .hover(|item| item.text_color(c::FG()))
+            .hover(|item| item.bg(c::BG_HOVER()).text_color(c::FG()))
             .on_click(
                 cx.listener(move |this, _, window, cx| this.select_switcher_row(index, window, cx)),
             );

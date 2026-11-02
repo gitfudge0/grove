@@ -2,7 +2,7 @@
 //! the worktree itself or the parent session's authority.
 use crate::codex::Provider;
 use std::{
-    io::{Read, Seek, Write},
+    io::{BufRead, BufReader, Read, Seek, Write},
     path::Path,
     process::{Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -187,31 +187,28 @@ fn worktree_changes(
     Ok((names, summary, excerpts))
 }
 
-fn args(provider: Provider, output: &Path) -> Vec<String> {
+fn args(provider: Provider, _output: &Path) -> Vec<String> {
     match provider {
         Provider::Codex => {
             let mut a = [
                 "--no-daemon",
-                "exec",
+                "app-server",
+                "--stdio",
                 "--strict-config",
-                "--ignore-user-config",
-                "--ignore-rules",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
+                "-c",
+                "model=\"gpt-6-luna\"",
+                "-c",
+                "sandbox_mode=\"read-only\"",
                 "-c",
                 "approval_policy=\"never\"",
                 "-c",
                 "web_search=\"disabled\"",
                 "-c",
                 "project_doc_max_bytes=0",
-                "--output-last-message",
             ]
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-            a.push(output.to_string_lossy().into_owned());
             for feature in [
                 "shell_tool",
                 "unified_exec",
@@ -227,19 +224,28 @@ fn args(provider: Provider, output: &Path) -> Vec<String> {
             ] {
                 a.extend(["--disable".into(), feature.into()]);
             }
-            a.push("-".into());
             a
         }
         Provider::Claude => [
             "--print",
-            "--safe-mode",
+            "--bare",
+            "--model",
+            "haiku",
+            "--settings",
+            r#"{"disableAllHooks":true}"#,
+            "--setting-sources",
+            "",
+            "--permission-mode",
+            "dontAsk",
             "--tools",
             "",
             "--strict-mcp-config",
             "--no-session-persistence",
             "--disable-slash-commands",
             "--output-format",
-            "text",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
             "--system-prompt",
             INSTRUCTIONS,
         ]
@@ -273,10 +279,20 @@ pub fn answer_with_cancel(
     conversation: &[(String, String)],
     cancelled: &AtomicBool,
 ) -> Result<String, String> {
-    // Managed Claude settings remain active in safe mode and may install hooks.
-    // Until those can be ruled out, do not launch it under a read-only promise.
+    answer_streaming(provider, cwd, session, conversation, cancelled, |_| {})
+}
+
+/// Streams cumulative answer text, without granting tools or parent-session authority.
+pub fn answer_streaming(
+    provider: Provider,
+    cwd: &str,
+    session: &str,
+    conversation: &[(String, String)],
+    cancelled: &AtomicBool,
+    mut update: impl FnMut(String),
+) -> Result<String, String> {
     if provider == Provider::Claude {
-        return Err("Side chat is unavailable for Claude because its managed hooks cannot be safely disabled.".into());
+        crate::side_chat_claude::ensure_read_only()?;
     }
     if conversation
         .last()
@@ -380,6 +396,9 @@ pub fn answer_with_cancel(
         };
         prompt.push_str(&format!("{role}: {}\n", tail(text, 8_000)));
     }
+    if provider == Provider::Codex {
+        return codex_answer(dir.path(), &prompt, cancelled, update);
+    }
     let mut input = tempfile::tempfile().map_err(|e| e.to_string())?;
     input
         .write_all(prompt.as_bytes())
@@ -399,12 +418,10 @@ pub fn answer_with_cancel(
             .env_clear()
             .envs(env.iter().map(|(key, value)| (key, value)));
     }
-    let output = fs_err::File::create(&output_path).map_err(|e| e.to_string())?;
-    if provider == Provider::Claude {
-        command.stdout(output.into_file());
-    } else {
-        command.stdout(Stdio::null());
-    }
+    // A private spool avoids blocked pipes and lets cancellation remain responsive.
+    let spool = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    let mut stream = fs_err::File::open(spool.path()).map_err(|e| e.to_string())?;
+    command.stdout(spool.reopen().map_err(|e| e.to_string())?);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -417,46 +434,315 @@ pub fn answer_with_cancel(
         .spawn()
         .map_err(|e| format!("Side chat provider could not start: {e}"))?;
     let started = Instant::now();
+    let mut decoder = AnswerStream::default();
+    let mut offset = 0;
+    let mut pending = Vec::new();
+    let mut poll_stream = || -> Result<(), String> {
+        stream
+            .seek(std::io::SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut stream)
+            .take(2_097_153 - offset)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        offset += bytes.len() as u64;
+        if offset > 2_097_152 {
+            return Err("Side chat output exceeded its limit.".into());
+        }
+        pending.extend_from_slice(&bytes);
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line = pending.drain(..=end).collect::<Vec<_>>();
+            if let Some(text) = decoder.event(provider, &String::from_utf8_lossy(&line))? {
+                update(text);
+            }
+        }
+        Ok(())
+    };
     let status = loop {
+        if let Err(error) = poll_stream() {
+            stop_provider(&mut child);
+            return Err(error);
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() < TIMEOUT && !cancelled.load(Ordering::Acquire) => {
-                std::thread::sleep(Duration::from_millis(100))
+                std::thread::sleep(Duration::from_millis(25))
             }
             _ => {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
-                #[cfg(windows)]
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_provider(&mut child);
                 return Err("Side chat timed out or was interrupted. Try again.".into());
             }
         }
     };
-    if !status.success() {
+    poll_stream()?;
+    drop(poll_stream);
+    if !status.success() || decoder.failed {
         return Err(
             "Side chat provider is unavailable or could not enforce its tool-free configuration."
                 .into(),
         );
     }
-    let mut bytes = Vec::new();
-    fs_err::File::open(output_path)
-        .map_err(|e| e.to_string())?
-        .take(ANSWER_LIMIT)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    let answer = String::from_utf8_lossy(&bytes).trim().to_owned();
+    let answer = decoder.text.trim().to_owned();
     if answer.is_empty() {
         Err("Side chat returned an empty response. Try again.".into())
     } else {
         Ok(answer)
+    }
+}
+
+fn codex_credentials() -> Result<serde_json::Value, String> {
+    use serde_json::json;
+    let environment = crate::env_path::session_environment();
+    let value = |name: &str| {
+        environment
+            .as_ref()
+            .and_then(|env| {
+                env.iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value.clone())
+            })
+            .or_else(|| std::env::var(name).ok())
+            .filter(|value| !value.trim().is_empty())
+    };
+    if let Some(key) = value("OPENAI_API_KEY") {
+        return Ok(json!({"type":"apiKey","apiKey":key}));
+    }
+    let home = value("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| value("HOME").map(|home| Path::new(&home).join(".codex")))
+        .ok_or("Side chat could not locate Codex authentication.")?;
+    let mut bytes = Vec::new();
+    fs_err::File::open(home.join("auth.json"))
+        .and_then(|file| file.take(65_536).read_to_end(&mut bytes))
+        .map_err(|_| "Side chat requires exported OpenAI API credentials or Codex file authentication. Sign in with Codex again.")?;
+    let auth: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "Side chat could not read Codex authentication. Sign in with Codex again.")?;
+    if let Some(key) = auth["OPENAI_API_KEY"]
+        .as_str()
+        .filter(|key| !key.trim().is_empty())
+    {
+        return Ok(json!({"type":"apiKey","apiKey":key}));
+    }
+    let token = auth["tokens"]["access_token"]
+        .as_str()
+        .filter(|token| !token.is_empty());
+    let account = auth["tokens"]["account_id"]
+        .as_str()
+        .filter(|id| !id.is_empty());
+    match (token, account) {
+        (Some(token), Some(account)) => Ok(json!({"type":"chatgptAuthTokens","accessToken":token,"chatgptAccountId":account})),
+        _ => Err("Side chat requires exported OpenAI API credentials or Codex file authentication. Sign in with Codex again.".into()),
+    }
+}
+
+fn stop_provider(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    let _ = Command::new("taskkill")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// An isolated app-server connection exposes actual text deltas; `exec --json`
+/// only promises item snapshots and can buffer the whole answer.
+fn codex_answer(
+    cwd: &Path,
+    prompt: &str,
+    cancelled: &AtomicBool,
+    mut update: impl FnMut(String),
+) -> Result<String, String> {
+    use serde_json::{json, Value};
+    let credentials = codex_credentials()?;
+    let home = tempfile::tempdir().map_err(|_| "Could not isolate side chat configuration")?;
+    let (program, arguments) = Provider::Codex
+        .agent()
+        .session_invocation(&args(Provider::Codex, cwd));
+    let mut command = Command::new(program);
+    command
+        .args(arguments)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if let Some(env) = crate::env_path::session_environment() {
+        command
+            .env_clear()
+            .envs(env.iter().map(|(key, value)| (key, value)));
+    }
+    // Only explicit transient authentication crosses into the isolated home.
+    // No parent configuration, rules, integrations, or refresh tokens are copied.
+    command.env("CODEX_HOME", home.path());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    if cancelled.load(Ordering::Acquire) {
+        return Err("Side chat stopped.".into());
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Side chat provider could not start: {e}"))?;
+    let result = (|| {
+        let mut input = child
+            .stdin
+            .take()
+            .ok_or("Side chat provider input unavailable")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("Side chat provider output unavailable")?;
+        let (send, receive) = std::sync::mpsc::sync_channel(64);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = Vec::new();
+                // Bound each protocol envelope before allocating arbitrary output.
+                let read = reader.by_ref().take(2_097_153).read_until(b'\n', &mut line);
+                if !matches!(read, Ok(1..)) {
+                    break;
+                }
+                if line.len() > 2_097_152 {
+                    let _ = send.send(Err("Side chat event exceeded its limit.".to_owned()));
+                    break;
+                }
+                let event = serde_json::from_slice::<Value>(&line)
+                    .map_err(|_| "Invalid side chat protocol event".to_owned());
+                if send.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut request = |value: Value| -> Result<(), String> {
+            serde_json::to_writer(&mut input, &value).map_err(|e| e.to_string())?;
+            input
+                .write_all(b"\n")
+                .and_then(|()| input.flush())
+                .map_err(|e| e.to_string())
+        };
+        request(
+            json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"grove-side-chat","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}}),
+        )?;
+        let started = Instant::now();
+        let mut decoder = AnswerStream::default();
+        loop {
+            if cancelled.load(Ordering::Acquire) || started.elapsed() >= TIMEOUT {
+                return Err("Side chat timed out or was interrupted. Try again.".into());
+            }
+            let event = match receive.recv_timeout(Duration::from_millis(25)) {
+                Ok(event) => event?,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(_) => return Err("Side chat provider disconnected.".into()),
+            };
+            if event.get("error").is_some() {
+                return Err(
+                    "Side chat provider rejected its isolated configuration or model.".into(),
+                );
+            }
+            match event["id"].as_u64() {
+                Some(1) => {
+                    request(json!({"method":"initialized"}))?;
+                    request(json!({"id":4,"method":"account/login/start","params":credentials}))?;
+                }
+                Some(4) => {
+                    request(json!({"id":2,"method":"thread/start","params":{
+                        "cwd":cwd,"model":"gpt-6-luna","ephemeral":true,
+                        "approvalPolicy":"never","sandbox":"read-only",
+                        "baseInstructions":INSTRUCTIONS,"developerInstructions":INSTRUCTIONS,
+                        "config":{"project_doc_max_bytes":0,"web_search":"disabled"}
+                    }}))?;
+                }
+                Some(2) => {
+                    let thread = event["result"]["thread"]["id"]
+                        .as_str()
+                        .ok_or("Side chat thread unavailable")?;
+                    request(json!({"id":3,"method":"turn/start","params":{
+                        "threadId":thread,"model":"gpt-6-luna",
+                        "approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"},
+                        "input":[{"type":"text","text":prompt}]
+                    }}))?;
+                }
+                _ => {}
+            }
+            // Reject every unexpected provider request, rather than granting any tool authority.
+            if event.get("method").is_some() && event.get("id").is_some() {
+                request(
+                    json!({"id":event["id"],"error":{"code":-32601,"message":"Side chat has no tools or approvals"}}),
+                )?;
+            }
+            if let Some(text) = decoder.event(Provider::Codex, &event.to_string())? {
+                update(text);
+            }
+            if event["method"] == "turn/completed" {
+                if event["params"]["turn"]["status"] != "completed" {
+                    return Err("Side chat response failed or was interrupted. Try again.".into());
+                }
+                let answer = decoder.text.trim().to_owned();
+                return if answer.is_empty() {
+                    Err("Side chat returned an empty response. Try again.".into())
+                } else {
+                    Ok(answer)
+                };
+            }
+        }
+    })();
+    stop_provider(&mut child);
+    result
+}
+
+#[derive(Default)]
+struct AnswerStream {
+    text: String,
+    failed: bool,
+}
+impl AnswerStream {
+    fn event(&mut self, provider: Provider, line: &str) -> Result<Option<String>, String> {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            return Ok(None);
+        };
+        let before = self.text.clone();
+        match provider {
+            Provider::Codex => {
+                if event["method"] == "item/agentMessage/delta" {
+                    if let Some(delta) = event["params"]["delta"].as_str() {
+                        self.text.push_str(delta);
+                    }
+                } else if event["method"] == "item/completed"
+                    && event["params"]["item"]["type"] == "agentMessage"
+                {
+                    if let Some(text) = event["params"]["item"]["text"].as_str() {
+                        self.text = text.to_owned();
+                    }
+                }
+            }
+            Provider::Claude => {
+                if event["type"] == "stream_event"
+                    && event["event"]["type"] == "content_block_delta"
+                    && event["event"]["delta"]["type"] == "text_delta"
+                {
+                    if let Some(delta) = event["event"]["delta"]["text"].as_str() {
+                        self.text.push_str(delta);
+                    }
+                } else if event["type"] == "result" {
+                    self.failed |= event["is_error"].as_bool().unwrap_or(false);
+                    if let Some(text) = event["result"].as_str() {
+                        self.text = text.to_owned();
+                    }
+                }
+            }
+        }
+        if self.text.len() as u64 > ANSWER_LIMIT {
+            return Err("Side chat answer exceeded its limit.".into());
+        }
+        Ok((before != self.text && !self.text.is_empty()).then(|| self.text.clone()))
     }
 }
 
@@ -468,10 +754,9 @@ mod tests {
         let codex = args(Provider::Codex, Path::new("/tmp/output"));
         for flag in [
             "--strict-config",
-            "--ignore-user-config",
-            "--ignore-rules",
-            "--ephemeral",
-            "read-only",
+            "app-server",
+            "sandbox_mode=\"read-only\"",
+            "model=\"gpt-6-luna\"",
             "approval_policy=\"never\"",
             "web_search=\"disabled\"",
             "shell_tool",
@@ -487,7 +772,7 @@ mod tests {
         }
         let claude = args(Provider::Claude, Path::new("/tmp/output"));
         for flag in [
-            "--safe-mode",
+            "--bare",
             "--tools",
             "--strict-mcp-config",
             "--no-session-persistence",
@@ -497,6 +782,74 @@ mod tests {
         }
         let index = claude.iter().position(|a| a == "--tools").unwrap();
         assert_eq!(claude[index + 1], "");
+    }
+    #[test]
+    fn both_providers_publish_partial_text_before_completion() {
+        let mut codex = AnswerStream::default();
+        assert_eq!(
+            codex
+                .event(
+                    Provider::Codex,
+                    r#"{"method":"item/agentMessage/delta","params":{"delta":"First "}}"#
+                )
+                .unwrap()
+                .as_deref(),
+            Some("First ")
+        );
+        assert_eq!(
+            codex
+                .event(
+                    Provider::Codex,
+                    r#"{"method":"item/agentMessage/delta","params":{"delta":"second"}}"#
+                )
+                .unwrap()
+                .as_deref(),
+            Some("First second")
+        );
+        assert_eq!(codex.event(Provider::Codex, r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"First second"}}}"#).unwrap(), None);
+        let mut claude = AnswerStream::default();
+        assert_eq!(claude.event(Provider::Claude, r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"First "}}}"#).unwrap().as_deref(), Some("First "));
+        assert_eq!(claude.event(Provider::Claude, r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"second"}}}"#).unwrap().as_deref(), Some("First second"));
+        assert_eq!(
+            claude
+                .event(
+                    Provider::Claude,
+                    r#"{"type":"result","result":"First second","is_error":false}"#
+                )
+                .unwrap(),
+            None
+        );
+    }
+    fn live_stream(provider: Provider) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut updates = Vec::new();
+        let answer = answer_streaming(provider, dir.path().to_str().unwrap(), "The app has four session groups: Needs you, Review, Working, and Idle.", &[("user".into(), "Explain the four supplied session groups in 20 numbered sentences. Use only this snapshot.".into())], &AtomicBool::new(false), |text| updates.push(text)).unwrap();
+        assert!(
+            updates.len() >= 2,
+            "expected multiple live deltas, got {}",
+            updates.len()
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|text| !text.trim().is_empty() && text.len() < answer.len()),
+            "no partial answer arrived before completion"
+        );
+        eprintln!(
+            "{provider:?}: {} incremental updates, {} final bytes",
+            updates.len(),
+            answer.len()
+        );
+    }
+    #[test]
+    #[ignore = "requires authenticated Codex and a live Luna request"]
+    fn live_codex_streams_incrementally() {
+        live_stream(Provider::Codex);
+    }
+    #[test]
+    #[ignore = "requires exported Anthropic API key and a live Haiku request"]
+    fn live_claude_streams_incrementally() {
+        live_stream(Provider::Claude);
     }
     #[test]
     fn tail_keeps_recent_unicode_context() {
@@ -524,9 +877,9 @@ mod tests {
         live_read_only(Provider::Codex);
     }
     #[test]
-    fn claude_fails_closed_before_launch() {
-        let result = answer(Provider::Claude, "/missing", "", &[]);
-        assert!(result.unwrap_err().contains("managed hooks"));
+    #[ignore = "requires authenticated Claude and a live model request"]
+    fn live_claude_cannot_write() {
+        live_read_only(Provider::Claude);
     }
 
     #[cfg(unix)]

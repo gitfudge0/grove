@@ -453,8 +453,10 @@ impl Render for ModelPicker {
                 .gap(rpx(SPACE_LG))
                 // Only the row owns the model highlight, including its action slots.
                 // An idle search cursor must not look like a hovered model.
-                .when(search_navigation && i == self.cursor, |row| row.bg(c::BG()))
-                .focus_visible(|row| row.bg(c::BG()))
+                .when(selected || (search_navigation && i == self.cursor), |row| {
+                    row.bg(c::BG_HOVER()).text_color(c::FG())
+                })
+                .focus_visible(|row| row.bg(c::BG_HOVER()))
                 .child(
                     div()
                         .flex_1()
@@ -465,7 +467,8 @@ impl Render for ModelPicker {
                         .child(
                             div()
                                 .id(("model-picker-name", i))
-                                .text_color(c::FG())
+                                .text_color(if selected || (search_navigation && i == self.cursor) { c::FG() } else { c::FG_DIM() })
+                                .group_hover("neutral-control", |name| name.text_color(c::FG()))
                                 .text_size(rpx(TEXT_BODY))
                                 .line_height(rpx(MODEL_NAME_LINE_H))
                                 .truncate()

@@ -1,6 +1,7 @@
 //! Session-owned, read-only side conversations.
 use super::*;
 use crate::views::components::{project_field_well, shimmer_label, transcript_action};
+use futures::StreamExt;
 use gpui::AnimationExt;
 use gpui_component::{
     input::{Input, InputState, TextDecoration, TextDecorationCollection},
@@ -10,6 +11,7 @@ use gpui_component::{
 
 pub(super) const SIDE_CHAT_WIDTH: f32 = 400.;
 const SIDE_CHAT_NARROW_HEIGHT: f32 = 280.;
+const SIDE_CHAT_USER_MAX_WIDTH: f32 = 320.;
 
 pub(super) struct SideChat {
     input: Entity<InputState>,
@@ -28,13 +30,20 @@ pub(super) struct SideChat {
     scroll: gpui::ScrollHandle,
     follow_latest: bool,
     pending_scroll: Option<bool>,
+    motion_frame: Option<Instant>,
+    motion_frame_pending: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 struct MessageView {
     view: Entity<TextViewState>,
+    stream_text: (String, usize),
     focus: FocusHandle,
     _subscriptions: Vec<gpui::Subscription>,
 }
+
+#[cfg(test)]
+#[path = "side_chat_native_tests.rs"]
+mod native_tests;
 
 #[cfg(test)]
 mod tests {
@@ -103,8 +112,8 @@ mod tests {
                 title: None,
                 title_generation: None,
                 roots: Vec::new(),
-                thread_id: None,
-                items: Vec::new().into(),
+                thread_id: Some("side-chat-layout-thread".into()),
+                items: vec![serde_json::json!({"id":"main-history", "type":"agentMessage", "text":"Main transcript content."})].into(),
                 work_periods: Vec::new(),
                 draft: String::new(),
                 draft_images: Vec::new(),
@@ -256,6 +265,27 @@ mod tests {
             cx.debug_bounds("side-chat-message-0").is_some(),
             "assistant Markdown is mounted in the transcript"
         );
+        let main_composer = cx.debug_bounds("codex-composer").unwrap();
+        let card = cx.debug_bounds("side-chat-card").unwrap();
+        assert!((main_composer.bottom() - card.bottom()).abs() <= gpui::px(1.),
+            "side chat must align with the main composer: {main_composer:?} {card:?}");
+        let composer = cx.debug_bounds("side-chat-composer").unwrap();
+        let input = cx.debug_bounds("side-chat-input").unwrap();
+        let footer = cx.debug_bounds("side-chat-composer-footer").unwrap();
+        assert!(
+            input.top() >= composer.top() && input.bottom() <= footer.top(),
+            "input must fit above composer footer: {input:?} {footer:?}"
+        );
+        assert!(
+            footer.bottom() < composer.bottom(),
+            "footer must fit within composer: {footer:?} {composer:?}"
+        );
+        let bubble = cx.debug_bounds("side-chat-bubble-1").unwrap();
+        let user_copy = cx.debug_bounds("side-chat-copy-1").unwrap();
+        assert!(
+            user_copy.top() >= bubble.bottom(),
+            "Copy belongs outside the user bubble: {user_copy:?} {bubble:?}"
+        );
         let history = cx.debug_bounds("side-chat-history").unwrap();
         let responding = cx.debug_bounds("side-chat-responding").unwrap();
         assert!(
@@ -319,6 +349,91 @@ mod tests {
                     .contains_key(&0));
             })
         });
+        // Measure the actual main and side surfaces together for both providers
+        // and changed rem zoom, rather than comparing isolated panel snapshots.
+        for provider in [grove_core::codex::Provider::Codex, grove_core::codex::Provider::Claude] {
+            for (width, height, rem) in [(1280., 800., 16.), (1100., 760., 16.), (1600., 1000., 20.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    sidebar.update(cx, |sidebar, cx| {
+                        let id = sidebar.checkout_panel.side_chats.keys().next().unwrap().0;
+                        let session = sidebar.runtime.read(cx).registry.read(cx).codex(id).unwrap().clone();
+                        session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            cx.notify();
+                        });
+                    });
+                });
+                for _ in 0..3 {
+                    cx.run_until_parked();
+                    cx.update(|window, cx| { let _ = window.draw(cx); });
+                }
+                let main = cx.debug_bounds("codex-composer").unwrap();
+                let side = cx.debug_bounds("side-chat-card").unwrap();
+                assert!((main.bottom() - side.bottom()).abs() <= gpui::px(1.),
+                    "{provider:?} at {width}/{rem}: {main:?} vs {side:?}");
+            }
+        }
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        cx.update(|window, _| window.set_rem_size(gpui::px(16.)));
+        // Enter must preserve an unavailable Claude draft even though the
+        // disabled send button cannot be activated. This exercises the actual
+        // subscription route without launching Claude in OAuth-only installs.
+        if grove_core::side_chat_claude::ensure_read_only().is_err() {
+            let (key, count) = cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    let key = sidebar
+                        .checkout_panel
+                        .side_chats
+                        .keys()
+                        .next()
+                        .unwrap()
+                        .clone();
+                    let session = sidebar
+                        .runtime
+                        .read(cx)
+                        .registry
+                        .read(cx)
+                        .codex(key.0)
+                        .unwrap()
+                        .clone();
+                    session.update(cx, |session, _| {
+                        session.state.saved.provider = grove_core::codex::Provider::Claude
+                    });
+                    let chat = sidebar.checkout_panel.side_chats.get_mut(&key).unwrap();
+                    chat.busy = false;
+                    chat.retryable = false;
+                    let count = chat.messages.len();
+                    let input = chat.input.clone();
+                    input.update(cx, |input, cx| {
+                        input.set_value("Keep this unavailable Haiku draft", window, cx);
+                        cx.emit(gpui_component::input::InputEvent::PressEnter {
+                            secondary: false,
+                            shift: false,
+                        });
+                    });
+                    (key, count)
+                })
+            });
+            // GPUI delivers entity subscription events after the emitting update.
+            cx.update(|_, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    let chat = &sidebar.checkout_panel.side_chats[&key];
+                    assert_eq!(
+                        chat.messages.len(),
+                        count,
+                        "unavailable Enter must not append a question"
+                    );
+                    assert_eq!(
+                        chat.input.read(cx).value().as_ref(),
+                        "Keep this unavailable Haiku draft"
+                    );
+                    assert!(chat.error.as_deref().unwrap().contains("ANTHROPIC_API_KEY"));
+                    assert!(!chat.retryable && !chat.busy);
+                });
+            });
+        }
         // An ambiguous multi-checkout session must not overflow a narrow window.
         let second_path = fixture.path().join("second").to_string_lossy().into_owned();
         cx.update(|_, cx| {
@@ -434,9 +549,17 @@ impl Sidebar {
         let Some(chat) = self.checkout_panel.side_chats.get(key) else {
             return;
         };
+        let mut messages = chat.messages.clone();
+        // Keep partial output visible in memory, but persist an unanswered user
+        // question so restoring an interrupted request offers a truthful retry.
+        if (chat.busy || chat.retryable)
+            && messages.last().is_some_and(|(role, _)| role == "assistant")
+        {
+            messages.pop();
+        }
         let saved = grove_core::codex::SavedSideChat {
             draft: chat.input.read(cx).value().to_string(),
-            messages: chat.messages.clone(),
+            messages,
         };
         let session = self
             .runtime
@@ -515,13 +638,15 @@ impl Sidebar {
         };
         let saved = &session.read(cx).state.saved;
         let provider = saved.provider;
-        if provider != grove_core::codex::Provider::Codex {
-            if let Some(chat) = self.checkout_panel.side_chats.get_mut(&key) {
-                chat.error = Some("Side chat is unavailable for this provider.".into());
-                chat.retryable = false;
+        if provider == grove_core::codex::Provider::Claude {
+            if let Err(error) = grove_core::side_chat_claude::ensure_read_only() {
+                if let Some(chat) = self.checkout_panel.side_chats.get_mut(&key) {
+                    chat.error = Some(error);
+                    chat.retryable = false;
+                }
+                cx.notify();
+                return;
             }
-            cx.notify();
-            return;
         }
         let cwd = key.1.clone();
         let context = serde_json::to_string(&saved.items).unwrap_or_default();
@@ -547,27 +672,53 @@ impl Sidebar {
         let conversation = chat.messages.clone();
         chat.follow_latest = true;
         self.persist_side_chat(&key, cx);
+        let answer_index = conversation.len();
         cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move {
-                    grove_core::side_chat::answer_with_cancel(
-                        provider,
-                        &cwd,
-                        &context,
-                        &conversation,
-                        &cancel,
-                    )
-                })
-                .await;
+            let (updates, mut incoming) = futures::channel::mpsc::unbounded();
+            let result = cx.background_executor().spawn(async move {
+                let result = grove_core::side_chat::answer_streaming(
+                    provider,
+                    &cwd,
+                    &context,
+                    &conversation,
+                    &cancel,
+                    |text| {
+                        let _ = updates.unbounded_send(text);
+                    },
+                );
+                drop(updates);
+                result
+            });
+            while let Some(text) = incoming.next().await {
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(chat) = this.checkout_panel.side_chats.get_mut(&key) {
+                        if chat.messages.len() == answer_index {
+                            chat.messages.push(("assistant".into(), text));
+                            if !cx.reduce_motion() {
+                                chat.entrances
+                                    .insert(answer_index, cx.background_executor().now());
+                            }
+                        } else if let Some((_, answer)) = chat.messages.get_mut(answer_index) {
+                            *answer = text;
+                        }
+                    }
+                    cx.notify();
+                });
+            }
+            let result = result.await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(chat) = this.checkout_panel.side_chats.get_mut(&key) {
                     chat.busy = false;
                     chat.cancel = None;
                     match result {
                         Ok(answer) => {
-                            chat.messages.push(("assistant".into(), answer));
-                            if !cx.reduce_motion() {
+                            let new_message = chat.messages.len() == answer_index;
+                            if new_message {
+                                chat.messages.push(("assistant".into(), answer));
+                            } else if let Some((_, text)) = chat.messages.get_mut(answer_index) {
+                                *text = answer;
+                            }
+                            if new_message && !cx.reduce_motion() {
                                 chat.entrances.insert(
                                     chat.messages.len() - 1,
                                     cx.background_executor().now(),
@@ -608,6 +759,15 @@ impl Sidebar {
         let Some(chat) = self.checkout_panel.side_chats.get_mut(&key) else {
             return;
         };
+        if chat.retryable
+            && chat
+                .messages
+                .last()
+                .is_some_and(|(role, _)| role == "assistant")
+        {
+            chat.messages.pop();
+            chat.message_views.truncate(chat.messages.len());
+        }
         let Some((role, question)) = chat.messages.last() else {
             return;
         };
@@ -720,11 +880,14 @@ impl Sidebar {
             .read(cx)
             .codex(id)
             .map(|session| session.read(cx).state.saved.provider);
-        let supported = available && provider == Some(grove_core::codex::Provider::Codex);
+        let claude_unavailable = (provider == Some(grove_core::codex::Provider::Claude))
+            .then(grove_core::side_chat_claude::ensure_read_only)
+            .and_then(Result::err);
+        let supported = available && provider.is_some() && claude_unavailable.is_none();
         let context_disclosure = match (available, provider) {
             (false, _) => "Read-only · Context is unavailable; no context is sent.",
             (true, Some(grove_core::codex::Provider::Codex)) => "Read-only · Each question sends Codex a new, bounded snapshot of this session and worktree. It may omit files or history; answers may become stale as work continues.",
-            (true, Some(grove_core::codex::Provider::Claude)) => "Read-only · Claude Code is unavailable; no context is sent.",
+            (true, Some(grove_core::codex::Provider::Claude)) => "Read-only · Each question sends Haiku a new, bounded snapshot using tool-free bare mode.",
             (true, None) => "Read-only · Session context is unavailable; no context is sent.",
         };
         if !self.checkout_panel.side_chats.contains_key(&key) {
@@ -790,6 +953,8 @@ impl Sidebar {
                     scroll: gpui::ScrollHandle::new(),
                     follow_latest: true,
                     pending_scroll: None,
+                    motion_frame: None,
+                    motion_frame_pending: Default::default(),
                 },
             );
         }
@@ -817,8 +982,22 @@ impl Sidebar {
             chat.follow_latest = toward_bottom
                 && chat.scroll.max_offset().y + chat.scroll.offset().y <= gpui::px(1.);
         }
+        let now = cx.background_executor().now();
+        let elapsed = chat.motion_frame.replace(now)
+            .map_or(0.0, |previous| now.duration_since(previous).as_secs_f32());
+        let mut needs_frame = false;
         if chat.follow_latest {
-            chat.scroll.scroll_to_bottom();
+            if cx.reduce_motion() || chat.message_views.is_empty() {
+                chat.scroll.scroll_to_bottom();
+            } else {
+                let target = -chat.scroll.max_offset().y;
+                let current = chat.scroll.offset();
+                let fraction = 1.0 - (-elapsed / (MOTION_FAST_MS as f32 / 1000.0)).exp();
+                let next = current.y + (target - current.y) * fraction;
+                let settled = (target - next).abs() <= gpui::px(0.5);
+                chat.scroll.set_offset(gpui::point(current.x, if settled { target } else { next }));
+                needs_frame |= !settled;
+            }
         }
         let scroll = chat.scroll.clone();
         let scroll_key = key.clone();
@@ -865,13 +1044,22 @@ impl Sidebar {
                 ];
                 chat.message_views.push(MessageView {
                     view,
+                    stream_text: (text.clone(), if role == "assistant" && chat.busy && !cx.reduce_motion() { 0 } else { text.len() }),
                     focus,
                     _subscriptions: subscriptions,
                 });
             }
-            let view = &chat.message_views[index].view;
-            if view.read(cx).source().as_ref() != text {
-                view.update(cx, |view, cx| view.set_text_incremental(text, cx));
+            let message_view = &mut chat.message_views[index];
+            let shown = motion::streamed_text(
+                text,
+                &mut message_view.stream_text,
+                elapsed,
+                role == "assistant" && chat.busy && !cx.reduce_motion(),
+            );
+            needs_frame |= shown.len() < text.len();
+            let view = &message_view.view;
+            if view.read(cx).source().as_ref() != shown {
+                view.update(cx, |view, cx| view.set_text_incremental(shown, cx));
             }
             let user = role == "user";
             let body = TextView::new(view)
@@ -927,18 +1115,7 @@ impl Sidebar {
                 .min_w_0()
                 .gap(rpx(SPACE_LG));
             if user {
-                row = row
-                    .w_full()
-                    .max_w(rpx(320.))
-                    .p(rpx(SPACE_2XL))
-                    .rounded(rpx(RADIUS_PANEL))
-                    .bg(c::BG_RAIL())
-                    .child(
-                        div()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child("You"),
-                    );
+                row = row.w_full().max_w(rpx(SIDE_CHAT_USER_MAX_WIDTH));
             } else {
                 row = row.w_full();
             }
@@ -963,16 +1140,37 @@ impl Sidebar {
                 .child(
                     div()
                         .debug_selector(move || format!("side-chat-body-{index}"))
+                        .min_w_0()
+                        .when(user, |bubble| {
+                            bubble
+                                .debug_selector(move || format!("side-chat-bubble-{index}"))
+                                .p(rpx(SPACE_2XL))
+                                .rounded(rpx(RADIUS_PANEL))
+                                .bg(c::BG_RAIL())
+                        })
+                        .when(user, |bubble| {
+                            bubble.child(
+                                div()
+                                    .mb(rpx(SPACE_LG))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child("You"),
+                            )
+                        })
                         .child(body),
                 )
-                .child(
-                    div()
+                .child({
+                    let actions = div()
                         .flex()
                         .justify_end()
                         .h(rpx(CHROME_CONTROL_H))
-                        .when(!visible, |actions| actions.opacity(0.0))
-                        .child(copy),
-                );
+                        .child(copy);
+                    if visible {
+                        motion::fast(actions, ("side-chat-actions", index), cx)
+                    } else {
+                        actions.opacity(0.0).into_any_element()
+                    }
+                });
             let row = if !cx.reduce_motion()
                 && chat.entrances.get(&index).is_some_and(|started| {
                     cx.background_executor().now().duration_since(*started)
@@ -990,10 +1188,11 @@ impl Sidebar {
                                 / Duration::from_millis(MOTION_SLOW_MS).as_secs_f32();
                             let progress = motion::ease_standard(elapsed.min(1.0));
                             let remaining = 1.0 - progress;
-                            row.top(rpx(SPACE_3XL
-                                * remaining
-                                * remaining
-                                * (1.0 - 2.0 * progress)))
+                            row.opacity(MOTION_FADE_FROM + (1.0 - MOTION_FADE_FROM) * progress)
+                                .top(rpx(SPACE_3XL
+                                    * remaining
+                                    * remaining
+                                    * (1.0 - 2.0 * progress)))
                         },
                     )
                     .into_any_element()
@@ -1038,6 +1237,14 @@ impl Sidebar {
                 );
             }
         }
+        if needs_frame && !cx.reduce_motion() && !chat.motion_frame_pending.replace(true) {
+            let owner = cx.entity().downgrade();
+            let pending = chat.motion_frame_pending.clone();
+            window.on_next_frame(move |_, cx| {
+                pending.set(false);
+                let _ = owner.update(cx, |_, cx| cx.notify());
+            });
+        }
         let input = chat.input.clone();
         let busy = chat.busy;
         let action_key = key.clone();
@@ -1066,26 +1273,30 @@ impl Sidebar {
                 );
             }
         }
-        let context_label = if supported {
-            "Read-only · Codex"
-        } else {
-            "Read-only"
+        let context_label = match provider {
+            Some(grove_core::codex::Provider::Codex) => "Read-only · Luna",
+            Some(grove_core::codex::Provider::Claude) => "Read-only · Haiku",
+            None => "Read-only",
         };
         let input_label = format!("Ask about this session or worktree. {context_disclosure}");
         div().id("side-chat-panel").debug_selector(|| "side-chat-panel".into())
             .flex_shrink_0().min_h_0()
             .when(wide, |panel| panel.w(rpx(SIDE_CHAT_WIDTH)).h_full().pt(rpx(APPBAR_TOTAL_H + SPACE_3XL)))
             .when(!wide, |panel| panel.w_full().h(rpx(SIDE_CHAT_NARROW_HEIGHT)).pt(rpx(SPACE_3XL)))
-            .px(rpx(SPACE_3XL)).pb(rpx(SPACE_3XL)).flex().flex_col()
+            .px(rpx(SPACE_3XL)).pb(if wide { super::super::codex_view::composer_bottom_inset(window) } else { rpx(SPACE_3XL).to_pixels(window.rem_size()) }).flex().flex_col()
             .text_size(rpx(TEXT_BODY)).text_color(c::FG())
-            .child(project_field_well(false, false).h_full().min_h_0().w_full().p(rpx(SPACE_2XL)).justify_start().gap(rpx(SPACE_LG))
+            .child(project_field_well(false, false).debug_selector(|| "side-chat-card".into()).h_full().min_h_0().w_full().p(rpx(SPACE_2XL)).justify_start().gap(rpx(SPACE_LG))
                 .when(!available, |panel| panel.child(div().text_color(c::FG_DIM()).child("This checkout is unavailable. History remains readable; restore the checkout to ask another question.")))
                 .when(!available && recovery_paths.len() > 1, |panel| panel.child(recovery_choices))
-                .when(available && !supported, |panel| panel.child(div().text_color(c::FG_DIM()).child("Side chat is unavailable for this provider until read-only access can be enforced.")))
+                .when(available && !supported, |panel| panel.child(div().text_color(c::FG_DIM()).child(claude_unavailable.unwrap_or_else(|| "Side chat is unavailable for this provider until read-only access can be enforced.".into()))))
                 .child(history)
-                .child(project_field_well(false, false).w_full().p(rpx(SPACE_LG)).gap(rpx(SPACE_SM))
-                  .child(Input::new(&input).aria_label(input_label).appearance(false).bordered(false).focus_bordered(false).p_0())
-                  .child(div().flex().items_center().justify_between().gap(rpx(SPACE_SM))
+                .child(div().id("side-chat-composer").debug_selector(|| "side-chat-composer".into())
+                  .w_full().min_w_0().flex_shrink_0().flex().flex_col()
+                  .p(rpx(SPACE_2XL)).gap(rpx(SPACE_LG))
+                  .rounded(rpx(RADIUS_PANEL)).border_1().border_color(c::BORDER_SOFT()).bg(c::BG_RAIL())
+                  .child(div().id("side-chat-input").debug_selector(|| "side-chat-input".into()).min_h(rpx(FORM_VALUE_LINE_H * 2.0))
+                    .child(Input::new(&input).aria_label(input_label).appearance(false).bordered(false).focus_bordered(false).text_color(c::FG()).p_0()))
+                  .child(div().id("side-chat-composer-footer").debug_selector(|| "side-chat-composer-footer".into()).flex().items_center().justify_between().gap(rpx(SPACE_SM))
                     .child(div().id("side-chat-context").text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(context_label))
                     .child(if busy {
                     super::super::codex_view::composer_icon("side-chat-stop", "Stop response", "stop", false, true)

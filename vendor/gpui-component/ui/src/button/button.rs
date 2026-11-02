@@ -599,7 +599,8 @@ impl RenderOnce for Button {
                     .when(normal_style.underline, |this| this.text_decoration_1())
                     .hover(|this| {
                         let hover_style = style.hovered(self.outline, cx);
-                        this.border_color(hover_style.border)
+                        this.bg(hover_style.bg)
+                            .border_color(hover_style.border)
                             .text_color(hover_style.fg)
                     })
                     .active(|this| {
@@ -1155,6 +1156,7 @@ impl ButtonVariant {
         let fg = match self {
             Self::Link => cx.theme().link_active,
             Self::Text => cx.theme().foreground.opacity(0.7),
+            Self::Custom(colors) => colors.hover_foreground.unwrap_or(colors.foreground),
             _ => self.text_color(false, cx),
         };
         let underline = self.underline(cx);
@@ -1277,6 +1279,8 @@ mod tests {
                 assert_eq!(strengthened.normal(false, cx).fg, foreground);
                 assert_eq!(strengthened.hovered(false, cx).fg, strong);
                 assert_eq!(strengthened.active(false, cx).fg, strong);
+                assert_eq!(strengthened.selected(false, cx).fg, strong);
+                assert_eq!(strengthened.selected(false, cx).bg, active.into());
                 assert_eq!(strengthened.disabled(false, cx).fg, foreground.opacity(0.5));
                 assert_ne!(
                     variant.disabled(false, cx).bg,

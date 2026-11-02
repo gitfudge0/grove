@@ -436,6 +436,7 @@ pub(crate) struct Paragraph {
     pub(super) link_refs: HashMap<SharedString, SharedString>,
 
     pub(crate) state: Arc<Mutex<InlineState>>,
+    pub(super) flow_states: super::inline_flow::FragmentStates,
 }
 
 impl PartialEq for Paragraph {
@@ -453,6 +454,7 @@ impl Paragraph {
             children: vec![InlineNode::new(&text)],
             link_refs: HashMap::new(),
             state: Arc::new(Mutex::new(InlineState::default())),
+            flow_states: Default::default(),
         }
     }
 
@@ -551,6 +553,7 @@ impl Paragraph {
                 children: vec![],
                 link_refs: Default::default(),
                 state: Arc::new(Mutex::new(InlineState::default())),
+                flow_states: Default::default(),
             },
         )
     }
@@ -826,7 +829,13 @@ impl Paragraph {
                     .iter()
                     .any(|item| matches!(item, InlineFlowItem::Custom { .. }))
             {
-                return InlineFlow::new(span.unwrap_or_default(), items).into_any_element();
+                return InlineFlow::new(
+                    span.unwrap_or_default(),
+                    items,
+                    self.flow_states.clone(),
+                    self.state.clone(),
+                )
+                .into_any_element();
             }
         }
 
@@ -914,7 +923,7 @@ impl Paragraph {
                     }
 
                     if let Some(mut link_mark) = style.link.clone() {
-                        highlight.color = Some(cx.theme().link);
+                        highlight.color = Some(cx.theme().muted_foreground);
                         highlight.underline = Some(gpui::UnderlineStyle {
                             thickness: gpui::px(1.),
                             ..Default::default()
@@ -1026,7 +1035,7 @@ impl Paragraph {
                     }
 
                     if let Some(mut link_mark) = style.link.clone() {
-                        highlight.color = Some(cx.theme().link);
+                        highlight.color = Some(cx.theme().muted_foreground);
                         highlight.underline = Some(gpui::UnderlineStyle {
                             thickness: gpui::px(1.),
                             ..Default::default()

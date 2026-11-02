@@ -1998,7 +1998,7 @@ impl Sidebar {
                 } else if primary {
                     s.text_color(c::BG())
                 } else {
-                    s.text_color(c::FG())
+                    s.bg(c::BG_HOVER()).text_color(c::FG())
                 }
             })
             .focus_visible(move |s| {
@@ -4035,7 +4035,8 @@ impl Sidebar {
                                     .text_size(rpx(TEXT_SMALL))
                                     .line_height(rpx(SESSION_LIST_FOOTER_H))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(c::FG_DIM())
+                                    .text_color(if selected { c::FG() } else { c::FG_DIM() })
+                                    .group_hover("session-row", |label| label.text_color(c::FG()))
                                     .id(("session-list-context", id.raw()))
                                     .debug_selector(move || {
                                         format!("session-list-context-{}", id.raw())

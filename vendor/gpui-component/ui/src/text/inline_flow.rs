@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ops::Range,
     sync::{Arc, Mutex},
 };
@@ -20,9 +21,14 @@ use super::{
 
 const IMAGE_LEN: usize = 1;
 
+pub(super) type FragmentStates =
+    Arc<Mutex<HashMap<(usize, usize, usize), Arc<Mutex<InlineState>>>>>;
+
 pub(super) struct InlineFlow {
     id: ElementId,
     items: Vec<InlineFlowItem>,
+    fragment_states: FragmentStates,
+    paragraph_state: Arc<Mutex<InlineState>>,
 }
 
 pub(super) enum InlineFlowItem {
@@ -104,10 +110,17 @@ enum LineFragmentKind {
 }
 
 impl InlineFlow {
-    pub(super) fn new(id: impl Into<ElementId>, items: Vec<InlineFlowItem>) -> Self {
+    pub(super) fn new(
+        id: impl Into<ElementId>,
+        items: Vec<InlineFlowItem>,
+        fragment_states: FragmentStates,
+        paragraph_state: Arc<Mutex<InlineState>>,
+    ) -> Self {
         Self {
             id: id.into(),
             items,
+            fragment_states,
+            paragraph_state,
         }
     }
 
@@ -329,8 +342,19 @@ impl Element for InlineFlow {
                             state,
                             text: source,
                             ..
-                        } if source_range == (0..source.len()) => state.clone(),
-                        _ => Arc::new(Mutex::new(InlineState::default())),
+                        } if source_range == (0..source.len())
+                            && Arc::ptr_eq(state, &self.paragraph_state) => state.clone(),
+                        _ => self
+                            .fragment_states
+                            .lock()
+                            .ok()
+                            .map(|mut states| {
+                                states
+                                    .entry((item_ix, source_range.start, source_range.end))
+                                    .or_insert_with(|| Arc::new(Mutex::new(InlineState::default())))
+                                    .clone()
+                            })
+                            .unwrap_or_default(),
                     };
                     if let Ok(mut state) = state.lock() {
                         state.set_text(text);

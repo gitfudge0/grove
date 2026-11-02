@@ -419,11 +419,15 @@ impl Sidebar {
             .flex_1()
             .min_w_0()
             .cursor_pointer()
+            .group("neutral-control")
             .flex()
             .items_start()
             .gap(rpx(SPACE_LG))
             .line_height(rpx(TIMELINE_TASK_LINE_H))
             .py(rpx(SPACE_SM))
+            .text_color(if open { c::FG() } else { c::FG_DIM() })
+            .when(open, |style| style.bg(c::BG_HOVER()))
+            .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .on_mouse_down(gpui::MouseButton::Left, {
                 let focus = focus.clone();
@@ -459,7 +463,7 @@ impl Sidebar {
                     .child(icon(
                         if open { "chev-down" } else { "chev-right" },
                         ICON_SM,
-                        c::FG_DIM(),
+                        if open { c::FG() } else { c::FG_DIM() },
                     )),
             )
             .child(
@@ -740,6 +744,8 @@ impl Sidebar {
                     .tab_index(0)
                     .tab_stop(true)
                     .track_focus(&focus)
+                    .text_color(c::FG_DIM())
+                    .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                     .focus_visible(|style| style.bg(c::BG_HOVER()))
                     .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                         if *hovered {

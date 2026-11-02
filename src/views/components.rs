@@ -102,7 +102,7 @@ pub fn header_control_with_tooltip(
 pub(super) fn header_control_frame(
     id: impl Into<gpui::ElementId>,
     label: impl Into<gpui::SharedString>,
-    _hover: gpui::Hsla,
+    hover: gpui::Hsla,
 ) -> Stateful<Div> {
     div()
         .id(id)
@@ -117,7 +117,7 @@ pub(super) fn header_control_frame(
         .rounded(rpx(RADIUS_CONTROL))
         .group("neutral-control")
         .text_color(c::FG_DIM())
-        .hover(|s| s.text_color(c::FG()))
+        .hover(move |s| s.bg(hover).text_color(c::FG()))
         .on_mouse_down(MouseButton::Left, |_, window, cx| {
             window.prevent_default();
             cx.stop_propagation();
@@ -380,7 +380,7 @@ pub fn dense_action_with_colors(
     label: impl Into<gpui::SharedString>,
     fill: gpui::Hsla,
     foreground: gpui::Hsla,
-    _hover: gpui::Hsla,
+    hover: gpui::Hsla,
     window: &gpui::Window,
     cx: &gpui::App,
 ) -> gpui_component::button::Button {
@@ -410,8 +410,8 @@ pub fn dense_action_with_colors(
                 .color(fill)
                 .foreground(rest_foreground)
                 .hover_foreground(if neutral { c::FG() } else { foreground })
-                .hover(fill)
-                .active(fill)
+                .hover(if neutral { c::BG_HOVER() } else { hover })
+                .active(if neutral { c::BG_HOVER() } else { hover })
                 .shadow(false),
         )
         .rounded(rpx(recipe.radius).to_pixels(window.rem_size()))
@@ -453,7 +453,8 @@ pub fn question_choice(
         .rounded(rpx(RADIUS_CONTROL))
         .text_color(c::FG_DIM())
         .bg(if selected { c::BG_HL() } else { c::BG_RAIL() })
-        .hover(|style| style.text_color(c::FG()))
+        .when(selected, |row| row.text_color(c::FG()))
+        .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
         .focus_visible(|style| style.bg(c::BG_HOVER()).border_color(c::BORDER_STRONG()))
         .border_1()
         .border_color(c::BORDER_SOFT())
@@ -489,7 +490,8 @@ pub fn question_choice(
                     row.child(
                         div()
                             .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
+                            .text_color(if selected { c::FG() } else { c::FG_DIM() })
+                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
                             .child(description),
                     )
                 }),
@@ -527,13 +529,13 @@ pub fn question_disclosure(
         .border_t_1()
         .border_color(c::BORDER_SOFT())
         .text_color(c::FG_DIM())
-        .when(expanded, |row| row.bg(c::FIELD_FILL()))
-        .hover(|row| row.text_color(c::FG()))
+        .when(expanded, |row| row.bg(c::BG_HOVER()).text_color(c::FG()))
+        .hover(|row| row.bg(c::BG_HOVER()).text_color(c::FG()))
         .focus_visible(|row| row.bg(c::BG_HOVER()))
         .child(crate::icons::icon(
             if expanded { "chev-down" } else { "chev-right" },
             ICON_SM,
-            c::FG_DIM(),
+            if expanded { c::FG() } else { c::FG_DIM() },
         ))
         .child(
             div()
@@ -546,7 +548,8 @@ pub fn question_disclosure(
                 .child(
                     div()
                         .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
+                        .text_color(if expanded { c::FG() } else { c::FG_DIM() })
+                        .group_hover("neutral-control", |text| text.text_color(c::FG()))
                         .child(summary),
                 ),
         )
@@ -579,11 +582,11 @@ pub fn settings_control(
         .border_1()
         .border_color(c::BORDER_SOFT())
         .text_size(rpx(TEXT_SMALL))
-        .text_color(c::FG_DIM())
+        .text_color(if selected { c::FG() } else { c::FG_DIM() })
         .when(enabled, |el| {
             el.cursor_pointer()
                 .group("neutral-control")
-                .hover(|style| style.text_color(c::FG()))
+                .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
         })
         .when(!enabled, |el| el.cursor_default().opacity(OPACITY_DISABLED))
@@ -781,16 +784,34 @@ pub fn shimmer_label(
     if !running || cx.reduce_motion() {
         return div().child(label).into_any_element();
     }
+    // The animated spans own explicit colors, so changing inherited text color
+    // cannot brighten them on hover. Keep the animated text in layout and swap
+    // its paint for a foreground copy while the owning neutral control is hovered.
+    let hover_label = label.clone();
     div()
-        .with_animation(
-            id,
-            gpui::Animation::new(TOOL_SHIMMER_PERIOD).repeat(),
-            move |element, progress| {
-                element.child(
-                    gpui::StyledText::new(label.clone())
-                        .with_highlights(shimmer_highlights(&label, progress)),
-                )
-            },
+        .relative()
+        .child(
+            div()
+                .group_hover("neutral-control", |style| style.opacity(0.0))
+                .with_animation(
+                    id,
+                    gpui::Animation::new(TOOL_SHIMMER_PERIOD).repeat(),
+                    move |element, progress| {
+                        element.child(
+                            gpui::StyledText::new(label.clone())
+                                .with_highlights(shimmer_highlights(&label, progress)),
+                        )
+                    },
+                ),
+        )
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .text_color(c::FG())
+                .opacity(0.0)
+                .group_hover("neutral-control", |style| style.opacity(1.0))
+                .child(hover_label),
         )
         .into_any_element()
 }

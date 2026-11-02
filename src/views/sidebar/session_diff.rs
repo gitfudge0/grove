@@ -87,7 +87,7 @@ impl Sidebar {
                 .px(rpx(SPACE_LG))
                 .justify_start()
                 .gap(rpx(SPACE_SM))
-                .when(selected, |row| row.bg(c::BG_HL()))
+                .when(selected, |row| row.bg(c::BG_HL()).text_color(c::FG()))
                 .child(status_letter(&file.status))
                 .child(div().flex_1().min_w_0().truncate().child(path))
                 .child(format!("+{} -{}", file.added, file.removed)),

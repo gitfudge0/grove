@@ -340,7 +340,7 @@ impl Render for ReleaseCarousel {
                     .role(gpui::Role::RadioButton)
                     .cursor_pointer()
                     .aria_selected(index == self.index)
-                    .hover(|style| style.text_color(c::FG()))
+                    .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                     .focus_visible(|style| style.bg(c::BG_HOVER()))
                     .tab_index(0)
                     .aria_label(format!("Go to highlight {}", index + 1))

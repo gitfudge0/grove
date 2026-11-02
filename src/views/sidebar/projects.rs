@@ -439,6 +439,7 @@ impl ProjectPanel {
             .track_focus(focus)
             .tab_index(0)
             .cursor_pointer()
+            .group("neutral-control")
             .w_full()
             .min_w_0()
             .min_h(rpx(if glyph.is_some() {
@@ -450,9 +451,12 @@ impl ProjectPanel {
             .gap(rpx(SPACE_LG))
             .flex()
             .items_center()
+            .text_color(if expanded { c::FG() } else { c::FG_DIM() })
+            .when(expanded, |s| s.bg(c::BG_HOVER()))
+            .hover(|s| s.bg(c::BG_HOVER()).text_color(c::FG()))
             .focus_visible(|s| s.bg(c::BG_HOVER()));
         if let Some(glyph) = glyph {
-            row = row.child(icon(glyph, ICON_MD, c::FG_DIM()));
+            row = row.child(icon(glyph, ICON_MD, if expanded { c::FG() } else { c::FG_DIM() }));
         }
         let copy = div()
             .flex_1()
@@ -474,7 +478,8 @@ impl ProjectPanel {
                     div()
                         .when(glyph.is_none(), |s| s.flex_1().min_w_0())
                         .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
+                        .text_color(if expanded { c::FG() } else { c::FG_DIM() })
+                        .group_hover("neutral-control", |text| text.text_color(c::FG()))
                         .truncate()
                         .child(preview),
                 )
@@ -483,7 +488,7 @@ impl ProjectPanel {
             .child(icon(
                 if expanded { "chev-down" } else { "chev-right" },
                 ICON_MD,
-                c::FG_DIM(),
+                if expanded { c::FG() } else { c::FG_DIM() },
             ))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_script(editor.clone(), cx)))
             .on_key_down(
@@ -857,8 +862,9 @@ fn project_action(
             ButtonCustomVariant::new(cx)
                 .color(fill)
                 .foreground(fg)
-                .hover(fill)
-                .active(fill)
+                .hover_foreground(if matches!(style, ProjectActionStyle::Quiet) { c::FG() } else { fg })
+                .hover(hover)
+                .active(hover)
                 .shadow(false),
         )
     };
@@ -1324,7 +1330,7 @@ impl Render for ProjectPanel {
                                 .border_1()
                                 .border_color(c::BORDER_SOFT())
                                 .bg(if selected { c::BG_HOVER() } else { c::BG() })
-                                .hover(|style| style.text_color(c::FG()))
+                                .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
                                 .focus_visible(|style| style.border_color(c::FG()))
                                 .flex()
                                 .items_center()
