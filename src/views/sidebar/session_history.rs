@@ -196,7 +196,7 @@ impl Sidebar {
         cx: &mut Context<Self>,
         sidebar: bool,
     ) -> AnyElement {
-        use gpui_component::input::Input;
+        use gpui_component::{input::Input, Sizable};
         let store = &cx.global::<SettingsState>().store;
         let query = self.history_search.read(cx).value().trim().to_lowercase();
         let matches = |title: &str, project: &str, cwd: &str, agent: Agent| {
@@ -376,87 +376,118 @@ impl Sidebar {
             .read(cx)
             .focus_handle(cx)
             .is_focused(window);
-        let mut list = div()
-            .id("history-list")
-            .debug_selector(|| "history-list".into())
-            .min_w_0()
-            .min_h_0()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .when(true, |list| {
-                list.child(
-                    div()
-                        .p(rpx(SPACE_2XL))
-                        .flex()
-                        .flex_col()
-                        .gap(rpx(SPACE_LG))
-                        .child(
-                            crate::views::components::project_field_well(focused, false)
-                                .w_full()
-                                .child(
-                                    Input::new(&self.history_search)
-                                        .aria_label("Search history")
-                                        .appearance(false)
-                                        .bordered(false)
-                                        .focus_bordered(false)
-                                        .p_0(),
-                                ),
-                        )
-                        .when(!sidebar, |container| {
-                            container.child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .gap(rpx(SPACE_SM))
+        let mut list =
+            div()
+                .id("history-list")
+                .debug_selector(|| "history-list".into())
+                .min_w_0()
+                .min_h_0()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .when(true, |list| {
+                    list.child(
+                        div()
+                            .px(rpx(SPACE_3XL))
+                            .pt(rpx(SPACE_3XL))
+                            .pb(rpx(SPACE_LG))
+                            .flex()
+                            .flex_col()
+                            .gap(rpx(SPACE_LG))
+                            .when(sidebar, |header| {
+                                header.child(
+                                    div()
+                                        .text_size(rpx(TEXT_TITLE))
+                                        .text_color(c::FG())
+                                        .child("History"),
+                                )
+                            })
+                            .child(
+                                crate::views::components::search_field_well(focused)
+                                    .w_full()
+                                    .child(icon("search", ICON_MD, c::FG_DIM()))
                                     .child(
-                                        self.control(
-                                            "history-project-filter",
-                                            format!("Filter by project: {project_label}"),
-                                            Action::HistoryFilterMenu(true),
-                                            cx,
-                                        )
-                                        .w_auto()
-                                        .px(rpx(SPACE_LG))
-                                        .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                                        .child(project_label),
+                                        div().flex_1().min_w_0().child(
+                                            Input::new(&self.history_search)
+                                                .small()
+                                                .text_size(rpx(TEXT_TITLE))
+                                                .aria_label("Search sessions and transcripts")
+                                                .appearance(false)
+                                                .bordered(false)
+                                                .focus_bordered(false)
+                                                .p_0(),
+                                        ),
                                     )
-                                    .child(
-                                        self.control(
-                                            "history-provider-filter",
-                                            format!("Filter by provider: {provider_label}"),
-                                            Action::HistoryFilterMenu(false),
-                                            cx,
+                                    .when(!query.is_empty(), |field| {
+                                        field.child(
+                                            self.control(
+                                                "history-clear-search",
+                                                "Clear search",
+                                                Action::ClearHistorySearch,
+                                                cx,
+                                            )
+                                            .child(icon("close", ICON_SM, c::FG_DIM())),
                                         )
-                                        .w_auto()
-                                        .px(rpx(SPACE_LG))
-                                        .child(icon("chev-down", ICON_SM, c::FG_DIM()))
-                                        .child(provider_label),
-                                    ),
+                                    }),
                             )
-                        }),
-                )
-            })
-            .when(!sidebar, |list| {
-                list.child(
-                    div()
-                        .px(rpx(SPACE_2XL))
-                        .py(rpx(SPACE_MD))
-                        .flex()
-                        .justify_between()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Closed sessions")
-                        .child(format!("{} sessions", records.len() + cli_records.len())),
-                )
-            });
+                            .when(!sidebar, |container| {
+                                container.child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap(rpx(SPACE_SM))
+                                        .child(
+                                            self.control(
+                                                "history-project-filter",
+                                                format!("Filter by project: {project_label}"),
+                                                Action::HistoryFilterMenu(true),
+                                                cx,
+                                            )
+                                            .w_auto()
+                                            .px(rpx(SPACE_LG))
+                                            .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                                            .child(project_label),
+                                        )
+                                        .child(
+                                            self.control(
+                                                "history-provider-filter",
+                                                format!("Filter by provider: {provider_label}"),
+                                                Action::HistoryFilterMenu(false),
+                                                cx,
+                                            )
+                                            .w_auto()
+                                            .px(rpx(SPACE_LG))
+                                            .child(icon("chev-down", ICON_SM, c::FG_DIM()))
+                                            .child(provider_label),
+                                        ),
+                                )
+                            }),
+                    )
+                })
+                .when(true, |list| {
+                    list.child(
+                        div()
+                            .px(rpx(SPACE_3XL + SPACE_SM))
+                            .py(rpx(SPACE_MD))
+                            .flex()
+                            .justify_between()
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(if query.is_empty() {
+                                "Recent sessions".to_string()
+                            } else {
+                                let count = records.len() + cli_records.len();
+                                format!("{count} {}", if count == 1 { "result" } else { "results" })
+                            }),
+                    )
+                });
         let mut rows = div()
             .id("history-list-scroll")
             .debug_selector(|| "history-list-scroll".into())
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .px(rpx(SPACE_LG))
+            .px(rpx(SPACE_3XL))
             .flex()
             .flex_col();
         if records.is_empty() && cli_records.is_empty() && !self.session_history_loading {
@@ -502,7 +533,9 @@ impl Sidebar {
                 .aria_selected(matches!(&self.session_history_selected, Some(HistorySelection::Native(key)) if key == &s.key))
                 .w_full()
                 .h_auto()
-                .min_h(rpx(HEAD_H))
+                .min_h(rpx(ROW_H))
+                .text_size(rpx(TEXT_TITLE))
+                .text_color(c::FG())
                 .justify_start()
                 .px(rpx(SPACE_LG))
                 .py(rpx(SPACE_SM))
@@ -529,7 +562,9 @@ impl Sidebar {
                 .aria_selected(matches!(&self.session_history_selected, Some(HistorySelection::Cli(key)) if key == &s.key))
                 .w_full()
                 .h_auto()
-                .min_h(rpx(HEAD_H))
+                .min_h(rpx(ROW_H))
+                .text_size(rpx(TEXT_TITLE))
+                .text_color(c::FG())
                 .justify_start()
                 .px(rpx(SPACE_LG))
                 .py(rpx(SPACE_SM))
@@ -1036,32 +1071,52 @@ fn transcript_match(saved: &grove_core::codex::SavedSession, query: &str) -> Opt
         .map(|text| {
             let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
             let position = text.to_lowercase().find(query).unwrap_or(0);
-            let start = text.char_indices().rev().filter(|(i, _)| *i < position).nth(24).map_or(0, |(i, _)| i);
+            let start = text
+                .char_indices()
+                .rev()
+                .filter(|(i, _)| *i < position)
+                .nth(24)
+                .map_or(0, |(i, _)| i);
             format!("{}{}", if start > 0 { "…" } else { "" }, &text[start..])
         })
 }
 
-fn highlighted_history_text(text: &str, query: &str) -> Div {
-    let mut row = div().flex().min_w_0().overflow_hidden();
-    let lower = text.to_lowercase();
-    if !query.is_empty() {
-        if let Some(start) = lower.find(query) {
-            let end = start + query.len();
-            if text.is_char_boundary(start) && text.is_char_boundary(end) && end <= text.len() {
-                row = row
-                    .child(text[..start].to_string())
-                    .child(
-                        div()
-                            .bg(c::AMBER_ROW_TINT())
-                            .text_color(c::FG())
-                            .child(text[start..end].to_string()),
-                    )
-                    .child(text[end..].to_string());
-                return row;
-            }
-        }
+fn history_match_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    if query.is_empty() {
+        return Vec::new();
     }
-    row.child(text.to_string())
+    // Map case-folded bytes back to original character boundaries (e.g. İ expands).
+    let mut folded = String::new();
+    let mut boundaries = Vec::new();
+    for (start, ch) in text.char_indices() {
+        let lower = ch.to_lowercase().to_string();
+        boundaries.extend(std::iter::repeat_n(
+            (start, start + ch.len_utf8()),
+            lower.len(),
+        ));
+        folded.push_str(&lower);
+    }
+    folded
+        .match_indices(query)
+        .map(|(start, matched)| boundaries[start].0..boundaries[start + matched.len() - 1].1)
+        .collect()
+}
+
+fn highlighted_history_text(text: &str, query: &str, lines: usize) -> Div {
+    let highlights = history_match_ranges(text, query).into_iter().map(|range| {
+        (
+            range,
+            gpui::HighlightStyle {
+                background_color: Some(c::AMBER_ROW_TINT()),
+                ..Default::default()
+            },
+        )
+    });
+    div()
+        .min_w_0()
+        .w_full()
+        .line_clamp(lines)
+        .child(gpui::StyledText::new(text.to_string()).with_highlights(highlights))
 }
 
 fn history_card_content(title: &str, query: &str, excerpt: Option<String>) -> Div {
@@ -1070,14 +1125,16 @@ fn history_card_content(title: &str, query: &str, excerpt: Option<String>) -> Di
         .min_w_0()
         .flex()
         .flex_col()
-        .child(highlighted_history_text(title, query));
+        .child(highlighted_history_text(title, query, 1));
     if let Some(excerpt) = excerpt {
         content = content.child(
             div()
                 .min_w_0()
                 .text_size(rpx(TEXT_SMALL))
                 .text_color(c::FG_DIM())
-                .child(highlighted_history_text(&excerpt, query)),
+                .mt(rpx(SPACE_SM))
+                .line_height(rpx(SPACE_3XL))
+                .child(highlighted_history_text(&excerpt, query, 2)),
         );
     }
     content
@@ -1092,7 +1149,20 @@ fn history_matches(query: &str, title: &str, project: &str, cwd: &str) -> bool {
 
 #[cfg(test)]
 mod history_filter_tests {
-    use super::{history_checkout_name, history_matches};
+    use super::{history_checkout_name, history_match_ranges, history_matches};
+    #[test]
+    fn highlights_every_match_at_original_unicode_boundaries() {
+        assert_eq!(
+            history_match_ranges("Highlight and highlight", "highlight"),
+            vec![0..9, 14..23]
+        );
+        assert_eq!(
+            history_match_ranges("İ highlight", "highlight"),
+            vec![3..12]
+        );
+        assert_eq!(history_match_ranges("İ", "i"), vec![0..2]);
+        assert!(history_match_ranges("anything", "").is_empty());
+    }
     #[test]
     fn uses_concise_checkout_names() {
         assert_eq!(

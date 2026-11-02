@@ -244,13 +244,13 @@ impl Sidebar {
             );
             let mut group = super::super::components::preference_choices();
             for (choice, label, glyph, key) in [
+                (SessionGrouping::Activity, "Activity", "list", "false"),
                 (
                     SessionGrouping::Worktrees,
                     "Worktree",
                     "git-branch",
                     "worktrees",
                 ),
-                (SessionGrouping::Activity, "Activity", "list", "false"),
             ] {
                 group = group.child(
                     self.control(
@@ -270,18 +270,19 @@ impl Sidebar {
                 );
             }
             if !showing_history {
-                heading = heading.child(group).child(
-                    self.control(
-                        "global-nav-new-session",
-                        "New session",
-                        Action::Destination(Destination::NewSession),
-                        cx,
+                heading = heading
+                    .child(
+                        self.control(
+                            "global-nav-new-session",
+                            "New session",
+                            Action::Destination(Destination::NewSession),
+                            cx,
+                        )
+                        .debug_selector(|| "global-nav-new-session".into())
+                        .track_focus(&self.navigation_focus[3])
+                        .child(icon("plus", ICON_SM, c::FG_DIM())),
                     )
-                    .debug_selector(|| "global-nav-new-session".into())
-                    .track_focus(&self.navigation_focus[3])
-                    .mr(-rpx(SPACE_LG))
-                    .child(icon("plus", ICON_SM, c::FG_DIM())),
-                );
+                    .child(group.mr(-rpx(SPACE_LG)));
             }
         }
         let mut sessions = div()

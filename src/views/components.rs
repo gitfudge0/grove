@@ -118,8 +118,7 @@ pub(super) fn header_control_frame(
     label: impl Into<gpui::SharedString>,
     hover: gpui::Hsla,
 ) -> Stateful<Div> {
-    inline_disclosure_frame(id, label)
-        .hover(move |style| style.bg(hover).text_color(c::FG()))
+    inline_disclosure_frame(id, label).hover(move |style| style.bg(hover).text_color(c::FG()))
 }
 
 /// Inline disclosure: foreground-only pointer feedback; owner retains focus/open fills.
@@ -240,6 +239,26 @@ pub fn form_field(
                 format!("form-error-{id}-{error}"),
                 cx,
             ))
+        })
+}
+
+/// Compact search field for navigation lists. The well owns its border and focus ring.
+pub fn search_field_well(focused: bool) -> Div {
+    div()
+        .h(rpx(ROW_MIN_H))
+        .flex_shrink_0()
+        .min_w_0()
+        .px(rpx(SPACE_XL))
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_LG))
+        .rounded(rpx(RADIUS_GROUP))
+        .bg(c::FIELD_FILL())
+        .border_1()
+        .border_color(if focused {
+            c::SEL_RING()
+        } else {
+            c::BORDER_SOFT()
         })
 }
 

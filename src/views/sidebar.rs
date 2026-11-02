@@ -334,6 +334,7 @@ enum Action {
     RefreshSessionHistory,
     HistoryFilterMenu(bool),
     ClearHistoryFilters,
+    ClearHistorySearch,
     PreviewSessionHistory(String),
     PreviewCliHistory(String),
     ReopenSessionHistory(String),
@@ -580,9 +581,8 @@ impl Sidebar {
         let worktree_base = cx.new(|cx| InputState::new(window, cx).placeholder("main"));
         let projects_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Find a project"));
-        let history_search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search sessions and transcripts")
-        });
+        let history_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search sessions and transcripts"));
         let mut observers = vec![
             cx.observe(&runtime, |_, _, cx| cx.notify()),
             cx.observe(&registry, |_, _, cx| cx.notify()),
@@ -2061,9 +2061,10 @@ impl Sidebar {
     ) -> Stateful<Div> {
         let label = label.into();
         let tooltip_label = label.clone();
-        self.control(id, label, action, cx).tooltip(move |window, cx| {
-            crate::views::components::tooltip(tooltip_label.clone(), window).build(window, cx)
-        })
+        self.control(id, label, action, cx)
+            .tooltip(move |window, cx| {
+                crate::views::components::tooltip(tooltip_label.clone(), window).build(window, cx)
+            })
     }
     fn row(
         &self,
@@ -2076,9 +2077,12 @@ impl Sidebar {
         let worktree = matches!(&action, Action::Select(Selection::Worktree(..)));
         let tooltip_label = label.clone();
         self.control(SharedString::from(id.clone()), label, action, cx)
-            .when(worktree, |row| row.tooltip(move |window, cx| {
-                crate::views::components::tooltip(tooltip_label.clone(), window).build(window, cx)
-            }))
+            .when(worktree, |row| {
+                row.tooltip(move |window, cx| {
+                    crate::views::components::tooltip(tooltip_label.clone(), window)
+                        .build(window, cx)
+                })
+            })
             .debug_selector(move || id.clone())
             .w_full()
             .h(rpx(ROW_H))
@@ -2883,7 +2887,11 @@ impl Sidebar {
         let was_project_flyout = self.project_flyout.is_some();
         if !matches!(
             &action,
-            Action::Launch(..) | Action::Close(_) | Action::FinishSession(_) | Action::ConfirmClose(_) | Action::Cancel
+            Action::Launch(..)
+                | Action::Close(_)
+                | Action::FinishSession(_)
+                | Action::ConfirmClose(_)
+                | Action::Cancel
         ) {
             self.dismiss_project_context(cx);
             self.track_project_flyout_pointer(window.mouse_position(), window, cx);
@@ -2927,6 +2935,13 @@ impl Sidebar {
                 self.load_session_history(cx);
             }
             Action::HistoryFilterMenu(project) => self.open_history_filter(project, window, cx),
+            Action::ClearHistorySearch => {
+                self.history_search.update(cx, |input, cx| {
+                    input.set_value("", window, cx);
+                    input.focus_handle(cx).focus(window, cx);
+                });
+                cx.notify();
+            }
             Action::ClearHistoryFilters => {
                 self.history_project_filter = None;
                 self.history_provider_filter = None;
@@ -5155,8 +5170,13 @@ impl Sidebar {
                         .child("Terminals"),
                 )
                 .child(
-                    self.control_with_tooltip("add-terminal", "Add terminal", Action::AddTerminal, cx)
-                        .child(icon("plus", ICON_SM, c::FG_DIM())),
+                    self.control_with_tooltip(
+                        "add-terminal",
+                        "Add terminal",
+                        Action::AddTerminal,
+                        cx,
+                    )
+                    .child(icon("plus", ICON_SM, c::FG_DIM())),
                 ),
         );
         for meta in self
@@ -7708,10 +7728,25 @@ mod tests {
                 draw(cx);
                 sidebar.read_with(cx, |sidebar, cx| {
                     assert!(sidebar.pending_close.is_none());
-                    assert!(sidebar.runtime.read(cx).registry.read(cx).meta(SessionId::from_raw(id)).is_none());
+                    assert!(sidebar
+                        .runtime
+                        .read(cx)
+                        .registry
+                        .read(cx)
+                        .meta(SessionId::from_raw(id))
+                        .is_none());
                     if id == 1 {
-                        assert_eq!(sidebar.selection, Some(Selection::Session(SessionId::from_raw(2))));
-                        assert!(sidebar.runtime.read(cx).registry.read(cx).meta(SessionId::from_raw(2)).is_some());
+                        assert_eq!(
+                            sidebar.selection,
+                            Some(Selection::Session(SessionId::from_raw(2)))
+                        );
+                        assert!(sidebar
+                            .runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .meta(SessionId::from_raw(2))
+                            .is_some());
                     }
                 });
             }
