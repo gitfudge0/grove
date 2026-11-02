@@ -17,6 +17,7 @@ pub(super) mod projects;
 mod script_preview;
 mod session_diff;
 mod session_history;
+mod session_motion;
 mod side_chat;
 mod task_glance;
 mod worktree_form;
@@ -569,6 +570,7 @@ pub struct Sidebar {
     task_glances: HashMap<SessionId, task_glance::TaskGlanceCache>,
     header_tasks: task_glance::HeaderTasks,
     dashboard_timelines: dashboard_timeline::DashboardTimelines,
+    session_motion: session_motion::SessionMotion,
     age_timer: Option<gpui::Task<()>>,
     #[cfg(test)]
     age_ticks: u64,
@@ -801,6 +803,7 @@ impl Sidebar {
             task_glances: HashMap::new(),
             header_tasks: task_glance::HeaderTasks::default(),
             dashboard_timelines: dashboard_timeline::DashboardTimelines::default(),
+            session_motion: session_motion::SessionMotion::default(),
             age_timer: None,
             #[cfg(test)]
             age_ticks: 0,

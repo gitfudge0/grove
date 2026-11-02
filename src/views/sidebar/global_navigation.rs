@@ -147,6 +147,7 @@ impl Sidebar {
             self.navigation_transition = None;
         }
         if width <= 0.0 {
+            self.sync_session_motion(&[], false, window, cx);
             return div().w_0().h_full().flex_shrink_0().into_any_element();
         }
         let mut nav = div()
@@ -291,11 +292,13 @@ impl Sidebar {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .px(rpx(SPACE_LG));
-        let groups = if showing_history {
+        let mut groups = if showing_history {
             Vec::new()
         } else {
             self.sidebar_session_groups(cx)
         };
+        self.sync_session_motion(&groups, !showing_history, window, cx);
+        self.session_motion_groups(&mut groups);
         let mut count = 0;
         for (label, ids) in groups {
             if ids.is_empty() {
@@ -318,8 +321,11 @@ impl Sidebar {
             for id in ids {
                 if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(id).cloned() {
                     count += 1;
-                    sessions =
-                        sessions.child(self.session_row(&meta, true, None, false, window, cx));
+                    let row = self.session_row(&meta, true, None, false, window, cx);
+                    sessions = sessions.child(self.session_motion_row(id, row));
+                } else if let Some(row) = self.exiting_session_row(id, cx) {
+                    count += 1;
+                    sessions = sessions.child(self.session_motion_row(id, row));
                 }
             }
         }
