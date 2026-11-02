@@ -3,7 +3,7 @@ use super::*;
 use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 
-const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.2;
+const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.25;
 
 /// Preferences for a fresh dashboard draft after adopting the previous one.
 struct DashboardDefaults {
