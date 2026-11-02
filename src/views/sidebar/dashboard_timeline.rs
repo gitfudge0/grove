@@ -426,7 +426,6 @@ impl Sidebar {
             .line_height(rpx(TIMELINE_TASK_LINE_H))
             .py(rpx(SPACE_SM))
             .text_color(if open { c::FG() } else { c::FG_DIM() })
-            .when(open, |style| style.bg(c::BG_HOVER()))
             .hover(|style| style.text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
             .on_mouse_down(gpui::MouseButton::Left, {
