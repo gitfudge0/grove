@@ -306,9 +306,6 @@ impl Sidebar {
                     .mt(rpx(SPACE_XS))
                     .h(rpx(CHROME_CONTROL_H))
                     .gap(rpx(SPACE_SM))
-                    .when_some(card.tasks.as_ref(), |line, tasks| {
-                        line.child(task_glance::row_progress(id, tasks))
-                    })
                     .child(
                         div()
                             .flex()
@@ -325,7 +322,10 @@ impl Sidebar {
                                 cx,
                             )))
                             .child(div().min_w_0().truncate().child(card.status)),
-                    ),
+                    )
+                    .when_some(card.tasks.as_ref(), |line, tasks| {
+                        line.child(task_glance::row_progress(id, tasks))
+                    }),
             )
             .children(card.roots.iter().cloned().map(|root| {
                 div()
