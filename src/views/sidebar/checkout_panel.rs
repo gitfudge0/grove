@@ -378,7 +378,33 @@ impl Sidebar {
             || self.checkout_panel.recovery.is_some()
     }
 
+    pub(super) fn focus_worktree_terminal_trigger(&self, window: &mut Window, cx: &mut App) {
+        if let Some(focus) = self.checkout_panel.trigger_focus.get("terminal") {
+            focus.focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+        }
+    }
+
     pub(super) fn checkout_targets(&self, cx: &App) -> Vec<(usize, String)> {
+        if self.dashboard_open {
+            return self.dashboard_checkout(cx).into_iter().collect();
+        }
+        if let Some(Selection::Worktree(idx, path)) = &self.selection {
+            return self
+                .snapshot
+                .projects
+                .iter()
+                .find(|project| project.idx == *idx)
+                .filter(|project| {
+                    project
+                        .worktrees
+                        .iter()
+                        .any(|worktree| worktree.path == *path)
+                })
+                .map(|_| vec![(*idx, path.clone())])
+                .unwrap_or_default();
+        }
         if let Some(Selection::Session(id) | Selection::Home(id)) = self.selection {
             let registry = self.runtime.read(cx).registry.read(cx);
             if let Some(meta) = registry.meta(id) {
@@ -2245,10 +2271,11 @@ impl Sidebar {
                 .is_some_and(|session| !session.read(cx).is_deferred()),
             _ => false,
         };
-        let controls = matches!(
-            self.selection,
-            Some(Selection::Session(_) | Selection::Home(_))
-        )
+        let controls = (!self.dashboard_open
+            && matches!(
+                self.selection,
+                Some(Selection::Session(_) | Selection::Home(_))
+            ))
         .then(|| self.session_panel_controls(side_chat_available, window, cx));
         let mut width = 1.;
         let mut revision = None;
@@ -2274,7 +2301,8 @@ impl Sidebar {
         } else {
             panel
         };
-        let panel_width = if self.checkout_panel.side_chat_owner.is_some()
+        let panel_width = if !self.dashboard_open
+            && self.checkout_panel.side_chat_owner.is_some()
             && self.checkout_panel.side_chat_owner == self.selection
         {
             super::side_chat::SIDE_CHAT_WIDTH
@@ -2317,7 +2345,7 @@ impl Sidebar {
             .into_any_element()
     }
 
-    pub(super) fn render_content(
+    pub(super) fn render_checkout_content(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2325,11 +2353,9 @@ impl Sidebar {
         self.checkout_panel.narrow_content = None;
         self.checkout_panel.agents_visible = false;
         self.checkout_panel.toggle_available = false;
-        if self.dashboard_open {
-            return self.render_content_body(window, cx);
-        }
         for kind in [
             "checkout",
+            "terminal",
             "publish",
             "summary",
             "commit",
@@ -2345,7 +2371,12 @@ impl Sidebar {
             self.checkout_panel.source_bounds.entry(kind).or_default();
         }
         let targets = self.checkout_targets(cx);
-        if self.checkout_panel.root_owner != self.selection {
+        let owner = if self.dashboard_open {
+            None
+        } else {
+            self.selection.clone()
+        };
+        if self.checkout_panel.root_owner != owner {
             self.checkout_panel.peek = None;
             self.checkout_panel.peek_task = None;
             self.checkout_panel.peek_hover_target = None;
@@ -2354,7 +2385,13 @@ impl Sidebar {
             self.checkout_panel.focus_confirmation = false;
             self.checkout_panel.restore_focus = false;
             self.checkout_panel.return_focus = None;
-            self.checkout_panel.root_owner = self.selection.clone();
+            self.checkout_panel.root_owner = owner;
+            if self.dashboard_open {
+                self.checkout_panel.plan_peek = None;
+                self.checkout_panel.plan_peek_task = None;
+                self.checkout_panel.script_peek = None;
+                self.checkout_panel.script_peek_task = None;
+            }
             self.checkout_panel.chosen_root = None;
             self.checkout_panel.select_path(None);
             self.checkout_panel.publish = None;
@@ -2364,15 +2401,15 @@ impl Sidebar {
             self.checkout_panel.popup_subscription = None;
             self.checkout_panel.generation = self.checkout_panel.generation.wrapping_add(1);
         }
-        let has_agents = self.selected_session_has_agents(cx);
-        let has_plan = !self.selected_native_plans(cx).is_empty();
+        let has_agents = !self.dashboard_open && self.selected_session_has_agents(cx);
+        let has_plan = !self.dashboard_open && !self.selected_native_plans(cx).is_empty();
         let agents_only = self.is_zen() || targets.is_empty();
         if agents_only {
             self.branch_entry = None;
             self.branch_peek = None;
             self.branch_peek_task = None;
         }
-        if self.mode == ViewMode::Grid && !self.is_zen()
+        if self.mode == ViewMode::Grid && !self.is_zen() && !self.dashboard_open
             || self.project_panel.is_some()
             || self.project_setup.is_some()
             || self.pending_new_worktree.is_some()
@@ -2389,7 +2426,8 @@ impl Sidebar {
             return self.render_content_body(window, cx);
         }
         self.checkout_panel.toggle_available = !self.is_zen();
-        if self.checkout_panel.side_chat_owner.is_some()
+        if !self.dashboard_open
+            && self.checkout_panel.side_chat_owner.is_some()
             && self.checkout_panel.side_chat_owner == self.selection
             && !self.is_zen()
         {
@@ -2508,6 +2546,15 @@ impl Sidebar {
                     checkout_row("checkout-finder", "Open in Finder", "folder", window, cx)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.act(Action::Reveal(target.clone()), window, cx);
+                        })),
+                );
+                let terminal_path = path.clone();
+                let terminal_focus = self.checkout_panel.trigger_focus["terminal"].clone();
+                card = card.child(
+                    checkout_row("checkout-terminal", "Open Terminal", "terminal", window, cx)
+                        .with_focus_handle(terminal_focus)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_worktree_terminal(&terminal_path, cx);
                         })),
                 );
                 card = card
@@ -3093,12 +3140,18 @@ impl Sidebar {
                     );
             }
         }
-        if let Some(plan) = self.render_checkout_plan(window, cx) {
+        if let Some(plan) = (!self.dashboard_open)
+            .then(|| self.render_checkout_plan(window, cx))
+            .flatten()
+        {
             card = card
                 .child(checkout_divider("checkout-plan-divider"))
                 .child(plan);
         }
-        if let Some(agents) = self.render_checkout_agents(window, cx) {
+        if let Some(agents) = (!self.dashboard_open)
+            .then(|| self.render_checkout_agents(window, cx))
+            .flatten()
+        {
             card = card
                 .child(checkout_divider("checkout-agents-divider"))
                 .child(agents);
@@ -6221,7 +6274,6 @@ mod tests {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
             for selection in [
                 Some(Selection::Project(0)),
-                Some(Selection::Worktree(0, fixture_path.clone())),
                 Some(Selection::Session(SessionId::from_raw(u64::MAX))),
                 None,
             ] {
@@ -6241,6 +6293,23 @@ mod tests {
                 assert!(cx.debug_bounds("checkout-panel").is_none());
                 assert!(cx.debug_bounds("checkout-summary").is_none());
             }
+            cx.update(|_, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.selection = Some(Selection::Worktree(0, fixture_path.clone()));
+                    sidebar.checkout_panel.expanded = true;
+                    assert_eq!(
+                        sidebar.checkout_targets(cx),
+                        vec![(0, fixture_path.clone())]
+                    );
+                    cx.notify();
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(cx.debug_bounds("checkout-card").is_some());
+            assert!(cx.debug_bounds("checkout-terminal").is_some());
         }
     }
 }

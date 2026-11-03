@@ -426,6 +426,10 @@ impl ProjectService {
     }
 
     fn kill_sessions(&mut self, matches: impl Fn(&SessionMeta) -> bool, cx: &mut Context<Self>) {
+        self.registry.update(cx, |registry, cx| {
+            registry.remove_worktree_shells_matching(&matches);
+            cx.notify();
+        });
         let ids: Vec<_> = self
             .registry
             .read(cx)
@@ -696,6 +700,23 @@ impl ProjectService {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let ids = self.archive_blockers(path, cx)?;
+        let mut checkouts: Vec<_> = git::list_worktrees(path)
+            .into_iter()
+            .map(|worktree| worktree.path)
+            .collect();
+        checkouts.push(path.to_owned());
+        self.registry.update(cx, |registry, cx| {
+            registry.remove_worktree_shells_matching(|meta| {
+                checkouts.iter().any(|checkout| {
+                    path_within_worktree(
+                        &meta.wt_path,
+                        checkout,
+                        Path::new(checkout).canonicalize().ok().as_deref(),
+                    )
+                })
+            });
+            cx.notify();
+        });
         self.kill_sessions(|meta| ids.contains(&meta.id), cx);
         Ok(())
     }

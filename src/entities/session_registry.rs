@@ -601,6 +601,30 @@ impl SessionRegistry {
         self.wt_terms.get(&id)
     }
 
+    pub fn worktree_shells(&self) -> impl Iterator<Item = &SessionMeta> {
+        self.wt.values().flat_map(|shells| shells.iter())
+    }
+
+    /// Project/worktree removal also owns shells that are hidden in the UI.
+    pub fn remove_worktree_shells_matching(&mut self, matches: impl Fn(&SessionMeta) -> bool) {
+        let targets: Vec<_> = self
+            .wt
+            .iter()
+            .flat_map(|(path, shells)| {
+                shells
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, meta)| matches(meta))
+                    .map(|(idx, _)| (path.clone(), idx))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for (path, idx) in targets {
+            self.close_wt_shell(&path, idx);
+        }
+    }
+
     /// Panel shells share the home terminals' label sequence.
     pub fn next_wt_label(&mut self) -> String {
         self.next_home_label()
@@ -940,6 +964,19 @@ mod tests {
         assert!(!r.wt_shells_need_spawn("/a"));
         assert_eq!(r.wt_shells("/a").len(), 1);
         assert_eq!(r.active_wt_shell_idx("/a"), Some(0));
+    }
+
+    #[test]
+    fn removal_clears_only_matching_worktree_shells_and_active_indices() {
+        let mut r = SessionRegistry::new();
+        r.push_wt_meta("/one");
+        r.push_wt_meta("/one");
+        r.push_wt_meta("/two");
+        r.remove_worktree_shells_matching(|meta| meta.wt_path == "/one");
+        assert!(r.wt_shells("/one").is_empty());
+        assert_eq!(r.active_wt_shell_idx("/one"), None);
+        assert_eq!(r.wt_shells("/two").len(), 1);
+        assert_eq!(r.active_wt_shell_idx("/two"), Some(0));
     }
 
     #[test]

@@ -21,6 +21,7 @@ mod session_motion;
 mod side_chat;
 mod task_glance;
 mod worktree_form;
+mod worktree_terminal;
 use super::{motion, rpx, terminal_view::TerminalView, tokens::*};
 use crate::{
     activity::ActivityState,
@@ -477,6 +478,7 @@ pub struct Sidebar {
     diff_return_focus: Option<FocusHandle>,
     diff_observer: Option<gpui::Subscription>,
     terminal_views: HashMap<SessionId, Entity<TerminalView>>,
+    worktree_terminal: worktree_terminal::WorktreeTerminal,
     dashboard: Option<dashboard::Dashboard>,
     dashboard_open: bool,
     destination: global_navigation::Destination,
@@ -721,6 +723,7 @@ impl Sidebar {
             diff_return_focus: None,
             diff_observer: None,
             terminal_views: HashMap::new(),
+            worktree_terminal: worktree_terminal::WorktreeTerminal::default(),
             dashboard: None,
             dashboard_open: false,
             destination: global_navigation::Destination::Home,
@@ -1651,6 +1654,7 @@ impl Sidebar {
                 .terminal_views
                 .values()
                 .chain(self.home_terminal_views.values())
+                .chain(self.worktree_terminal.views.values())
                 .find_map(|view| view.read(cx).terminal_menu_state(window, cx)),
             grid: self.is_grid(),
             zen: self.is_zen(),
@@ -2706,9 +2710,11 @@ impl Sidebar {
         if !self.navigation_available() {
             return;
         }
-        if let Some((_, path)) = self.selected_worktree() {
-            self.runtime
-                .update(cx, |runtime, cx| runtime.spawn_wt_shell(&path, cx));
+        let targets = self.checkout_targets(cx);
+        if let Some((_, path)) =
+            checkout_panel::selected_checkout(&targets, self.checkout_panel.chosen_root.as_deref())
+        {
+            self.open_worktree_terminal(&path, cx);
         }
     }
 

@@ -10,7 +10,7 @@ use crate::{
         terminal_session::TerminalSession,
         toast::ToastState,
         upgrade::Upgrade,
-        workspace_state::{LiveTile, PtyPane, WorkspaceState},
+        workspace_state::{LiveTile, WorkspaceState},
     },
     settings::SettingsState,
 };
@@ -1068,7 +1068,45 @@ impl Runtime {
         cx.notify();
     }
 
-    pub fn spawn_wt_shell(&mut self, wt_path: &str, cx: &mut Context<Self>) {
+    pub fn spawn_wt_shell(&mut self, wt_path: &str, cx: &mut Context<Self>) -> bool {
+        let target = (|| -> Result<(), String> {
+            if let Some(error) = crate::entities::codex_session::workspace_restore_error(
+                &[std::path::PathBuf::from(wt_path)],
+                None,
+            ) {
+                return Err(error);
+            }
+            let canonical = fs_err::canonicalize(wt_path)
+                .map_err(|_| format!("{wt_path}: worktree is no longer available"))?;
+            if !canonical.is_dir() {
+                return Err(format!("{wt_path}: checkout is not a directory"));
+            }
+            let projects = &cx.global::<SettingsState>().store.projects;
+            let project = projects
+                .iter()
+                .filter(|project| !project.archived)
+                .find(|project| {
+                    fs_err::canonicalize(&project.path).is_ok_and(|path| path == canonical)
+                        || grove_core::git::list_worktrees(&project.path)
+                            .into_iter()
+                            .any(|worktree| {
+                                fs_err::canonicalize(worktree.path)
+                                    .is_ok_and(|path| path == canonical)
+                            })
+                })
+                .ok_or_else(|| format!("{wt_path}: checkout is no longer registered"))?;
+            if self.projects.read(cx).is_removing(&project.path)
+                || self.projects.read(cx).is_worktree_removing(wt_path)
+            {
+                return Err("Cannot open a terminal while this checkout is being removed.".into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = target {
+            self.toast
+                .update(cx, |toast, cx| toast.set_error(error, cx));
+            return false;
+        }
         let (id, label) = self
             .registry
             .update(cx, |r, _| (r.next_home_id(), r.next_wt_label()));
@@ -1087,7 +1125,7 @@ impl Runtime {
             self.toast.update(cx, |t, cx| {
                 t.set_error(format!("terminal failed: {err}"), cx);
             });
-            return;
+            return false;
         }
         let meta = crate::entities::session_registry::SessionMeta {
             id,
@@ -1107,10 +1145,7 @@ impl Runtime {
             r.push_wt_shell(wt_path, meta, Some(session));
             cx.notify();
         });
-        self.state.update(cx, |s, cx| {
-            s.focus_pane(PtyPane::Panel);
-            cx.notify();
-        });
+        true
     }
 
     /// Run the configured project script as a native session in this worktree.
@@ -1649,6 +1684,112 @@ mod tests {
             assert_eq!(registry.len(), 1);
             assert_eq!(registry.all()[0].wt_path, path);
             assert_eq!(registry.all()[0].agent, Agent::Terminal);
+        });
+    }
+
+    #[gpui::test]
+    fn worktree_shell_pty_runs_in_linked_checkout_without_agent_session(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = git_fixture();
+        let root = repo.path().canonicalize().unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "fixture"
+            ])
+            .status()
+            .unwrap()
+            .success());
+        let linked = root.join("linked");
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "add", "-qb", "shell-fixture"])
+            .arg(&linked)
+            .status()
+            .unwrap()
+            .success());
+        let path = linked.to_str().unwrap();
+        let output = root.join("shell-cwd.txt");
+        let runtime = cx.update(|cx| {
+            let runtime = init_script_runtime(cx, script_project(root.to_str().unwrap(), "true"));
+            assert!(runtime.update(cx, |runtime, cx| runtime.spawn_wt_shell(path, cx)));
+            let registry = runtime.read(cx).registry.read(cx);
+            assert!(registry.all().is_empty());
+            assert!(registry.home_terminals().is_empty());
+            let terminal = registry.wt_shell(path, 0).unwrap().clone();
+            assert_eq!(terminal.read(cx).initial_cwd(), Some(path));
+            assert_eq!(
+                terminal.read(cx).backend(),
+                &crate::entities::terminal_session::Backend::Native
+            );
+            terminal
+                .update(cx, |terminal, _| {
+                    terminal.send_checked(
+                        format!("printf '%s' \"$PWD\" > '{}'\n", output.display()).as_bytes(),
+                    )
+                })
+                .unwrap();
+            runtime
+        });
+        for _ in 0..200 {
+            if fs_err::read_to_string(&output).is_ok_and(|value| value == path) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cx.run_until_parked();
+        }
+        assert_eq!(fs_err::read_to_string(&output).unwrap(), path);
+        cx.update(|cx| {
+            let service = runtime.read(cx).projects.clone();
+            service.update(cx, |service, cx| {
+                service
+                    .kill_sessions_for_project_path(root.to_str().unwrap(), cx)
+                    .unwrap()
+            });
+            assert!(runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .wt_shells(path)
+                .is_empty());
+            assert!(runtime.read(cx).registry.read(cx).all().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn worktree_shell_rejects_stale_archived_and_removing_checkouts(cx: &mut gpui::TestAppContext) {
+        let repo = git_fixture();
+        let root = repo.path().canonicalize().unwrap();
+        let path = root.to_str().unwrap();
+        cx.update(|cx| {
+            let runtime = init_script_runtime(cx, script_project(path, "true"));
+            let missing = root.join("removed");
+            assert!(!runtime.update(cx, |runtime, cx| runtime
+                .spawn_wt_shell(missing.to_str().unwrap(), cx)));
+            cx.global_mut::<SettingsState>().store.projects[0].archived = true;
+            assert!(!runtime.update(cx, |runtime, cx| runtime.spawn_wt_shell(path, cx)));
+            cx.global_mut::<SettingsState>().store.projects[0].archived = false;
+            runtime.read(cx).projects.clone().update(cx, |service, _| {
+                service.mark_history_removal_for_test(path, Some(path))
+            });
+            assert!(!runtime.update(cx, |runtime, cx| runtime.spawn_wt_shell(path, cx)));
+            assert!(runtime
+                .read(cx)
+                .registry
+                .read(cx)
+                .worktree_shells()
+                .next()
+                .is_none());
         });
     }
 

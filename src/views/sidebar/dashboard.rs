@@ -362,6 +362,11 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         self.destination = super::global_navigation::Destination::Home;
+        // Home has no session header toggle; its selected checkout stays available.
+        if self.checkout_panel.hidden {
+            self.checkout_panel.hidden = false;
+            self.start_panel_motion(false, true, cx);
+        }
         self.dismiss_project_panel_for_navigation();
         if let Some(settings) = &self.settings_panel {
             settings.update(cx, |settings, cx| settings.close(window, cx));
@@ -770,6 +775,15 @@ impl Sidebar {
         })
         .detach();
     }
+    pub(super) fn dashboard_checkout(&self, cx: &App) -> Option<(usize, String)> {
+        let tray = self.dashboard.as_ref()?.tray.read(cx);
+        cx.global::<SettingsState>()
+            .store
+            .workspace_projects(self.active_workspace)
+            .find(|(idx, project)| *idx == tray.project && !project.archived)
+            .map(|(idx, _)| (idx, tray.path.clone()))
+    }
+
     pub(super) fn render_dashboard(
         &mut self,
         window: &mut Window,
@@ -1875,7 +1889,13 @@ mod tests {
             "recent={recent:?}; hints={hints:?}"
         );
         assert!(composer.size.height > gpui::px(50.));
-        assert!(composer.size.height < gpui::px(130.));
+        assert!(
+            composer.bottom() <= page.bottom(),
+            "composer must fit beside checkout tools"
+        );
+        if let Some(checkout) = cx.debug_bounds("checkout-panel") {
+            assert!(composer.right() <= checkout.left());
+        }
 
         cx.simulate_resize(gpui::size(gpui::px(560.), gpui::px(500.)));
         cx.run_until_parked();
