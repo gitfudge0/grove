@@ -2073,6 +2073,7 @@ impl CodexView {
     }
     fn queue_tray(
         &mut self,
+        attached_above: bool,
         state: &codex::Snapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2104,7 +2105,7 @@ impl CodexView {
         let resume_enabled =
             state.status != codex::Status::Disconnected && state.queue_uncertain.is_empty();
         let collapsed = self.queue_collapsed;
-        let mut tray = composer_tray(window)
+        let mut tray = composer_tray(window).when(attached_above, |tray| tray.rounded_none())
             .id("codex-queued-prompts")
             .debug_selector(|| "codex-queued-prompts".into())
             .child(
@@ -2623,6 +2624,7 @@ impl CodexView {
     /// Current session feedback shares the task dock’s exact horizontal inset.
     fn session_review(
         &self,
+        attached_above: bool,
         state: &codex::Snapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2642,7 +2644,7 @@ impl CodexView {
             .map(|item| review_overview(&codex::item_text(item)));
         let expanded = summary.is_some() && !self.expanded.contains("session-review-disclosure");
         Some(
-            composer_tray(window)
+            composer_tray(window).when(attached_above, |tray| tray.rounded_none())
                 // Keep intrinsic height; the containing rail removes its gap.
                 .mb_0()
                 .pb(rpx(SPACE_LG))
@@ -2699,6 +2701,7 @@ impl CodexView {
 
     fn session_plan_ready(
         &self,
+        attached_above: bool,
         state: &codex::Snapshot,
         window: &Window,
         cx: &mut Context<Self>,
@@ -2734,7 +2737,7 @@ impl CodexView {
                 revision.document.revision_id.clone(),
             ))?
             .clone();
-        Some(composer_tray(window)
+        Some(composer_tray(window).when(attached_above, |tray| tray.rounded_none())
             .mb_0().pb(rpx(SPACE_LG)).rounded(rpx(RADIUS_PANEL))
             .id("session-plan-ready")
             .debug_selector(|| "session-plan-ready".into())
@@ -2752,6 +2755,7 @@ impl CodexView {
 
     fn session_notice(
         &self,
+        attached_above: bool,
         state: &codex::Snapshot,
         window: &Window,
         cx: &mut Context<Self>,
@@ -2914,7 +2918,7 @@ impl CodexView {
             }
         }
         Some(
-            composer_tray(window)
+            composer_tray(window).when(attached_above, |tray| tray.rounded_none())
                 .id("codex-error")
                 .debug_selector(|| "codex-error".into())
                 .role(gpui::Role::Alert)
@@ -2940,6 +2944,7 @@ impl CodexView {
     /// The docked, read-only checklist; jumps identify the task’s transcript start.
     fn task_strip(
         &self,
+        attached_above: bool,
         list: &TaskList,
         status: codex::Status,
         jumps: Vec<usize>,
@@ -3191,7 +3196,7 @@ impl CodexView {
             }
             rows
         });
-        composer_tray(window)
+        composer_tray(window).when(attached_above, |tray| tray.rounded_none())
             .id("codex-task-strip-panel")
             .debug_selector(|| "codex-task-strip-panel".into())
             // Balance the visible bottom attachment against the header's top inset.
@@ -5650,6 +5655,24 @@ impl Render for CodexView {
             );
         }
         self.sync_status_cards(&state);
+        let session_notice = self.session_notice(false, &state, window, cx);
+        let (notice_above, notice_below) = if self.dashboard_tray.is_some() {
+            (None, session_notice)
+        } else {
+            (session_notice, None)
+        };
+        let controls_attached = notice_above.is_some();
+        let status_attached = controls_attached
+            || !state.approvals.is_empty() || !state.elicitations.is_empty();
+        let session_plan = self.session_plan_ready(status_attached, &state, window, cx);
+        let session_review = if state.plan_ready() {
+            None
+        } else {
+            self.session_review(status_attached, &state, window, cx)
+        };
+        let has_review = session_review.is_some();
+        let tasks_attached = status_attached || session_plan.is_some() || has_review;
+        let lower_attached = tasks_attached || task_cache.list.is_some();
         let agent_controls = if !state.approvals.is_empty() || !state.elicitations.is_empty() {
             Some(
                 div()
@@ -5670,10 +5693,11 @@ impl Render for CodexView {
                     .when(!state.approvals.is_empty(), |tray| {
                         tray.child(
                             composer_tray(window)
+                                .rounded_none()
                                 .mx_0()
                                 .mb_0()
                                 .pb(rpx(SPACE_LG))
-                                .rounded(rpx(RADIUS_PANEL))
+                                .when(!controls_attached, |panel| panel.rounded_t(rpx(RADIUS_PANEL)))
                                 .child(self.status_card_header(
                                     "approval-status-disclosure",
                                     "Approval needed",
@@ -5689,10 +5713,12 @@ impl Render for CodexView {
                     .when(!state.elicitations.is_empty(), |tray| {
                         tray.child(
                             composer_tray(window)
+                                .rounded_none()
                                 .mx_0()
                                 .mb_0()
                                 .pb(rpx(SPACE_LG))
-                                .rounded(rpx(RADIUS_PANEL))
+                                .rounded_none()
+                                .when(!controls_attached && state.approvals.is_empty(), |panel| panel.rounded_t(rpx(RADIUS_PANEL)))
                                 .child(self.status_card_header(
                                     "elicitation-status-disclosure",
                                     "Input needed",
@@ -5720,7 +5746,7 @@ impl Render for CodexView {
                     })
                 })
         });
-        let queued = self.queue_tray(&state, window, cx);
+        let queued = self.queue_tray(lower_attached || !state.saved.rewind_drafts.is_empty() || (!self.composer_collapsed && self.suggestion_choices(&state, cx).is_some()), &state, window, cx);
         let task_strip = task_cache.list.as_ref().map(|list| {
             let rendered = message_child;
             let jumps = list
@@ -5734,7 +5760,7 @@ impl Render for CodexView {
                         .min(rendered.saturating_sub(1))
                 })
                 .collect();
-            self.task_strip(list, state.status, jumps, window, cx)
+            self.task_strip(tasks_attached, list, state.status, jumps, window, cx)
         });
         let mut attachments = div()
             .id("codex-attachments")
@@ -5927,7 +5953,7 @@ impl Render for CodexView {
                 }))
         });
         let choices = (!self.composer_collapsed && self.suggestion_choices(&state, cx).is_some())
-            .then(|| self.composer_choices(&state, window, cx));
+            .then(|| self.composer_choices(lower_attached || !state.saved.rewind_drafts.is_empty(), &state, window, cx));
         let collapsed = self.composer_collapsed;
         let composer_min_h = if self.dashboard_tray.is_some() {
             DASHBOARD_COMPOSER_MIN_H
@@ -6096,19 +6122,8 @@ impl Render for CodexView {
         } else {
             body.into_any_element()
         };
-        let session_plan = self.session_plan_ready(&state, window, cx);
-        let session_review = if state.plan_ready() {
-            None
-        } else {
-            self.session_review(&state, window, cx)
-        };
-        let has_review = session_review.is_some();
-        let session_notice = self.session_notice(&state, window, cx);
-        let (notice_above, notice_below) = if self.dashboard_tray.is_some() {
-            (None, session_notice)
-        } else {
-            (session_notice, None)
-        };
+        let composer_attached = lower_attached || rewind_drafts.is_some()
+            || choices.is_some() || !self.queue_motion_rows.is_empty();
         let mut surface =
             surface.child(
                 div()
@@ -6144,7 +6159,7 @@ impl Render for CodexView {
                             .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
                             .child(div().w_full().flex().flex_col().flex_shrink_0()
-                            .children(self.render_reference_preview(window, cx))
+                            .children(self.render_reference_preview(composer_attached, window, cx))
                             .child(
                         div()
                             .id("codex-composer")
@@ -6159,7 +6174,7 @@ impl Render for CodexView {
                             .pt(rpx(SPACE_3XL))
                             .pb(rpx(SPACE_2XL))
                             .rounded(rpx(RADIUS_PANEL))
-                            .when(self.queue_editor.as_ref().map_or_else(|| self.reference.is_some(), |editor| editor.reference.is_some()), |composer| composer.rounded_none().rounded_b(rpx(RADIUS_PANEL)))
+                            .when(composer_attached || self.queue_editor.as_ref().map_or_else(|| self.reference.is_some(), |editor| editor.reference.is_some()), |composer| composer.rounded_none().rounded_b(rpx(RADIUS_PANEL)))
                             .border_1()
                             .border_color(c::BORDER_SOFT())
                             .bg(c::BG_RAIL())
@@ -8309,6 +8324,7 @@ impl CodexView {
 
     fn composer_choices(
         &self,
+        attached_above: bool,
         state: &codex::Snapshot,
         window: &Window,
         cx: &mut Context<Self>,
@@ -8409,7 +8425,7 @@ impl CodexView {
                 })),
             );
         }
-        composer_tray(window)
+        composer_tray(window).when(attached_above, |tray| tray.rounded_none())
             .id("codex-composer-options")
             .debug_selector(|| "codex-composer-options".into())
             .child(
@@ -8658,6 +8674,7 @@ impl CodexView {
 
     fn render_reference_preview(
         &self,
+        attached_above: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
@@ -8706,7 +8723,7 @@ impl CodexView {
                 .px(rpx(SPACE_2XL))
                 .pt(rpx(SPACE_LG))
                 .pb(rpx(SPACE_LG))
-                .rounded_t(rpx(RADIUS_PANEL))
+                .when(!attached_above, |preview| preview.rounded_t(rpx(RADIUS_PANEL)))
                 .border_1()
                 .border_b_0()
                 .border_color(c::BORDER_SOFT())
