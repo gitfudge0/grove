@@ -877,14 +877,7 @@ impl Sidebar {
             .rounded(rpx(RADIUS_PANEL))
             .p(rpx(SPACE_2XL))
             .flex()
-            .flex_col()
-            .child(
-                div()
-                    .pb(rpx(SPACE_SM))
-                    .text_size(rpx(TEXT_TITLE))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("Activity"),
-            );
+            .flex_col();
         if sessions.is_empty() {
             recent = recent.child(
                 div()
@@ -1124,7 +1117,25 @@ impl Sidebar {
                                     .px(rpx(SPACE_20))
                                     .pt(rpx(SPACE_3XL))
                                     .pb(rpx(SPACE_3XL))
-                                    .child(recent),
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .max_w(rpx(CHAT_MAX_W))
+                                            .flex()
+                                            .flex_col()
+                                            .gap(rpx(SPACE_LG))
+                                            .child(
+                                                div()
+                                                    .id("dashboard-activity-heading")
+                                                    .debug_selector(|| {
+                                                        "dashboard-activity-heading".into()
+                                                    })
+                                                    .text_size(rpx(TEXT_TITLE))
+                                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                                    .child("Activity"),
+                                            )
+                                            .child(recent),
+                                    ),
                             ),
                     ),
             )
@@ -1881,12 +1892,15 @@ mod tests {
         assert!(composer.top() - summary.bottom() < gpui::px(100.));
         assert_eq!(tray.top(), composer.bottom());
         assert!(hints.top() >= tray.bottom());
+        let heading = cx.debug_bounds("dashboard-activity-heading").unwrap();
+        assert_eq!(heading.left(), recent.left());
+        assert!(heading.bottom() < recent.top());
         assert_eq!(recent.left(), composer.left());
         assert_eq!(recent.size.width, composer.size.width);
         assert!(recent.top() >= hints.bottom());
         assert!(
-            recent.top() - hints.bottom() < gpui::px(50.),
-            "recent={recent:?}; hints={hints:?}"
+            heading.top() - hints.bottom() < gpui::px(50.),
+            "heading={heading:?}; hints={hints:?}"
         );
         assert!(composer.size.height > gpui::px(50.));
         assert!(
@@ -1907,6 +1921,9 @@ mod tests {
         assert!(composer.top() >= summary.bottom());
         assert!(composer.size.width > gpui::px(100.));
         let recent = cx.debug_bounds("dashboard-recent").unwrap();
+        let heading = cx.debug_bounds("dashboard-activity-heading").unwrap();
+        assert_eq!(heading.left(), recent.left());
+        assert!(heading.bottom() < recent.top());
         assert_eq!(recent.left(), composer.left());
         assert_eq!(recent.size.width, composer.size.width);
         assert!(composer.top() - summary.bottom() < gpui::px(100.));
