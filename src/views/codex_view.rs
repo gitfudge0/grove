@@ -1140,6 +1140,7 @@ pub struct CodexView {
     composer_transition_generation: usize,
     composer_motion_finished: Rc<Cell<bool>>,
     tasks_expanded: bool,
+    status_card_keys: HashSet<String>,
     task_cache: Option<Rc<TaskCache>>,
     transcript_cache: Option<Rc<TranscriptRenderCache>>,
     subscriptions: Vec<Subscription>,
@@ -1441,6 +1442,7 @@ impl CodexView {
             composer_transition_generation: 0,
             composer_motion_finished: Rc::new(Cell::new(true)),
             tasks_expanded: true,
+            status_card_keys: HashSet::new(),
             task_cache: None,
             transcript_cache: None,
             dashboard_tray: None,
@@ -2531,6 +2533,78 @@ impl CodexView {
         cx.notify();
     }
 
+    /// Collapse once per arriving identity, never on a routine rerender.
+    fn sync_status_cards(&mut self, state: &codex::Snapshot) {
+        let mut keys = HashSet::new();
+        if state.session_status() == "Review" {
+            if let Some(period) = state.review_completion() {
+                keys.insert(format!("review:{period}"));
+            }
+        }
+        if state.error.is_some() || state.status == codex::Status::Disconnected {
+            keys.insert(format!("notice:{:?}:{:?}", state.status, state.error));
+        }
+        if state.plan_ready() {
+            for plan in &state.saved.rich_plans.revisions {
+                keys.insert(format!(
+                    "plan:{}:{}",
+                    plan.document.plan_id, plan.document.revision_id
+                ));
+            }
+        }
+        for approval in &state.approvals {
+            keys.insert(Self::approval_key(approval, state.interaction_epoch));
+        }
+        for question in &state.questions {
+            keys.insert(question_key(state, question));
+        }
+        for request in &state.elicitations {
+            keys.insert(format!("elicitation:{request:?}"));
+        }
+        if keys.difference(&self.status_card_keys).next().is_some() {
+            self.tasks_expanded = false;
+        }
+        self.status_card_keys = keys;
+    }
+
+    fn status_card_header(
+        &self,
+        key: &'static str,
+        label: &'static str,
+        kind: StatusKind,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let expanded = !self.expanded.contains(key);
+        super::components::inline_disclosure(key, label)
+            .w_full()
+            .h(rpx(TASK_STRIP_HEAD_H))
+            .justify_start()
+            .gap(rpx(SPACE_SM))
+            .text_size(rpx(TEXT_SMALL))
+            .aria_expanded(expanded)
+            .child(crate::icons::icon(
+                if expanded { "chev-down" } else { "chev-right" },
+                ICON_MD,
+                c::FG_DIM(),
+            ))
+            .child(status::label(key, kind, label, ICON_SM, cx))
+            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                if action_key(event) {
+                    if !this.expanded.remove(key) {
+                        this.expanded.insert(key.into());
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !this.expanded.remove(key) {
+                    this.expanded.insert(key.into());
+                }
+                cx.notify();
+            }))
+    }
+
     /// Current session feedback shares the task dock’s exact horizontal inset.
     fn session_review(
         &self,
@@ -2543,33 +2617,22 @@ impl CodexView {
         }
         let work_period = state.review_completion()?;
         Some(
-            div()
+            composer_tray(window)
+                .mb_0()
+                .pb(rpx(SPACE_LG))
+                .rounded(rpx(RADIUS_PANEL))
                 .id("session-review")
                 .debug_selector(|| "session-review".into())
-                .role(gpui::Role::Status)
+                .role(gpui::Role::Group)
+                .aria_label("Ready for review")
                 .min_w_0()
                 .flex_shrink_0()
-                .border_1()
-                .border_color(c::BORDER())
-                .rounded(rpx(RADIUS_GROUP))
-                .p(rpx(SPACE_LG))
                 .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(rpx(SPACE_LG))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(rpx(TEXT_SMALL))
-                        .child(status::label(
-                            "session-review-status",
-                            StatusKind::Success,
-                            "Ready for review",
-                            ICON_SM,
-                            cx,
-                        )),
-                )
+                .flex_col()
+                .child(div().flex().items_center().gap(rpx(SPACE_LG))
+                    .child(div().flex_1().min_w_0().child(self.status_card_header(
+                        "session-review-disclosure", "Ready for review", StatusKind::Success, cx,
+                    )))
                 .child(
                     form_action("session-mark-reviewed", "Mark reviewed", false, window, cx)
                         .icon(
@@ -2590,8 +2653,67 @@ impl CodexView {
                             }
                         })),
                 )
+                )
+                .when(!self.expanded.contains("session-review-disclosure"), |panel| panel.child(
+                    div().pl(rpx(TASK_LABEL_INSET)).pb(rpx(SPACE_LG))
+                        .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
+                        .child("The agent finished. Review the result above; any unverified tasks remain open."),
+                ))
                 .into_any_element(),
         )
+    }
+
+    fn session_plan_ready(
+        &self,
+        state: &codex::Snapshot,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if self.transcript_only() || !state.plan_ready() {
+            return None;
+        }
+        let receipt = state.saved.session_review.pending.as_ref()?;
+        let period = state.saved.work_periods.get(receipt.period)?;
+        let mut seen = HashSet::new();
+        let revision = state.saved.rich_plans.revisions.iter().rev().find(|plan| {
+            seen.insert(plan.document.plan_id.clone())
+                && matches!(
+                    plan.review.delivery,
+                    grove_core::rich_plan::ResponseDelivery::Draft
+                        | grove_core::rich_plan::ResponseDelivery::Failed { .. }
+                )
+                && matches!(
+                    plan.review.approval,
+                    grove_core::rich_plan::ResponseDelivery::Draft
+                        | grove_core::rich_plan::ResponseDelivery::Failed { .. }
+                )
+                && state.saved.items.iter().enumerate().any(|(index, item)| {
+                    index >= period.start_item
+                        && index < period.end_item.unwrap_or(0)
+                        && item["id"].as_str() == Some(plan.message_id.as_str())
+                })
+        })?;
+        let plan = self
+            .native_plans
+            .get(&(
+                revision.document.plan_id.clone(),
+                revision.document.revision_id.clone(),
+            ))?
+            .clone();
+        Some(composer_tray(window)
+            .mb_0().pb(rpx(SPACE_LG)).rounded(rpx(RADIUS_PANEL))
+            .id("session-plan-ready")
+            .debug_selector(|| "session-plan-ready".into())
+            .role(gpui::Role::Group).aria_label("Plan ready")
+            .child(self.status_card_header("session-plan-disclosure", "Plan ready", StatusKind::NeedsInput, cx))
+            .when(!self.expanded.contains("session-plan-disclosure"), |panel| panel.child(
+                div().pl(rpx(TASK_LABEL_INSET)).pb(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
+                    .child("Review the plan and send feedback. Implementation approval is a separate action."),
+            ))
+            .child(form_action("session-plan-review", "Review response", false, window, cx)
+                .on_click(move |_, window, cx| plan.update(cx, |plan, cx| plan.reveal(window, cx))))
+            .into_any_element())
     }
 
     fn session_notice(
@@ -2758,26 +2880,28 @@ impl CodexView {
             }
         }
         Some(
-            div()
+            composer_tray(window)
+                .mb_0()
+                .pb(rpx(SPACE_LG))
+                .rounded(rpx(RADIUS_PANEL))
                 .id("codex-error")
                 .debug_selector(|| "codex-error".into())
                 .role(gpui::Role::Alert)
                 .flex_shrink_0()
-                .mx(rpx(composer_tray_inset(window)))
-                .p(rpx(SPACE_2XL))
-                .rounded(rpx(RADIUS_PANEL))
-                .border_1()
-                .border_color(c::BORDER_SOFT())
-                .bg(c::BG_RAIL())
                 .flex()
-                .gap(rpx(SPACE_LG))
-                .child(status::mark(
-                    "session-notice-mark",
-                    notice_kind,
-                    ICON_MD,
-                    cx,
-                ))
-                .child(content)
+                .flex_col()
+                .child(self.status_card_header("session-notice-disclosure", title, notice_kind, cx))
+                .when(
+                    !self.expanded.contains("session-notice-disclosure"),
+                    |panel| {
+                        panel.child(
+                            div()
+                                .pl(rpx(TASK_LABEL_INSET))
+                                .pb(rpx(SPACE_LG))
+                                .child(content),
+                        )
+                    },
+                )
                 .into_any_element(),
         )
     }
@@ -5494,6 +5618,7 @@ impl Render for CodexView {
                     ),
             );
         }
+        self.sync_status_cards(&state);
         let agent_controls = if !state.approvals.is_empty() || !state.elicitations.is_empty() {
             Some(
                 div()
@@ -5512,10 +5637,42 @@ impl Render for CodexView {
                     .gap(rpx(SPACE_LG))
                     .mx(rpx(composer_tray_inset(window)))
                     .when(!state.approvals.is_empty(), |tray| {
-                        tray.child(self.approval_panel(&state, window, cx))
+                        tray.child(
+                            composer_tray(window)
+                                .mx_0()
+                                .mb_0()
+                                .pb(rpx(SPACE_LG))
+                                .rounded(rpx(RADIUS_PANEL))
+                                .child(self.status_card_header(
+                                    "approval-status-disclosure",
+                                    "Approval needed",
+                                    StatusKind::NeedsInput,
+                                    cx,
+                                ))
+                                .when(
+                                    !self.expanded.contains("approval-status-disclosure"),
+                                    |panel| panel.child(self.approval_panel(&state, window, cx)),
+                                ),
+                        )
                     })
                     .when(!state.elicitations.is_empty(), |tray| {
-                        tray.child(self.elicitation_panel(&state, window, cx))
+                        tray.child(
+                            composer_tray(window)
+                                .mx_0()
+                                .mb_0()
+                                .pb(rpx(SPACE_LG))
+                                .rounded(rpx(RADIUS_PANEL))
+                                .child(self.status_card_header(
+                                    "elicitation-status-disclosure",
+                                    "Input needed",
+                                    StatusKind::NeedsInput,
+                                    cx,
+                                ))
+                                .when(
+                                    !self.expanded.contains("elicitation-status-disclosure"),
+                                    |panel| panel.child(self.elicitation_panel(&state, window, cx)),
+                                ),
+                        )
                     }),
             )
         } else {
@@ -5908,7 +6065,12 @@ impl Render for CodexView {
         } else {
             body.into_any_element()
         };
-        let session_review = self.session_review(&state, window, cx);
+        let session_plan = self.session_plan_ready(&state, window, cx);
+        let session_review = if state.plan_ready() {
+            None
+        } else {
+            self.session_review(&state, window, cx)
+        };
         let session_notice = self.session_notice(&state, window, cx);
         let (notice_above, notice_below) = if self.dashboard_tray.is_some() {
             (None, session_notice)
@@ -5942,6 +6104,7 @@ impl Render for CodexView {
                             .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_intro(&state)))
                             .when_some(notice_above, gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
+                            .when_some(session_plan, gpui::ParentElement::child)
                             .when_some(session_review, gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
                             .when_some(rewind_drafts, gpui::ParentElement::child)
@@ -13352,6 +13515,47 @@ mod tests {
             );
         }
     }
+    #[gpui::test]
+    fn codex_and_claude_status_arrival_collapses_tasks_once(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    let mut state = view.session.read(cx).state.clone();
+                    state.saved.provider = provider;
+                    state.error = None;
+                    state.status = Status::Working;
+                    view.sync_status_cards(&state);
+                    view.tasks_expanded = true;
+                    state.error = Some("First failure".into());
+                    view.sync_status_cards(&state);
+                    assert!(
+                        !view.tasks_expanded,
+                        "{provider:?}: new card collapses Tasks"
+                    );
+                    view.tasks_expanded = true;
+                    view.sync_status_cards(&state);
+                    assert!(
+                        view.tasks_expanded,
+                        "{provider:?}: rerender preserves manual expansion"
+                    );
+                    state.error = Some("Second failure".into());
+                    view.sync_status_cards(&state);
+                    assert!(
+                        !view.tasks_expanded,
+                        "{provider:?}: replacement card collapses Tasks"
+                    );
+                    state.error = None;
+                    view.sync_status_cards(&state);
+                    assert!(
+                        !view.tasks_expanded,
+                        "{provider:?}: removal does not reopen Tasks"
+                    );
+                })
+            });
+        }
+    }
+
     #[gpui::test]
     fn codex_and_claude_review_control_dispatches_only_current_receipt(
         cx: &mut gpui::TestAppContext,
