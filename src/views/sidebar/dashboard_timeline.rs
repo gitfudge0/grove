@@ -498,7 +498,8 @@ impl Sidebar {
                 .track_focus(review_focus.as_ref().unwrap())
                 .tab_stop(true)
                 .w_auto()
-                .px(rpx(SPACE_SM))
+                .h(rpx(TIMELINE_TASK_LINE_H))
+                .px_0()
                 .gap(rpx(SPACE_SM))
                 .text_size(rpx(TEXT_SMALL))
                 .child(icon("check", ICON_SM, c::FG_DIM()))
@@ -509,7 +510,7 @@ impl Sidebar {
                 .relative()
                 .flex_shrink_0()
                 .min_w(rpx(REVIEW_STATUS_SLOT_W))
-                .h(rpx(CONTROL_H))
+                .h(rpx(TIMELINE_TASK_LINE_H))
                 .flex()
                 .items_center()
                 .justify_end()
@@ -519,7 +520,16 @@ impl Sidebar {
                         .child(status_label),
                 )
                 .child(div().absolute().right_0().top_0().child(if show_review {
-                    motion::fast(action, format!("review-reveal-{key:?}"), cx)
+                    if cx.reduce_motion() {
+                        action.into_any_element()
+                    } else {
+                        action.with_animation(
+                            format!("review-reveal-{key:?}"),
+                            gpui::Animation::new(std::time::Duration::from_millis(MOTION_FAST_MS))
+                                .with_easing(motion::ease_standard),
+                            |action, progress| action.opacity(progress),
+                        ).into_any_element()
+                    }
                 } else {
                     action.opacity(0.).into_any_element()
                 }))

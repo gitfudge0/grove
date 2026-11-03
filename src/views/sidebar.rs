@@ -1916,7 +1916,7 @@ impl Sidebar {
             &action,
             Action::Launch(..) | Action::RunScript(..) | Action::RunNamedScript(..)
         );
-        let project_disclosure = matches!(&action, Action::ToggleProjectsDestination(_));
+        let project_disclosure = matches!(&action, Action::ToggleProjectsDestination(_) | Action::MarkReviewed(..));
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
         let confirm = matches!(
@@ -5162,14 +5162,16 @@ impl Sidebar {
                 .px(rpx(SIDEBAR_CONTENT_INSET))
                 .flex()
                 .items_center()
+                .gap(rpx(SPACE_SM))
+                .child(crate::icons::action_icon("terminal", ICON_LG))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(rpx(TEXT_SMALL))
+                        .text_size(rpx(TEXT_TITLE))
                         .text_color(c::FG_DIM())
-                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .font_weight(gpui::FontWeight::NORMAL)
                         .debug_selector(|| "sidebar-terminals-heading".into())
                         .child("Terminals"),
                 )

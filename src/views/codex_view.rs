@@ -2618,9 +2618,9 @@ impl CodexView {
         let work_period = state.review_completion()?;
         Some(
             composer_tray(window)
+                // Negative tray overlap collapses the dock's intrinsic height.
                 .mb_0()
                 .pb(rpx(SPACE_LG))
-                .rounded(rpx(RADIUS_PANEL))
                 .id("session-review")
                 .debug_selector(|| "session-review".into())
                 .role(gpui::Role::Group)
@@ -2881,9 +2881,6 @@ impl CodexView {
         }
         Some(
             composer_tray(window)
-                .mb_0()
-                .pb(rpx(SPACE_LG))
-                .rounded(rpx(RADIUS_PANEL))
                 .id("codex-error")
                 .debug_selector(|| "codex-error".into())
                 .role(gpui::Role::Alert)
@@ -13588,6 +13585,17 @@ mod tests {
                 })
             });
             draw(cx);
+            for (width, height, rem) in [(1000., 900., 16.), (400., 600., 16.), (400., 600., 20.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+                cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
+                for _ in 0..4 {
+                    cx.update(gpui::Window::simulate_next_frame);
+                    draw(cx);
+                }
+                let composer = cx.debug_bounds("codex-composer").unwrap();
+                assert!(composer.bottom() <= gpui::px(height), "{provider:?}: composer clipped: {composer:?}");
+                assert!(composer.top() >= gpui::px(0.), "{provider:?}: composer above pane: {composer:?}");
+            }
             let action = cx
                 .debug_bounds("session-mark-reviewed")
                 .expect("review action must be visible");

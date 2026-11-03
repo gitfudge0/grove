@@ -1,0 +1,274 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - text: GROVE / EXPLORATORY MOCK / 01
+      - heading "A session always has a clear next step." [level=1] [ref=e5]
+      - paragraph [ref=e6]: Execution, attention, and organization are independent. Browse every state below to see its row, placement, and selected-session treatment.
+    - button "Light appearance" [ref=e8] [cursor=pointer]
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - strong [ref=e11]: Grove
+      - generic [ref=e12]: / Personal workspace
+      - generic [ref=e13]: Session state proposal
+    - generic [ref=e14]:
+      - complementary [ref=e15]:
+        - generic [ref=e16]:
+          - button "Attention" [pressed] [ref=e17] [cursor=pointer]
+          - button "Projects" [ref=e18] [cursor=pointer]
+        - generic [ref=e19]:
+          - generic [ref=e20]: Preview scenario
+          - combobox "Preview scenario" [ref=e21] [cursor=pointer]:
+            - option "Parallel work" [selected]
+            - option "No sessions yet"
+            - option "Nothing needs you"
+            - option "Loading saved sessions"
+            - option "Offline · saved sessions"
+        - generic [ref=e22]:
+          - generic [ref=e23]:
+            - generic [ref=e24]: Needs you
+            - generic [ref=e25]: "2"
+          - button "Unify session status tracking Approval needed" [ref=e26] [cursor=pointer]:
+            - img [ref=e28]
+            - generic [ref=e31]:
+              - generic [ref=e32]: Unify session status tracking
+              - generic [ref=e33]: Approval needed
+          - button "Choose grouping defaults Answer needed" [ref=e34] [cursor=pointer]:
+            - img [ref=e36]
+            - generic [ref=e39]:
+              - generic [ref=e40]: Choose grouping defaults
+              - generic [ref=e41]: Answer needed
+          - generic [ref=e42]:
+            - generic [ref=e43]: Review
+            - generic [ref=e44]: "1"
+          - button "Fix completion acknowledgment Completed · unread" [ref=e45] [cursor=pointer]:
+            - img [ref=e47]
+            - generic [ref=e50]:
+              - generic [ref=e51]: Fix completion acknowledgment
+              - generic [ref=e52]: Completed · unread
+          - generic [ref=e53]:
+            - generic [ref=e54]: Working
+            - generic [ref=e55]: "2"
+          - button "Keep project counts consistent Working" [ref=e56] [cursor=pointer]:
+            - img [ref=e58]
+            - generic [ref=e60]:
+              - generic [ref=e61]: Keep project counts consistent
+              - generic [ref=e62]: Working
+          - button "Audit both provider adapters Waiting for agents" [ref=e63] [cursor=pointer]:
+            - img [ref=e65]
+            - generic [ref=e67]:
+              - generic [ref=e68]: Audit both provider adapters
+              - generic [ref=e69]: Waiting for agents
+          - generic [ref=e70]:
+            - generic [ref=e71]: Ready
+            - generic [ref=e72]: "1"
+          - button "Sidebar density follow-up Ready" [ref=e73] [cursor=pointer]:
+            - img [ref=e75]
+            - generic [ref=e78]:
+              - generic [ref=e79]: Sidebar density follow-up
+              - generic [ref=e80]: Ready
+          - paragraph [ref=e81]:
+            - text: Pinned sessions keep their position.
+            - text: Attention filters include pinned work.
+      - main [ref=e82]:
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]: Grove / feat/session-status
+            - heading "Unify session status tracking" [level=2] [ref=e86]
+          - generic [ref=e88]:
+            - img [ref=e89]
+            - text: Approval needed
+        - generic [ref=e92]:
+          - generic [ref=e93]:
+            - generic [ref=e94]:
+              - img [ref=e95]
+              - text: Codex
+            - generic [ref=e97]: Session state proposal
+          - generic [ref=e98]:
+            - text: You · 4 min ago
+            - text: Make session status consistent across the sidebar and conversation.
+          - generic [ref=e99]:
+            - generic [ref=e100]:
+              - img [ref=e101]
+              - text: Approval needed
+            - paragraph [ref=e104]: Allow this session to run cargo test in the checkout?
+        - generic [ref=e105]:
+          - generic [ref=e106]:
+            - heading "Approval needed" [level=3] [ref=e107]:
+              - generic [ref=e108]:
+                - img [ref=e109]
+                - text: Approval needed
+            - paragraph [ref=e112]: Allow this session to run cargo test in the checkout?
+            - button "Review approval" [ref=e114] [cursor=pointer]:
+              - img [ref=e115]
+              - text: Review approval
+          - generic [ref=e117]:
+            - text: Ask a follow-up or add context…
+            - generic [ref=e118]:
+              - generic [ref=e119]: Codex · Current checkout
+              - button "Send" [ref=e120] [cursor=pointer]:
+                - img [ref=e121]
+                - text: Send
+        - generic [ref=e123]:
+          - 'heading "Placement: Needs you" [level=3] [ref=e124]'
+          - paragraph [ref=e125]: Opening the session never approves or dismisses the request.
+          - paragraph [ref=e126]: Preview only. Actions do not contact an agent.
+    - generic [ref=e127]:
+      - generic [ref=e128]: grove / session-status
+      - generic [ref=e129]: Fixture data · no provider connected
+  - generic [ref=e130]:
+    - generic [ref=e131]:
+      - generic [ref=e132]:
+        - heading "Every session state" [level=2] [ref=e133]
+        - text: Select a state to inspect it in Grove above.
+      - combobox "Preview provider" [ref=e134] [cursor=pointer]:
+        - option "Codex" [selected]
+        - option "Claude"
+    - generic [ref=e135]:
+      - button "Draft Ready · Send prompt" [ref=e136] [cursor=pointer]:
+        - generic [ref=e137]:
+          - img [ref=e138]
+          - text: Draft
+        - generic [ref=e141]: Ready · Send prompt
+      - button "Queued Working · View queue" [ref=e142] [cursor=pointer]:
+        - generic [ref=e143]:
+          - img [ref=e144]
+          - text: Queued
+        - generic [ref=e146]: Working · View queue
+      - button "Starting Working · Cancel start" [ref=e147] [cursor=pointer]:
+        - generic [ref=e148]:
+          - img [ref=e149]
+          - text: Starting
+        - generic [ref=e151]: Working · Cancel start
+      - button "Working Working · Stop turn" [ref=e152] [cursor=pointer]:
+        - generic [ref=e153]:
+          - img [ref=e154]
+          - text: Working
+        - generic [ref=e156]: Working · Stop turn
+      - button "Waiting for agents Working · View agents" [ref=e157] [cursor=pointer]:
+        - generic [ref=e158]:
+          - img [ref=e159]
+          - text: Waiting for agents
+        - generic [ref=e161]: Working · View agents
+      - button "Waiting for command Working · View command" [ref=e162] [cursor=pointer]:
+        - generic [ref=e163]:
+          - img [ref=e164]
+          - text: Waiting for command
+        - generic [ref=e166]: Working · View command
+      - button "Approval needed Needs you · Review approval" [pressed] [ref=e167] [cursor=pointer]:
+        - generic [ref=e168]:
+          - img [ref=e169]
+          - text: Approval needed
+        - generic [ref=e172]: Needs you · Review approval
+      - button "Answer needed Needs you · Answer question" [ref=e173] [cursor=pointer]:
+        - generic [ref=e174]:
+          - img [ref=e175]
+          - text: Answer needed
+        - generic [ref=e178]: Needs you · Answer question
+      - button "Needs you Needs you · Open terminal" [ref=e179] [cursor=pointer]:
+        - generic [ref=e180]:
+          - img [ref=e181]
+          - text: Needs you
+        - generic [ref=e184]: Needs you · Open terminal
+      - button "Failed Needs you · View error" [ref=e185] [cursor=pointer]:
+        - generic [ref=e186]:
+          - img [ref=e187]
+          - text: Failed
+        - generic [ref=e190]: Needs you · View error
+      - button "Disconnected Needs you · Reconnect" [ref=e191] [cursor=pointer]:
+        - generic [ref=e192]:
+          - img [ref=e193]
+          - text: Disconnected
+        - generic [ref=e195]: Needs you · Reconnect
+      - button "Reconnecting Needs you · Reconnecting…" [ref=e196] [cursor=pointer]:
+        - generic [ref=e197]:
+          - img [ref=e198]
+          - text: Reconnecting
+        - generic [ref=e200]: Needs you · Reconnecting…
+      - button "Usage limit Needs you · View limit details" [ref=e201] [cursor=pointer]:
+        - generic [ref=e202]:
+          - img [ref=e203]
+          - text: Usage limit
+        - generic [ref=e206]: Needs you · View limit details
+      - button "Completed · unread Review · Open result" [ref=e207] [cursor=pointer]:
+        - generic [ref=e208]:
+          - img [ref=e209]
+          - text: Completed · unread
+        - generic [ref=e212]: Review · Open result
+      - button "Completed · seen Review · Mark reviewed" [ref=e213] [cursor=pointer]:
+        - generic [ref=e214]:
+          - img [ref=e215]
+          - text: Completed · seen
+        - generic [ref=e218]: Review · Mark reviewed
+      - button "Plan ready Review · Review plan" [ref=e219] [cursor=pointer]:
+        - generic [ref=e220]:
+          - img [ref=e221]
+          - text: Plan ready
+        - generic [ref=e224]: Review · Review plan
+      - button "Ready Ready · Write follow-up" [ref=e225] [cursor=pointer]:
+        - generic [ref=e226]:
+          - img [ref=e227]
+          - text: Ready
+        - generic [ref=e230]: Ready · Write follow-up
+      - button "Interrupted Ready · Write follow-up" [ref=e231] [cursor=pointer]:
+        - generic [ref=e232]:
+          - img [ref=e233]
+          - text: Interrupted
+        - generic [ref=e235]: Ready · Write follow-up
+      - button "Canceled Ready · Edit prompt" [ref=e236] [cursor=pointer]:
+        - generic [ref=e237]:
+          - img [ref=e238]
+          - text: Canceled
+        - generic [ref=e241]: Ready · Edit prompt
+      - button "Exited Ready · View output" [ref=e242] [cursor=pointer]:
+        - generic [ref=e243]:
+          - img [ref=e244]
+          - text: Exited
+        - generic [ref=e246]: Ready · View output
+      - button "Unknown Needs you · View connection" [ref=e247] [cursor=pointer]:
+        - generic [ref=e248]:
+          - img [ref=e249]
+          - text: Unknown
+        - generic [ref=e252]: Needs you · View connection
+      - button "Pinned + approval Needs you · Review approval" [ref=e253] [cursor=pointer]:
+        - generic [ref=e254]:
+          - img [ref=e255]
+          - text: Pinned + approval
+        - generic [ref=e258]: Needs you · Review approval
+      - button "Snoozed Snoozed · Wake now" [ref=e259] [cursor=pointer]:
+        - generic [ref=e260]:
+          - img [ref=e261]
+          - text: Snoozed
+        - generic [ref=e264]: Snoozed · Wake now
+      - button "Woken Ready · Open session" [ref=e265] [cursor=pointer]:
+        - generic [ref=e266]:
+          - img [ref=e267]
+          - text: Woken
+        - generic [ref=e270]: Ready · Open session
+      - button "Settled Settled · Return to active" [ref=e271] [cursor=pointer]:
+        - generic [ref=e272]:
+          - img [ref=e273]
+          - text: Settled
+        - generic [ref=e276]: Settled · Return to active
+      - button "Archived Archived · Restore session" [ref=e277] [cursor=pointer]:
+        - generic [ref=e278]:
+          - img [ref=e279]
+          - text: Archived
+        - generic [ref=e282]: Archived · Restore session
+    - generic [ref=e283]:
+      - generic [ref=e284]: Needs you · action required
+      - generic [ref=e285]: Review · result to assess
+      - generic [ref=e286]: Working · agent progressing
+      - generic [ref=e287]: Ready · quiet, resumable
+  - generic [ref=e288]:
+    - generic [ref=e289]:
+      - heading "Opening is acknowledgment" [level=3] [ref=e290]
+      - paragraph [ref=e291]: Unread clears on view. Review remains until you mark the result reviewed. Pending questions and approvals stay actionable.
+    - generic [ref=e292]:
+      - heading "Parking is reversible" [level=3] [ref=e293]
+      - paragraph [ref=e294]: Pin keeps a stable location. Snooze hides quiet work until a chosen time. Settle moves finished work into history. None implies deleting a checkout.
+    - generic [ref=e295]:
+      - heading "Attention wins" [level=3] [ref=e296]
+      - paragraph [ref=e297]: Approval → answer → recovery → review → work → ready. Pins stay in place and appear in attention filters. New genuine work restores settled sessions.
+  - group [ref=e298]:
+    - generic "State transitions, combinations, and control treatments" [ref=e299] [cursor=pointer]
+  - paragraph [ref=e300]: "Exploratory HTML, not a measured native reference. Grove catalog status glyphs and bundled DM Sans are embedded; spacing follows native tokens. Proposed states and rules require implementation review. Codex: live behavior untested. Claude: live behavior untested. Native macOS, Linux and Windows rendering: untested. The controls select mock fixtures only."

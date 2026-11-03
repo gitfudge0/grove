@@ -270,17 +270,19 @@ impl Sidebar {
                 );
             }
             if !showing_history {
-                heading = heading.child(group).child(
-                    self.control(
-                        "global-nav-new-session",
-                        "New session",
-                        Action::Destination(Destination::NewSession),
-                        cx,
+                heading = heading
+                    .child(
+                        self.control(
+                            "global-nav-new-session",
+                            "New session",
+                            Action::Destination(Destination::NewSession),
+                            cx,
+                        )
+                        .debug_selector(|| "global-nav-new-session".into())
+                        .track_focus(&self.navigation_focus[3])
+                        .child(icon("plus", ICON_SM, c::FG_DIM())),
                     )
-                    .debug_selector(|| "global-nav-new-session".into())
-                    .track_focus(&self.navigation_focus[3])
-                    .child(icon("plus", ICON_SM, c::FG_DIM())),
-                );
+                    .child(group);
             }
         }
         let mut sessions = div()
