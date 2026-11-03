@@ -12,6 +12,7 @@ mod task_scope;
 
 const TIMELINE_TASK_LINE_H: f32 = super::SESSION_TITLE_LINE_H;
 const TIMELINE_SPINE_W: f32 = 1.;
+const REVIEW_STATUS_SLOT_W: f32 = 112.;
 const ACTIVITY_HISTORY_LIMIT: usize = 64;
 const ACTIVITY_TEXT_LIMIT: usize = 120;
 // The approved Make room entrance plays the shared slow motion at half speed.
@@ -224,6 +225,8 @@ pub(super) struct DashboardTimelines {
     task_opened: HashSet<(Scope, String)>,
     task_focus: HashMap<(Scope, String), FocusHandle>,
     task_hovered: HashSet<(Scope, String)>,
+    review_hovered: HashSet<Scope>,
+    review_focus: HashMap<Scope, (FocusHandle, Vec<gpui::Subscription>)>,
     group_opened: HashSet<(Scope, String)>,
     group_focus: HashMap<(Scope, String), FocusHandle>,
 }
@@ -313,6 +316,8 @@ impl DashboardTimelines {
         self.open_focus.retain(|key, _| keep(key));
         self.reveals.retain(|key, _| keep(key));
         self.entrances.retain(|key, _| keep(key));
+        self.review_hovered.retain(keep);
+        self.review_focus.retain(|key, _| keep(key));
         self.task_opened.retain(|(key, _)| keep(key));
         self.task_focus.retain(|(key, _), _| keep(key));
         self.task_hovered.retain(|(key, _)| keep(key));
@@ -449,6 +454,80 @@ impl Sidebar {
             .map(super::task_glance::TaskGlanceCache::timeline)
             .unwrap_or_default();
         let accessible = format!("Activity history · {}", metadata.context);
+        let review_completion = dashboard_review_completion(metadata);
+        if review_completion.is_some() && !self.dashboard_timelines.review_focus.contains_key(&key)
+        {
+            let handle = cx.focus_handle();
+            let subscriptions = vec![
+                cx.on_focus_in(&handle, window, |_, _, cx| cx.notify()),
+                cx.on_focus_out(&handle, window, |_, _, _, cx| cx.notify()),
+            ];
+            self.dashboard_timelines
+                .review_focus
+                .insert(key, (handle, subscriptions));
+        }
+        let review_focus = self
+            .dashboard_timelines
+            .review_focus
+            .get(&key)
+            .map(|entry| entry.0.clone());
+        let show_review = review_completion.is_some()
+            && (self.dashboard_timelines.review_hovered.contains(&key)
+                || window.last_input_was_keyboard() && review_focus
+                    .as_ref()
+                    .is_some_and(|focus| focus.contains_focused(window, cx)));
+        let status_label = super::super::status::label(
+            format!("dashboard-session-{}", id.raw()),
+            super::super::status::session_kind(metadata.display_status),
+            metadata.display_status,
+            TEXT_SMALL,
+            cx,
+        )
+        .debug_selector(move || format!("dashboard-session-status-{}", id.raw()))
+        .flex_shrink_0()
+        .text_size(rpx(TEXT_SMALL));
+        let status_slot = if let Some(receipt) = review_completion {
+            let action = self
+                .control(
+                    ("dashboard-mark-reviewed", id.raw()),
+                    "Mark reviewed",
+                    Action::MarkReviewed(id, receipt),
+                    cx,
+                )
+                .debug_selector(move || format!("dashboard-mark-reviewed-{}", id.raw()))
+                .track_focus(review_focus.as_ref().unwrap())
+                .tab_stop(true)
+                .w_auto()
+                .px(rpx(SPACE_SM))
+                .gap(rpx(SPACE_SM))
+                .text_size(rpx(TEXT_SMALL))
+                .child(icon("check", ICON_SM, c::FG_DIM()))
+                .child("Mark reviewed");
+            // The invisible label reserves the native status geometry; the action
+            // stays mounted so Tab can discover it before pointer hover.
+            div()
+                .relative()
+                .flex_shrink_0()
+                .min_w(rpx(REVIEW_STATUS_SLOT_W))
+                .h(rpx(CONTROL_H))
+                .flex()
+                .items_center()
+                .justify_end()
+                .child(
+                    div()
+                        .opacity(if show_review { 0. } else { 1. })
+                        .child(status_label),
+                )
+                .child(div().absolute().right_0().top_0().child(if show_review {
+                    motion::fast(action, format!("review-reveal-{key:?}"), cx)
+                } else {
+                    action.opacity(0.).into_any_element()
+                }))
+                .into_any_element()
+        } else {
+            status_label.into_any_element()
+        };
+        let review_key_focus = review_focus.clone();
         let toggle = div()
             .id(("dashboard-progress-toggle", id.raw()))
             .debug_selector(move || format!("dashboard-progress-toggle-{}", id.raw()))
@@ -485,6 +564,12 @@ impl Sidebar {
             }))
             .capture_key_down(
                 cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    if review_key_focus
+                        .as_ref()
+                        .is_some_and(|focus| focus.contains_focused(window, cx))
+                    {
+                        return;
+                    }
                     if !event.is_held && matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         this.dashboard_timelines.toggle(key);
                         window.prevent_default();
@@ -532,20 +617,7 @@ impl Sidebar {
                                         cx,
                                     )),
                             )
-                            .child(
-                                super::super::status::label(
-                                    format!("dashboard-session-{}", id.raw()),
-                                    super::super::status::session_kind(metadata.display_status),
-                                    metadata.display_status,
-                                    TEXT_SMALL,
-                                    cx,
-                                )
-                                .debug_selector(move || {
-                                    format!("dashboard-session-status-{}", id.raw())
-                                })
-                                .flex_shrink_0()
-                                .text_size(rpx(TEXT_SMALL)),
-                            )
+                            .child(status_slot)
                             .child(
                                 div()
                                     .flex_shrink_0()
@@ -591,23 +663,16 @@ impl Sidebar {
         .child(icon("arrow-right", ICON_SM, c::FG_DIM()));
         let body = self.render_dashboard_tasks(key, &data, status, window, cx);
         let detail = self.dashboard_progress_reveal(key, open, body, cx);
-        let review_action = dashboard_review_completion(metadata).map(|receipt| {
-            self.control(
-                ("dashboard-mark-reviewed", id.raw()),
-                "Mark reviewed",
-                Action::MarkReviewed(id, receipt),
-                cx,
-            )
-            .debug_selector(move || format!("dashboard-mark-reviewed-{}", id.raw()))
-            .w_auto()
-            .px(rpx(SPACE_LG))
-            .gap(rpx(SPACE_SM))
-            .text_size(rpx(TEXT_SMALL))
-            .child(icon("check", ICON_SM, c::FG_DIM()))
-            .child("Mark reviewed")
-        });
         let row = div()
             .id(("dashboard-progress", id.raw()))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.dashboard_timelines.review_hovered.insert(key);
+                } else {
+                    this.dashboard_timelines.review_hovered.remove(&key);
+                }
+                cx.notify();
+            }))
             .w_full()
             .flex()
             .flex_col()
@@ -622,14 +687,6 @@ impl Sidebar {
                     .child(toggle)
                     .child(open_button),
             )
-            .when_some(review_action, |row, action| {
-                row.child(
-                    div()
-                        .pl(rpx(ICON_LG + SPACE_LG))
-                        .pt(rpx(SPACE_SM))
-                        .child(action),
-                )
-            })
             .child(detail)
             .into_any_element();
         self.dashboard_session_entrance(key, row, cx)
