@@ -122,21 +122,14 @@ impl Sidebar {
                     .child("Awaiting task update · checklist predates your latest input"),
             );
         }
-        body = body.child(
-            div()
-                .text_size(rpx(TEXT_SMALL))
-                .text_color(c::FG_DIM())
-                .child(data.list.as_ref().map_or_else(
-                    || "No current tasks".into(),
-                    |list| {
-                        format!(
-                            "Current scope · {} of {} complete",
-                            list.done(),
-                            list.total()
-                        )
-                    },
-                )),
-        );
+        if tasks.is_empty() {
+            body = body.child(
+                div()
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child("No current tasks"),
+            );
+        }
         if projection.added + projection.removed > 0 {
             body = body.child(
                 div()
@@ -148,34 +141,7 @@ impl Sidebar {
                     )),
             );
         }
-        let active: Vec<_> = tasks
-            .iter()
-            .filter(|task| task.status != TaskStatus::Completed)
-            .cloned()
-            .collect();
-        let completed: Vec<_> = tasks
-            .iter()
-            .filter(|task| task.status == TaskStatus::Completed)
-            .cloned()
-            .collect();
-        body = body.child(self.render_dashboard_task_rows(scope, data, status, &active, false, cx));
-        if !completed.is_empty() {
-            body = body.child(self.task_scope_disclosure(
-                scope,
-                "completed".into(),
-                format!("Completed in this scope · {}", completed.len()),
-                cx,
-            ));
-            if self
-                .dashboard_timelines
-                .group_opened
-                .contains(&(scope, "completed".into()))
-            {
-                body = body.child(
-                    self.render_dashboard_task_rows(scope, data, status, &completed, false, cx),
-                );
-            }
-        }
+        body = body.child(self.render_dashboard_task_rows(scope, data, status, tasks, false, cx));
         let unassigned: Vec<_> = data
             .activity
             .iter()
@@ -353,19 +319,13 @@ mod tests {
         let selector: &'static str =
             Box::leak(format!("dashboard-task-label-1-1-{}", task_key(done)).into_boxed_str());
         assert!(
-            cx.debug_bounds(selector).is_none(),
-            "completed tasks are folded away"
+            cx.debug_bounds(selector).is_some(),
+            "completed tasks remain in the list"
         );
-        let group = cx
+        assert!(cx
             .debug_bounds("dashboard-task-group-1-1-completed")
-            .unwrap();
-        cx.simulate_click(group.center(), gpui::Modifiers::default());
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
-        assert!(cx.debug_bounds(selector).is_some());
-        // A follow-up only marks the checklist stale, preserving disclosure state.
+            .is_none());
+        // A follow-up marks the checklist stale while keeping current tasks visible.
         probe.update(cx, |probe, cx| {
             probe.data = fixture(false, true);
             cx.notify();
@@ -375,12 +335,6 @@ mod tests {
             let _ = window.draw(cx);
         });
         assert!(cx.debug_bounds(selector).is_some());
-        cx.simulate_keystrokes("space");
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
-        assert!(cx.debug_bounds(selector).is_none());
         probe.update(cx, |probe, cx| {
             probe.data = fixture(true, false);
             cx.notify();
