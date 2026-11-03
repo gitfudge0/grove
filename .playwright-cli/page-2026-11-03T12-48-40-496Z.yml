@@ -1,0 +1,70 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - heading "Activity" [level=1] [ref=e4]
+    - heading "Review · 2" [level=2] [ref=e5]
+    - article [ref=e6]:
+      - generic [ref=e7]:
+        - button "Show tasks for Show completion summaries in Activity" [ref=e8] [cursor=pointer]:
+          - img [ref=e9]
+        - generic [ref=e11]: Show completion summaries in Activity
+        - generic [ref=e12]:
+          - img [ref=e13]
+          - text: Review
+        - generic "Open session" [ref=e16]:
+          - img [ref=e17]
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - generic [ref=e21]:
+            - img [ref=e22]
+            - text: grove
+          - generic [ref=e24]:
+            - img [ref=e25]
+            - text: Main checkout
+          - generic [ref=e30]: GPT-6.1-Sol Medium
+        - generic [ref=e31]: Review summary
+        - paragraph [ref=e32]: Mocked labeled review summaries with artifact links that open directly from Home.
+        - link "View mock" [ref=e33] [cursor=pointer]:
+          - /url: review-summary.html
+          - img [ref=e34]
+          - text: View mock
+    - article [ref=e36]:
+      - generic [ref=e37]:
+        - button "Show tasks for Review how component widths and heights are determined" [ref=e38] [cursor=pointer]:
+          - img [ref=e39]
+        - generic [ref=e41]: Review how component widths and heights are determined
+        - generic [ref=e42]:
+          - img [ref=e43]
+          - text: Review
+        - generic "Open session" [ref=e46]:
+          - img [ref=e47]
+      - generic [ref=e49]:
+        - generic [ref=e50]:
+          - generic [ref=e51]:
+            - img [ref=e52]
+            - text: grove
+          - generic [ref=e54]:
+            - img [ref=e55]
+            - text: Main checkout
+          - generic [ref=e60]: Claude Sonnet
+        - generic [ref=e61]: Review summary
+        - paragraph [ref=e62]: Explained how shared tokens, content sizing, and rem zoom determine component dimensions.
+    - heading "Working · 1" [level=2] [ref=e63]
+    - article [ref=e64]:
+      - generic [ref=e65]:
+        - button "Show tasks for Check narrow layouts" [ref=e66] [cursor=pointer]:
+          - img [ref=e67]
+        - generic [ref=e69]: Check narrow layouts
+        - generic [ref=e70]:
+          - img [ref=e71]
+          - text: Working
+        - generic "Open session" [ref=e73]:
+          - img [ref=e74]
+      - generic [ref=e77]:
+        - generic [ref=e78]:
+          - img [ref=e79]
+          - text: grove
+        - generic [ref=e81]:
+          - img [ref=e82]
+          - text: Main checkout
+        - generic [ref=e87]: GPT-6.1-Sol Medium
+  - generic [ref=e88]: Exploratory mock · Concise outcome plus a direct artifact link. Sample completion text.

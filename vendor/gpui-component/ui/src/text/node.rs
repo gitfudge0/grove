@@ -7,9 +7,9 @@ use std::{
 
 use gpui::{
     AnyElement, App, DefiniteLength, Div, ElementId, FontStyle, FontWeight, Half, HighlightStyle,
-    Hsla, InteractiveElement as _, IntoElement, Length, ObjectFit, Overflow, ParentElement,
-    ScrollHandle, SharedString, SharedUri, StatefulInteractiveElement, Styled, StyledImage as _,
-    Window, div, img, prelude::FluentBuilder as _, px, relative, rems,
+    Hsla, InteractiveElement as _, IntoElement, ObjectFit, Overflow, ParentElement, ScrollHandle,
+    SharedString, SharedUri, StatefulInteractiveElement, Styled, StyledImage as _, Window, div,
+    img, prelude::FluentBuilder as _, px, relative, rems,
 };
 use markdown::mdast;
 use ropey::Rope;
@@ -1573,7 +1573,7 @@ impl BlockNode {
             .into_any_element()
     }
 
-    /// Columns proportioned by content length and shrunk to fit; cell text wraps.
+    /// Columns wrap in proportion to content length; excess minimum widths scroll.
     fn render_wrap_table(
         table: &Table,
         col_lens: &[usize],
@@ -1583,9 +1583,32 @@ impl BlockNode {
         cx: &mut App,
     ) -> AnyElement {
         const MAX_LENGTH: usize = 150;
+        const CELL_MIN_REM: f32 = 4.;
 
         let style = &node_cx.style;
         let row_count = table.children.len();
+        let table_ix = options.ix;
+        // Retain each table’s horizontal position across ordinary redraws.
+        let scroll_key = table.span.map_or_else(
+            || format!("{}-table-wrap-scroll-{table_ix}", window.current_view()),
+            |span| {
+                format!(
+                    "{}-table-wrap-scroll-{}:{}",
+                    window.current_view(),
+                    span.start,
+                    span.end
+                )
+            },
+        );
+        let scroll_handle = window
+            .use_keyed_state(SharedString::from(scroll_key), cx, |_, _| {
+                ScrollHandle::default()
+            })
+            .read(cx)
+            .clone();
+        // Include the track's two hairline borders so the last cell fits completely.
+        let minimum_width =
+            rems(col_lens.len() as f32 * CELL_MIN_REM).to_pixels(window.rem_size()) + px(2.);
         let mut rows = Vec::with_capacity(row_count);
         for (row_ix, row) in table.children.iter().enumerate() {
             let mut cells = Vec::with_capacity(row.children.len());
@@ -1601,11 +1624,15 @@ impl BlockNode {
                 cells.push(
                     div()
                         .id(("cell", ix))
+                        .debug_selector(move || {
+                            format!("markdown-table-{table_ix}-cell-{row_ix}-{ix}")
+                        })
                         .overflow_hidden()
                         .when(align == ColumnumnAlign::Center, |this| this.text_center())
                         .when(align == ColumnumnAlign::Right, |this| this.text_right())
-                        .min_w_16()
-                        .w(Length::Definite(relative(len as f32)))
+                        .min_w(rems(CELL_MIN_REM))
+                        .flex_basis(px(0.))
+                        .flex_grow(len as f32)
                         .px_2()
                         .py_1()
                         .when(!is_last_col, |this| {
@@ -1631,17 +1658,19 @@ impl BlockNode {
         div()
             .pb(rems(1.))
             .w_full()
-            .child(
+            .child(horizontal_scroll_area(
+                ("table", options.ix),
+                &scroll_handle,
+                &style.table,
                 div()
-                    .id(("table", options.ix))
                     .w_full()
+                    .min_w(minimum_width)
                     .border_1()
                     .border_color(cx.theme().border)
                     .rounded(cx.theme().radius)
                     .overflow_hidden()
-                    .children(rows)
-                    .refine_style(&style.table),
-            )
+                    .children(rows),
+            ))
             .into_any_element()
     }
 

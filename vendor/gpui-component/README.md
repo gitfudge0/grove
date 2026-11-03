@@ -206,3 +206,9 @@ Applied to `ui/src` (source, not manifests):
     (`status-working`) used by dense actions, including loading references.
     This avoids the unavailable vendor Loader asset without a generated
     factory override; the shared native recipe supplies the icon.
+
+17. **Keep wrapping Markdown table columns reachable.**
+    The default wrapping renderer uses content-length flex weights and rem-based
+    column minimums. Its track scrolls horizontally when those minimums exceed
+    the pane width, using the existing horizontal scroll mask so vertical wheel
+    input still reaches the transcript. Narrow tables retain ordinary wrapping.

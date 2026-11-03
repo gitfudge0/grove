@@ -11,6 +11,7 @@ use gpui_component::{
 
 pub(super) const SIDE_CHAT_WIDTH: f32 = 400.;
 const SIDE_CHAT_NARROW_HEIGHT: f32 = 280.;
+const SIDE_CHAT_MAX_HEIGHT_FRACTION: f32 = 0.4;
 const SIDE_CHAT_USER_MAX_WIDTH: f32 = 320.;
 
 pub(super) struct SideChat {
@@ -156,10 +157,12 @@ mod tests {
         cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
         cx.run_until_parked();
         cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
             let _ = window.draw(cx);
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
             let _ = window.draw(cx);
         });
         // Reopening the wide panel must keep its full height from the first
@@ -171,6 +174,7 @@ mod tests {
                 sidebar.toggle_side_chat(window, cx);
                 sidebar.toggle_side_chat(window, cx);
             });
+            window.simulate_next_frame(cx);
             let _ = window.draw(cx);
         });
         let opening_height = cx.debug_bounds("side-chat-panel").unwrap().size.height;
@@ -262,6 +266,7 @@ mod tests {
             })
         });
         cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
             let _ = window.draw(cx);
         });
         cx.update(|_, cx| {
@@ -325,6 +330,7 @@ mod tests {
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
             let _ = window.draw(cx);
         });
         assert!(
@@ -394,6 +400,7 @@ mod tests {
                 for _ in 0..3 {
                     cx.run_until_parked();
                     cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
                         let _ = window.draw(cx);
                     });
                 }
@@ -407,6 +414,112 @@ mod tests {
         }
         cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
         cx.update(|window, _| window.set_rem_size(gpui::px(16.)));
+        // Both provider fixtures share the short-pane budget, including zoom.
+        // No live provider process is started by this geometry regression.
+        for provider in [
+            grove_core::codex::Provider::Codex,
+            grove_core::codex::Provider::Claude,
+        ] {
+            for (width, height, rem) in [(600., 400., 16.), (320., 200., 16.), (500., 300., 20.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    cx.set_reduce_motion(true);
+                    sidebar.update(cx, |sidebar, cx| {
+                        let id = sidebar.checkout_panel.side_chats.keys().next().unwrap().0;
+                        let session = sidebar
+                            .runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .codex(id)
+                            .unwrap()
+                            .clone();
+                        session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            session.state.status = grove_core::codex::Status::Idle;
+                            cx.notify();
+                        });
+                        sidebar.checkout_panel.hidden = false;
+                        sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
+                        cx.notify();
+                    });
+                });
+                for _ in 0..3 {
+                    cx.run_until_parked();
+                    cx.update(|window, cx| {
+                        window.simulate_next_frame(cx);
+                        let _ = window.draw(cx);
+                    });
+                }
+                let panel = cx.debug_bounds("side-chat-panel").unwrap();
+                let rail = cx.debug_bounds("codex-composer-rail").unwrap();
+                assert!(
+                    panel.size.height <= gpui::px(height * 0.4 + 1.),
+                    "{provider:?}: short pane exceeded its budget: {panel:?}"
+                );
+                assert!(
+                    rail.bottom() <= gpui::px(height + 1.),
+                    "{provider:?}: composer scroll area left the window: {rail:?}"
+                );
+                let send = cx.debug_bounds("codex-send").unwrap();
+                sidebar.read_with(cx, |sidebar, cx| {
+                    let scroll = &sidebar
+                        .codex_views
+                        .values()
+                        .next()
+                        .unwrap()
+                        .read(cx)
+                        .composer_rail_scroll;
+                    let offset = scroll.offset();
+                    scroll.set_offset(gpui::point(
+                        offset.x,
+                        offset.y + rail.bottom() - send.bottom(),
+                    ));
+                });
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                });
+                let send = cx.debug_bounds("codex-send").unwrap();
+                assert!(
+                    send.bottom() <= rail.bottom() && send.top() >= rail.top(),
+                    "{provider:?}: main send control must remain reachable: {send:?} vs {rail:?}"
+                );
+                sidebar.read_with(cx, |sidebar, _| {
+                    let scroll = &sidebar.checkout_panel.side_chat_panel_scroll;
+                    assert!(
+                        scroll.max_offset().y > gpui::px(0.),
+                        "short side chat must allow reaching its composer"
+                    );
+                    scroll.set_offset(gpui::point(gpui::px(0.), -scroll.max_offset().y));
+                });
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                });
+                let footer = cx.debug_bounds("side-chat-composer-footer").unwrap();
+                assert!(footer.bottom() <= panel.bottom() + gpui::px(1.), "{provider:?}: side composer footer must be reachable by scrolling: {footer:?} vs {panel:?}");
+                cx.update(|window, cx| {
+                    cx.set_reduce_motion(false);
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.toggle_side_chat(window, cx);
+                        sidebar.hold_panel_motion_at_start();
+                    });
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                });
+                let exiting = cx.debug_bounds("narrow-session-panel-exit").unwrap();
+                assert!(
+                    exiting.size.height == panel.size.height,
+                    "{provider:?}: closing changed the outgoing height: {panel:?} -> {exiting:?}"
+                );
+            }
+        }
+        cx.update(|window, cx| {
+            window.set_rem_size(gpui::px(16.));
+            cx.set_reduce_motion(true);
+        });
         // An ambiguous multi-checkout session must not overflow a narrow window.
         let second_path = fixture.path().join("second").to_string_lossy().into_owned();
         cx.update(|_, cx| {
@@ -454,6 +567,7 @@ mod tests {
         cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(800.)));
         cx.run_until_parked();
         cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
             let _ = window.draw(cx);
         });
         let required = cx.debug_bounds("side-chat-checkout-required").unwrap();
@@ -461,6 +575,22 @@ mod tests {
             required.size.width <= gpui::px(320.),
             "checkout selection must fit narrow windows: {required:?}"
         );
+        for (width, height, rem) in [(320., 200., 16.), (500., 300., 20.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
+            for _ in 0..3 {
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                });
+            }
+            let required = cx.debug_bounds("side-chat-checkout-required").unwrap();
+            assert!(
+                required.size.height <= gpui::px(height * 0.4 + 1.),
+                "checkout recovery must share the short-pane budget: {required:?}"
+            );
+        }
         drop(updates);
     }
 }
@@ -806,20 +936,24 @@ impl Sidebar {
             .or_else(|| (recovery_paths.len() == 1).then(|| recovery_paths[0].clone()));
         let available = selected.is_some();
         let wide = Self::logical_window_width(window) >= super::checkout_panel::WIDE_VIEWPORT;
+        let measured_height = self.checkout_panel.panel_last_narrow_height.clone();
+        let panel_scroll = self.checkout_panel.side_chat_panel_scroll.clone();
         let Some(path) = selected.map(|(_, path)| path).or(recovered) else {
             let mut panel = div()
                 .id("side-chat-checkout-required")
                 .debug_selector(|| "side-chat-checkout-required".into())
                 .when(wide, |panel| panel.w(rpx(SIDE_CHAT_WIDTH)))
-                .when(!wide, |panel| panel.w_full())
-                .h_full()
-                .pt(rpx(APPBAR_TOTAL_H + SPACE_3XL))
+                .relative()
+                .flex_shrink_0()
+                .when(wide, |panel| panel.h_full().pt(rpx(APPBAR_TOTAL_H + SPACE_3XL)))
+                .when(!wide, |panel| panel.w_full().h(rpx(SIDE_CHAT_NARROW_HEIGHT)).max_h(gpui::relative(SIDE_CHAT_MAX_HEIGHT_FRACTION)).overflow_y_scroll().track_scroll(&panel_scroll))
                 .p(rpx(SPACE_3XL))
                 .text_size(rpx(TEXT_BODY))
                 .text_color(c::FG_DIM())
                 .flex()
                 .flex_col()
-                .gap(rpx(SPACE_LG));
+                .gap(rpx(SPACE_LG))
+                .when(!wide, |panel| panel.child(gpui::canvas(move |bounds, _, _| measured_height.set(bounds.size.height), |_, (), _, _| {}).absolute().inset_0()));
             if recovery_paths.is_empty() {
                 panel = panel.child("Choose a checkout in the right panel before using Side chat.");
             } else {
@@ -837,7 +971,7 @@ impl Sidebar {
                     );
                 }
             }
-            return panel.into_any_element();
+            return if wide { panel.into_any_element() } else { self.narrow_panel_entrance(panel, cx) };
         };
         let key = (id, path.clone());
         let provider = self
@@ -1261,13 +1395,15 @@ impl Sidebar {
             None => "Read-only",
         };
         let input_label = format!("Ask about this session or worktree. {context_disclosure}");
-        div().id("side-chat-panel").debug_selector(|| "side-chat-panel".into())
-            .flex_shrink_0().min_h_0()
+        let panel = div().id("side-chat-panel").debug_selector(|| "side-chat-panel".into())
+            .relative().flex_shrink_0().min_h_0()
+            .when(!wide, |panel| panel.child(gpui::canvas(move |bounds, _, _| measured_height.set(bounds.size.height), |_, (), _, _| {}).absolute().inset_0()))
             .when(wide, |panel| panel.w(rpx(SIDE_CHAT_WIDTH)).h_full().pt(rpx(APPBAR_TOTAL_H + SPACE_3XL)))
-            .when(!wide, |panel| panel.w_full().h(rpx(SIDE_CHAT_NARROW_HEIGHT)).pt(rpx(SPACE_3XL)))
+            .when(!wide, |panel| panel.w_full().h(rpx(SIDE_CHAT_NARROW_HEIGHT)).max_h(gpui::relative(SIDE_CHAT_MAX_HEIGHT_FRACTION)).overflow_y_scroll().track_scroll(&panel_scroll).pt(rpx(SPACE_3XL)))
             .px(rpx(SPACE_3XL)).pb(if wide { super::super::codex_view::composer_bottom_inset(window) } else { rpx(SPACE_3XL).to_pixels(window.rem_size()) }).flex().flex_col()
             .text_size(rpx(TEXT_BODY)).text_color(c::FG())
-            .child(project_field_well(false, false).debug_selector(|| "side-chat-card".into()).h_full().min_h_0().w_full().p(rpx(SPACE_2XL)).justify_start().gap(rpx(SPACE_LG))
+            .child(project_field_well(false, false).debug_selector(|| "side-chat-card".into()).h_full().min_h_0()
+                .when(!wide, |card| card.min_h(rpx(SIDE_CHAT_NARROW_HEIGHT - SPACE_3XL * 2.))).w_full().p(rpx(SPACE_2XL)).justify_start().gap(rpx(SPACE_LG))
                 .when(!available, |panel| panel.child(div().text_color(c::FG_DIM()).child("This checkout is unavailable. History remains readable; restore the checkout to ask another question.")))
                 .when(!available && recovery_paths.len() > 1, |panel| panel.child(recovery_choices))
                 .when(available && !supported, |panel| panel.child(div().text_color(c::FG_DIM()).child("Side chat is unavailable for this provider.")))
@@ -1302,7 +1438,7 @@ impl Sidebar {
                             }
                         }))
                         .on_click(cx.listener(move |this, _, window, cx| this.send_side_chat(action_key.clone(), window, cx)))
-                }))))
-            .into_any_element()
+                }))));
+        if wide { panel.into_any_element() } else { self.narrow_panel_entrance(panel, cx) }
     }
 }

@@ -39,6 +39,8 @@ use std::{
 };
 
 mod measured_slot;
+#[cfg(test)]
+mod table_sizing_tests;
 #[path = "model_picker.rs"]
 mod model_picker;
 
@@ -1063,6 +1065,7 @@ pub struct CodexView {
     selection_reply_focus: FocusHandle,
     submitted_images: Vec<String>,
     pub(super) transcript_bounds: Rc<Cell<gpui::Bounds<gpui::Pixels>>>,
+    pub(super) composer_rail_scroll: gpui::ScrollHandle,
     checkout_context: Option<(String, String)>,
     expanded: HashSet<String>,
     pub(super) agents_in_checkout: bool,
@@ -1366,6 +1369,7 @@ impl CodexView {
             selection_reply_focus: cx.focus_handle(),
             submitted_images: Vec::new(),
             transcript_bounds: Rc::default(),
+            composer_rail_scroll: gpui::ScrollHandle::new(),
             expanded: HashSet::new(),
             agents_in_checkout: false,
             work_tick_pending: Rc::new(Cell::new(false)),
@@ -2958,6 +2962,9 @@ impl CodexView {
         Some(
             composer_tray(window)
                 .when(attached_above, |tray| tray.rounded_none())
+                // Negative tray overlap can erase the rail's intrinsic height.
+                .mb_0()
+                .pb(rpx(SPACE_LG))
                 .id("codex-error")
                 .debug_selector(|| "codex-error".into())
                 .role(gpui::Role::Alert)
@@ -6187,9 +6194,13 @@ impl Render for CodexView {
         let mut surface =
             surface.child(
                 div()
-                    // May shrink below its content so a short pane squeezes
-                    // the task strip instead of clipping the composer.
+                    .id("codex-composer-rail")
+                    .debug_selector(|| "codex-composer-rail".into())
+                    // Short panes scroll attached controls instead of clipping them.
                     .min_h_0()
+                    .max_h_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.composer_rail_scroll)
                     .w_full()
                     .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.my_auto().pt(rpx(SPACE_3XL)))
                     .px(rpx(SPACE_20))
@@ -6200,6 +6211,7 @@ impl Render for CodexView {
                     })
                     .pb(rpx(SPACE_3XL))
                     .flex()
+                    .items_start()
                     .justify_center()
                     .child(
                         div()

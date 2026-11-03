@@ -141,6 +141,9 @@ pub(super) struct CheckoutPanel {
     panel_motion_revision: u64,
     // Preserve the outgoing panel's width while its empty shell collapses.
     panel_last_wide_width: f32,
+    // Keep dismissal continuous for checkout, side chat, and recovery content.
+    pub(super) panel_last_narrow_height: std::rc::Rc<std::cell::Cell<gpui::Pixels>>,
+    pub(super) side_chat_panel_scroll: ScrollHandle,
     pub(super) side_chats: HashMap<(SessionId, String), super::side_chat::SideChat>,
     pub(super) chosen_root: Option<String>,
     root_owner: Option<Selection>,
@@ -2229,6 +2232,14 @@ impl Sidebar {
             })
     }
 
+    #[cfg(test)]
+    pub(super) fn hold_panel_motion_at_start(&mut self) {
+        if let Some((started, _, _, _)) = self.checkout_panel.panel_motion.as_mut() {
+            // Draw the exact first frame independently of machine/render latency.
+            *started = Instant::now() + Duration::from_secs(1);
+        }
+    }
+
     pub(super) fn panel_motion_exiting(&self, cx: &App) -> bool {
         !cx.reduce_motion()
             && self
@@ -2239,18 +2250,18 @@ impl Sidebar {
                 })
     }
 
-    fn narrow_panel_entrance(&self, panel: AnyElement, cx: &App) -> AnyElement {
+    pub(super) fn narrow_panel_entrance<E: IntoElement + gpui::Styled + 'static>(&self, panel: E, cx: &App) -> AnyElement {
         match self.checkout_panel.panel_motion {
             Some((started, _, _, id))
                 if started.elapsed() < Duration::from_millis(MOTION_BASE_MS) =>
             {
                 motion::fast(
-                    div().w_full().child(panel),
+                    panel,
                     format!("narrow-session-panel-enter-{id}"),
                     cx,
                 )
             }
-            _ => panel,
+            _ => panel.into_any_element(),
         }
     }
 
@@ -2437,7 +2448,7 @@ impl Sidebar {
                 let body = self.render_content_body(window, cx);
                 return self.wide_panel_layout(body, panel, window, cx);
             }
-            self.checkout_panel.narrow_content = Some(self.narrow_panel_entrance(panel, cx));
+            self.checkout_panel.narrow_content = Some(panel);
             return self.render_content_body(window, cx);
         }
         if self.checkout_panel.hidden && !self.is_zen() {
@@ -2456,11 +2467,10 @@ impl Sidebar {
                     let body = self.render_content_body(window, cx);
                     return self.wide_panel_layout(body, div().into_any_element(), window, cx);
                 }
-                let height = (window.viewport_size().height * NARROW_HEIGHT_FRACTION)
-                    .min(rpx(CARD_WIDTH).to_pixels(window.rem_size()))
+                let height = self.checkout_panel.panel_last_narrow_height.get()
                     * self.panel_motion_width().unwrap_or(0.);
                 self.checkout_panel.narrow_content =
-                    Some(div().w_full().h(height).into_any_element());
+                    Some(div().debug_selector(|| "narrow-session-panel-exit".into()).w_full().h(height).flex_shrink_0().into_any_element());
                 window.request_animation_frame();
                 return self.render_content_body(window, cx);
             }
@@ -3180,6 +3190,9 @@ impl Sidebar {
                 }
             }));
         if !wide {
+            let height = self.checkout_panel.panel_last_narrow_height.clone();
+            panel = panel.child(gpui::canvas(move |bounds, _, _| height.set(bounds.size.height), |_, (), _, _| {})
+                .absolute().inset_0());
             panel = panel.child(
                 transcript_action(
                     "checkout-summary",
@@ -3225,7 +3238,7 @@ impl Sidebar {
             self.wide_panel_layout(body, panel.into_any_element(), window, cx)
         } else {
             self.checkout_panel.narrow_content =
-                Some(self.narrow_panel_entrance(panel.into_any_element(), cx));
+                Some(self.narrow_panel_entrance(panel, cx));
             self.render_content_body(window, cx)
         }
     }

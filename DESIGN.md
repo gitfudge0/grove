@@ -74,6 +74,10 @@ Do not add tooltips by default. Add one explicitly when it supplies needed conte
 
 ## Alignment and responsive layout
 
+Narrow Side chat, including checkout recovery, uses at most 40% of its containing pane height and retains scrolling access to its controls when short. Closing a narrow session panel starts from its actual allocated height. Attached status notices retain their intrinsic height so the composer stays within its pane.
+
+Markdown tables wrap cells in proportional columns. When column minimum widths exceed the available width, horizontal scrolling keeps every column reachable; minimum widths follow rem zoom.
+
 Bottom form actions share one horizontal, left-aligned wrapping row at the same column inset as the form content. Cancel and primary actions stay together; do not spread them across the footer.
 
 Reserve leading icon, label, metadata, and trailing action/count space appropriate to the row. Truncating text yields before fixed controls. Revealing close, Copy, or task actions preserves the row’s geometry; loading feedback retains its icon slot. Worktree launchers intentionally replace Git counts on hover/focus and may occupy a different trailing width. Do not let a flex label consume the space required by a trailing control. Header height follows its remaining content when controls move elsewhere. Project navigation headings reserve count and action widths before shrinking their title; at widths that cannot fit both groups, actions wrap into a transparent following row without overlap or hidden controls. Test long labels and narrow widths; avoid clipping and overlap rather than hiding meaningful actions.
