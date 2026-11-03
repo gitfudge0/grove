@@ -126,6 +126,8 @@ pub const CARD_LABEL_INDENT: f32 = SPACE_2XL + 1.0;
 
 /// Shared outer content inset for the expanded sidebar and its appbar segment.
 pub const SIDEBAR_CONTENT_INSET: f32 = SPACE_3XL;
+/// Sidebar rows share their leading column even when glyphs have different sizes.
+pub const SIDEBAR_ICON_SLOT: f32 = ICON_LG;
 /// Reference app header geometry.
 pub const APPBAR_H: f32 = 40.0;
 /// Top breathing room above the shared window/workspace control row.

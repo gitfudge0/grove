@@ -467,7 +467,11 @@ impl Sidebar {
                 .when(true, |list| {
                     list.child(
                         div()
-                            .px(rpx(SPACE_3XL + SPACE_SM))
+                            .px(rpx(if sidebar {
+                                SIDEBAR_CONTENT_INSET
+                            } else {
+                                SPACE_3XL + SPACE_SM
+                            }))
                             .py(rpx(SPACE_MD))
                             .flex()
                             .justify_between()
@@ -487,7 +491,7 @@ impl Sidebar {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .px(rpx(SPACE_3XL))
+            .px(rpx(if sidebar { SPACE_LG } else { SPACE_3XL }))
             .flex()
             .flex_col();
         if records.is_empty() && cli_records.is_empty() && !self.session_history_loading {

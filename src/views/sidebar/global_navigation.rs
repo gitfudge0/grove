@@ -270,19 +270,17 @@ impl Sidebar {
                 );
             }
             if !showing_history {
-                heading = heading
-                    .child(
-                        self.control(
-                            "global-nav-new-session",
-                            "New session",
-                            Action::Destination(Destination::NewSession),
-                            cx,
-                        )
-                        .debug_selector(|| "global-nav-new-session".into())
-                        .track_focus(&self.navigation_focus[3])
-                        .child(icon("plus", ICON_SM, c::FG_DIM())),
+                heading = heading.child(group).child(
+                    self.control(
+                        "global-nav-new-session",
+                        "New session",
+                        Action::Destination(Destination::NewSession),
+                        cx,
                     )
-                    .child(group.mr(-rpx(SPACE_LG)));
+                    .debug_selector(|| "global-nav-new-session".into())
+                    .track_focus(&self.navigation_focus[3])
+                    .child(icon("plus", ICON_SM, c::FG_DIM())),
+                );
             }
         }
         let mut sessions = div()
@@ -711,11 +709,14 @@ mod tests {
             assert!(history.bottom() <= projects.top());
             assert!(projects.bottom() <= heading.top());
             assert!(destination.left() >= heading.left());
-            assert!(
-                destination.right()
-                    <= heading.right()
-                        + rpx(SPACE_LG).to_pixels(cx.update(|window, _| window.rem_size()))
+            assert_eq!(
+                destination.right(),
+                heading.right()
+                    - rpx(SIDEBAR_CONTENT_INSET)
+                        .to_pixels(cx.update(|window, _| window.rem_size()))
             );
+            let group = cx.debug_bounds("session-group-worktrees").unwrap();
+            assert!(group.right() <= destination.left());
             assert!(destination.top() >= heading.top());
             assert!(destination.bottom() <= heading.bottom());
             assert!(heading.bottom() <= terminals.top());

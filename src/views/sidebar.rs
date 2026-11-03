@@ -4037,7 +4037,7 @@ impl Sidebar {
             .group("session-row")
             .h_auto()
             .min_h(rpx(SESSION_LIST_CARD_H))
-            .px(rpx(SPACE_XL))
+            .px(rpx(SPACE_LG))
             .py(rpx(SPACE_LG))
             .rounded(rpx(RADIUS_GROUP))
             .bg(if selected {
@@ -4064,7 +4064,11 @@ impl Sidebar {
                             .child(
                                 div()
                                     .flex_shrink_0()
-                                    .size(rpx(TEXT_MICRO))
+                                    .w(rpx(SIDEBAR_ICON_SLOT))
+                                    .h(rpx(SESSION_LIST_HEADER_H))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .id(("session-list-agent", id.raw()))
                                     .debug_selector(move || {
                                         format!("session-list-agent-{}", id.raw())
@@ -5226,8 +5230,14 @@ impl Sidebar {
                 .min_h(rpx(ROW_H))
                 .py(rpx(SPACE_SM))
                 .my(rpx(SPACE_XS))
+                .gap(rpx(SPACE_SM))
                 .child(
                     div()
+                        .w(rpx(SIDEBAR_ICON_SLOT))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .id(("home-icon", id.raw()))
                         .debug_selector(move || format!("home-icon-{}", id.raw()))
                         .child(icon("terminal", ICON_SM, c::FG_DIM())),
@@ -7649,6 +7659,16 @@ mod tests {
                         .unwrap()
                         .left(),
                     card.left()
+                );
+                assert_eq!(
+                    cx.debug_bounds(if card_id == "session-1" {
+                        "session-list-title-1"
+                    } else {
+                        "session-list-title-2"
+                    })
+                    .unwrap()
+                    .left(),
+                    card.left() + gpui::px(SPACE_LG)
                 );
                 assert!(card.size.height >= gpui::px(SESSION_LIST_CARD_H));
                 assert!(close.left() >= card.left() && close.right() <= card.right());
@@ -11131,6 +11151,8 @@ for line in sys.stdin:
             let icon = cx.debug_bounds(icon_id).unwrap();
             assert!((f32::from(row.left() - rail.left()) - SPACE_LG).abs() <= 1.0);
             assert!((f32::from(rail.right() - row.right()) - SPACE_LG).abs() <= 1.0);
+            assert_eq!(icon.left(), rail.left() + gpui::px(SIDEBAR_CONTENT_INSET));
+            assert_eq!(icon.size.width, gpui::px(SIDEBAR_ICON_SLOT));
             assert_eq!(row.center().y, close.center().y);
             assert!((f32::from(icon.center().y - close.center().y)).abs() <= 1.0);
             assert!(close.left() >= row.left() && close.right() <= row.right());
