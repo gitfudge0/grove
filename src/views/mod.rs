@@ -20,6 +20,7 @@ pub mod tokens;
 mod worktree_launcher;
 
 mod codex_view;
+mod review_summary;
 pub mod components;
 mod inline_html;
 mod mermaid;

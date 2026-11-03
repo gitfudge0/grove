@@ -423,15 +423,7 @@ const CONTEXT_RING_STROKE: f32 = 1.5;
 const CONTEXT_RING_SEGMENTS: f32 = 48.0;
 /// Keep the review dock an overview; detailed evidence stays in the transcript.
 fn review_overview(response: &str) -> String {
-    let paragraph = response.trim().split("\n\n").next().unwrap_or_default();
-    let plain = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
-    let plain = plain.replace("**", "").replace('`', "");
-    if plain.chars().count() <= 240 {
-        return plain;
-    }
-    let prefix: String = plain.chars().take(239).collect();
-    let end = prefix.rfind(' ').unwrap_or(prefix.len());
-    format!("{}…", prefix[..end].trim_end())
+    super::review_summary::ReviewSummary::parse(response, std::path::Path::new("/")).text
 }
 
 /// The task strip header uses the compact control height.
@@ -2648,7 +2640,8 @@ impl CodexView {
                         && !codex::item_text(item).trim().is_empty()
                 })
             })
-            .map(|item| review_overview(&codex::item_text(item)));
+            .map(|item| review_overview(&codex::item_text(item)))
+            .filter(|summary| !summary.is_empty());
         let expanded = summary.is_some() && !self.expanded.contains("session-review-disclosure");
         Some(
             composer_tray(window)
@@ -12304,6 +12297,35 @@ mod tests {
         );
         assert!(replacements.iter().any(|r| r.font_scale > 1.));
         assert!(super::composer_markdown_replacements("**unfinished").is_empty());
+    }
+
+    #[test]
+    fn review_summary_uses_current_completion_for_codex_and_claude() {
+        use super::super::review_summary::ReviewSummary;
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let mut state = snapshot();
+            state.saved.provider = provider;
+            state.saved.items = vec![
+                    json!({"type":"agentMessage", "text":"Old result"}),
+                    json!({"type":"agentMessage", "phase":"final_answer", "text":"Added review links.\n\n[View mock](mock.html)"}),
+                    json!({"type":"agentMessage", "phase":"commentary", "text":"Unrelated commentary"}),
+                ].into();
+            state.saved.work_periods = vec![codex::WorkPeriod {
+                start_item: 1,
+                end_item: Some(3),
+                duration_ms: None,
+                subagents: vec![],
+            }];
+            state.saved.session_review.pending = Some(codex::ReviewCompletion { id: 42, period: 0 });
+            let summary = ReviewSummary::from_snapshot(&state).unwrap();
+            assert_eq!(summary.text, "Added review links.");
+            assert_eq!(summary.links[0].url, "file:///unused/mock.html");
+            state.status = Status::Working;
+            assert!(ReviewSummary::from_snapshot(&state).is_none());
+            state.status = Status::Done;
+            state.saved.session_review.pending = None;
+            assert!(ReviewSummary::from_snapshot(&state).is_none());
+        }
     }
 
     #[test]

@@ -226,6 +226,7 @@ pub(super) struct DashboardTimelines {
     task_focus: HashMap<(Scope, String), FocusHandle>,
     task_hovered: HashSet<(Scope, String)>,
     review_hovered: HashSet<Scope>,
+    review_link_focus: HashMap<Scope, HashMap<String, FocusHandle>>,
     review_focus: HashMap<Scope, (FocusHandle, Vec<gpui::Subscription>)>,
     group_opened: HashSet<(Scope, String)>,
     group_focus: HashMap<(Scope, String), FocusHandle>,
@@ -317,6 +318,7 @@ impl DashboardTimelines {
         self.reveals.retain(|key, _| keep(key));
         self.entrances.retain(|key, _| keep(key));
         self.review_hovered.retain(keep);
+        self.review_link_focus.retain(|key, _| keep(key));
         self.review_focus.retain(|key, _| keep(key));
         self.task_opened.retain(|(key, _)| keep(key));
         self.task_focus.retain(|(key, _), _| keep(key));
@@ -455,6 +457,22 @@ impl Sidebar {
             .unwrap_or_default();
         let accessible = format!("Activity history · {}", metadata.context);
         let review_completion = dashboard_review_completion(metadata);
+        let review_summary = review_completion.and_then(|_| {
+            let registry = self.runtime.read(cx).registry.read(cx);
+            registry.codex(id).and_then(|session| {
+                super::super::review_summary::ReviewSummary::from_snapshot(&session.read(cx).state)
+            })
+        });
+        let summary_view = review_summary.map(|summary| {
+            summary.render(
+                &format!("dashboard-review-summary-{}", id.raw()),
+                self.dashboard_timelines
+                    .review_link_focus
+                    .entry(key)
+                    .or_default(),
+                cx,
+            )
+        });
         if review_completion.is_some() && !self.dashboard_timelines.review_focus.contains_key(&key)
         {
             let handle = cx.focus_handle();
@@ -702,6 +720,16 @@ impl Sidebar {
                     .child(toggle)
                     .child(open_button),
             )
+            .when_some(summary_view, |row, summary| {
+                row.child(
+                    div()
+                        .min_w_0()
+                        .pl(rpx(ICON_LG + SPACE_LG))
+                        .pr(rpx(ICON_BTN_W))
+                        .pt(rpx(SPACE_LG))
+                        .child(summary),
+                )
+            })
             .child(detail)
             .into_any_element();
         self.dashboard_session_entrance(key, row, cx)
