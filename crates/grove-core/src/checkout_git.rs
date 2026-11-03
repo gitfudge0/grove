@@ -36,6 +36,17 @@ impl CheckoutGitState {
     }
 }
 
+/// A comparison against a specific fetched remote default-branch commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MainBranchState {
+    pub remote: String,
+    pub branch: String,
+    pub head: String,
+    pub behind: usize,
+    checkout_identity: [u8; 32],
+    comparison_identity: [u8; 32],
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitAction {
     Fetch,
@@ -66,7 +77,10 @@ fn git_with_index_limit(
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
-    if matches!(args.first(), Some(&"fetch" | &"push" | &"pull")) {
+    if matches!(
+        args.first(),
+        Some(&"fetch" | &"push" | &"pull" | &"ls-remote")
+    ) {
         let configured = std::env::var("GIT_SSH_COMMAND")
             .ok()
             .or_else(|| git(path, &["config", "--get", "core.sshCommand"]).ok());
@@ -120,6 +134,10 @@ fn git_with_index_limit(
                         || detail.contains("signing failed")
                     {
                         "Commit signing failed. Check your Git signing configuration and retry"
+                    } else if detail.contains("conflict")
+                        && matches!(args.first(), Some(&"merge" | &"revert"))
+                    {
+                        "The operation has conflicts. Resolve or abort it in the checkout before continuing"
                     } else if args.first() == Some(&"commit") && !detail.contains("authentication")
                     {
                         "Commit failed. Check your commit hooks, signing setup, and staged changes, then retry"
@@ -534,6 +552,328 @@ pub fn inspect(path: &Path) -> Result<CheckoutGitState, String> {
     })
 }
 
+fn checked_target(path: &Path, expected: &CheckoutGitState) -> Result<CheckoutGitState, String> {
+    let current = inspect(path)?;
+    if current.target_identity() != expected.target_identity() {
+        return Err("Checkout changed. Refresh before retrying".into());
+    }
+    Ok(current)
+}
+
+fn comparison_remote(path: &Path, state: &CheckoutGitState) -> Result<Option<String>, String> {
+    if state.remotes.is_empty() {
+        return Ok(None);
+    }
+    if let Some(branch) = &state.branch {
+        if let Ok(remote) = git(
+            path,
+            &["config", "--get", &format!("branch.{branch}.remote")],
+        ) {
+            if state.remotes.contains(&remote) {
+                return Ok(Some(remote));
+            }
+            return Err("The branch tracking remote is unavailable".into());
+        }
+    }
+    if state.remotes.iter().any(|remote| remote == "origin") {
+        return Ok(Some("origin".into()));
+    }
+    if state.remotes.len() == 1 {
+        return Ok(state.remotes.first().cloned());
+    }
+    Err("Choose a branch tracking remote before comparing main".into())
+}
+
+/// Refresh only this checkout's selected remote tracking refs and compare its default branch.
+/// Fetching changes remote-tracking refs; it never changes a local branch or working files.
+/// With `fetch = false`, the comparison is cached and does not establish remote freshness.
+pub fn inspect_main(
+    path: &Path,
+    expected: &CheckoutGitState,
+    fetch: bool,
+) -> Result<Option<MainBranchState>, String> {
+    let current = checked_target(path, expected)?;
+    let Some(local_head) = current.head.as_deref() else {
+        return Ok(None);
+    };
+    let Some(remote) = comparison_remote(path, &current)? else {
+        return Ok(None);
+    };
+    let branch = if fetch {
+        let advertised = git(
+            path,
+            &[
+                "ls-remote",
+                "--symref",
+                "--",
+                &remote,
+                "HEAD",
+                "refs/heads/main",
+                "refs/heads/master",
+            ],
+        )?;
+        let default = advertised.lines().find_map(|line| {
+            let (value, name) = line.split_once('\t')?;
+            (name == "HEAD")
+                .then(|| value.strip_prefix("ref: refs/heads/").map(str::to_owned))
+                .flatten()
+        });
+        default.or_else(|| {
+            ["main", "master"]
+                .into_iter()
+                .find(|branch| {
+                    advertised.lines().any(|line| {
+                        line.split_once('\t')
+                            .is_some_and(|(_, name)| name == format!("refs/heads/{branch}"))
+                    })
+                })
+                .map(str::to_owned)
+        })
+    } else {
+        git(
+            path,
+            &[
+                "symbolic-ref",
+                "--quiet",
+                &format!("refs/remotes/{remote}/HEAD"),
+            ],
+        )
+        .ok()
+        .and_then(|reference| {
+            reference
+                .strip_prefix(&format!("refs/remotes/{remote}/"))
+                .map(str::to_owned)
+        })
+        .or_else(|| {
+            ["main", "master"]
+                .into_iter()
+                .find(|branch| {
+                    git(
+                        path,
+                        &[
+                            "rev-parse",
+                            "--verify",
+                            &format!("refs/remotes/{remote}/{branch}^{{commit}}"),
+                        ],
+                    )
+                    .is_ok()
+                })
+                .map(str::to_owned)
+        })
+    };
+    if let Some(branch) = &branch {
+        git(path, &["check-ref-format", &format!("refs/heads/{branch}")])?;
+    }
+    if fetch {
+        // Explicit destinations prevent a remote's arbitrary fetch refspec from changing
+        // local heads. Refresh the configured upstream alongside the default branch.
+        let mut refspecs = Vec::new();
+        if let Some(branch) = &branch {
+            refspecs.push(format!(
+                "+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+            ));
+        }
+        if let Some(local_branch) = &current.branch {
+            if current.upstream.is_some() {
+                let merge = git(
+                    path,
+                    &["config", "--get", &format!("branch.{local_branch}.merge")],
+                )?;
+                let destination = git(path, &["rev-parse", "--symbolic-full-name", "@{upstream}"])?;
+                if !merge.starts_with("refs/heads/")
+                    || !destination.starts_with(&format!("refs/remotes/{remote}/"))
+                {
+                    return Err(
+                        "The branch tracking configuration cannot be refreshed safely".into(),
+                    );
+                }
+                refspecs.push(format!("+{merge}:{destination}"));
+            }
+        }
+        refspecs.sort();
+        refspecs.dedup();
+        if !refspecs.is_empty() {
+            let mut args = vec![
+                "fetch",
+                "--no-tags",
+                "--no-recurse-submodules",
+                "--",
+                remote.as_str(),
+            ];
+            args.extend(refspecs.iter().map(String::as_str));
+            git(path, &args)?;
+        }
+        checked_target(path, expected)?;
+    }
+    let Some(branch) = branch else {
+        return Ok(None);
+    };
+    let head = git(
+        path,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("refs/remotes/{remote}/{branch}^{{commit}}"),
+        ],
+    )?;
+    let behind = git(
+        path,
+        &["rev-list", "--count", &format!("{local_head}..{head}")],
+    )?
+    .parse()
+    .map_err(|_| "Could not compare the remote default branch")?;
+    checked_target(path, expected)?;
+    let comparison_identity = digest(format!("{remote}\0{branch}\0{head}").as_bytes());
+    Ok(Some(MainBranchState {
+        remote,
+        branch,
+        head,
+        behind,
+        checkout_identity: expected.target_identity(),
+        comparison_identity,
+    }))
+}
+
+/// Merge exactly the reviewed default-branch commit. No rebase, reset or implicit pull.
+pub fn merge_main(
+    path: &Path,
+    expected: &CheckoutGitState,
+    main: &MainBranchState,
+) -> Result<(), String> {
+    let current = checked_target(path, expected)?;
+    if current.dirty || current.branch.is_none() || current.head.is_none() {
+        return Err("Commit or discard local edits on a branch before merging main".into());
+    }
+    if main.comparison_identity
+        != digest(format!("{}\0{}\0{}", main.remote, main.branch, main.head).as_bytes())
+        || main.checkout_identity != current.target_identity()
+        || comparison_remote(path, &current)?.as_ref() != Some(&main.remote)
+        || git(
+            path,
+            &[
+                "rev-parse",
+                "--verify",
+                &format!("refs/remotes/{}/{}^{{commit}}", main.remote, main.branch),
+            ],
+        )? != main.head
+    {
+        return Err("The main comparison changed. Review it again before merging".into());
+    }
+    if main.behind == 0 {
+        return Err("There are no new commits on main to merge".into());
+    }
+    if checked_target(path, expected)?.dirty {
+        return Err("Checkout changed. Review local edits before merging main".into());
+    }
+    git(path, &["merge", "--no-ff", "--no-edit", "--", &main.head])?;
+    Ok(())
+}
+
+/// Return the exact tracked discard scope for an explicitly captured working snapshot.
+/// The caller can show these names in confirmation; untracked files are excluded.
+pub fn discard_tracked_paths(
+    path: &Path,
+    expected: &CheckoutGitState,
+) -> Result<Vec<String>, String> {
+    let root = git(path, &["rev-parse", "--show-toplevel"])?;
+    let path = Path::new(&root);
+    let current = checked_target(path, expected)?;
+    let Some(head) = current.head.as_deref() else {
+        return Err("Create a commit before discarding tracked changes".into());
+    };
+    if expected.working_identity.is_none()
+        || expected.working_identity != Some(working_snapshot(path)?)
+        || current.staged_identity != expected.staged_identity
+    {
+        return Err("Checkout changes changed. Review them before discarding".into());
+    }
+    let mut tracked = nul_files(&git(path, &["ls-files", "-z"])?);
+    tracked.extend(nul_files(&git(
+        path,
+        &["ls-tree", "-r", "--name-only", "-z", head],
+    )?));
+    let paths: Vec<_> = current
+        .changed_files
+        .into_iter()
+        .filter(|name| tracked.contains(name))
+        .collect();
+    if paths.is_empty() {
+        return Err("There are no tracked changes to discard".into());
+    }
+    Ok(paths)
+}
+
+/// Discard only tracked paths from an explicitly captured working snapshot.
+/// Files which were untracked in the snapshot are never removed or restored.
+pub fn discard_tracked(path: &Path, expected: &CheckoutGitState) -> Result<(), String> {
+    let root = git(path, &["rev-parse", "--show-toplevel"])?;
+    let path = Path::new(&root);
+    let current = checked_target(path, expected)?;
+    let head = current
+        .head
+        .as_deref()
+        .ok_or("Create a commit before discarding tracked changes")?;
+    let paths = discard_tracked_paths(path, expected)?;
+    let mut pathspec =
+        tempfile::NamedTempFile::new().map_err(|_| "Could not prepare discard scope")?;
+    use std::io::Write as _;
+    for name in paths {
+        pathspec
+            .write_all(format!(":(top,literal){name}\0").as_bytes())
+            .map_err(|_| "Could not prepare discard scope")?;
+    }
+    // Re-read the captured scope immediately before the one native restore operation.
+    let latest = checked_target(path, expected)?;
+    if latest.staged_identity != expected.staged_identity
+        || expected.working_identity != Some(working_snapshot(path)?)
+    {
+        return Err("Checkout changes changed. Review them before discarding".into());
+    }
+    let source = format!("--source={head}");
+    let paths = format!("--pathspec-from-file={}", pathspec.path().display());
+    git(
+        path,
+        &[
+            "restore",
+            &source,
+            "--staged",
+            "--worktree",
+            &paths,
+            "--pathspec-file-nul",
+        ],
+    )?;
+    Ok(())
+}
+
+/// Revert one exact reachable non-merge commit by creating a new inverse commit.
+pub fn revert_commit(path: &Path, expected: &CheckoutGitState, commit: &str) -> Result<(), String> {
+    let current = checked_target(path, expected)?;
+    if current.dirty || current.branch.is_none() || current.head.is_none() {
+        return Err("Use a clean checkout on a branch before reverting a commit".into());
+    }
+    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Choose an exact commit from this branch's history".into());
+    }
+    let resolved = git(
+        path,
+        &["rev-parse", "--verify", &format!("{commit}^{{commit}}")],
+    )?;
+    if resolved != commit.to_ascii_lowercase() {
+        return Err("The selected commit changed. Review history again".into());
+    }
+    git(path, &["merge-base", "--is-ancestor", commit, "HEAD"])
+        .map_err(|_| "Choose a commit from this branch's history")?;
+    let parents = git(path, &["rev-list", "--parents", "-n", "1", commit])?;
+    if parents.split_whitespace().count() > 2 {
+        return Err("Merge commits require a parent choice and cannot be reverted here".into());
+    }
+    if checked_target(path, expected)?.dirty {
+        return Err("Checkout changed. Review local edits before reverting".into());
+    }
+    git(path, &["revert", "--no-edit", "--", commit])?;
+    Ok(())
+}
+
 pub fn execute(path: &Path, expected: &CheckoutGitState, action: GitAction) -> Result<(), String> {
     let root = git(path, &["rev-parse", "--show-toplevel"])?;
     let path = Path::new(&root);
@@ -886,5 +1226,226 @@ mod tests {
         fs_err::remove_file(dir.path().join("dirty")).unwrap();
         execute(dir.path(), &inspect(dir.path()).unwrap(), GitAction::Pull).unwrap();
         assert_eq!(inspect(dir.path()).unwrap().behind, Some(0));
+    }
+
+    fn remote_fixture() -> (tempfile::TempDir, tempfile::TempDir) {
+        let checkout = fixture();
+        fs_err::write(checkout.path().join("tracked"), "base\n").unwrap();
+        commit(checkout.path());
+        let remote = tempfile::tempdir().unwrap();
+        run(remote.path(), &["init", "--bare", "--initial-branch=main"]);
+        run(
+            checkout.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        run(
+            checkout.path(),
+            &["push", "--set-upstream", "origin", "main"],
+        );
+        (checkout, remote)
+    }
+
+    #[test]
+    fn main_comparison_fetches_default_and_upstream_without_integrating() {
+        let (checkout, remote) = remote_fixture();
+        run(checkout.path(), &["checkout", "-b", "feature"]);
+        fs_err::write(checkout.path().join("feature"), "feature\n").unwrap();
+        commit(checkout.path());
+        run(
+            checkout.path(),
+            &["push", "--set-upstream", "origin", "feature"],
+        );
+        let peer = fixture();
+        run(
+            peer.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        run(peer.path(), &["fetch", "origin"]);
+        run(peer.path(), &["reset", "--hard", "origin/main"]);
+        fs_err::write(peer.path().join("main-change"), "main\n").unwrap();
+        commit(peer.path());
+        run(peer.path(), &["push", "origin", "main"]);
+        run(
+            peer.path(),
+            &["checkout", "-b", "feature", "origin/feature"],
+        );
+        fs_err::write(peer.path().join("peer-feature"), "peer\n").unwrap();
+        commit(peer.path());
+        run(peer.path(), &["push", "origin", "feature"]);
+        let expected = inspect(checkout.path()).unwrap();
+        let before_head = expected.head.clone();
+        let comparison = inspect_main(checkout.path(), &expected, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(comparison.remote, "origin");
+        assert_eq!(comparison.branch, "main");
+        assert_eq!(comparison.behind, 1);
+        let refreshed = inspect(checkout.path()).unwrap();
+        assert_eq!(refreshed.head, before_head);
+        assert_eq!(refreshed.behind, Some(1));
+        assert!(!checkout.path().join("main-change").exists());
+        assert!(!checkout.path().join("peer-feature").exists());
+        merge_main(checkout.path(), &refreshed, &comparison).unwrap();
+        assert!(checkout.path().join("main-change").exists());
+        assert!(!checkout.path().join("peer-feature").exists());
+        assert_ne!(inspect(checkout.path()).unwrap().head, before_head);
+    }
+
+    #[test]
+    fn main_comparison_rejects_stale_target_and_main_snapshot() {
+        let (checkout, remote) = remote_fixture();
+        run(checkout.path(), &["checkout", "-b", "feature"]);
+        let expected = inspect(checkout.path()).unwrap();
+        let comparison = inspect_main(checkout.path(), &expected, true)
+            .unwrap()
+            .unwrap();
+        run(checkout.path(), &["checkout", "main"]);
+        assert!(inspect_main(checkout.path(), &expected, false).is_err());
+        assert!(merge_main(checkout.path(), &expected, &comparison).is_err());
+        run(checkout.path(), &["checkout", "feature"]);
+        let peer = fixture();
+        run(
+            peer.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        run(peer.path(), &["fetch", "origin"]);
+        run(peer.path(), &["reset", "--hard", "origin/main"]);
+        fs_err::write(peer.path().join("new"), "new\n").unwrap();
+        commit(peer.path());
+        run(peer.path(), &["push", "origin", "main"]);
+        let comparison = inspect_main(checkout.path(), &expected, true)
+            .unwrap()
+            .unwrap();
+        run(
+            checkout.path(),
+            &[
+                "update-ref",
+                "refs/remotes/origin/main",
+                expected.head.as_deref().unwrap(),
+            ],
+        );
+        assert!(merge_main(checkout.path(), &expected, &comparison)
+            .unwrap_err()
+            .contains("comparison changed"));
+    }
+
+    #[test]
+    fn main_comparison_prefers_tracking_remote_and_does_not_infer_missing_main() {
+        let (checkout, remote) = remote_fixture();
+        run(checkout.path(), &["remote", "rename", "origin", "upstream"]);
+        let unrelated = tempfile::tempdir().unwrap();
+        run(
+            unrelated.path(),
+            &["init", "--bare", "--initial-branch=main"],
+        );
+        run(
+            checkout.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                unrelated.path().to_str().unwrap(),
+            ],
+        );
+        let state = inspect(checkout.path()).unwrap();
+        let main = inspect_main(checkout.path(), &state, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(main.remote, "upstream");
+        run(
+            checkout.path(),
+            &["remote", "set-url", "upstream", "/does-not-exist"],
+        );
+        assert!(inspect_main(checkout.path(), &state, true).is_err());
+        // Keep the temporary remote alive until comparison has finished.
+        drop(remote);
+    }
+
+    #[test]
+    fn discard_tracked_rejects_stale_scope_and_preserves_untracked_files() {
+        let checkout = fixture();
+        fs_err::write(checkout.path().join("tracked"), "base\n").unwrap();
+        fs_err::write(checkout.path().join("deleted"), "base\n").unwrap();
+        commit(checkout.path());
+        fs_err::write(checkout.path().join("tracked"), "staged\n").unwrap();
+        run(checkout.path(), &["add", "tracked"]);
+        fs_err::write(checkout.path().join("tracked"), "working\n").unwrap();
+        fs_err::remove_file(checkout.path().join("deleted")).unwrap();
+        fs_err::write(checkout.path().join("untracked"), "keep me\n").unwrap();
+        fs_err::write(checkout.path().join(":(glob)added"), "new staged file\n").unwrap();
+        run(checkout.path(), &["add", "--", ":(literal):(glob)added"]);
+        let stale = prepare_commit(checkout.path()).unwrap();
+        fs_err::write(checkout.path().join("tracked"), "newer\n").unwrap();
+        assert!(discard_tracked(checkout.path(), &stale).is_err());
+        assert_eq!(
+            fs_err::read_to_string(checkout.path().join("tracked")).unwrap(),
+            "newer\n"
+        );
+        let expected = prepare_commit(checkout.path()).unwrap();
+        assert_eq!(
+            discard_tracked_paths(checkout.path(), &expected).unwrap(),
+            vec![":(glob)added", "deleted", "tracked"]
+        );
+        let nested = checkout.path().join("nested");
+        fs_err::create_dir(&nested).unwrap();
+        discard_tracked(&nested, &expected).unwrap();
+        assert_eq!(
+            fs_err::read_to_string(checkout.path().join("tracked")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(
+            fs_err::read_to_string(checkout.path().join("deleted")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(
+            fs_err::read_to_string(checkout.path().join("untracked")).unwrap(),
+            "keep me\n"
+        );
+        assert!(!checkout.path().join(":(glob)added").exists());
+        assert!(git(checkout.path(), &["diff", "--cached", "--name-only"])
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            inspect(checkout.path()).unwrap().changed_files,
+            vec!["untracked"]
+        );
+        assert!(discard_tracked(checkout.path(), &inspect(checkout.path()).unwrap()).is_err());
+    }
+
+    #[test]
+    fn revert_creates_inverse_commit_and_rejects_dirty_or_unreachable_scope() {
+        let checkout = fixture();
+        fs_err::write(checkout.path().join("tracked"), "base\n").unwrap();
+        commit(checkout.path());
+        fs_err::write(checkout.path().join("tracked"), "feature\n").unwrap();
+        commit(checkout.path());
+        let expected = inspect(checkout.path()).unwrap();
+        let selected = expected.head.clone().unwrap();
+        fs_err::write(checkout.path().join("untracked"), "keep\n").unwrap();
+        assert!(revert_commit(checkout.path(), &expected, &selected).is_err());
+        fs_err::remove_file(checkout.path().join("untracked")).unwrap();
+        assert!(revert_commit(checkout.path(), &expected, "HEAD").is_err());
+        let tree = git(checkout.path(), &["rev-parse", "HEAD^{tree}"]).unwrap();
+        let unreachable = git(
+            checkout.path(),
+            &["commit-tree", &tree, "-m", "unreachable"],
+        )
+        .unwrap();
+        assert!(revert_commit(checkout.path(), &expected, &unreachable)
+            .unwrap_err()
+            .contains("history"));
+        revert_commit(checkout.path(), &expected, &selected).unwrap();
+        assert_eq!(
+            fs_err::read_to_string(checkout.path().join("tracked")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(
+            git(checkout.path(), &["rev-parse", "HEAD^"]).unwrap(),
+            selected
+        );
+        assert!(git(checkout.path(), &["log", "-1", "--format=%s"])
+            .unwrap()
+            .starts_with("Revert"));
+        assert!(revert_commit(checkout.path(), &expected, &selected).is_err());
     }
 }
