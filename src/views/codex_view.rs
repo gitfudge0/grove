@@ -421,8 +421,22 @@ const CONTEXT_WARN_PERCENT: u32 = 80;
 const CONTEXT_RING_STROKE: f32 = 1.5;
 /// Polyline segments per full turn of the context ring.
 const CONTEXT_RING_SEGMENTS: f32 = 48.0;
+/// Keep the review dock an overview; detailed evidence stays in the transcript.
+fn review_overview(response: &str) -> String {
+    let paragraph = response.trim().split("\n\n").next().unwrap_or_default();
+    let plain = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+    let plain = plain.replace("**", "").replace('`', "");
+    if plain.chars().count() <= 240 {
+        return plain;
+    }
+    let prefix: String = plain.chars().take(239).collect();
+    let end = prefix.rfind(' ').unwrap_or(prefix.len());
+    format!("{}…", prefix[..end].trim_end())
+}
+
 /// The task strip header uses the compact control height.
 const TASK_STRIP_HEAD_H: f32 = CONTROL_H;
+
 /// One task row in the expanded strip (DESIGN.md row-h).
 const TASK_ROW_H: f32 = CONTROL_H + SPACE_SM;
 /// Rows reserve the header disclosure column before their status mark.
@@ -2576,6 +2590,7 @@ impl CodexView {
     ) -> gpui::Stateful<gpui::Div> {
         let expanded = !self.expanded.contains(key);
         super::components::inline_disclosure(key, label)
+            .debug_selector(move || key.into())
             .w_full()
             .h(rpx(TASK_STRIP_HEAD_H))
             .justify_start()
@@ -2616,11 +2631,22 @@ impl CodexView {
             return None;
         }
         let work_period = state.review_completion()?;
+        let summary = state.saved.session_review.pending.as_ref()
+            .and_then(|receipt| state.saved.work_periods.get(receipt.period))
+            .and_then(|period| state.saved.items.get(period.start_item..period.end_item?))
+            .and_then(|items| items.iter().rev().find(|item| {
+                item["type"] == "agentMessage"
+                    && item["phase"] != "commentary"
+                    && !codex::item_text(item).trim().is_empty()
+            }))
+            .map(|item| review_overview(&codex::item_text(item)));
+        let expanded = summary.is_some() && !self.expanded.contains("session-review-disclosure");
         Some(
             composer_tray(window)
-                // Negative tray overlap collapses the dock's intrinsic height.
+                // Keep intrinsic height; the containing rail removes its gap.
                 .mb_0()
                 .pb(rpx(SPACE_LG))
+                .when(!expanded, |panel| panel.bg(c::BG()))
                 .id("session-review")
                 .debug_selector(|| "session-review".into())
                 .role(gpui::Role::Group)
@@ -2630,9 +2656,14 @@ impl CodexView {
                 .flex()
                 .flex_col()
                 .child(div().flex().items_center().gap(rpx(SPACE_LG))
-                    .child(div().flex_1().min_w_0().child(self.status_card_header(
-                        "session-review-disclosure", "Ready for review", StatusKind::Success, cx,
-                    )))
+                    .child(div().flex_1().min_w_0()
+                        .when(summary.is_some(), |header| header.child(self.status_card_header(
+                            "session-review-disclosure", "Ready for review", StatusKind::Success, cx,
+                        )))
+                        .when(summary.is_none(), |header| header.child(
+                            div().h(rpx(TASK_STRIP_HEAD_H)).flex().items_center()
+                                .child(status::label("session-review-status", StatusKind::Success, "Ready for review", ICON_SM, cx))
+                        )))
                 .child(
                     form_action("session-mark-reviewed", "Mark reviewed", false, window, cx)
                         .icon(
@@ -2654,10 +2685,13 @@ impl CodexView {
                         })),
                 )
                 )
-                .when(!self.expanded.contains("session-review-disclosure"), |panel| panel.child(
-                    div().pl(rpx(TASK_LABEL_INSET)).pb(rpx(SPACE_LG))
+                .when(expanded, |panel| panel.child(
+                    div().id("session-review-summary")
+                        .debug_selector(|| "session-review-summary".into())
+                        .line_clamp(2)
+                        .pl(rpx(TASK_LABEL_INSET)).pb(rpx(SPACE_LG))
                         .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                        .child("The agent finished. Review the result above; any unverified tasks remain open."),
+                        .child(summary.unwrap_or_default()),
                 ))
                 .into_any_element(),
         )
@@ -6068,6 +6102,7 @@ impl Render for CodexView {
         } else {
             self.session_review(&state, window, cx)
         };
+        let has_review = session_review.is_some();
         let session_notice = self.session_notice(&state, window, cx);
         let (notice_above, notice_below) = if self.dashboard_tray.is_some() {
             (None, session_notice)
@@ -6098,6 +6133,7 @@ impl Render for CodexView {
                             .flex()
                             .flex_col()
                             .gap(rpx(SPACE_MD))
+                            .when(has_review, |rail| rail.gap_0())
                             .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_intro(&state)))
                             .when_some(notice_above, gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
@@ -12183,6 +12219,16 @@ mod tests {
         assert!(super::composer_markdown_replacements("**unfinished").is_empty());
     }
 
+    #[test]
+    fn review_overview_keeps_only_a_bounded_opening_paragraph() {
+        assert_eq!(review_overview("**Fixed the review panel.**\n\nDetails and evidence."), "Fixed the review panel.");
+        assert_eq!(review_overview(" First line\ncontinues here. "), "First line continues here.");
+        let long = review_overview(&"界 ".repeat(300));
+        assert!(long.chars().count() <= 240);
+        assert!(long.ends_with('…'));
+        assert_eq!(review_overview("  "), "");
+    }
+
     #[gpui::test]
     fn composer_markdown_preserves_source_navigation_copy_and_ime_for_both_providers(
         cx: &mut gpui::TestAppContext,
@@ -13592,10 +13638,23 @@ mod tests {
                     cx.update(gpui::Window::simulate_next_frame);
                     draw(cx);
                 }
+                let review = cx.debug_bounds("session-review").unwrap();
                 let composer = cx.debug_bounds("codex-composer").unwrap();
+                assert!(review.bottom() >= composer.top(), "{provider:?}: review must attach to composer");
+                assert!(cx.debug_bounds("session-review-summary").is_some(), "{provider:?}: completed response is shown");
                 assert!(composer.bottom() <= gpui::px(height), "{provider:?}: composer clipped: {composer:?}");
                 assert!(composer.top() >= gpui::px(0.), "{provider:?}: composer above pane: {composer:?}");
             }
+            cx.update(|_, cx| view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.items = vec![json!({"id":"result","type":"agentMessage","text":""})].into();
+                    cx.notify();
+                });
+                cx.notify();
+            }));
+            draw(cx);
+            assert!(cx.debug_bounds("session-review-summary").is_none(), "{provider:?}: empty result stays collapsed");
+            assert!(cx.debug_bounds("session-review-disclosure").is_none(), "{provider:?}: empty result has no disclosure");
             let action = cx
                 .debug_bounds("session-mark-reviewed")
                 .expect("review action must be visible");
