@@ -2105,7 +2105,8 @@ impl CodexView {
         let resume_enabled =
             state.status != codex::Status::Disconnected && state.queue_uncertain.is_empty();
         let collapsed = self.queue_collapsed;
-        let mut tray = composer_tray(window).when(attached_above, |tray| tray.rounded_none())
+        let mut tray = composer_tray(window)
+            .when(attached_above, |tray| tray.rounded_none())
             .id("codex-queued-prompts")
             .debug_selector(|| "codex-queued-prompts".into())
             .child(
@@ -2633,18 +2634,25 @@ impl CodexView {
             return None;
         }
         let work_period = state.review_completion()?;
-        let summary = state.saved.session_review.pending.as_ref()
+        let summary = state
+            .saved
+            .session_review
+            .pending
+            .as_ref()
             .and_then(|receipt| state.saved.work_periods.get(receipt.period))
             .and_then(|period| state.saved.items.get(period.start_item..period.end_item?))
-            .and_then(|items| items.iter().rev().find(|item| {
-                item["type"] == "agentMessage"
-                    && item["phase"] != "commentary"
-                    && !codex::item_text(item).trim().is_empty()
-            }))
+            .and_then(|items| {
+                items.iter().rev().find(|item| {
+                    item["type"] == "agentMessage"
+                        && item["phase"] != "commentary"
+                        && !codex::item_text(item).trim().is_empty()
+                })
+            })
             .map(|item| review_overview(&codex::item_text(item)));
         let expanded = summary.is_some() && !self.expanded.contains("session-review-disclosure");
         Some(
-            composer_tray(window).when(attached_above, |tray| tray.rounded_none())
+            composer_tray(window)
+                .when(attached_above, |tray| tray.rounded_none())
                 // Keep intrinsic height; the containing rail removes its gap.
                 .mb_0()
                 .pb(rpx(SPACE_LG))
@@ -2657,44 +2665,81 @@ impl CodexView {
                 .flex_shrink_0()
                 .flex()
                 .flex_col()
-                .child(div().flex().items_center().gap(rpx(SPACE_LG))
-                    .child(div().flex_1().min_w_0()
-                        .when(summary.is_some(), |header| header.child(self.status_card_header(
-                            "session-review-disclosure", "Ready for review", StatusKind::Success, cx,
-                        )))
-                        .when(summary.is_none(), |header| header.child(
-                            div().h(rpx(TASK_STRIP_HEAD_H)).flex().items_center()
-                                .child(status::label("session-review-status", StatusKind::Success, "Ready for review", ICON_SM, cx))
-                        )))
                 .child(
-                    form_action("session-mark-reviewed", "Mark reviewed", false, window, cx)
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/check.svg")
-                                .size(rpx(ICON_SM)),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_LG))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .when(summary.is_some(), |header| {
+                                    header.child(self.status_card_header(
+                                        "session-review-disclosure",
+                                        "Ready for review",
+                                        StatusKind::Success,
+                                        cx,
+                                    ))
+                                })
+                                .when(summary.is_none(), |header| {
+                                    header.child(
+                                        div()
+                                            .h(rpx(TASK_STRIP_HEAD_H))
+                                            .flex()
+                                            .items_center()
+                                            .child(status::label(
+                                                "session-review-status",
+                                                StatusKind::Success,
+                                                "Ready for review",
+                                                ICON_SM,
+                                                cx,
+                                            )),
+                                    )
+                                }),
                         )
-                        .debug_selector(|| "session-mark-reviewed".into())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            let current = &this.session.read(cx).state;
-                            if current.session_status() == "Review"
-                                && current.review_completion() == Some(work_period)
-                            {
-                                this.session.update(cx, |session, cx| {
-                                    session.send(Action::MarkReviewed { work_period }, cx)
-                                });
-                                this.input.focus_handle(cx).focus(window, cx);
-                            }
-                        })),
+                        .child(
+                            form_action(
+                                "session-mark-reviewed",
+                                "Mark reviewed",
+                                false,
+                                window,
+                                cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/check.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .debug_selector(|| "session-mark-reviewed".into())
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    let current = &this.session.read(cx).state;
+                                    if current.session_status() == "Review"
+                                        && current.review_completion() == Some(work_period)
+                                    {
+                                        this.session.update(cx, |session, cx| {
+                                            session.send(Action::MarkReviewed { work_period }, cx)
+                                        });
+                                        this.input.focus_handle(cx).focus(window, cx);
+                                    }
+                                },
+                            )),
+                        ),
                 )
-                )
-                .when(expanded, |panel| panel.child(
-                    div().id("session-review-summary")
-                        .debug_selector(|| "session-review-summary".into())
-                        .line_clamp(2)
-                        .pl(rpx(TASK_LABEL_INSET)).pb(rpx(SPACE_LG))
-                        .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                        .child(summary.unwrap_or_default()),
-                ))
+                .when(expanded, |panel| {
+                    panel.child(
+                        div()
+                            .id("session-review-summary")
+                            .debug_selector(|| "session-review-summary".into())
+                            .line_clamp(2)
+                            .pl(rpx(TASK_MARK_INSET))
+                            .pb(rpx(SPACE_LG))
+                            .text_size(rpx(TEXT_SMALL))
+                            .text_color(c::FG_DIM())
+                            .child(summary.unwrap_or_default()),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -2918,7 +2963,8 @@ impl CodexView {
             }
         }
         Some(
-            composer_tray(window).when(attached_above, |tray| tray.rounded_none())
+            composer_tray(window)
+                .when(attached_above, |tray| tray.rounded_none())
                 .id("codex-error")
                 .debug_selector(|| "codex-error".into())
                 .role(gpui::Role::Alert)
@@ -3196,7 +3242,8 @@ impl CodexView {
             }
             rows
         });
-        composer_tray(window).when(attached_above, |tray| tray.rounded_none())
+        composer_tray(window)
+            .when(attached_above, |tray| tray.rounded_none())
             .id("codex-task-strip-panel")
             .debug_selector(|| "codex-task-strip-panel".into())
             // Balance the visible bottom attachment against the header's top inset.
@@ -5662,8 +5709,8 @@ impl Render for CodexView {
             (session_notice, None)
         };
         let controls_attached = notice_above.is_some();
-        let status_attached = controls_attached
-            || !state.approvals.is_empty() || !state.elicitations.is_empty();
+        let status_attached =
+            controls_attached || !state.approvals.is_empty() || !state.elicitations.is_empty();
         let session_plan = self.session_plan_ready(status_attached, &state, window, cx);
         let session_review = if state.plan_ready() {
             None
@@ -5697,7 +5744,9 @@ impl Render for CodexView {
                                 .mx_0()
                                 .mb_0()
                                 .pb(rpx(SPACE_LG))
-                                .when(!controls_attached, |panel| panel.rounded_t(rpx(RADIUS_PANEL)))
+                                .when(!controls_attached, |panel| {
+                                    panel.rounded_t(rpx(RADIUS_PANEL))
+                                })
                                 .child(self.status_card_header(
                                     "approval-status-disclosure",
                                     "Approval needed",
@@ -5718,7 +5767,9 @@ impl Render for CodexView {
                                 .mb_0()
                                 .pb(rpx(SPACE_LG))
                                 .rounded_none()
-                                .when(!controls_attached && state.approvals.is_empty(), |panel| panel.rounded_t(rpx(RADIUS_PANEL)))
+                                .when(!controls_attached && state.approvals.is_empty(), |panel| {
+                                    panel.rounded_t(rpx(RADIUS_PANEL))
+                                })
                                 .child(self.status_card_header(
                                     "elicitation-status-disclosure",
                                     "Input needed",
@@ -5746,7 +5797,14 @@ impl Render for CodexView {
                     })
                 })
         });
-        let queued = self.queue_tray(lower_attached || !state.saved.rewind_drafts.is_empty() || (!self.composer_collapsed && self.suggestion_choices(&state, cx).is_some()), &state, window, cx);
+        let queued = self.queue_tray(
+            lower_attached
+                || !state.saved.rewind_drafts.is_empty()
+                || (!self.composer_collapsed && self.suggestion_choices(&state, cx).is_some()),
+            &state,
+            window,
+            cx,
+        );
         let task_strip = task_cache.list.as_ref().map(|list| {
             let rendered = message_child;
             let jumps = list
@@ -5953,7 +6011,14 @@ impl Render for CodexView {
                 }))
         });
         let choices = (!self.composer_collapsed && self.suggestion_choices(&state, cx).is_some())
-            .then(|| self.composer_choices(lower_attached || !state.saved.rewind_drafts.is_empty(), &state, window, cx));
+            .then(|| {
+                self.composer_choices(
+                    lower_attached || !state.saved.rewind_drafts.is_empty(),
+                    &state,
+                    window,
+                    cx,
+                )
+            });
         let collapsed = self.composer_collapsed;
         let composer_min_h = if self.dashboard_tray.is_some() {
             DASHBOARD_COMPOSER_MIN_H
@@ -6122,8 +6187,10 @@ impl Render for CodexView {
         } else {
             body.into_any_element()
         };
-        let composer_attached = lower_attached || rewind_drafts.is_some()
-            || choices.is_some() || !self.queue_motion_rows.is_empty();
+        let composer_attached = lower_attached
+            || rewind_drafts.is_some()
+            || choices.is_some()
+            || !self.queue_motion_rows.is_empty();
         let mut surface =
             surface.child(
                 div()
@@ -8425,7 +8492,8 @@ impl CodexView {
                 })),
             );
         }
-        composer_tray(window).when(attached_above, |tray| tray.rounded_none())
+        composer_tray(window)
+            .when(attached_above, |tray| tray.rounded_none())
             .id("codex-composer-options")
             .debug_selector(|| "codex-composer-options".into())
             .child(
@@ -8723,7 +8791,9 @@ impl CodexView {
                 .px(rpx(SPACE_2XL))
                 .pt(rpx(SPACE_LG))
                 .pb(rpx(SPACE_LG))
-                .when(!attached_above, |preview| preview.rounded_t(rpx(RADIUS_PANEL)))
+                .when(!attached_above, |preview| {
+                    preview.rounded_t(rpx(RADIUS_PANEL))
+                })
                 .border_1()
                 .border_b_0()
                 .border_color(c::BORDER_SOFT())
@@ -12238,8 +12308,14 @@ mod tests {
 
     #[test]
     fn review_overview_keeps_only_a_bounded_opening_paragraph() {
-        assert_eq!(review_overview("**Fixed the review panel.**\n\nDetails and evidence."), "Fixed the review panel.");
-        assert_eq!(review_overview(" First line\ncontinues here. "), "First line continues here.");
+        assert_eq!(
+            review_overview("**Fixed the review panel.**\n\nDetails and evidence."),
+            "Fixed the review panel."
+        );
+        assert_eq!(
+            review_overview(" First line\ncontinues here. "),
+            "First line continues here."
+        );
         let long = review_overview(&"界 ".repeat(300));
         assert!(long.chars().count() <= 240);
         assert!(long.ends_with('…'));
@@ -13657,21 +13733,42 @@ mod tests {
                 }
                 let review = cx.debug_bounds("session-review").unwrap();
                 let composer = cx.debug_bounds("codex-composer").unwrap();
-                assert!(review.bottom() >= composer.top(), "{provider:?}: review must attach to composer");
-                assert!(cx.debug_bounds("session-review-summary").is_some(), "{provider:?}: completed response is shown");
-                assert!(composer.bottom() <= gpui::px(height), "{provider:?}: composer clipped: {composer:?}");
-                assert!(composer.top() >= gpui::px(0.), "{provider:?}: composer above pane: {composer:?}");
+                assert!(
+                    review.bottom() >= composer.top(),
+                    "{provider:?}: review must attach to composer"
+                );
+                assert!(
+                    cx.debug_bounds("session-review-summary").is_some(),
+                    "{provider:?}: completed response is shown"
+                );
+                assert!(
+                    composer.bottom() <= gpui::px(height),
+                    "{provider:?}: composer clipped: {composer:?}"
+                );
+                assert!(
+                    composer.top() >= gpui::px(0.),
+                    "{provider:?}: composer above pane: {composer:?}"
+                );
             }
-            cx.update(|_, cx| view.update(cx, |view, cx| {
-                view.session.update(cx, |session, cx| {
-                    session.state.saved.items = vec![json!({"id":"result","type":"agentMessage","text":""})].into();
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.items =
+                            vec![json!({"id":"result","type":"agentMessage","text":""})].into();
+                        cx.notify();
+                    });
                     cx.notify();
-                });
-                cx.notify();
-            }));
+                })
+            });
             draw(cx);
-            assert!(cx.debug_bounds("session-review-summary").is_none(), "{provider:?}: empty result stays collapsed");
-            assert!(cx.debug_bounds("session-review-disclosure").is_none(), "{provider:?}: empty result has no disclosure");
+            assert!(
+                cx.debug_bounds("session-review-summary").is_none(),
+                "{provider:?}: empty result stays collapsed"
+            );
+            assert!(
+                cx.debug_bounds("session-review-disclosure").is_none(),
+                "{provider:?}: empty result has no disclosure"
+            );
             let action = cx
                 .debug_bounds("session-mark-reviewed")
                 .expect("review action must be visible");

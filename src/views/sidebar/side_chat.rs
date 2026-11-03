@@ -1255,7 +1255,9 @@ impl Sidebar {
         }
         let context_label = match provider {
             Some(grove_core::codex::Provider::Codex) => "Read-only · Luna",
-            Some(grove_core::codex::Provider::Claude) => "Haiku · Read tools only · Startup hooks may run",
+            Some(grove_core::codex::Provider::Claude) => {
+                "Haiku · Read tools only · Startup hooks may run"
+            }
             None => "Read-only",
         };
         let input_label = format!("Ask about this session or worktree. {context_disclosure}");

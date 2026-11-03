@@ -1916,7 +1916,10 @@ impl Sidebar {
             &action,
             Action::Launch(..) | Action::RunScript(..) | Action::RunNamedScript(..)
         );
-        let project_disclosure = matches!(&action, Action::ToggleProjectsDestination(_) | Action::MarkReviewed(..));
+        let project_disclosure = matches!(
+            &action,
+            Action::ToggleProjectsDestination(_) | Action::MarkReviewed(..)
+        );
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
         let confirm = matches!(

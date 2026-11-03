@@ -473,9 +473,10 @@ impl Sidebar {
             .map(|entry| entry.0.clone());
         let show_review = review_completion.is_some()
             && (self.dashboard_timelines.review_hovered.contains(&key)
-                || window.last_input_was_keyboard() && review_focus
-                    .as_ref()
-                    .is_some_and(|focus| focus.contains_focused(window, cx)));
+                || window.last_input_was_keyboard()
+                    && review_focus
+                        .as_ref()
+                        .is_some_and(|focus| focus.contains_focused(window, cx)));
         let status_label = super::super::status::label(
             format!("dashboard-session-{}", id.raw()),
             super::super::status::session_kind(metadata.display_status),
@@ -523,12 +524,16 @@ impl Sidebar {
                     if cx.reduce_motion() {
                         action.into_any_element()
                     } else {
-                        action.with_animation(
-                            format!("review-reveal-{key:?}"),
-                            gpui::Animation::new(std::time::Duration::from_millis(MOTION_FAST_MS))
+                        action
+                            .with_animation(
+                                format!("review-reveal-{key:?}"),
+                                gpui::Animation::new(std::time::Duration::from_millis(
+                                    MOTION_FAST_MS,
+                                ))
                                 .with_easing(motion::ease_standard),
-                            |action, progress| action.opacity(progress),
-                        ).into_any_element()
+                                |action, progress| action.opacity(progress),
+                            )
+                            .into_any_element()
                     }
                 } else {
                     action.opacity(0.).into_any_element()
