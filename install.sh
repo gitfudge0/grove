@@ -11,15 +11,18 @@ REPO_REF="${GROVE_REPO_REF:-main}"
 
 # A checkout builds locally; curl installs published binaries unless --source is set.
 SOURCE=0
+CLEAN=0
 PROFILE=local
 for arg in "$@"; do
   case "$arg" in
     --source) SOURCE=1 ;;
+    --clean) CLEAN=1 ;;
     --release) PROFILE=release ;;
     --help|-h)
-      echo "Usage: install.sh [--source] [--release]"
+      echo "Usage: install.sh [--source] [--release] [--clean]"
       echo "Checkout: fast local build; curl: latest prebuilt release."
       echo "--source builds a remote checkout; --release optimizes source builds."
+      echo "Build artifacts are retained for reuse; --clean removes them after installation."
       exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 1 ;;
   esac
@@ -247,9 +250,9 @@ EOF
     ;;
 esac
 
-# Installation has succeeded; retain artifacts on every earlier failure for
-# diagnosis. Clean the whole selected profile, including dependencies and bundles.
-if [ "$PREBUILT" = 0 ]; then
+# Preserve compiled dependencies for the next install unless cleanup was requested.
+# Failed builds and installations always retain artifacts for diagnosis.
+if [ "$PREBUILT" = 0 ] && [ "$CLEAN" = 1 ]; then
   echo "Removing $PROFILE build artifacts..."
   CLEAN_ARGS=(--profile "$PROFILE")
   [ -z "$TARGET" ] || CLEAN_ARGS+=(--target "$TARGET")

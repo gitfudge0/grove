@@ -70,7 +70,7 @@ class InstallerTests(unittest.TestCase):
                                     text=True, capture_output=True)
             return result, log.read_text() if log.exists() else ''
 
-    def test_success_cleans_only_selected_profile_after_install(self):
+    def test_explicit_cleanup_cleans_only_selected_profile_after_install(self):
         cases = [
             ({}, 'local', '', 'cp <-R>'),
             ({'system': 'Linux', 'arch': 'x86_64'}, 'local', '', 'sudo <dpkg> <-i>'),
@@ -82,6 +82,8 @@ class InstallerTests(unittest.TestCase):
         ]
         for options, profile, target, installation in cases:
             with self.subTest(options=options):
+                options = dict(options)
+                options["args"] = [*options.get("args", []), "--clean"]
                 result, log = self.run_installer(build_succeeds=True, **options)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 clean = f'cargo <clean> <--profile> <{profile}>'
@@ -90,21 +92,29 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual([line for line in log.splitlines() if line.startswith('cargo <clean>')], [clean])
                 self.assertLess(log.index(installation), log.index(clean))
 
+    def test_success_retains_build_artifacts_by_default(self):
+        for system, arch in [('Darwin', 'arm64'), ('Linux', 'x86_64')]:
+            with self.subTest(system=system):
+                result, log = self.run_installer(system=system, arch=arch,
+                                                 build_succeeds=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('cargo <clean>', log)
+
     def test_install_failure_retains_build_artifacts(self):
         for system, arch in [('Darwin', 'arm64'), ('Linux', 'x86_64')]:
             with self.subTest(system=system):
                 result, log = self.run_installer(system=system, arch=arch,
-                                                 build_succeeds=True, install_fails=True)
+                                                 build_succeeds=True, install_fails=True, args=["--clean"])
                 self.assertEqual(result.returncode, 76, result.stderr)
                 self.assertNotIn('cargo <clean>', log)
 
     def test_build_failure_retains_build_artifacts(self):
-        result, log = self.run_installer()
+        result, log = self.run_installer(args=["--clean"])
         self.assertEqual(result.returncode, 77)
         self.assertNotIn('cargo <clean>', log)
 
     def test_cleanup_failure_is_reported(self):
-        result, log = self.run_installer(build_succeeds=True, clean_fails=True)
+        result, log = self.run_installer(build_succeeds=True, clean_fails=True, args=["--clean"])
         self.assertEqual(result.returncode, 79)
         self.assertIn('codesign ', log)
         self.assertIn('cargo <clean> <--profile> <local>', log)

@@ -69,9 +69,15 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ matrix.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ matrix.os }}-${{ matrix.arch }}-cargo-
+          key: downloads-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: downloads-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache compiled release artifacts
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: release-${{ matrix.os }}-${{ matrix.arch }}-v2-${{ hashFiles('rust-toolchain.toml', 'Cargo.toml', 'Cargo.lock', '.cargo/config.toml') }}-${{ github.sha }}-${{ inputs.source_tag }}
+          restore-keys: release-${{ matrix.os }}-${{ matrix.arch }}-v2-${{ hashFiles('rust-toolchain.toml', 'Cargo.toml', 'Cargo.lock', '.cargo/config.toml') }}-
 
       - name: Install Linux build deps
         if: matrix.os == 'linux'
@@ -107,13 +113,31 @@ jobs:
         if: matrix.target != ''
         run: rustup target add ${{ matrix.target }}
 
-      - name: Install cargo-bundle
+      # Packaging executables run on the host, including cross-target builds.
+      # Keep these separate from target artifacts and pin the tool versions.
+      - name: Cache cargo-bundle executable
         if: matrix.os != 'windows'
+        id: bundle-tool
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-bundle
+          key: cargo-bundle-0.12.0-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install cargo-bundle
+        if: matrix.os != 'windows' && steps.bundle-tool.outputs.cache-hit != 'true'
         run: cargo install cargo-bundle --version 0.12.0 --locked
 
-      - name: Install cargo-wix
+      - name: Cache cargo-wix executable
         if: matrix.os == 'windows'
-        run: cargo install cargo-wix --locked || cargo install cargo-wix
+        id: wix-tool
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-wix.exe
+          key: cargo-wix-0.3.9-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install cargo-wix
+        if: matrix.os == 'windows' && steps.wix-tool.outputs.cache-hit != 'true'
+        run: cargo install cargo-wix --version 0.3.9 --locked
 
       - name: Build release bundle (macOS/Linux)
         if: matrix.os != 'windows'
