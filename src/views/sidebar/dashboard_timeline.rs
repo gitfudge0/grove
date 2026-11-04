@@ -8,6 +8,7 @@ use grove_core::{
 use serde_json::Value;
 use std::sync::Arc;
 
+mod review_hold;
 mod task_scope;
 
 const TIMELINE_TASK_LINE_H: f32 = super::SESSION_TITLE_LINE_H;
@@ -230,6 +231,7 @@ pub(super) struct DashboardTimelines {
     task_focus: HashMap<(Scope, String), FocusHandle>,
     task_hovered: HashSet<(Scope, String)>,
     review_hovered: HashSet<Scope>,
+    pub(super) review_holds: review_hold::ReviewHolds,
     review_link_focus: HashMap<Scope, HashMap<String, FocusHandle>>,
     review_focus: HashMap<Scope, (FocusHandle, Vec<gpui::Subscription>)>,
     group_opened: HashSet<(Scope, String)>,
@@ -284,6 +286,7 @@ impl DashboardTimelines {
         mut sessions: Vec<SessionId>,
     ) -> bool {
         if !open {
+            self.review_holds.clear();
             self.invalidate_scope();
             self.clear_entrances();
             return false;
@@ -328,6 +331,7 @@ impl DashboardTimelines {
         self.reveals.retain(|key, _| keep(key));
         self.entrances.retain(|key, _| keep(key));
         self.review_hovered.retain(keep);
+        self.review_holds.retain(sessions, workspaces);
         self.review_link_focus.retain(|key, _| keep(key));
         self.review_focus.retain(|key, _| keep(key));
         self.task_opened.retain(|(key, _)| keep(key));
@@ -754,6 +758,7 @@ impl Sidebar {
             .child(detail)
             .into_any_element();
         let row = self.wrap_activity_reply(key, title, row, window, cx);
+        let row = self.track_review_hold(key, row, window, cx);
         self.dashboard_session_entrance(key, row, cx)
     }
     fn dashboard_session_entrance(

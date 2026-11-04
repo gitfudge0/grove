@@ -857,6 +857,10 @@ impl Sidebar {
                 active: activity.active_of(meta.id),
             })
             .collect::<Vec<_>>();
+        let grouping_entries = self
+            .dashboard_timelines
+            .review_holds
+            .entries(self.active_workspace, grouping_entries);
         let groups = super::group_sessions_for_list(&grouping_entries, Instant::now());
         let summary = div()
             .id("dashboard-summary")
@@ -990,7 +994,7 @@ impl Sidebar {
                     let row_focus =
                         self.dashboard_timelines
                             .session_focus(self.active_workspace, id, cx);
-                    recent = recent.child(
+                    let mut terminal_row = div().w_full().child(
                         self.row(
                             format!("dashboard-session-{}", id.raw()),
                             label,
@@ -1037,7 +1041,7 @@ impl Sidebar {
                         if let Some(completion) =
                             self.runtime.read(cx).activity.read(cx).terminal_review(id)
                         {
-                            recent = recent.child(
+                            terminal_row = terminal_row.child(
                                 div().pb(rpx(SPACE_LG)).child(
                                     self.control(
                                         ("dashboard-terminal-mark-reviewed", id.raw()),
@@ -1055,6 +1059,13 @@ impl Sidebar {
                             );
                         }
                     }
+                    let terminal_row = self.track_review_hold(
+                        (self.active_workspace, id),
+                        terminal_row.into_any_element(),
+                        window,
+                        cx,
+                    );
+                    recent = recent.child(terminal_row);
                 }
             }
         }

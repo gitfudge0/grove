@@ -3382,6 +3382,11 @@ impl Sidebar {
                 self.cancel_focus.focus(window, cx);
             }
             Action::MarkReviewed(id, work_period) => {
+                self.dashboard_timelines.review_holds.begin(
+                    self.active_workspace,
+                    id,
+                    window.last_input_was_keyboard(),
+                );
                 let session = self.runtime.read(cx).registry.read(cx).codex(id).cloned();
                 if let Some(session) = session {
                     session.update(cx, |session, cx| {
@@ -3402,6 +3407,11 @@ impl Sidebar {
                 cx.notify();
             }
             Action::MarkTerminalReviewed(id, completion) => {
+                self.dashboard_timelines.review_holds.begin(
+                    self.active_workspace,
+                    id,
+                    window.last_input_was_keyboard(),
+                );
                 self.runtime
                     .read(cx)
                     .activity
