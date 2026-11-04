@@ -9,6 +9,7 @@ exclude = [
     "vendor/gpui-component/macros",
     "vendor/gpui-component/assets",
     "vendor/sum_tree",
+    "vendor/gpui_linux",
 ]
 
 # Zed's Apache-licensed sum_tree uses GPL-only ztracing for optional
@@ -16,6 +17,7 @@ exclude = [
 # the exact Zed revision used by gpui. See vendor/sum_tree/README.md.
 [patch."https://github.com/zed-industries/zed"]
 sum_tree = { path = "vendor/sum_tree" }
+gpui_linux = { path = "vendor/gpui_linux" }
 
 # `log` is declared by the vendored gpui-component crate and reached only
 # through macros cargo-machete's regex scan cannot see. The vendored manifests

@@ -6141,6 +6141,11 @@ impl Render for CodexView {
                             ))
                             .child(
                                 Input::new(&self.input)
+                                    .min_h(rpx(if self.composer_collapsed {
+                                        CHROME_CONTROL_H
+                                    } else {
+                                        composer_min_h
+                                    }))
                                     .when(!self.pending_attachment_picker, |input| {
                                         input.file_drop_overlay(
                                             crate::views::components::file_drop_overlay(),
@@ -22243,64 +22248,97 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
-            let (view, cx, actions, _updates) = fixture(cx);
-            let dir = tempfile::tempdir().unwrap();
-            let image_path = dir.path().join("screenshot.png");
-            fs_err::write(&image_path, test_image(image::ImageFormat::Png)).unwrap();
-            let text_path = dir.path().join("design notes.md");
-            fs_err::write(&text_path, "Reference material").unwrap();
-            cx.update(|window, cx| {
-                view.update(cx, |view, cx| {
-                    view.session
-                        .update(cx, |session, _| session.state.saved.provider = provider);
-                    view.input.update(cx, |input, cx| {
-                        input.set_value("Keep this draft", window, cx)
-                    });
-                })
-            });
-            draw(cx);
-            let position = cx.debug_bounds("codex-composer-input").unwrap().center();
-            cx.simulate_event(gpui::FileDropEvent::Entered {
-                position,
-                paths: gpui::ExternalPaths(vec![text_path.clone(), image_path].into()),
-            });
-            draw(cx);
-            cx.simulate_event(gpui::FileDropEvent::Pending { position });
-            draw(cx);
-            // Drag exit must not change the draft or create an attachment.
-            cx.simulate_event(gpui::FileDropEvent::Exited);
-            draw(cx);
-            view.read_with(cx, |view, cx| {
-                assert_eq!(view.input.read(cx).value().as_ref(), "Keep this draft");
-                assert!(view.images.is_empty());
-            });
-            cx.simulate_event(gpui::FileDropEvent::Entered {
-                position,
-                paths: gpui::ExternalPaths(
-                    vec![text_path.clone(), dir.path().join("screenshot.png")].into(),
-                ),
-            });
-            draw(cx);
-            cx.simulate_event(gpui::FileDropEvent::Submit { position });
-            draw(cx);
-            view.read_with(cx, |view, cx| {
-                let text = view.input.read(cx).value();
-                assert!(text.contains("Keep this draft"), "{provider:?}: {text}");
-                assert!(
-                    text.contains(&format!("@{}", text_path.display())),
-                    "{provider:?}: {text}"
+            for fraction in [0.05, 0.95] {
+                let (view, cx, actions, _updates) = fixture(cx);
+                let dir = tempfile::tempdir().unwrap();
+                let image_path = dir.path().join("screenshot.png");
+                fs_err::write(&image_path, test_image(image::ImageFormat::Png)).unwrap();
+                let text_path = dir.path().join("design notes.md");
+                fs_err::write(&text_path, "Reference material").unwrap();
+                let other_paths: Vec<_> =
+                    ["archive.zip", "document.pdf", "data.bin", "no-extension"]
+                        .into_iter()
+                        .map(|name| dir.path().join(name))
+                        .collect();
+                for path in &other_paths {
+                    fs_err::write(path, b"reference").unwrap();
+                }
+                let folder = dir.path().join("folder");
+                fs_err::create_dir(&folder).unwrap();
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.session
+                            .update(cx, |session, _| session.state.saved.provider = provider);
+                        view.input.update(cx, |input, cx| {
+                            input.set_value("Keep this draft", window, cx)
+                        });
+                    })
+                });
+                draw(cx);
+                let bounds = cx.debug_bounds("codex-composer-input").unwrap();
+                let position = gpui::point(
+                    bounds.center().x,
+                    bounds.top() + bounds.size.height * fraction,
                 );
-                assert_eq!(view.images.len(), 1, "{provider:?}");
-                assert!(view.images[0].starts_with("data:image/png;base64,"));
-            });
-            let emitted: Vec<_> = actions.try_iter().collect();
-            assert!(emitted
-                .iter()
-                .any(|action| matches!(action, Action::DraftImages(images) if images.len() == 1)));
-            assert!(emitted.iter().any(|action| matches!(action, Action::Draft(text) if text.contains(&format!("@{}", text_path.display())))));
-            assert!(!emitted
-                .iter()
-                .any(|action| matches!(action, Action::Submit { .. })));
+                cx.simulate_event(gpui::FileDropEvent::Entered {
+                    position,
+                    paths: gpui::ExternalPaths(vec![text_path.clone(), image_path].into()),
+                });
+                draw(cx);
+                cx.simulate_event(gpui::FileDropEvent::Pending { position });
+                draw(cx);
+                assert_eq!(
+                    cx.debug_bounds("input-file-drop-overlay")
+                        .unwrap()
+                        .size
+                        .height,
+                    bounds.size.height
+                );
+                // Drag exit must not change the draft or create an attachment.
+                cx.simulate_event(gpui::FileDropEvent::Exited);
+                draw(cx);
+                view.read_with(cx, |view, cx| {
+                    assert_eq!(view.input.read(cx).value().as_ref(), "Keep this draft");
+                    assert!(view.images.is_empty());
+                });
+                cx.simulate_event(gpui::FileDropEvent::Entered {
+                    position,
+                    paths: gpui::ExternalPaths(
+                        std::iter::once(text_path.clone())
+                            .chain(std::iter::once(dir.path().join("screenshot.png")))
+                            .chain(other_paths.iter().cloned())
+                            .chain(std::iter::once(folder.clone()))
+                            .collect(),
+                    ),
+                });
+                draw(cx);
+                cx.simulate_event(gpui::FileDropEvent::Submit { position });
+                draw(cx);
+                view.read_with(cx, |view, cx| {
+                    let text = view.input.read(cx).value();
+                    assert!(text.contains("Keep this draft"), "{provider:?}: {text}");
+                    assert!(
+                        text.contains(&format!("@{}", text_path.display())),
+                        "{provider:?}: {text}"
+                    );
+                    for path in other_paths.iter().chain(std::iter::once(&folder)) {
+                        assert!(
+                            text.contains(&format!("@{}", path.display())),
+                            "{provider:?}: missing file reference"
+                        );
+                    }
+                    assert_eq!(view.images.len(), 1, "{provider:?}");
+                    assert!(view.images[0].starts_with("data:image/png;base64,"));
+                });
+                let emitted: Vec<_> = actions.try_iter().collect();
+                assert!(emitted.iter().any(
+                    |action| matches!(action, Action::DraftImages(images) if images.len() == 1)
+                ));
+                assert!(emitted.iter().any(|action| matches!(action, Action::Draft(text) if text.contains(&format!("@{}", text_path.display())))));
+                assert!(!emitted
+                    .iter()
+                    .any(|action| matches!(action, Action::Submit { .. })));
+            }
         }
     }
 
