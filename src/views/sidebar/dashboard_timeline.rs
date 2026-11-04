@@ -232,6 +232,8 @@ pub(super) struct DashboardTimelines {
     task_hovered: HashSet<(Scope, String)>,
     review_hovered: HashSet<Scope>,
     pub(super) review_holds: review_hold::ReviewHolds,
+    review_disclosures:
+        HashMap<Scope, Option<gpui::Entity<super::super::review_summary::SummaryDisclosure>>>,
     review_link_focus: HashMap<Scope, HashMap<String, FocusHandle>>,
     review_focus: HashMap<Scope, (FocusHandle, Vec<gpui::Subscription>)>,
     group_opened: HashSet<(Scope, String)>,
@@ -332,6 +334,7 @@ impl DashboardTimelines {
         self.entrances.retain(|key, _| keep(key));
         self.review_hovered.retain(keep);
         self.review_holds.retain(sessions, workspaces);
+        self.review_disclosures.retain(|key, _| keep(key));
         self.review_link_focus.retain(|key, _| keep(key));
         self.review_focus.retain(|key, _| keep(key));
         self.task_opened.retain(|(key, _)| keep(key));
@@ -482,6 +485,10 @@ impl Sidebar {
                 &format!("dashboard-review-summary-{}", id.raw()),
                 self.dashboard_timelines
                     .review_link_focus
+                    .entry(key)
+                    .or_default(),
+                self.dashboard_timelines
+                    .review_disclosures
                     .entry(key)
                     .or_default(),
                 cx,
