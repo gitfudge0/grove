@@ -706,6 +706,16 @@ fn speed_disabled_explanation(reason: &str) -> &str {
     }
 }
 
+// These labels must retain their full text. In particular, do not feed an
+// explicitly measured width back into GPUI's independent ellipsis measurement.
+fn full_model_label(text: gpui::StyledText) -> gpui::Div {
+    div()
+        .text_size(rpx(TEXT_SMALL))
+        .flex_shrink_0()
+        .whitespace_nowrap()
+        .child(text)
+}
+
 fn effort_label(value: &str) -> String {
     match value {
         "xhigh" => "Extra high".into(),
@@ -7608,20 +7618,6 @@ impl CodexView {
             window.viewport_size().height - margin * 2.0
         };
         let model_name = composer_model_name(state);
-        let mut model_run = window.text_style().to_run(model_name.len());
-        model_run.font.family = crate::fonts::UI_FAMILY.into();
-        // Reserve the card padding, flanking controls, row gaps, chevron and seam.
-        let model_budget =
-            rpx(width - SPACE_2XL * 2.0 - CONTROL_H * 2.0 - SPACE_SM * 2.0 - ICON_XS - SPACE_XS)
-                .to_pixels(window.rem_size())
-                - gpui::px(SPACE_XS);
-        let model_width = truncation_safe_label_width(
-            &model_name,
-            rpx(TEXT_SMALL).to_pixels(window.rem_size()),
-            &model_run,
-            window.text_system(),
-        )
-        .min(model_budget.max(gpui::px(0.)));
         let now = cx.background_executor().now();
         let fraction = self
             .effort_visual
@@ -7863,14 +7859,9 @@ impl CodexView {
                                 .justify_center()
                                 .gap(rpx(SPACE_XS))
                                 .child(
-                                    div()
+                                    full_model_label(gpui::StyledText::new(model_name))
                                         .id("codex-card-model-label")
-                                        .debug_selector(|| "codex-card-model-label".into())
-                                        .w(model_width)
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .flex_shrink_0()
-                                        .truncate()
-                                        .child(model_name),
+                                        .debug_selector(|| "codex-card-model-label".into()),
                                 )
                                 .child(crate::icons::icon("chev-right", ICON_XS, c::FG_MUTE())),
                         )
@@ -8079,22 +8070,20 @@ impl CodexView {
                     .when(menu == ComposerMenu::Access, |button| {
                         button.max_w_full().h_auto().min_h(rpx(CHROME_CONTROL_H))
                     })
-                    .child(
+                    .child(if menu == ComposerMenu::Settings {
+                        full_model_label(gpui::StyledText::new(label))
+                            .id(summary_id)
+                            .debug_selector(move || summary_id.into())
+                    } else {
                         div()
                             .id(summary_id)
                             .debug_selector(move || summary_id.into())
-                            .when(menu == ComposerMenu::Settings, |label| {
-                                label.w(label_width).flex_shrink_0().truncate()
-                            })
-                            .when(menu != ComposerMenu::Settings, |label| {
-                                label
-                                    .w(label_width)
-                                    .min_w_0()
-                                    .flex_shrink_1()
-                                    .whitespace_normal()
-                            })
-                            .child(label),
-                    )
+                            .w(label_width)
+                            .min_w_0()
+                            .flex_shrink_1()
+                            .whitespace_normal()
+                            .child(label)
+                    })
                     .child(
                         div()
                             .id(if menu == ComposerMenu::Access {
@@ -19731,6 +19720,77 @@ mod tests {
         assert_eq!(effort_key_index("right", 0, 1), None);
         assert_eq!(effort_key_index("end", 0, 3), Some(2));
         assert_eq!(effort_key_index("left", 0, 3), Some(0));
+    }
+
+    #[test]
+    fn model_label_native_layout_preserves_full_text_at_every_zoom() {
+        use gpui::AppContext as _;
+        let mut cx = gpui::HeadlessAppContext::with_platform(
+            gpui_platform::current_platform(true).text_system(),
+            Arc::new(crate::assets::Assets),
+            gpui_platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+        });
+        struct Probe {
+            label: &'static str,
+            zoom: f32,
+            layout: Option<gpui::TextLayout>,
+        }
+        impl Render for Probe {
+            fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                window.set_rem_size(gpui::px(crate::zoom::REM_BASE * self.zoom));
+                let text = gpui::StyledText::new(self.label);
+                self.layout = Some(text.layout().clone());
+                div()
+                    .font_family(crate::fonts::UI_FAMILY)
+                    .w(gpui::px(250.))
+                    .flex()
+                    .child(full_model_label(text))
+            }
+        }
+        let mut probe = None;
+        let window = cx
+            .open_window(gpui::size(gpui::px(900.), gpui::px(600.)), |window, cx| {
+                let child = cx.new(|_| Probe {
+                    label: "",
+                    zoom: 1.,
+                    layout: None,
+                });
+                probe = Some(child.clone());
+                cx.new(|cx| gpui_component::Root::new(child, window, cx).bordered(false))
+            })
+            .unwrap();
+        let probe = probe.unwrap();
+        for zoom in [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0] {
+            for label in [
+                "GPT-6.1 Terra",
+                "GPT-6.1-Sol · Medium · Fast",
+                "Claude Opus · High · Standard",
+            ] {
+                probe.update(&mut cx, |probe, cx| {
+                    probe.label = label;
+                    probe.zoom = zoom;
+                    cx.notify();
+                });
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.simulate_next_frame(cx);
+                    let _ = window.draw(cx);
+                })
+                .unwrap();
+                cx.update(|cx| {
+                    assert_eq!(
+                        probe.read(cx).layout.as_ref().unwrap().text(),
+                        label,
+                        "full shaped text at {zoom}x"
+                    )
+                });
+            }
+        }
+        cx.update_window(window.into(), |_, window, _| window.remove_window())
+            .unwrap();
     }
 
     #[gpui::test]
