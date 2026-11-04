@@ -95,7 +95,7 @@ impl DestinationTray {
                 let home_owner = owner.clone();
                 menu = menu
                     .item(
-                        PopupMenuItem::new("No project (home)")
+                        PopupMenuItem::new("No project")
                             .checked(selected_project == NO_PROJECT)
                             .on_click(move |_, _, cx| {
                                 let _ =
@@ -175,7 +175,7 @@ impl Render for DestinationTray {
             .projects
             .iter()
             .find(|p| p.0 == self.project)
-            .map_or_else(|| "No project (home)".into(), |p| p.1.clone());
+            .map_or_else(|| "No project".into(), |p| p.1.clone());
         let worktree = self
             .worktrees
             .iter()
@@ -1160,6 +1160,10 @@ impl Sidebar {
                             .min_h_full()
                             .flex()
                             .flex_col()
+                            .when_some(
+                                self.checkout_panel.narrow_content.take(),
+                                gpui::ParentElement::child,
+                            )
                             .child(
                                 div()
                                     .w_full()

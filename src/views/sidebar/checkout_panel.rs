@@ -2414,6 +2414,12 @@ impl Sidebar {
         }
         let has_agents = !self.dashboard_open && self.selected_session_has_agents(cx);
         let has_plan = !self.dashboard_open && !self.selected_native_plans(cx).is_empty();
+        let no_project = targets.is_empty()
+            && (self.dashboard_open
+                || matches!(
+                    self.selection,
+                    Some(Selection::Session(_) | Selection::Home(_))
+                ));
         let agents_only = self.is_zen() || targets.is_empty();
         if agents_only {
             self.branch_entry = None;
@@ -2428,7 +2434,7 @@ impl Sidebar {
                 .settings_panel
                 .as_ref()
                 .is_some_and(|panel| panel.read(cx).is_open())
-            || (targets.is_empty() && !has_agents && !has_plan)
+            || (targets.is_empty() && !has_agents && !has_plan && !no_project)
             || (self.is_zen() && !has_agents && !has_plan)
         {
             self.branch_peek = None;
@@ -3156,6 +3162,17 @@ impl Sidebar {
                     );
             }
         }
+        if no_project {
+            card = card.child(
+                div()
+                    .debug_selector(|| "checkout-no-project".into())
+                    .px(rpx(SPACE_2XL))
+                    .py(rpx(SPACE_SM))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child("Project tools are unavailable without a project checkout."),
+            );
+        }
         if let Some(plan) = (!self.dashboard_open)
             .then(|| self.render_checkout_plan(window, cx))
             .flatten()
@@ -3212,6 +3229,8 @@ impl Sidebar {
                         "Plan"
                     } else if has_agents {
                         "Agents"
+                    } else if no_project {
+                        "Project tools"
                     } else {
                         "Checkout"
                     },
