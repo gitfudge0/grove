@@ -165,7 +165,14 @@ impl ReviewSummary {
                     .gap(rpx(SPACE_SM))
                     .text_size(rpx(TEXT_SMALL))
                     .text_color(c::STATUS_INFO())
-                    .child(icon("external-link", ICON_SM, c::STATUS_INFO()).flex_shrink_0())
+                    .child(
+                        div()
+                            .h(rpx(TEXT_BODY + SPACE_LG))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .child(icon("external-link", ICON_SM, c::STATUS_INFO())),
+                    )
                     .child(
                         div()
                             .min_w_0()
