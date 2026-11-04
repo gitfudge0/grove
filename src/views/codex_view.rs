@@ -38,11 +38,13 @@ use std::{
     sync::Arc,
 };
 
+mod history;
 mod measured_slot;
-#[cfg(test)]
-mod table_sizing_tests;
+use history::TurnHistory;
 #[path = "model_picker.rs"]
 mod model_picker;
+#[cfg(test)]
+mod table_sizing_tests;
 
 const CODE_COPY_FEEDBACK_MS: u64 = 1200;
 
@@ -1152,6 +1154,10 @@ pub struct CodexView {
     status_card_keys: HashSet<String>,
     task_cache: Option<Rc<TaskCache>>,
     transcript_cache: Option<Rc<TranscriptRenderCache>>,
+    turn_history: TurnHistory,
+    history_earlier_focus: FocusHandle,
+    history_latest_focus: FocusHandle,
+    pending_history_jump: Option<usize>,
     subscriptions: Vec<Subscription>,
 }
 impl CodexView {
@@ -1455,6 +1461,10 @@ impl CodexView {
             status_card_keys: HashSet::new(),
             task_cache: None,
             transcript_cache: None,
+            turn_history: TurnHistory::default(),
+            history_earlier_focus: cx.focus_handle().tab_stop(true).tab_index(0),
+            history_latest_focus: cx.focus_handle().tab_stop(true).tab_index(0),
+            pending_history_jump: None,
             dashboard_tray: None,
             dashboard_pending: false,
             dashboard_retry_focus: cx.focus_handle(),
@@ -3230,13 +3240,13 @@ impl CodexView {
                         .on_key_down(cx.listener(
                             move |this, event: &gpui::KeyDownEvent, window, cx| {
                                 if action_key(event) {
-                                    this.jump_to_message(child, window, cx);
+                                    this.jump_to_transcript_item(child, window, cx);
                                     cx.stop_propagation();
                                 }
                             },
                         ))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.jump_to_message(child, window, cx);
+                            this.jump_to_transcript_item(child, window, cx);
                         })),
                 );
             }
@@ -4165,7 +4175,7 @@ impl CodexView {
         // Auto margins center short stacks and resolve to zero on overflow.
         // Override the shared header control's fixed height and flex basis so
         // markers form compact rows, compressing only to their minimum hit area.
-        let marker_count = anchors.len() as f32;
+        let marker_count = entries.len() as f32;
         let mut stack = div()
             .w_full()
             .flex()
@@ -4175,11 +4185,6 @@ impl CodexView {
             .min_h(rpx(marker_count * SPACE_SM))
             .flex_shrink_1();
         for entry in entries {
-            let Some((_, child)) = anchors.iter().find(|(index, _)| *index == entry.item_index)
-            else {
-                continue;
-            };
-            let child = *child;
             let index = entry.item_index;
             let selected = active == Some(index);
             let prompt = minimap_excerpt(&entry.prompt);
@@ -4235,12 +4240,12 @@ impl CodexView {
                         .group_hover("neutral-control", |style| style.bg(c::FG())),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.jump_to_message(child, window, cx);
+                    this.jump_to_transcript_item(index, window, cx);
                 }))
                 .on_key_down(cx.listener(
                     move |this, event: &gpui::KeyDownEvent, window, cx| {
                         if action_key(event) {
-                            this.jump_to_message(child, window, cx);
+                            this.jump_to_transcript_item(index, window, cx);
                             cx.stop_propagation();
                         }
                     },
@@ -4746,6 +4751,8 @@ impl Render for CodexView {
         }
         let changed_thread = self.stream_thread != state.saved.thread_id;
         if changed_thread {
+            self.turn_history = TurnHistory::default();
+            self.pending_history_jump = None;
             self.message_slots.clear();
             self.work_header_slots.clear();
             self.selection_views.clear();
@@ -4869,12 +4876,23 @@ impl Render for CodexView {
                 )
                 .into_any_element();
         }
+        let history_start = if self.transcript_only() {
+            0
+        } else {
+            let following = near_bottom
+                && !self.composer_collapsed
+                && self.edit_confirmation.is_none()
+                && !gpui_component::text::has_active_text_selection(window, cx)
+                && window.text_selection_snapshot(cx).is_none();
+            self.turn_history
+                .sync(&state.saved.items, &transcript.minimap_entries, following)
+        };
         let response_groups = &transcript.response_groups;
         let response_ends = &transcript.response_ends;
         let minimap_entries = &transcript.minimap_entries;
         let mut minimap_anchors = Vec::new();
         // The first rendered child at or after each item, for jump-to-start.
-        let mut item_children = Vec::with_capacity(state.saved.items.len());
+        let mut item_children = vec![0; state.saved.items.len() - history_start];
         let mut message_child = 0;
         let mut rendered_selection_keys = HashSet::new();
         let mut rendered_slot_keys = HashSet::new();
@@ -4909,6 +4927,11 @@ impl Render for CodexView {
             .px(rpx(SPACE_20))
             .py(rpx(SPACE_3XL))
             .gap(rpx(SPACE_20));
+        if !self.transcript_only() && (history_start > 0 || self.turn_history.expanded) {
+            let hidden = minimap_entries.partition_point(|entry| entry.item_index < history_start);
+            messages = messages.child(self.render_history_disclosure(hidden, cx));
+            message_child += 1;
+        }
         let focused_launch = state.saved.items.is_empty()
             && state.questions.is_empty()
             && self.question_receipts.is_empty()
@@ -4924,10 +4947,11 @@ impl Render for CodexView {
             .map(AsRef::as_ref)
             .chain(std::iter::once(&serde_json::Value::Null))
             .enumerate()
+            .skip(history_start)
         {
             // Flush before inspecting the next source item: the previous final item
             // may be hidden commentary, a checklist, or a collapsed tool.
-            if let Some(group_index) = response_ends[index] {
+            if let Some(group_index) = response_ends[index].filter(|_| index > history_start) {
                 let group = &response_groups[group_index];
                 let footer = if self.transcript_only()
                     || window.is_a11y_active()
@@ -4952,7 +4976,7 @@ impl Render for CodexView {
                 message_child += 1;
             }
             if index < state.saved.items.len() {
-                item_children.push(message_child);
+                item_children[index - history_start] = message_child;
                 let blocks = self.question_blocks_at(index, &state, window, cx);
                 message_child += blocks.len();
                 messages = messages.children(blocks);
@@ -5471,6 +5495,13 @@ impl Render for CodexView {
                     .child(row),
             );
         }
+        if let Some(index) = self.pending_history_jump.take() {
+            let child = item_children
+                .get(index.saturating_sub(history_start))
+                .copied()
+                .unwrap_or(message_child.saturating_sub(1));
+            self.jump_to_message(child, window, cx);
+        }
         if self.transcript_only() {
             self.message_slots.clear();
             self.work_header_slots.clear();
@@ -5806,18 +5837,7 @@ impl Render for CodexView {
             cx,
         );
         let task_strip = task_cache.list.as_ref().map(|list| {
-            let rendered = message_child;
-            let jumps = list
-                .tasks
-                .iter()
-                .map(|task| {
-                    item_children
-                        .get(task.started_at)
-                        .copied()
-                        .unwrap_or(rendered)
-                        .min(rendered.saturating_sub(1))
-                })
-                .collect();
+            let jumps = list.tasks.iter().map(|task| task.started_at).collect();
             self.task_strip(tasks_attached, list, state.status, jumps, window, cx)
         });
         let mut attachments = div()
@@ -12328,7 +12348,8 @@ mod tests {
                 duration_ms: None,
                 subagents: vec![],
             }];
-            state.saved.session_review.pending = Some(codex::ReviewCompletion { id: 42, period: 0 });
+            state.saved.session_review.pending =
+                Some(codex::ReviewCompletion { id: 42, period: 0 });
             let summary = ReviewSummary::from_snapshot(&state).unwrap();
             assert_eq!(summary.text, "Added review links.");
             assert_eq!(summary.links[0].url, "file:///unused/mock.html");
@@ -15051,6 +15072,119 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn history_window_renders_batches_and_reveals_navigation_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(850.)));
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| {
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.saved.thread_id = Some(format!("history-window-{provider:?}"));
+                        session.state.status = Status::Idle;
+                        session.state.saved.items = (0..84).flat_map(|turn| [
+                            json!({"id":format!("user-{turn}"),"type":"userMessage","text":format!("Request {turn}")}),
+                            json!({"id":format!("answer-{turn}"),"type":"agentMessage","phase":"final_answer","text":format!("Answer {turn}")}),
+                        ]).collect();
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.turn_history.start, 128, "{provider:?}");
+                assert_eq!(
+                    view.message_slots.len(),
+                    40,
+                    "only 20 turns get layout slots"
+                );
+                assert_eq!(view.session.read(cx).state.saved.items.len(), 168);
+            });
+            assert!(cx.debug_bounds("codex-message-anchor-0").is_none());
+            assert!(cx.debug_bounds("codex-message-anchor-128").is_some());
+            for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(850.)));
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(rem));
+                    gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                });
+                draw(cx);
+                let row = cx.debug_bounds("codex-history-window").unwrap();
+                let pane = cx.debug_bounds("codex-messages").unwrap();
+                assert!(row.left() >= pane.left() && row.right() <= pane.right());
+                let earlier = cx.debug_bounds("codex-history-earlier").unwrap();
+                assert!(earlier.left() >= row.left() && earlier.right() <= row.right());
+            }
+            cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(850.)));
+            cx.update(|window, cx| {
+                window.set_rem_size(gpui::px(16.));
+                gpui_component::Theme::global_mut(cx).font_size = gpui::px(16.);
+            });
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.smooth_follow = false;
+                    view.set_composer_collapsed(true, cx);
+                    view.scroll.scroll_to_top_of_item(0);
+                })
+            });
+            draw(cx);
+            let earlier = cx.debug_bounds("codex-history-earlier").unwrap();
+            cx.simulate_click(earlier.center(), gpui::Modifiers::default());
+            draw(cx);
+            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 88));
+            // Keyboard activation uses the same native disclosure and retains focus.
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 48));
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| view.history_latest_focus.focus(window, cx))
+            });
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            view.read_with(cx, |view, _| assert_eq!(view.turn_history.start, 128));
+            // The minimap retains hidden source messages and reveals before mapping
+            // their item identity to the new physical scroll-child index.
+            let marker = cx.debug_bounds("codex-minimap-message-14").unwrap();
+            cx.simulate_click(marker.center(), gpui::Modifiers::default());
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert_eq!(view.turn_history.start, 8);
+                assert!(view.turn_history.expanded);
+            });
+            let target = cx.debug_bounds("codex-message-anchor-14").unwrap();
+            let pane = cx.debug_bounds("codex-messages").unwrap();
+            assert!(
+                (target.top() - pane.top()).abs() < gpui::px(2.),
+                "{provider:?}: target aligned"
+            );
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session
+                            .state
+                            .saved
+                            .items
+                            .push(json!({"id":"new-input","type":"userMessage","text":"Next"}));
+                        cx.notify();
+                    });
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.turn_history.start, 8,
+                    "incoming turn preserves browsing"
+                )
+            });
+        }
+    }
+
     include!("codex_view/performance.rs");
     include!("codex_view/native_hit_geometry.rs");
 
@@ -15442,6 +15576,13 @@ mod tests {
                     cx.notify();
                 });
             });
+            draw(cx);
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.jump_to_transcript_item(0, window, cx);
+                })
+            });
+            draw(cx);
             for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
                 cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
                 cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
