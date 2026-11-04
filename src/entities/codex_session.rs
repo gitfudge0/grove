@@ -569,6 +569,28 @@ impl CodexSession {
         cx.notify();
         Ok(id)
     }
+    /// Independent Activity input never writes the full conversation's composer.
+    pub fn activity_prompt(
+        &mut self,
+        text: String,
+        mode: codex::SubmissionMode,
+        expected_turn: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Result<u64, String> {
+        codex::validate_prompt(&text, &[])?;
+        if self.is_deferred()
+            || self.state.status == codex::Status::Disconnected
+            || self.state.status == codex::Status::Starting
+            || self.state.compacting
+            || self.state.saved.pending_edit.is_some()
+        {
+            return Err("Open the session and finish recovery before replying.".into());
+        }
+        let id = self.handle.activity_prompt(text, mode, expected_turn)?;
+        self.state.clear_error();
+        cx.notify();
+        Ok(id)
+    }
     pub fn prompt(&mut self, text: String, cx: &mut Context<Self>) -> Result<(), String> {
         self.queue_prompt(text, Vec::new(), false, cx).map(|_| ())
     }

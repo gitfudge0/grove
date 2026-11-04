@@ -1,4 +1,5 @@
 //! Workspace-scoped navigation. UI state is kept per workspace while processes keep running.
+mod activity_reply;
 mod agent_preview;
 mod branch_history;
 mod branch_preview;

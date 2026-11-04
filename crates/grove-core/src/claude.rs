@@ -2100,6 +2100,44 @@ impl Actor {
             }
             Action::PromptWithImages { text, images } => self.submit(0, text, images)?,
             Action::Submit { id, text, images } => self.submit(id, text, images)?,
+            Action::ActivityPrompt {
+                id,
+                text,
+                mode,
+                expected_turn,
+            } => {
+                let result = (|| {
+                    codex::validate_prompt(&text, &[])?;
+                    if mode == SubmissionMode::Steer {
+                        if expected_turn.is_none()
+                            || self.state.turn_id != expected_turn
+                            || !self.state.status.busy()
+                        {
+                            return Err("The active turn changed. Your reply was not sent; review it before sending again.".into());
+                        }
+                        self.state.queued_prompts.push(QueuedPrompt {
+                            id,
+                            text,
+                            images: Vec::new(),
+                        });
+                        self.action(Action::SteerQueued(id)).map(|_| ())
+                    } else {
+                        if mode == SubmissionMode::Send
+                            && (self.state.status.busy() || self.state.turn_id.is_some())
+                        {
+                            return Err("The session started working. Your reply was not sent; queue it when ready.".into());
+                        }
+                        self.action(Action::ProjectPrompt { id, text }).map(|_| ())
+                    }
+                })();
+                if let Err(error) = result {
+                    if !self.state.queue_uncertain.contains(&id) {
+                        self.state.queued_prompts.retain(|prompt| prompt.id != id);
+                    }
+                    self.state.rejected_submission = Some(id);
+                    return Err(error);
+                }
+            }
             Action::ProjectPrompt { id, text } => {
                 codex::validate_prompt(&text, &[])?;
                 if self.state.status == Status::Disconnected {
@@ -5975,6 +6013,77 @@ mod tests {
             lines,
         });
         output
+    }
+    #[test]
+
+    fn activity_reply_queue_and_steer_preserve_identical_main_draft() {
+        let mut actor = actor();
+        let _reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("busy".into());
+        actor.state.saved.draft = "same text".into();
+        actor.state.saved.draft_images = vec!["data:image/png;base64,aGVsbG8=".into()];
+        actor.state.saved.draft_reference = Some(codex::ReferenceDraft {
+            id: "reference".into(),
+            thread_id: Some("source-thread".into()),
+            sources: vec![codex::ReferenceSource {
+                message_id: "source-message".into(),
+                role: "assistant".into(),
+            }],
+            text: "quoted selection".into(),
+        });
+        let original_reference = actor.state.saved.draft_reference.clone();
+        actor
+            .action(Action::ActivityPrompt {
+                id: 41,
+                text: "same text".into(),
+                mode: SubmissionMode::Queue,
+                expected_turn: Some("busy".into()),
+            })
+            .unwrap();
+        assert_eq!(actor.state.accepted_submission, Some(41));
+        assert_eq!(actor.state.saved.draft, "same text");
+        actor
+            .action(Action::ActivityPrompt {
+                id: 42,
+                text: "same text".into(),
+                mode: SubmissionMode::Steer,
+                expected_turn: Some("busy".into()),
+            })
+            .unwrap();
+        let uuid = actor.input_uuid.clone().unwrap();
+        actor.acknowledge_input(&json!(uuid));
+        assert_eq!(actor.state.accepted_submission, Some(42));
+        assert_eq!(actor.state.saved.draft, "same text");
+        assert_eq!(actor.state.saved.draft_images.len(), 1);
+        assert_eq!(actor.state.saved.draft_reference, original_reference);
+        assert!(!actor.state.queued_prompts.iter().any(|p| p.id == 42));
+    }
+    #[test]
+    fn activity_reply_rejects_a_changed_turn_without_queuing() {
+        let mut actor = actor();
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("new-turn".into());
+        assert!(actor
+            .action(Action::ActivityPrompt {
+                id: 53,
+                text: "correct this".into(),
+                mode: SubmissionMode::Steer,
+                expected_turn: Some("old-turn".into())
+            })
+            .is_err());
+        assert_eq!(actor.state.rejected_submission, Some(53));
+        assert!(actor.state.queued_prompts.is_empty());
+        assert!(actor
+            .action(Action::ActivityPrompt {
+                id: 54,
+                text: "follow-up".into(),
+                mode: SubmissionMode::Send,
+                expected_turn: None
+            })
+            .is_err());
+        assert!(actor.state.queued_prompts.is_empty());
     }
     #[test]
     fn project_prompt_preserves_composer_and_uses_native_queue() {

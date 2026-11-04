@@ -214,6 +214,10 @@ pub(super) fn recent_activity<T: std::borrow::Borrow<Value>>(items: &[T]) -> Vec
 
 #[derive(Default)]
 pub(super) struct DashboardTimelines {
+    pub(super) replies: HashMap<Scope, super::activity_reply::ActivityReply>,
+    pub(super) reply_open: Option<Scope>,
+    pub(super) reply_heights: HashMap<Scope, std::rc::Rc<std::cell::Cell<gpui::Pixels>>>,
+    pub(super) reply_focus: HashMap<Scope, FocusHandle>,
     activity_scope: Option<(u64, Vec<SessionId>)>,
     #[cfg(test)]
     warm_requests: usize,
@@ -312,6 +316,12 @@ impl DashboardTimelines {
     }
     pub fn retain(&mut self, sessions: &HashSet<SessionId>, workspaces: &HashSet<u64>) {
         let keep = |key: &Scope| sessions.contains(&key.1) && workspaces.contains(&key.0);
+        self.replies.retain(|key, _| keep(key));
+        self.reply_focus.retain(|key, _| keep(key));
+        self.reply_heights.retain(|key, _| keep(key));
+        if self.reply_open.is_some_and(|key| !keep(&key)) {
+            self.reply_open = None;
+        }
         self.opened.retain(keep);
         self.focus.retain(|key, _| keep(key));
         self.open_focus.retain(|key, _| keep(key));
@@ -694,6 +704,7 @@ impl Sidebar {
             super::super::components::tooltip(open_label, window).build(window, cx)
         })
         .child(icon("arrow-right", ICON_SM, c::FG_DIM()));
+        let respond = self.activity_reply_button(key, cx);
         let body = self.render_dashboard_tasks(key, &data, status, window, cx);
         let detail = self.dashboard_progress_reveal(key, open, body, cx);
         let row = div()
@@ -718,6 +729,7 @@ impl Sidebar {
                     .items_start()
                     .gap(rpx(SPACE_SM))
                     .child(toggle)
+                    .child(respond)
                     .child(open_button),
             )
             .when_some(summary_view, |row, summary| {
@@ -732,6 +744,7 @@ impl Sidebar {
             })
             .child(detail)
             .into_any_element();
+        let row = self.wrap_activity_reply(key, title, row, window, cx);
         self.dashboard_session_entrance(key, row, cx)
     }
     fn dashboard_session_entrance(

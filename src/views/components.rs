@@ -330,6 +330,24 @@ pub fn transcript_action(
     dense_action_with_colors(id, label, fill, foreground, hover, window, cx)
 }
 
+/// Shared main-conversation input surface. Compact owners may reduce its
+/// padding while keeping the same surface, seam and corner treatment.
+pub fn composer_surface() -> Div {
+    div()
+        .flex_shrink_0()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap(rpx(SPACE_LG))
+        .px(rpx(SPACE_2XL))
+        .pt(rpx(SPACE_3XL))
+        .pb(rpx(SPACE_2XL))
+        .rounded(rpx(RADIUS_PANEL))
+        .border_1()
+        .border_color(c::BORDER_SOFT())
+        .bg(c::BG_RAIL())
+}
+
 /// Existing checkout script register geometry, shared without changing its owner.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct CheckoutRegisterRecipe {
