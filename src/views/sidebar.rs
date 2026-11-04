@@ -304,6 +304,7 @@ enum Action {
     RunNamedScript(String, String, String),
     Close(SessionId),
     FinishSession(SessionId),
+    MarkActivityDone(SessionId),
     MarkTerminalReviewed(SessionId, Instant),
     MarkReviewed(SessionId, usize),
     ConfirmClose(SessionId),
@@ -1923,7 +1924,9 @@ impl Sidebar {
         );
         let project_disclosure = matches!(
             &action,
-            Action::ToggleProjectsDestination(_) | Action::MarkReviewed(..)
+            Action::ToggleProjectsDestination(_)
+                | Action::MarkReviewed(..)
+                | Action::MarkActivityDone(_)
         );
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
@@ -3413,6 +3416,19 @@ impl Sidebar {
                     cx,
                 );
                 cx.notify();
+            }
+            Action::MarkActivityDone(id) => {
+                // Recheck the live state: a row may have changed since it was painted.
+                let ready = self
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .codex(id)
+                    .is_some_and(|session| session.read(cx).state.session_status() == "Ready");
+                if ready {
+                    self.act(Action::FinishSession(id), window, cx);
+                }
             }
             Action::FinishSession(id) => {
                 let selected = self.selection == Some(Selection::Session(id));

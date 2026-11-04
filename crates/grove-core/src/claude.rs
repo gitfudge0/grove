@@ -1811,7 +1811,7 @@ impl Actor {
         };
         if std::mem::take(&mut self.compact_pending) && prompt.text == COMPACT_COMMAND {
             self.state.accepted_prompts += 1;
-            self.state.accepted_submission = Some(prompt.id);
+            self.state.accept_submission(prompt.id);
             self.state.rejected_submission = None;
             return;
         }
@@ -1839,7 +1839,7 @@ impl Actor {
         self.state.queue_uncertain.retain(|id| *id != prompt.id);
         self.state.saved.rich_plans.confirm_delivery(prompt.id);
         self.state.accepted_prompts += 1;
-        self.state.accepted_submission = Some(prompt.id);
+        self.state.accept_submission(prompt.id);
         self.state.rejected_submission = None;
     }
     fn clear_conversation(
@@ -2149,7 +2149,7 @@ impl Actor {
                     text,
                     images: Vec::new(),
                 });
-                self.state.accepted_submission = Some(id);
+                self.state.accept_submission(id);
             }
             Action::SubmitWithMode {
                 id,
@@ -2173,7 +2173,7 @@ impl Actor {
                     self.state
                         .queued_prompts
                         .push(QueuedPrompt { id, text, images });
-                    self.state.accepted_submission = Some(id);
+                    self.state.accept_submission(id);
                 }
             },
             Action::BeginQueuedEdit(id) => self.state.begin_queue_edit(id)?,

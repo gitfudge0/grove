@@ -945,15 +945,33 @@ impl Sidebar {
                 .when(wide, |panel| panel.w(rpx(SIDE_CHAT_WIDTH)))
                 .relative()
                 .flex_shrink_0()
-                .when(wide, |panel| panel.h_full().pt(rpx(APPBAR_TOTAL_H + SPACE_3XL)))
-                .when(!wide, |panel| panel.w_full().h(rpx(SIDE_CHAT_NARROW_HEIGHT)).max_h(gpui::relative(SIDE_CHAT_MAX_HEIGHT_FRACTION)).overflow_y_scroll().track_scroll(&panel_scroll))
+                .when(wide, |panel| {
+                    panel.h_full().pt(rpx(APPBAR_TOTAL_H + SPACE_3XL))
+                })
+                .when(!wide, |panel| {
+                    panel
+                        .w_full()
+                        .h(rpx(SIDE_CHAT_NARROW_HEIGHT))
+                        .max_h(gpui::relative(SIDE_CHAT_MAX_HEIGHT_FRACTION))
+                        .overflow_y_scroll()
+                        .track_scroll(&panel_scroll)
+                })
                 .p(rpx(SPACE_3XL))
                 .text_size(rpx(TEXT_BODY))
                 .text_color(c::FG_DIM())
                 .flex()
                 .flex_col()
                 .gap(rpx(SPACE_LG))
-                .when(!wide, |panel| panel.child(gpui::canvas(move |bounds, _, _| measured_height.set(bounds.size.height), |_, (), _, _| {}).absolute().inset_0()));
+                .when(!wide, |panel| {
+                    panel.child(
+                        gpui::canvas(
+                            move |bounds, _, _| measured_height.set(bounds.size.height),
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                });
             if recovery_paths.is_empty() {
                 panel = panel.child("Choose a checkout in the right panel before using Side chat.");
             } else {
@@ -971,7 +989,11 @@ impl Sidebar {
                     );
                 }
             }
-            return if wide { panel.into_any_element() } else { self.narrow_panel_entrance(panel, cx) };
+            return if wide {
+                panel.into_any_element()
+            } else {
+                self.narrow_panel_entrance(panel, cx)
+            };
         };
         let key = (id, path.clone());
         let provider = self
@@ -1439,6 +1461,10 @@ impl Sidebar {
                         }))
                         .on_click(cx.listener(move |this, _, window, cx| this.send_side_chat(action_key.clone(), window, cx)))
                 }))));
-        if wide { panel.into_any_element() } else { self.narrow_panel_entrance(panel, cx) }
+        if wide {
+            panel.into_any_element()
+        } else {
+            self.narrow_panel_entrance(panel, cx)
+        }
     }
 }

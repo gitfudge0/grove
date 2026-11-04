@@ -2250,16 +2250,16 @@ impl Sidebar {
                 })
     }
 
-    pub(super) fn narrow_panel_entrance<E: IntoElement + gpui::Styled + 'static>(&self, panel: E, cx: &App) -> AnyElement {
+    pub(super) fn narrow_panel_entrance<E: IntoElement + gpui::Styled + 'static>(
+        &self,
+        panel: E,
+        cx: &App,
+    ) -> AnyElement {
         match self.checkout_panel.panel_motion {
             Some((started, _, _, id))
                 if started.elapsed() < Duration::from_millis(MOTION_BASE_MS) =>
             {
-                motion::fast(
-                    panel,
-                    format!("narrow-session-panel-enter-{id}"),
-                    cx,
-                )
+                motion::fast(panel, format!("narrow-session-panel-enter-{id}"), cx)
             }
             _ => panel.into_any_element(),
         }
@@ -2469,8 +2469,14 @@ impl Sidebar {
                 }
                 let height = self.checkout_panel.panel_last_narrow_height.get()
                     * self.panel_motion_width().unwrap_or(0.);
-                self.checkout_panel.narrow_content =
-                    Some(div().debug_selector(|| "narrow-session-panel-exit".into()).w_full().h(height).flex_shrink_0().into_any_element());
+                self.checkout_panel.narrow_content = Some(
+                    div()
+                        .debug_selector(|| "narrow-session-panel-exit".into())
+                        .w_full()
+                        .h(height)
+                        .flex_shrink_0()
+                        .into_any_element(),
+                );
                 window.request_animation_frame();
                 return self.render_content_body(window, cx);
             }
@@ -3191,8 +3197,14 @@ impl Sidebar {
             }));
         if !wide {
             let height = self.checkout_panel.panel_last_narrow_height.clone();
-            panel = panel.child(gpui::canvas(move |bounds, _, _| height.set(bounds.size.height), |_, (), _, _| {})
-                .absolute().inset_0());
+            panel = panel.child(
+                gpui::canvas(
+                    move |bounds, _, _| height.set(bounds.size.height),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            );
             panel = panel.child(
                 transcript_action(
                     "checkout-summary",
@@ -3237,8 +3249,7 @@ impl Sidebar {
             let body = self.render_content_body(window, cx);
             self.wide_panel_layout(body, panel.into_any_element(), window, cx)
         } else {
-            self.checkout_panel.narrow_content =
-                Some(self.narrow_panel_entrance(panel, cx));
+            self.checkout_panel.narrow_content = Some(self.narrow_panel_entrance(panel, cx));
             self.render_content_body(window, cx)
         }
     }

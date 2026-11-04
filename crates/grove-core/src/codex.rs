@@ -996,6 +996,8 @@ pub struct Snapshot {
     pub edit_supported: bool,
     pub can_redirect: bool,
     pub accepted_submission: Option<u64>,
+    /// Session-local receipts survive coalesced snapshots and out-of-order turn replies.
+    pub accepted_submissions: std::collections::HashSet<u64>,
     pub rejected_submission: Option<u64>,
     pub queued_prompts: Vec<QueuedPrompt>,
     pub queue_edit: Option<u64>,
@@ -1045,6 +1047,15 @@ pub(crate) fn next_interaction_epoch() -> u64 {
     EPOCH.fetch_add(1, Ordering::Relaxed)
 }
 impl Snapshot {
+    pub fn accept_submission(&mut self, id: u64) {
+        self.accepted_submission = Some(id);
+        self.accepted_submissions.insert(id);
+    }
+
+    pub fn submission_accepted(&self, id: u64) -> bool {
+        self.accepted_submission == Some(id) || self.accepted_submissions.contains(&id)
+    }
+
     /// Pending successful result identity. This is deliberately not an unread flag.
     pub fn review_completion(&self) -> Option<usize> {
         if self.reconnecting || !matches!(self.status, Status::Done | Status::Idle) {
@@ -1749,6 +1760,7 @@ impl Snapshot {
             edit_supported: false,
             can_redirect: false,
             accepted_submission: None,
+            accepted_submissions: Default::default(),
             rejected_submission: None,
             queued_prompts: Vec::new(),
             queue_edit: None,
@@ -4621,7 +4633,7 @@ impl Actor {
                 self.state
                     .queued_prompts
                     .push(QueuedPrompt { id, text, images });
-                self.state.accepted_submission = Some(id);
+                self.state.accept_submission(id);
                 // An idle, healthy session can begin an explicitly queued submission.
                 if !self.state.status.busy() && self.state.turn_id.is_none() && !self.queue_paused {
                     self.queue_ready = true;
@@ -6579,7 +6591,7 @@ impl Actor {
             } => {
                 self.bind_edit_checkpoint(result);
                 if let Some(submission) = submission {
-                    self.state.accepted_submission = Some(submission);
+                    self.state.accept_submission(submission);
                 }
                 self.state.accepted_prompts = self.state.accepted_prompts.saturating_add(1);
                 if self.state.saved.title.is_none() {
@@ -6603,12 +6615,12 @@ impl Actor {
                     self.state.rejected_submission = Some(submission);
                     self.state.error = Some("Codex returned an unexpected steering turn".into());
                 } else {
-                    self.state.accepted_submission = Some(submission);
+                    self.state.accept_submission(submission);
                     if !from_queue {
                         self.state
                             .saved
                             .clear_submitted_draft(&draft.text, &draft.images);
-                        self.state.accepted_submission = Some(submission);
+                        self.state.accept_submission(submission);
                     }
                     self.state.queued_prompts.retain(|p| p.id != submission);
                     self.state.queue_sending.retain(|id| *id != submission);

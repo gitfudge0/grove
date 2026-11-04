@@ -483,8 +483,22 @@ impl Sidebar {
                 cx,
             )
         });
-        if review_completion.is_some() && !self.dashboard_timelines.review_focus.contains_key(&key)
-        {
+        let status_action = if let Some(receipt) = review_completion {
+            Some((
+                "dashboard-mark-reviewed",
+                "Mark reviewed",
+                Action::MarkReviewed(id, receipt),
+            ))
+        } else if metadata.display_status == "Ready" {
+            Some((
+                "dashboard-mark-done",
+                "Mark done",
+                Action::MarkActivityDone(id),
+            ))
+        } else {
+            None
+        };
+        if status_action.is_some() && !self.dashboard_timelines.review_focus.contains_key(&key) {
             let handle = cx.focus_handle();
             let subscriptions = vec![
                 cx.on_focus_in(&handle, window, |_, _, cx| cx.notify()),
@@ -499,7 +513,7 @@ impl Sidebar {
             .review_focus
             .get(&key)
             .map(|entry| entry.0.clone());
-        let show_review = review_completion.is_some()
+        let show_review = status_action.is_some()
             && (self.dashboard_timelines.review_hovered.contains(&key)
                 || window.last_input_was_keyboard()
                     && review_focus
@@ -515,15 +529,10 @@ impl Sidebar {
         .debug_selector(move || format!("dashboard-session-status-{}", id.raw()))
         .flex_shrink_0()
         .text_size(rpx(TEXT_SMALL));
-        let status_slot = if let Some(receipt) = review_completion {
+        let status_slot = if let Some((action_id, label, action)) = status_action {
             let action = self
-                .control(
-                    ("dashboard-mark-reviewed", id.raw()),
-                    "Mark reviewed",
-                    Action::MarkReviewed(id, receipt),
-                    cx,
-                )
-                .debug_selector(move || format!("dashboard-mark-reviewed-{}", id.raw()))
+                .control((action_id, id.raw()), label, action, cx)
+                .debug_selector(move || format!("{action_id}-{}", id.raw()))
                 .track_focus(review_focus.as_ref().unwrap())
                 .tab_stop(true)
                 .w_auto()
@@ -532,7 +541,7 @@ impl Sidebar {
                 .gap(rpx(SPACE_SM))
                 .text_size(rpx(TEXT_SMALL))
                 .child(icon("check", ICON_SM, c::FG_DIM()))
-                .child("Mark reviewed");
+                .child(label);
             // The invisible label reserves the native status geometry; the action
             // stays mounted so Tab can discover it before pointer hover.
             div()
@@ -2040,6 +2049,11 @@ mod tests {
                         matches!(label, "Review" | "Review · unread"),
                         "{provider:?} {label}"
                     );
+                    let done = cx.debug_bounds("dashboard-mark-done-41");
+                    assert_eq!(done.is_some(), label == "Ready", "{provider:?} {label}");
+                    if let Some(done) = done {
+                        assert!(done.right() <= open.left());
+                    }
                     if let Some(review) = review {
                         assert!(review.right() <= gpui::px(width));
                     }

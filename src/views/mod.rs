@@ -22,11 +22,11 @@ mod worktree_launcher;
 mod codex_view;
 #[cfg(test)]
 pub(crate) use codex_view::CodexView;
-mod review_summary;
 pub mod components;
 mod inline_html;
 mod mermaid;
 mod native_plan;
+mod review_summary;
 pub mod status;
 
 mod workspace_manager;

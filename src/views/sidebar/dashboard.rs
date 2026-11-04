@@ -886,14 +886,14 @@ impl Sidebar {
                     .child("Your sessions will appear here."),
             );
         } else {
-            for (section, indices) in groups {
+            for (group_index, (section, indices)) in groups.into_iter().enumerate() {
                 recent = recent.child(
                     div()
                         .id(gpui::SharedString::from(format!(
                             "dashboard-section-{section}"
                         )))
                         .debug_selector(move || format!("dashboard-section-{section}"))
-                        .pt(rpx(SPACE_2XL))
+                        .when(group_index > 0, |heading| heading.pt(rpx(SPACE_2XL)))
                         .pb(rpx(SPACE_SM))
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_DIM())

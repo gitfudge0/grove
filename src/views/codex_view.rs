@@ -1715,7 +1715,7 @@ impl CodexView {
                     .queued_prompts
                     .iter()
                     .any(|prompt| prompt.id == pending.submission)
-                    || (!queued_steering && state.accepted_submission != Some(pending.submission)));
+                    || (!queued_steering && !state.submission_accepted(pending.submission)));
             if let Some(optimistic) = &mut pending.optimistic {
                 optimistic["localSteering"] = steering_pending.into();
             }
@@ -4655,7 +4655,7 @@ impl Render for CodexView {
         self.sync_elicitations(&state, window, cx);
         if self
             .submitted_ack
-            .is_some_and(|target| state.accepted_submission == Some(target))
+            .is_some_and(|target| state.submission_accepted(target))
         {
             let reference_matches =
                 self.reference.as_ref().map(|quote| &quote.id) == self.submitted_reference.as_ref();
@@ -23257,6 +23257,35 @@ mod tests {
             cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
             first_payload
         );
+    }
+    #[gpui::test]
+    fn coalesced_acceptance_unlocks_queued_composer(cx: &mut gpui::TestAppContext) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, _actions, updates) = fixture(cx);
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session
+                        .update(cx, |session, _| session.state.saved.provider = provider);
+                    view.input
+                        .update(cx, |input, cx| input.set_value("queued reply", window, cx));
+                    view.submit_mode(SubmissionMode::Queue, window, cx);
+                })
+            });
+            let id = view.read_with(cx, |view, _| view.submitted_ack).unwrap();
+            let mut accepted = snapshot();
+            accepted.saved.provider = provider;
+            accepted.accept_submission(id);
+            updates.send(accepted.clone()).unwrap();
+            // A different turn/start response wins the poll's latest snapshot.
+            accepted.accept_submission(id.wrapping_add(1));
+            updates.send(accepted).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            assert!(view.read_with(cx, |view, _| view.submitted.is_none()));
+            assert!(view.read_with(cx, |view, _| view.submitted_ack.is_none()));
+            assert!(view.read_with(cx, |view, cx| view.input.read(cx).value().is_empty()));
+        }
     }
     #[gpui::test]
     fn image_only_submission_waits_for_explicit_ack_and_retains_rejected_images(

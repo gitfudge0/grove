@@ -7,10 +7,15 @@ use grove_core::codex::{Snapshot, Status, SubmissionMode};
 type Scope = (u64, SessionId);
 const REPLY_MIN_H: f32 = 128.;
 const REPLY_ERROR_MIN_H: f32 = 192.;
-const REPLY_OPACITY: f32 = 0.95;
+const REPLY_MOTION_MS: u64 = MOTION_SLOW_MS * 2;
+const REPLY_RECEIPT_DURATION: Duration = Duration::from_secs(3);
 const REPLY_ACK_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(super) struct ActivityReply {
+    progress: std::rc::Rc<std::cell::Cell<f32>>,
+    generation: u64,
+    closing: bool,
+    motion_task: Option<gpui::Task<()>>,
     input: Entity<InputState>,
     focus: FocusHandle,
     close_focus: FocusHandle,
@@ -67,6 +72,10 @@ impl Sidebar {
                 cx.notify();
             });
             entry.insert(ActivityReply {
+                progress: Default::default(),
+                generation: 0,
+                closing: false,
+                motion_task: None,
                 input,
                 focus: cx.focus_handle(),
                 close_focus: cx.focus_handle(),
@@ -74,13 +83,24 @@ impl Sidebar {
                 pending: None,
                 error: None,
                 receipt: None,
-                mode: SubmissionMode::Queue,
-                submitted_mode: SubmissionMode::Queue,
+                mode: SubmissionMode::Steer,
+                submitted_mode: SubmissionMode::Steer,
                 turn: None,
                 _subscriptions: vec![subscription, observer],
                 timeout: None,
             });
         }
+        if let Some(old) = self
+            .dashboard_timelines
+            .reply_open
+            .filter(|old| *old != key)
+        {
+            self.close_activity_reply(old, window, cx);
+        }
+        let reply = self.dashboard_timelines.replies.get_mut(&key).unwrap();
+        reply.generation += 1;
+        reply.closing = false;
+        reply.motion_task = None;
         self.dashboard_timelines.reply_open = Some(key);
         self.dashboard_timelines.replies[&key]
             .input
@@ -92,7 +112,25 @@ impl Sidebar {
         if self.dashboard_timelines.reply_open == Some(key) {
             self.dashboard_timelines.reply_open = None;
         }
-        if let Some(reply) = self.dashboard_timelines.replies.get(&key) {
+        if let Some(reply) = self.dashboard_timelines.replies.get_mut(&key) {
+            reply.generation += 1;
+            reply.closing = !cx.reduce_motion();
+            if reply.closing {
+                reply.motion_task = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(REPLY_MOTION_MS))
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(reply) = this.dashboard_timelines.replies.get_mut(&key) {
+                            reply.closing = false;
+                            reply.progress.set(0.);
+                        }
+                        cx.notify();
+                    });
+                }));
+            } else {
+                reply.progress.set(0.);
+            }
             reply.focus.focus(window, cx);
         }
         cx.notify();
@@ -100,7 +138,7 @@ impl Sidebar {
     fn submit_activity_reply(
         &mut self,
         key: Scope,
-        steer: bool,
+        _steer: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -113,7 +151,7 @@ impl Sidebar {
         let Some(reply) = self.dashboard_timelines.replies.get(&key) else {
             return;
         };
-        if reply.pending.is_some() {
+        if reply.pending.is_some() || self.dashboard_timelines.reply_open != Some(key) {
             return;
         }
         let text = reply.input.read(cx).value().to_string();
@@ -122,11 +160,7 @@ impl Sidebar {
         }
         // Use the mode and turn actually shown, rather than silently changing a
         // request that raced a provider update.
-        let mode = if steer && reply.mode != SubmissionMode::Send {
-            SubmissionMode::Steer
-        } else {
-            reply.mode
-        };
+        let mode = SubmissionMode::Steer;
         let turn = reply.turn.clone();
         let session = self
             .runtime
@@ -193,12 +227,17 @@ impl Sidebar {
             // Retain the submission lock: reconnect must never replay a side effect.
         } else if state.accepted_submission == Some(id) {
             reply.pending = None;
-            reply.timeout = None;
+            reply.timeout = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(REPLY_RECEIPT_DURATION).await;
+                let _ = this.update(cx, |this, cx| {
+                    if let Some(reply) = this.dashboard_timelines.replies.get_mut(&key) {
+                        reply.receipt = None;
+                    }
+                    cx.notify();
+                });
+            }));
             reply.error = None;
-            reply.receipt = Some(match reply.submitted_mode {
-                SubmissionMode::Steer => "Steering reply accepted",
-                _ => "Reply queued",
-            });
+            reply.receipt = Some("Session is being steered");
             reply
                 .input
                 .update(cx, |input, cx| input.set_value("", window, cx));
@@ -261,7 +300,7 @@ impl Sidebar {
     pub(super) fn wrap_activity_reply(
         &mut self,
         key: Scope,
-        title: &str,
+        _title: &str,
         row: AnyElement,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -273,34 +312,32 @@ impl Sidebar {
             .entry(key)
             .or_default()
             .clone();
+        let measured_height = height.clone();
+        let owner = cx.entity().downgrade();
         let mut frame = div()
             .debug_selector(move || format!("activity-reply-frame-{}", key.1.raw()))
-            .relative()
-            .w_full();
-        if active {
-            frame = frame.h(height
-                .get()
-                .max(rpx(REPLY_MIN_H).to_pixels(window.rem_size())));
+            .w_full()
+            .child(row);
+        if let Some(receipt) = self
+            .dashboard_timelines
+            .replies
+            .get(&key)
+            .and_then(|r| r.receipt)
+        {
+            frame = frame.child(
+                div()
+                    .pl(rpx(ICON_LG + SPACE_LG))
+                    .text_size(rpx(TEXT_SMALL))
+                    .child(receipt),
+            );
         }
-        if !active {
-            frame = frame.child(row);
-            if let Some(receipt) = self
-                .dashboard_timelines
-                .replies
-                .get(&key)
-                .and_then(|r| r.receipt)
-            {
-                frame = frame.child(super::super::status::label(
-                    format!("activity-reply-receipt-{}", key.1.raw()),
-                    super::super::status::session_kind("Review"),
-                    receipt,
-                    TEXT_SMALL,
-                    cx,
-                ));
-            }
-            return frame
-                .on_prepaint(move |bounds, _, _| height.set(bounds.size.height))
-                .into_any_element();
+        let closing = self
+            .dashboard_timelines
+            .replies
+            .get(&key)
+            .is_some_and(|r| r.closing);
+        if !active && !closing {
+            return frame.into_any_element();
         }
         let session = self
             .runtime
@@ -311,18 +348,16 @@ impl Sidebar {
             .cloned();
         let state = session.as_ref().map(|s| s.read(cx).state.shared());
         let Some(reply) = self.dashboard_timelines.replies.get_mut(&key) else {
-            return frame.child(row).into_any_element();
+            return frame.into_any_element();
         };
         let busy = state
             .as_ref()
             .is_some_and(|s| s.status.busy() || s.turn_id.is_some());
-        reply.mode = if busy {
-            SubmissionMode::Queue
-        } else {
-            SubmissionMode::Send
-        };
+        reply.mode = SubmissionMode::Steer;
         reply.turn = state.as_ref().and_then(|s| s.turn_id.clone());
-        let disabled = reply.pending.is_some()
+        let disabled = !active
+            || !busy
+            || reply.pending.is_some()
             || reply.input.read(cx).value().trim().is_empty()
             || state.as_ref().is_none_or(|s| {
                 matches!(s.status, Status::Disconnected | Status::Starting)
@@ -347,28 +382,11 @@ impl Sidebar {
                     "Open the session and finish connection or recovery before replying.".to_owned()
                 })
         });
-        if error.is_some() {
-            frame = frame.h(rpx(REPLY_ERROR_MIN_H));
-        }
         let pending = reply.pending.is_some();
-        let hints = if busy {
-            if cfg!(target_os = "macos") {
-                "Enter to queue · ⌘Enter to steer · Shift+Enter for a new line"
-            } else {
-                "Enter to queue · Ctrl+Enter to steer · Shift+Enter for a new line"
-            }
-        } else {
-            "Enter to send · Shift+Enter for a new line"
-        };
-        // Replace interactive underlay with inert session identity: no covered
-        // controls remain in the keyboard or pointer routes.
-        frame = frame.child(
-            div()
-                .p(rpx(SPACE_LG))
-                .text_size(rpx(TEXT_BODY))
-                .text_color(c::FG_DIM())
-                .child(title.to_owned()),
-        );
+        let hints = "Enter to steer · Shift+Enter for a new line";
+        let progress = reply.progress.clone();
+        let from = progress.get();
+        let generation = reply.generation;
         let close = super::super::components::header_control_frame(
             ("activity-reply-close", key.1.raw()),
             "Close reply",
@@ -393,7 +411,7 @@ impl Sidebar {
         .child(icon("close", ICON_SM, c::FG_DIM()));
         let send = super::super::codex_view::composer_icon(
             "activity-reply-submit",
-            if busy { "Queue reply" } else { "Send reply" },
+            "Steer session",
             if pending {
                 "status-working"
             } else {
@@ -423,13 +441,11 @@ impl Sidebar {
         let panel = div()
             .id(("activity-reply-overlay", key.1.raw()))
             .debug_selector(move || format!("activity-reply-overlay-{}", key.1.raw()))
-            .absolute()
-            .inset_0()
-            .occlude()
+            .w_full()
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .p(rpx(SPACE_LG))
-            .bg(c::BG().opacity(REPLY_OPACITY))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_action(
                 cx.listener(move |this, _: &crate::keymap::ToggleZen, window, cx| {
@@ -500,7 +516,7 @@ impl Sidebar {
                                     .truncate()
                                     .text_size(rpx(TEXT_SMALL))
                                     .text_color(c::FG_DIM())
-                                    .child(format!("Reply · {title}")),
+                                    .child("Steer session"),
                             )
                             .child(close),
                     )
@@ -523,7 +539,7 @@ impl Sidebar {
                                                 .appearance(false)
                                                 .bordered(false)
                                                 .focus_bordered(false)
-                                                .disabled(pending)
+                                                .disabled(pending || !active)
                                                 .text_color(c::FG())
                                                 .p_0(),
                                         ),
@@ -545,28 +561,40 @@ impl Sidebar {
                             .child(hints),
                     ),
             );
-        let target_height = if error.is_some() {
-            rpx(REPLY_ERROR_MIN_H).to_pixels(window.rem_size())
+        let panel = panel.on_prepaint(move |bounds, _, cx| {
+            if (measured_height.get() - bounds.size.height).abs() > gpui::px(0.5) {
+                measured_height.set(bounds.size.height);
+                let _ = owner.update(cx, |_, cx| cx.notify());
+            }
+        });
+        let target_height = height.get().max(
+            rpx(if error.is_some() {
+                REPLY_ERROR_MIN_H
+            } else {
+                REPLY_MIN_H
+            })
+            .to_pixels(window.rem_size()),
+        );
+        let body = div().w_full().overflow_hidden().child(panel);
+        if cx.reduce_motion() {
+            progress.set(if active { 1. } else { 0. });
+            frame.child(body).into_any_element()
         } else {
-            height
-                .get()
-                .max(rpx(REPLY_MIN_H).to_pixels(window.rem_size()))
-        };
-        let frame = frame.overflow_hidden().child(motion::base(
-            panel,
-            format!("activity-reply-{}", key.1.raw()),
-            cx,
-        ));
-        if cx.reduce_motion() || height.get() >= target_height {
-            frame.into_any_element()
-        } else {
-            let from = height.get();
             frame
-                .with_animation(
-                    format!("activity-reply-grow-{}", key.1.raw()),
-                    gpui::Animation::new(Duration::from_millis(MOTION_BASE_MS))
-                        .with_easing(motion::ease_standard),
-                    move |frame, t| frame.h(from + (target_height - from) * t),
+                .child(
+                    body.with_animation(
+                        format!("activity-reply-motion-{}-{generation}", key.1.raw()),
+                        gpui::Animation::new(Duration::from_millis(REPLY_MOTION_MS))
+                            .with_easing(motion::ease_standard),
+                        move |body, t| {
+                            let value = from + ((if active { 1. } else { 0. }) - from) * t;
+                            progress.set(value);
+                            body.max_h(target_height * value)
+                                .opacity(0.35 + 0.65 * value)
+                                .relative()
+                                .top(rpx(-SPACE_MD * (1. - value)))
+                        },
+                    ),
                 )
                 .into_any_element()
         }
@@ -667,6 +695,64 @@ mod tests {
             session,
             receive,
         )
+    }
+    #[gpui::test]
+    fn activity_done_requires_cleared_review_and_rejects_new_work(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut session = None;
+            let mut transport = None;
+            let (probe, cx) = cx.add_window_view(|window, cx| {
+                let (probe, saved, receive) = fixture(window, cx, provider);
+                session = Some(saved);
+                transport = Some(receive);
+                probe
+            });
+            let session = session.unwrap();
+            let (sidebar, id) = probe.read_with(cx, |probe, _| (probe.sidebar.clone(), probe.id));
+            for status in [Status::Working, Status::Idle] {
+                cx.update(|window, cx| {
+                    session.update(cx, |session, _| {
+                        session.state.status = status;
+                        session.state.turn_id = None;
+                        if status == Status::Idle {
+                            session.state.apply(&serde_json::json!({"method":"turn/started","params":{"threadId":"fixture-thread","turn":{"id":"completion-test"}}}));
+                            session.state.apply(&serde_json::json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":"completion-test","status":"completed"}}}));
+                        }
+                    });
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.act(Action::MarkActivityDone(id), window, cx)
+                    });
+                    assert!(sidebar
+                        .read(cx)
+                        .runtime
+                        .read(cx)
+                        .registry
+                        .read(cx)
+                        .codex(id)
+                        .is_some());
+                });
+            }
+            cx.update(|window, cx| {
+                session.update(cx, |session, _| {
+                    let receipt = session.state.review_completion().unwrap();
+                    session.state.mark_reviewed(receipt).unwrap();
+                    assert_eq!(session.state.session_status(), "Ready");
+                });
+                sidebar.update(cx, |sidebar, cx| {
+                    sidebar.act(Action::MarkActivityDone(id), window, cx)
+                });
+                assert!(sidebar
+                    .read(cx)
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .codex(id)
+                    .is_none());
+            });
+            drop(transport);
+        }
     }
     #[gpui::test]
     fn activity_reply_native_keyboard_draft_and_acknowledgment(cx: &mut gpui::TestAppContext) {
@@ -773,7 +859,7 @@ mod tests {
             let ProviderAction::ActivityPrompt {
                 id,
                 text,
-                mode: SubmissionMode::Queue,
+                mode: SubmissionMode::Steer,
                 ..
             } = action
             else {
@@ -798,6 +884,28 @@ mod tests {
                     .value()
                     .is_empty());
                 assert_eq!(session.read(cx).state.saved.draft, "main composer draft");
+                assert_eq!(
+                    sidebar.dashboard_timelines.replies[&key].receipt,
+                    Some("Session is being steered")
+                );
+            });
+            cx.executor().advance_clock(Duration::from_millis(2999));
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                assert!(
+                    probe.read(cx).sidebar.read(cx).dashboard_timelines.replies[&key]
+                        .receipt
+                        .is_some()
+                );
+            });
+            cx.executor().advance_clock(Duration::from_millis(1));
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                assert!(
+                    probe.read(cx).sidebar.read(cx).dashboard_timelines.replies[&key]
+                        .receipt
+                        .is_none()
+                );
             });
             cx.update(|window, cx| {
                 probe.read(cx).sidebar.clone().update(cx, |sidebar, cx| {
