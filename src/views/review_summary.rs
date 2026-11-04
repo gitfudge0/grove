@@ -105,6 +105,9 @@ fn destination(target: &str, cwd: &Path) -> Option<String> {
 }
 impl ReviewSummary {
     pub fn parse(source: &str, cwd: &Path) -> Self {
+        Self::parse_bounded(source, cwd, 240)
+    }
+    fn parse_bounded(source: &str, cwd: &Path, limit: usize) -> Self {
         let Ok(root) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
             return Self::default();
         };
@@ -127,10 +130,11 @@ impl ReviewSummary {
             cwd: &Path,
             definitions: &HashMap<String, String>,
             out: &mut ReviewSummary,
+            limit: usize,
         ) {
             if let Node::Paragraph(_) = node {
                 if out.text.is_empty() && prose(node, false).chars().any(char::is_alphanumeric) {
-                    out.text = bounded(&prose(node, true), 240);
+                    out.text = bounded(&prose(node, true), limit);
                 }
             }
             let target = match node {
@@ -147,18 +151,52 @@ impl ReviewSummary {
             // Fenced examples and HTML are never executable artifact links.
             if let Some(children) = node.children() {
                 for child in children {
-                    visit(child, cwd, definitions, out);
+                    visit(child, cwd, definitions, out, limit);
                 }
             }
         }
-        visit(&root, cwd, &definitions, &mut result);
+        visit(&root, cwd, &definitions, &mut result, limit);
         result
     }
     pub fn from_snapshot(state: &grove_core::codex::Snapshot) -> Option<Self> {
         state.review_completion()?;
         let receipt = state.saved.session_review.pending.as_ref()?;
         let period = state.saved.work_periods.get(receipt.period)?;
-        let items = state.saved.items.get(period.start_item..period.end_item?)?;
+        let items = state.saved.items.get(
+            state
+                .saved
+                .session_review
+                .reviewed_through
+                .min(period.start_item)..period.end_item?,
+        )?;
+        if !state.saved.session_review.summary.is_empty() {
+            let mut summary = Self::parse_bounded(
+                &state.saved.session_review.summary,
+                Path::new(&state.saved.cwd),
+                600,
+            );
+            // Keep artifacts from all unreviewed responses, independently of the brief.
+            for item in items
+                .iter()
+                .filter(|item| item["type"] == "agentMessage" && item["phase"] != "commentary")
+            {
+                for link in Self::parse(
+                    &grove_core::codex::item_text(item),
+                    Path::new(&state.saved.cwd),
+                )
+                .links
+                {
+                    if !summary
+                        .links
+                        .iter()
+                        .any(|existing| existing.url == link.url)
+                    {
+                        summary.links.push(link);
+                    }
+                }
+            }
+            return Some(summary);
+        }
         let text = items.iter().rev().find(|item| {
             item["type"] == "agentMessage"
                 && item["phase"] != "commentary"

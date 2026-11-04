@@ -32,6 +32,7 @@ pub mod provider_updates;
 pub mod release_highlights;
 pub mod render_rows;
 mod reports;
+pub mod review_brief;
 pub mod rich_plan;
 pub mod session_meta;
 pub mod session_title;

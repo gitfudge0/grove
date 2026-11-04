@@ -1689,6 +1689,9 @@ impl Actor {
             .retain(|period| period.start_item < edit.target);
         saved.session_review.pending = None;
         saved.session_review.last_completed_period = None;
+        saved.session_review.reviewed_through =
+            saved.session_review.reviewed_through.min(edit.target);
+        saved.session_review.summary.clear();
         saved.retain_claude_subagents();
         if edit.rewind {
             saved.finish_rewind_draft(edit.text, edit.images);
@@ -1766,7 +1769,10 @@ impl Actor {
             return Err(error);
         }
         self.capture_edit_checkpoint();
-        let content = user_content(&text, &images);
+        let mut content = user_content(&text, &images);
+        if !self.side_chat {
+            content.push(json!({"type":"text", "text":crate::review_brief::context(&self.state.saved.session_review)}));
+        }
         let uuid = nonce();
         self.write(json!({"type":"user","uuid":uuid,"session_id":self.state.saved.thread_id.as_deref().unwrap_or(""),"message":{"role":"user","content":content},"parent_tool_use_id":null}))?;
         if !self.side_chat {
@@ -6145,7 +6151,7 @@ mod tests {
         let first = read(&mut reader);
         assert_eq!(
             first["message"]["content"],
-            json!(user_content("first", &[image]))
+            json!([user_content("first", &[image]), vec![json!({"type":"text", "text":crate::review_brief::context(&actor.state.saved.session_review)})]].concat())
         );
         assert!(!actor.drain_queue());
         actor.acknowledge_input(&first["uuid"]);
@@ -6156,7 +6162,7 @@ mod tests {
         let second = read(&mut reader);
         assert_eq!(
             second["message"]["content"],
-            json!(user_content("second", &[]))
+            json!([user_content("second", &[]), vec![json!({"type":"text", "text":crate::review_brief::context(&actor.state.saved.session_review)})]].concat())
         );
         assert!(!actor.drain_queue());
         actor.acknowledge_input(&second["uuid"]);
@@ -6195,7 +6201,7 @@ mod tests {
         let sent = read(&mut reader);
         assert_eq!(
             sent["message"]["content"],
-            json!(user_content("retain", &images))
+            json!([user_content("retain", &images), vec![json!({"type":"text", "text":crate::review_brief::context(&actor.state.saved.session_review)})]].concat())
         );
         assert!(!actor.drain_queue());
         actor.acknowledge_input(&sent["uuid"]);

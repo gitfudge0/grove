@@ -377,6 +377,12 @@ pub struct SavedSession {
 /// A monotonic receipt protects newer results from stale review actions.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SessionReview {
+    /// Exclusive transcript boundary acknowledged by the user.
+    #[serde(default)]
+    pub reviewed_through: usize,
+    /// Provider-authored brief, independent of subsequent conversational replies.
+    #[serde(default)]
+    pub summary: String,
     #[serde(default)]
     pub sequence: usize,
     #[serde(default)]
@@ -559,6 +565,8 @@ impl SavedSession {
         saved.work_periods.clear();
         saved.session_review.pending = None;
         saved.session_review.last_completed_period = None;
+        saved.session_review.reviewed_through = 0;
+        saved.session_review.summary.clear();
         saved.draft.clear();
         saved.draft_images.clear();
         saved.draft_reference = None;
@@ -1086,6 +1094,11 @@ impl Snapshot {
         if self.review_completion() != Some(work_period) {
             return Err("This review belongs to a previous result".into());
         }
+        self.saved.session_review.reviewed_through = self.saved.work_periods
+            [self.saved.session_review.pending.as_ref().unwrap().period]
+            .end_item
+            .unwrap();
+        self.saved.session_review.summary.clear();
         self.saved.session_review.pending = None;
         Ok(())
     }
@@ -1099,6 +1112,15 @@ impl Snapshot {
         }
         if self.saved.session_review.last_completed_period == Some(period) {
             return;
+        }
+        let work = &self.saved.work_periods[period];
+        for item in &self.saved.items[work.start_item..work.end_item.unwrap()] {
+            if item["type"] == "agentMessage" && item["phase"] != "commentary" {
+                let text = item_text(item);
+                if let Some(brief) = crate::review_brief::extract(&text) {
+                    self.saved.session_review.summary = brief.to_owned();
+                }
+            }
         }
         self.saved.session_review.last_completed_period = Some(period);
         self.saved.session_review.sequence = self.saved.session_review.sequence.saturating_add(1);
@@ -1897,6 +1919,8 @@ impl Snapshot {
         saved.work_periods.clear();
         saved.session_review.pending = None;
         saved.session_review.last_completed_period = None;
+        saved.session_review.reviewed_through = 0;
+        saved.session_review.summary.clear();
         saved.claude_subagents.clear();
         saved.rich_plans = crate::rich_plan::PlanStore::default();
         saved.draft.clear();
@@ -3045,6 +3069,7 @@ pub fn item_text(item: &Value) -> String {
                 parts
                     .iter()
                     .filter_map(|p| p["text"].as_str())
+                    .filter(|text| !crate::review_brief::is_context(text))
                     .collect::<Vec<_>>()
                     .join("\n")
             })
@@ -4264,7 +4289,10 @@ impl Actor {
         }
         input
     }
-    fn turn_params(&self, input: Vec<Value>) -> Value {
+    fn turn_params(&self, mut input: Vec<Value>) -> Value {
+        if !self.side_chat {
+            input.push(json!({"type":"text", "text":crate::review_brief::context(&self.state.saved.session_review)}));
+        }
         let mut params = if self.reset_configuration {
             if self.state.saved.composer.reset_model_effort_only {
                 // Omitted permission fields retain the provider's exact effective
@@ -4521,6 +4549,9 @@ impl Actor {
             .retain(|period| period.start_item < edit.target);
         saved.session_review.pending = None;
         saved.session_review.last_completed_period = None;
+        saved.session_review.reviewed_through =
+            saved.session_review.reviewed_through.min(edit.target);
+        saved.session_review.summary.clear();
         saved.rich_plans.retain_messages(&saved.items);
         if edit.rewind {
             saved.finish_rewind_draft(edit.text, edit.images);
@@ -6479,6 +6510,8 @@ impl Actor {
                             self.state.saved.work_periods.clear();
                             self.state.saved.session_review.pending = None;
                             self.state.saved.session_review.last_completed_period = None;
+                            self.state.saved.session_review.reviewed_through = 0;
+                            self.state.saved.session_review.summary.clear();
                             self.state.saved.edit_checkpoints.clear();
                             self.state.work_started = None;
                         }
@@ -7217,6 +7250,60 @@ mod tests {
         }
     }
     #[test]
+    fn review_briefs_accumulate_until_review_and_survive_restore() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut state = Snapshot::new(saved());
+            state.saved.provider = provider;
+            let complete = |state: &mut Snapshot, text: &str| {
+                state.begin_work();
+                state
+                    .saved
+                    .items
+                    .push(json!({"type":"agentMessage", "phase":"final_answer", "text":text}));
+                state.finish_work();
+                state.status = Status::Done;
+                state.completed_for_review();
+            };
+            complete(&mut state, "<grove-review-summary>Fixed theme hover colors; native checks pending.</grove-review-summary>");
+            let first = state.review_completion().unwrap();
+            complete(&mut state, "Committed as abc123.");
+            assert_eq!(
+                state.saved.session_review.summary,
+                "Fixed theme hover colors; native checks pending."
+            );
+            assert!(state.mark_reviewed(first).is_err());
+            complete(&mut state, "<grove-review-summary>Fixed hover and focus colors. Checked both themes.</grove-review-summary>");
+            let mut restored = Snapshot::new(
+                serde_json::from_value(serde_json::to_value(&state.saved).unwrap()).unwrap(),
+            );
+            restored.status = Status::Idle;
+            assert!(restored
+                .saved
+                .session_review
+                .summary
+                .contains("hover and focus"));
+            restored
+                .mark_reviewed(restored.review_completion().unwrap())
+                .unwrap();
+            assert_eq!(
+                restored.saved.session_review.reviewed_through,
+                restored.saved.items.len()
+            );
+            assert!(restored.saved.session_review.summary.is_empty());
+            complete(
+                &mut restored,
+                "<grove-review-summary>Added keyboard navigation.</grove-review-summary>",
+            );
+            assert_eq!(
+                restored.saved.session_review.summary,
+                "Added keyboard navigation."
+            );
+            let fresh = restored.saved.fresh_conversation();
+            assert_eq!(fresh.session_review.reviewed_through, 0);
+            assert!(fresh.session_review.summary.is_empty());
+        }
+    }
+    #[test]
     fn session_review_receipts_survive_restore_and_reject_stale_turn_actions() {
         for provider in [Provider::Codex, Provider::Claude] {
             let mut session = saved();
@@ -7283,6 +7370,8 @@ mod tests {
         // No active identity after reconnect/rewind cannot be proof of success.
         snapshot.saved.session_review.pending = None;
         snapshot.saved.session_review.last_completed_period = None;
+        snapshot.saved.session_review.reviewed_through = 0;
+        snapshot.saved.session_review.summary.clear();
         snapshot.status = Status::Idle;
         assert!(!snapshot.apply(&json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"second","status":"completed"}}})));
         assert_eq!(snapshot.review_completion(), None);
@@ -7769,7 +7858,10 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         let sent: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(sent["params"]["input"][0]["text"], canonical);
-        assert_eq!(sent["params"]["input"].as_array().unwrap().len(), 1);
+        assert_eq!(sent["params"]["input"].as_array().unwrap().len(), 2);
+        assert!(crate::review_brief::is_context(
+            sent["params"]["input"][1]["text"].as_str().unwrap()
+        ));
         assert_eq!(actor.state.saved.draft, "explain");
         actor
             .action(Action::DraftReference(Some(reference("new"))))
@@ -8128,6 +8220,8 @@ mod tests {
                 saved.work_periods.clear();
                 saved.session_review.pending = None;
                 saved.session_review.last_completed_period = None;
+                saved.session_review.reviewed_through = 0;
+                saved.session_review.summary.clear();
             }
             let restored = Snapshot::new(saved);
             let agent = &restored.saved.work_periods[0].subagents[0];

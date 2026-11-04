@@ -2651,21 +2651,8 @@ impl CodexView {
             return None;
         }
         let work_period = state.review_completion()?;
-        let summary = state
-            .saved
-            .session_review
-            .pending
-            .as_ref()
-            .and_then(|receipt| state.saved.work_periods.get(receipt.period))
-            .and_then(|period| state.saved.items.get(period.start_item..period.end_item?))
-            .and_then(|items| {
-                items.iter().rev().find(|item| {
-                    item["type"] == "agentMessage"
-                        && item["phase"] != "commentary"
-                        && !codex::item_text(item).trim().is_empty()
-                })
-            })
-            .map(|item| review_overview(&codex::item_text(item)))
+        let summary = super::review_summary::ReviewSummary::from_snapshot(state)
+            .map(|summary| review_overview(&summary.text))
             .filter(|summary| !summary.is_empty());
         let expanded = summary.is_some() && !self.expanded.contains("session-review-disclosure");
         Some(
@@ -12477,6 +12464,15 @@ mod tests {
                     .unwrap()
                     .to_string()
             );
+            state.saved.session_review.summary =
+                "Links ignored the theme. Updated shared hover colors. Native checks pending."
+                    .into();
+            state.saved.session_review.reviewed_through = 1;
+            assert_eq!(
+                ReviewSummary::from_snapshot(&state).unwrap().text,
+                state.saved.session_review.summary
+            );
+            assert_eq!(ReviewSummary::from_snapshot(&state).unwrap().links.len(), 1);
             state.status = Status::Working;
             assert!(ReviewSummary::from_snapshot(&state).is_none());
             state.status = Status::Done;
@@ -13929,6 +13925,7 @@ mod tests {
                             sequence: 7,
                             last_completed_period: Some(0),
                             pending: Some(codex::ReviewCompletion { id: 7, period: 0 }),
+                            ..Default::default()
                         };
                         session.state.status = Status::Done;
                         cx.notify();
