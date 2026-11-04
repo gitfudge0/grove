@@ -2795,7 +2795,8 @@ impl Sidebar {
         }
         let focus = window.focused(cx);
         let owner = cx.entity().downgrade();
-        let popup = PopupMenu::build(window, cx, move |mut popup, _, _| {
+        let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
+            popup = crate::views::components::dropdown_menu(popup, window);
             for entry in entries {
                 let owner = owner.clone();
                 let project_path = project_path.clone();

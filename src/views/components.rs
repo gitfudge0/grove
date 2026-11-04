@@ -1183,3 +1183,37 @@ mod action_recipe_tests {
         }
     }
 }
+
+/// Shared compact dropdown geometry; menu owners retain focus and activation.
+pub fn dropdown_menu(
+    menu: gpui_component::menu::PopupMenu,
+    window: &gpui::Window,
+) -> gpui_component::menu::PopupMenu {
+    menu.menu_style(gpui_component::menu::MenuStyle {
+        row_height: rpx(MENU_ROW_H).to_pixels(window.rem_size()),
+        inset: rpx(SPACE_LG).to_pixels(window.rem_size()),
+        padding: rpx(SPACE_MD).to_pixels(window.rem_size()),
+        gap: rpx(SPACE_LG).to_pixels(window.rem_size()),
+        radius: rpx(RADIUS_CHROME).to_pixels(window.rem_size()),
+        font_size: rpx(TEXT_BODY).to_pixels(window.rem_size()),
+    })
+}
+
+/// Visual row recipe for custom dropdowns with application-owned keyboard routing.
+pub fn dropdown_row(id: impl Into<gpui::ElementId>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::MenuItem)
+        .cursor_pointer()
+        .h(rpx(MENU_ROW_H))
+        .flex_shrink_0()
+        .text_size(rpx(TEXT_BODY))
+        .text_color(c::FG_DIM())
+        .group("neutral-control")
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .px(rpx(SPACE_LG))
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_LG))
+        .rounded(rpx(RADIUS_CHROME))
+}

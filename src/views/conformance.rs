@@ -833,3 +833,25 @@ fn inline_transcript_disclosures_do_not_fill_when_expanded() {
     assert!(!tools.contains(".when(expanded, |style| style.bg("));
     assert!(!transcript.contains(".when(tool_expanded, |style| style.bg("));
 }
+
+#[test]
+fn application_popup_menus_use_shared_dropdown_recipe() {
+    for path in [
+        "src/views/codex_view.rs",
+        "src/views/sidebar.rs",
+        "src/views/sidebar/dashboard.rs",
+        "src/views/sidebar/session_history.rs",
+        "src/views/sidebar/checkout_panel.rs",
+    ] {
+        let text = source(path);
+        assert_eq!(
+            text.matches("PopupMenu::build(").count(),
+            text.matches("components::dropdown_menu(").count(),
+            "{path}: every popup must use the shared dropdown recipe"
+        );
+        assert!(
+            !text.contains(".item_padding("),
+            "{path}: local menu padding forks the recipe"
+        );
+    }
+}

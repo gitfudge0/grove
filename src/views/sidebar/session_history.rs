@@ -98,7 +98,8 @@ impl Sidebar {
             .map(|p| (p.name.clone(), p.path.clone()))
             .collect::<Vec<_>>();
         let focus = window.focused(cx);
-        let popup = PopupMenu::build(window, cx, move |mut menu, _, _| {
+        let popup = PopupMenu::build(window, cx, move |mut menu, window, _| {
+            menu = crate::views::components::dropdown_menu(menu, window);
             let target = owner.clone();
             menu = menu.item(
                 PopupMenuItem::new(if project {

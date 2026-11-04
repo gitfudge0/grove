@@ -15,7 +15,6 @@ const ROW_H: f32 = 28.0;
 const FIELD_H: f32 = 60.0;
 const FIELD_INSET: f32 = 14.0;
 const SELECTOR_H: f32 = 32.0;
-const MENU_ROW_H: f32 = 28.0;
 const MENU_LEADING_W: f32 = 24.0;
 const MENU_STATUS_W: f32 = 48.0;
 const MENU_TRAILING_W: f32 = 28.0;
@@ -482,23 +481,10 @@ impl WorkspaceManager {
             for (index, row) in self.state.rows.iter().enumerate() {
                 let id = row.id;
                 rows = rows.child(
-                    div()
-                        .id(("workspace", id))
-                        .role(gpui::Role::MenuItem)
-                        .cursor_pointer()
+                    super::components::dropdown_row(("workspace", id))
                         .aria_label(row.name.clone())
                         .aria_selected(self.state.active == id)
-                        .h(rpx(MENU_ROW_H))
-                        .flex_shrink_0()
-                        .text_size(rpx(TEXT_BODY))
-                        .text_color(c::FG_DIM())
-                        .group("neutral-control")
-                        .font_weight(FontWeight::MEDIUM)
-                        .px(rpx(SPACE_LG))
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_LG))
-                        .rounded(rpx(RADIUS_CHROME))
+                        .when(self.state.active == id, |el| el.bg(c::MENU_HOVER()))
                         .when(self.keyboard_navigation && self.selected == index, |el| {
                             el.bg(c::MENU_HOVER())
                         })
@@ -561,23 +547,9 @@ impl WorkspaceManager {
             .enumerate()
             {
                 actions = actions.child(
-                    div()
-                        .id(("workspace-action", offset))
+                    super::components::dropdown_row(("workspace-action", offset))
                         .debug_selector(move || format!("workspace-action-{offset}"))
-                        .role(gpui::Role::MenuItem)
-                        .cursor_pointer()
                         .aria_label(label)
-                        .h(rpx(MENU_ROW_H))
-                        .text_size(rpx(TEXT_BODY))
-                        .text_color(c::FG_DIM())
-                        .group("neutral-control")
-                        .font_weight(FontWeight::MEDIUM)
-                        .flex_shrink_0()
-                        .px(rpx(SPACE_LG))
-                        .flex()
-                        .items_center()
-                        .gap(rpx(SPACE_LG))
-                        .rounded(rpx(RADIUS_CHROME))
                         .when(
                             self.keyboard_navigation
                                 && self.selected == self.state.rows.len() + offset,

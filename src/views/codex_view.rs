@@ -6269,7 +6269,6 @@ impl Render for CodexView {
                             .id("codex-composer")
                             .debug_selector(|| "codex-composer".into())
                             .max_w(rpx(CHAT_MAX_W))
-                            .when(composer_attached || self.queue_editor.as_ref().map_or_else(|| self.reference.is_some(), |editor| editor.reference.is_some()), |composer| composer.rounded_none().rounded_b(rpx(RADIUS_PANEL)))
                             .child(body)
                             .child(
                                 div()
@@ -7174,6 +7173,7 @@ impl CodexView {
         let height = COMPOSER_MENU_MAX_H
             .min(f32::from(window.viewport_size().height) / scale - APPBAR_TOTAL_H - SPACE_3XL);
         let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
+            popup = crate::views::components::dropdown_menu(popup, window);
             popup = popup
                 .action_context(context)
                 .scrollable(true)

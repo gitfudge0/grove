@@ -164,3 +164,6 @@ pub const RADIUS_PREFERENCE: f32 = 16.;
 pub const FORM_PAGE_PADDING_Y: f32 = 36.;
 pub const FORM_CONTENT_MAX_W: f32 = 620.;
 pub const FORM_HEADING_MARGIN: f32 = 26.;
+
+/// Compact dropdown geometry shared by native and vendor menus.
+pub const MENU_ROW_H: f32 = 28.0;

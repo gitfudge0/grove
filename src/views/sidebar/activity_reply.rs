@@ -32,6 +32,15 @@ pub(super) struct ActivityReply {
     timeout: Option<gpui::Task<()>>,
 }
 
+// Queue is also safe if new work starts before the provider consumes the reply.
+fn reply_mode(state: &Snapshot) -> SubmissionMode {
+    if state.status.busy() || state.turn_id.is_some() {
+        SubmissionMode::Steer
+    } else {
+        SubmissionMode::Queue
+    }
+}
+
 impl Sidebar {
     fn open_activity_reply(&mut self, key: Scope, window: &mut Window, cx: &mut Context<Self>) {
         if key.0 != self.active_workspace || !self.dashboard_owns_session(key.1) {
@@ -162,10 +171,7 @@ impl Sidebar {
         if text.trim().is_empty() {
             return;
         }
-        // Use the mode and turn actually shown, rather than silently changing a
-        // request that raced a provider update.
-        let mode = SubmissionMode::Steer;
-        let turn = reply.turn.clone();
+        // Resolve routing at activation: a turn may finish while the user types.
         let session = self
             .runtime
             .read(cx)
@@ -173,6 +179,11 @@ impl Sidebar {
             .read(cx)
             .codex(key.1)
             .cloned();
+        let state = session
+            .as_ref()
+            .map(|session| session.read(cx).state.shared());
+        let mode = state.as_deref().map_or(SubmissionMode::Queue, reply_mode);
+        let turn = state.as_ref().and_then(|state| state.turn_id.clone());
         let result = session
             .ok_or_else(|| "This session is no longer available.".to_string())
             .and_then(|session| {
@@ -263,7 +274,11 @@ impl Sidebar {
             }));
             reply.error = None;
             reply.receipt_closing = false;
-            reply.receipt = Some("Session is being steered");
+            reply.receipt = Some(if reply.submitted_mode == SubmissionMode::Steer {
+                "Session is being steered"
+            } else {
+                "Reply queued"
+            });
             reply
                 .input
                 .update(cx, |input, cx| input.set_value("", window, cx));
@@ -389,13 +404,9 @@ impl Sidebar {
         let Some(reply) = self.dashboard_timelines.replies.get_mut(&key) else {
             return frame.into_any_element();
         };
-        let busy = state
-            .as_ref()
-            .is_some_and(|s| s.status.busy() || s.turn_id.is_some());
-        reply.mode = SubmissionMode::Steer;
+        reply.mode = state.as_deref().map_or(SubmissionMode::Queue, reply_mode);
         reply.turn = state.as_ref().and_then(|s| s.turn_id.clone());
         let disabled = !active
-            || !busy
             || reply.pending.is_some()
             || reply.input.read(cx).value().trim().is_empty()
             || state.as_ref().is_none_or(|s| {
@@ -422,7 +433,17 @@ impl Sidebar {
                 })
         });
         let pending = reply.pending.is_some();
-        let hints = "Enter to steer · Shift+Enter for a new line";
+        let steering = reply.mode == SubmissionMode::Steer;
+        let label = if steering {
+            "Steer session"
+        } else {
+            "Send to session"
+        };
+        let hints = if steering {
+            "Enter to steer · Shift+Enter for a new line"
+        } else {
+            "Enter to send · Shift+Enter for a new line"
+        };
         let progress = reply.progress.clone();
         let from = progress.get();
         let generation = reply.generation;
@@ -450,7 +471,7 @@ impl Sidebar {
         .child(icon("close", ICON_SM, c::FG_DIM()));
         let send = super::super::codex_view::composer_icon(
             "activity-reply-submit",
-            "Steer session",
+            label,
             if pending {
                 "status-working"
             } else {
@@ -555,7 +576,7 @@ impl Sidebar {
                                     .truncate()
                                     .text_size(rpx(TEXT_SMALL))
                                     .text_color(c::FG_DIM())
-                                    .child("Steer session"),
+                                    .child(label),
                             )
                             .child(close),
                     )
@@ -1005,11 +1026,26 @@ mod tests {
                 assert_eq!(reply.input.read(cx).value().as_ref(), "Steer narrow layout");
                 assert!(reply.error.is_some());
             });
+            // Finish the turn without a redraw: activation must use fresh state,
+            // preserve the rejected draft, and submit a follow-up for either provider.
+            cx.update(|_, cx| {
+                session.update(cx, |session, _| {
+                    session.state.status = Status::Idle;
+                    session.state.turn_id = None;
+                });
+            });
             cx.simulate_keystrokes("enter");
             cx.run_until_parked();
-            let ProviderAction::ActivityPrompt { id, .. } = receive.try_recv().unwrap() else {
-                panic!("expected queue retry")
+            let ProviderAction::ActivityPrompt {
+                id,
+                text,
+                mode: SubmissionMode::Queue,
+                expected_turn: None,
+            } = receive.try_recv().unwrap()
+            else {
+                panic!("expected follow-up after turn completion for {provider:?}")
             };
+            assert_eq!(text, "Steer narrow layout");
             cx.update(|_, cx| {
                 session.update(cx, |s, cx| {
                     s.state.queue_uncertain.push(id);

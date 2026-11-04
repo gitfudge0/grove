@@ -3279,7 +3279,8 @@ impl Sidebar {
             .path
             .clone();
         let targets = self.checkout_targets(cx);
-        let popup = PopupMenu::build(window, cx, move |mut popup, _, _| {
+        let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
+            popup = crate::views::components::dropdown_menu(popup, window);
             if publish {
                 for remote in state
                     .as_ref()

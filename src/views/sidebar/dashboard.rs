@@ -76,12 +76,9 @@ impl DestinationTray {
         let selected_path = self.path.clone();
         let focus = window.focused(cx);
         let popup = PopupMenu::build(window, cx, move |mut menu, window, _| {
+            menu = crate::views::components::dropdown_menu(menu, window);
             menu = menu
                 .scrollable(true)
-                .item_padding(
-                    rpx(SPACE_2XL).to_pixels(window.rem_size()),
-                    rpx(SPACE_MD).to_pixels(window.rem_size()),
-                )
                 .max_h(rpx(MODAL_SCROLL_MAX_H).to_pixels(window.rem_size()));
             if project {
                 for (idx, name, path) in projects {

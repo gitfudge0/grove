@@ -255,6 +255,17 @@ impl PopupMenuItem {
     }
 }
 
+/// Application-owned compact menu geometry, resolved at the current rem size.
+#[derive(Clone, Copy)]
+pub struct MenuStyle {
+    pub row_height: Pixels,
+    pub inset: Pixels,
+    pub padding: Pixels,
+    pub gap: Pixels,
+    pub radius: Pixels,
+    pub font_size: Pixels,
+}
+
 pub struct PopupMenu {
     pub(crate) focus_handle: FocusHandle,
     pub(crate) menu_items: Vec<PopupMenuItem>,
@@ -269,6 +280,7 @@ pub struct PopupMenu {
     bounds: Bounds<Pixels>,
     size: Size,
     item_padding: (Pixels, Pixels),
+    menu_style: Option<MenuStyle>,
     check_side: Side,
 
     parent_menu: Option<WeakEntity<Self>>,
@@ -303,6 +315,7 @@ impl PopupMenu {
             external_link_icon: true,
             size: Size::default(),
             item_padding: (px(8.), Pixels::ZERO),
+            menu_style: None,
             submenu_anchor: (Anchor::TopLeft, Pixels::ZERO),
             priority: 1,
             _subscriptions: vec![],
@@ -367,6 +380,12 @@ impl PopupMenu {
 
     pub fn max_h(mut self, height: impl Into<Pixels>) -> Self {
         self.max_height = Some(height.into());
+        self
+    }
+
+    pub fn menu_style(mut self, style: MenuStyle) -> Self {
+        self.item_padding = (style.inset, Pixels::ZERO);
+        self.menu_style = Some(style);
         self
     }
 
@@ -1106,19 +1125,27 @@ impl PopupMenu {
         let is_submenu = matches!(item, PopupMenuItem::Submenu { .. });
         let group_name = format!("{}:item-{}", cx.entity().entity_id(), ix);
 
-        let (item_height, radius) = match self.size {
+        let (mut item_height, mut radius) = match self.size {
             Size::Small => (px(20.), options.radius.half()),
             _ => (px(26.), options.radius),
         };
 
+        if let Some(style) = self.menu_style {
+            item_height = style.row_height;
+            radius = style.radius;
+        }
         let this = MenuItemElement::new(ix, &group_name)
             .relative()
             .text_sm()
+            .when_some(self.menu_style, |this, style| {
+                this.text_size(style.font_size)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+            })
             .py(self.item_padding.1)
             .px(self.item_padding.0)
             .rounded(radius)
             .items_center()
-            .selected(self.highlighted_index() == Some(ix))
+            .selected(self.highlighted_index() == Some(ix) || item.is_checked())
             .on_hover(cx.listener(move |this, hovered, _, cx| {
                 if *hovered {
                     this.keyboard_navigation = false;
@@ -1142,6 +1169,9 @@ impl PopupMenu {
                 .my_0p5()
                 .mx_neg_1()
                 .border_b(px(2.))
+                .when_some(self.menu_style, |this, style| {
+                    this.my(style.gap / 2.).mx_0().border_b(gpui::px(1.))
+                })
                 .border_color(cx.theme().border)
                 .disabled(true),
             PopupMenuItem::Label(label) => this.disabled(true).cursor_default().child(
@@ -1199,7 +1229,10 @@ impl PopupMenu {
                 })
                 .disabled(*disabled)
                 .h(item_height + self.item_padding.1 * 2.)
-                .gap_x_1()
+                .gap_x(
+                    self.menu_style
+                        .map_or(rems(0.25).to_pixels(window.rem_size()), |style| style.gap),
+                )
                 .children(Self::render_icon(
                     has_left_icon,
                     is_left_check,
@@ -1238,7 +1271,7 @@ impl PopupMenu {
                 menu,
                 disabled,
             } => this
-                .selected(self.highlighted_index() == Some(ix))
+                .selected(self.highlighted_index() == Some(ix) || item.is_checked())
                 .disabled(*disabled)
                 .items_start()
                 .child(
@@ -1360,6 +1393,7 @@ impl Render for PopupMenu {
             .on_action(cx.listener(Self::dismiss))
             .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
             .popover_style(cx)
+            .when_some(self.menu_style, |this, style| this.rounded(style.radius))
             .text_color(cx.theme().popover_foreground)
             .relative()
             .occlude()
@@ -1368,6 +1402,7 @@ impl Render for PopupMenu {
                     .id("items")
                     .p_1()
                     .gap_y_0p5()
+                    .when_some(self.menu_style, |this, style| this.p(style.padding).gap_0())
                     .min_w(rems(8.))
                     .when_some(self.min_width, |this, min_width| this.min_w(min_width))
                     .max_w(max_width)
