@@ -348,22 +348,8 @@ impl Element for Inline {
         };
 
         let text_layout = self.styled_text.layout().clone();
-        if let Some(index) = state.hovered_index {
-            if let Some((range, _)) = self.links.iter().find(|(range, _)| range.contains(&index)) {
-                let selection = Selection {
-                    start: range.start,
-                    end: range.end,
-                };
-                Self::paint_selection(
-                    &selection,
-                    &text_layout,
-                    &bounds,
-                    window,
-                    cx,
-                    *cx.theme().tokens.list_hover,
-                );
-            }
-        }
+        // Inline links use foreground-only hover feedback (set in request_layout).
+        // A list-hover fill can obscure text when theme token palettes differ.
         self.styled_text
             .paint(global_id, None, bounds, &mut (), &mut (), window, cx);
 
