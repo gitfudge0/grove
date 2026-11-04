@@ -386,6 +386,7 @@ impl Render for ProjectSetup {
                         )
                         .child(
                             Input::new(&self.path_input)
+                                .file_drop_overlay(crate::views::components::file_drop_overlay())
                                 .aria_label("Project folder")
                                 .appearance(false)
                                 .bordered(false)

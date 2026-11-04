@@ -38,3 +38,6 @@ mod toast_notice;
 
 #[cfg(test)]
 mod conformance;
+
+#[cfg(test)]
+mod file_drop_tests;

@@ -120,6 +120,8 @@ pub enum InputEvent {
     Change,
     /// Opt-in encoded clipboard image paste; ordinary inputs keep text behavior.
     PasteImages(Vec<gpui::Image>),
+    /// Native paths for inputs whose owner handles attachments instead of text insertion.
+    DropFiles(Vec<std::path::PathBuf>),
     PressEnter {
         secondary: bool,
         shift: bool,
@@ -350,6 +352,8 @@ pub struct InputState {
     pub(super) submit_on_enter: bool,
     markdown_auto_continue: bool,
     accept_image_paste: bool,
+    accept_file_drop: bool,
+    pub(super) file_drop_enabled: bool,
     pub(super) soft_wrap: bool,
     pub(super) scroll_beyond_last_line: Option<usize>,
     pub(super) cursor_surrounding_lines: Option<usize>,
@@ -454,6 +458,8 @@ impl InputState {
             submit_on_enter: false,
             markdown_auto_continue: false,
             accept_image_paste: false,
+            accept_file_drop: false,
+            file_drop_enabled: false,
             soft_wrap: true,
             scroll_beyond_last_line: None,
             cursor_surrounding_lines: None,
@@ -507,7 +513,59 @@ impl InputState {
         }
     }
 
-    /// Set Input to use multi line mode (default rows is 2).
+    /// Let the owner handle native paths via `InputEvent::DropFiles`.
+    /// Drops remain disabled until the rendered Input supplies a file-drop overlay.
+    pub fn accept_file_drop(mut self, accept: bool) -> Self {
+        self.accept_file_drop = accept;
+        self
+    }
+
+    pub(super) fn can_drop_files(&self) -> bool {
+        self.file_drop_enabled
+            && !self.disabled
+            && !self.loading
+            && !self.masked
+            && self.mask_pattern.is_none()
+    }
+
+    /// Handle a native drop without replacing the user's selection or submitting input.
+    pub fn drop_files(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() || !self.can_drop_files() {
+            return;
+        }
+        cx.stop_propagation();
+        self.focus(window, cx);
+        if self.accept_file_drop {
+            cx.emit(InputEvent::DropFiles(paths.to_vec()));
+        } else {
+            let separator = if self.mode.is_multi_line() { "\n" } else { " " };
+            let text = paths
+                .iter()
+                .map(|path| path.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(separator);
+            let source = self.value();
+            let cursor = self.cursor();
+            let before = if cursor > 0 && !source[..cursor].ends_with(char::is_whitespace) {
+                separator
+            } else {
+                ""
+            };
+            let after =
+                if cursor < source.len() && !source[cursor..].starts_with(char::is_whitespace) {
+                    separator
+                } else {
+                    ""
+                };
+            self.insert(format!("{before}{text}{after}"), window, cx);
+        }
+    }
+
     /// Emits `InputEvent::PasteImages` for encoded clipboard images when enabled.
     /// Text entries are still inserted at the current selection as usual.
     pub fn accept_image_paste(mut self, accept: bool) -> Self {
@@ -515,6 +573,7 @@ impl InputState {
         self
     }
 
+    /// Set Input to use multi line mode (default rows is 2).
     pub fn multi_line(mut self, multi_line: bool) -> Self {
         self.mode = self.mode.multi_line(multi_line);
         self

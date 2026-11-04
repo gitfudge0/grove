@@ -211,7 +211,7 @@ impl Sidebar {
                 )
                 .child(
                     compact_field_well(focused).id(("session-title-input-well", id.raw())).on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).flex_1().child(
-                        Input::new(&input)
+                        Input::new(&input).file_drop_overlay(crate::views::components::file_drop_overlay())
                             .aria_label("Session title")
                             .aria_description(
                                 "Enter a title of 1–80 characters. Enter saves; Escape cancels.",

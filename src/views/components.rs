@@ -7,6 +7,36 @@ const FORM_FIELD_H: f32 = FIELD_H;
 pub(super) const FORM_FIELD_INSET: f32 = FIELD_INSET_X;
 const FORM_FIELD_VALUE: f32 = FORM_VALUE_SIZE;
 
+/// Transient file-drop feedback shared by every editable input. It overlays the
+/// editor rather than replacing it, so drag exit/cancel leaves text and focus intact.
+/// Drag feedback is immediate; no animation should lag behind the pointer.
+pub fn file_drop_overlay() -> Div {
+    div()
+        .debug_selector(|| "input-file-drop-overlay".into())
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(rpx(SPACE_SM))
+        .rounded(rpx(RADIUS_CONTROL))
+        .border_1()
+        .border_dashed()
+        .border_color(c::SEL_RING())
+        .bg(c::BG_RAIL())
+        .text_color(c::FG())
+        .text_size(rpx(TEXT_SMALL))
+        .invisible()
+        .cursor_default()
+        .group_drag_over::<gpui::ExternalPaths>("input-file-drop", |style| style.visible())
+        .child(crate::icons::icon("paperclip", ICON_SM, c::FG()))
+        .child(
+            div()
+                .debug_selector(|| "input-file-drop-label".into())
+                .child("Drop files here"),
+        )
+}
+
 /// Preferred width for a truncating label whose trailing control stays adjacent.
 pub fn truncation_safe_label_width(
     label: &str,
@@ -223,6 +253,7 @@ pub fn form_field(
                 )
                 .child(
                     gpui_component::input::Input::new(input)
+                        .file_drop_overlay(crate::views::components::file_drop_overlay())
                         .aria_label(label)
                         .when_some(error, |input, error| {
                             input.aria_description(error.to_string())

@@ -378,7 +378,7 @@ impl WorkspaceManager {
                                 "Workspace name"
                             })
                             .child(
-                                Input::new(&self.input)
+                                Input::new(&self.input).file_drop_overlay(crate::views::components::file_drop_overlay())
                                     .aria_label(if deleting {
                                         "Confirm workspace name"
                                     } else {

@@ -695,6 +695,7 @@ impl NativePlan {
                     })
                     .child(
                         Input::new(input)
+                            .file_drop_overlay(crate::views::components::file_drop_overlay())
                             .disabled(self.send_pending || review_locked(&self.snapshot(cx)))
                             .aria_label(if bucket == "own_answers" {
                                 "Your own answer"

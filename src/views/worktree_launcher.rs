@@ -1074,7 +1074,7 @@ impl Render for WorktreeLauncher {
                                             .cursor_pointer().on_click(cx.listener(|this, _, window, cx| this.back(window, cx)))
                                             .child(icon("arrow-left", ICON_MD, c::FG_DIM()))))
                                     .child(
-                                        Input::new(&self.input).disabled(!self.open).tab_index(if self.open { 0 } else { -1 })
+                                        Input::new(&self.input).file_drop_overlay(crate::views::components::file_drop_overlay()).disabled(!self.open).tab_index(if self.open { 0 } else { -1 })
                                             .aria_label(if project_step { "Search projects" } else if self.mode == PaletteMode::Single { "Search worktrees" } else { "Search commands and worktrees" })
                                             .appearance(false)
                                             .bordered(false)

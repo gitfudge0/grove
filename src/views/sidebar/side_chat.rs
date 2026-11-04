@@ -1435,7 +1435,7 @@ impl Sidebar {
                   .p(rpx(SPACE_2XL)).gap(rpx(SPACE_LG))
                   .rounded(rpx(RADIUS_PANEL)).border_1().border_color(c::BORDER_SOFT()).bg(c::BG_RAIL())
                   .child(div().id("side-chat-input").debug_selector(|| "side-chat-input".into()).min_h(rpx(FORM_VALUE_LINE_H * 2.0))
-                    .child(Input::new(&input).aria_label(input_label).appearance(false).bordered(false).focus_bordered(false).text_color(c::FG()).p_0()))
+                    .child(Input::new(&input).file_drop_overlay(crate::views::components::file_drop_overlay()).aria_label(input_label).appearance(false).bordered(false).focus_bordered(false).text_color(c::FG()).p_0()))
                   .child(div().id("side-chat-composer-footer").debug_selector(|| "side-chat-composer-footer".into()).flex().items_center().justify_between().gap(rpx(SPACE_SM))
                     .child(div().id("side-chat-context").min_w_0().flex_1().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(context_label))
                     .child(if busy {

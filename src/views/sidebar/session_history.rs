@@ -409,6 +409,9 @@ impl Sidebar {
                                     .child(
                                         div().flex_1().min_w_0().child(
                                             Input::new(&self.history_search)
+                                                .file_drop_overlay(
+                                                    crate::views::components::file_drop_overlay(),
+                                                )
                                                 .small()
                                                 .text_size(rpx(TEXT_TITLE))
                                                 .aria_label("Search sessions and transcripts")
@@ -708,6 +711,7 @@ impl Sidebar {
                     .w_full()
                     .child(
                         Input::new(&self.projects_search)
+                            .file_drop_overlay(crate::views::components::file_drop_overlay())
                             .aria_label("Find a project")
                             .appearance(false)
                             .bordered(false)

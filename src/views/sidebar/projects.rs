@@ -965,6 +965,7 @@ fn script_field(
         )
         .child(
             gpui_component::input::Input::new(input)
+                .file_drop_overlay(crate::views::components::file_drop_overlay())
                 .aria_label(label)
                 .appearance(false)
                 .bordered(false)

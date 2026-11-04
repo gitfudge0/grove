@@ -2,9 +2,10 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Rems, RenderOnce, Role,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window, div, px, relative,
+    AnyElement, App, DefiniteLength, Edges, EdgesRefinement, Entity, ExternalPaths, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Rems,
+    RenderOnce, Role, StatefulInteractiveElement as _, StyleRefinement, Styled, TextAlign, Window,
+    div, px, relative,
 };
 
 use crate::button::{Button, ButtonVariants as _};
@@ -39,6 +40,7 @@ pub struct Input {
     size: Size,
     prefix: Option<AnyElement>,
     suffix: Option<AnyElement>,
+    file_drop_overlay: Option<AnyElement>,
     height: Option<DefiniteLength>,
     appearance: bool,
     cleanable: bool,
@@ -82,6 +84,7 @@ impl Input {
             style: StyleRefinement::default(),
             prefix: None,
             suffix: None,
+            file_drop_overlay: None,
             height: None,
             appearance: true,
             cleanable: false,
@@ -118,6 +121,13 @@ impl Input {
 
     pub fn suffix(mut self, suffix: impl IntoElement) -> Self {
         self.suffix = Some(suffix.into_any_element());
+        self
+    }
+
+    /// Enable native file drops with an application-owned drag-over overlay.
+    /// The overlay can use the `input-file-drop` group to show only during a file drag.
+    pub fn file_drop_overlay(mut self, overlay: impl IntoElement) -> Self {
+        self.file_drop_overlay = Some(overlay.into_any_element());
         self
     }
 
@@ -344,6 +354,11 @@ impl RenderOnce for Input {
             state.context_menu_builder = self.context_menu_builder.clone();
             state.disabled = self.disabled;
             state.size = self.size;
+            state.file_drop_enabled = self.file_drop_overlay.is_some()
+                && !matches!(
+                    self.content_type,
+                    Some(InputContentType::Password | InputContentType::NewPassword)
+                );
 
             // Only for single line mode
             if state.mode.is_single_line() {
@@ -388,9 +403,37 @@ impl RenderOnce for Input {
             && state.text.len() > 0
             && state.mode.is_single_line();
         let has_suffix = suffix.is_some() || state.loading || self.mask_toggle || show_clear_button;
+        let file_drop_enabled = state.can_drop_files();
 
         div()
             .id(("input", self.state.entity_id()))
+            .relative()
+            .group("input-file-drop")
+            .when(file_drop_enabled, |input| {
+                input
+                    .on_drag_move::<ExternalPaths>(|event, window, cx| {
+                        // GPUI converts FileDrop to pointer events after tracking input
+                        // modality. A drag immediately after typing otherwise retains
+                        // keyboard modality, suppressing both hover and drop hit tests.
+                        if window.last_input_was_keyboard() {
+                            let pointer = event.event.clone();
+                            window.defer(cx, move |window, cx| {
+                                if window.last_input_was_keyboard() {
+                                    window.dispatch_event(
+                                        gpui::PlatformInput::MouseMove(pointer),
+                                        cx,
+                                    );
+                                }
+                            });
+                        }
+                    })
+                    .on_drop(window.listener_for(
+                        &self.state,
+                        |state, paths: &ExternalPaths, window, cx| {
+                            state.drop_files(paths.paths(), window, cx);
+                        },
+                    ))
+            })
             .role(accessibility_role)
             .when_some(self.aria_label, |input, label| input.aria_label(label))
             .when_some(self.aria_description, |input, description| {
@@ -516,6 +559,11 @@ impl RenderOnce for Input {
             })
             .when(!state.mode.is_multi_line(), |this| {
                 this.child(self.state.clone())
+            })
+            .children(if file_drop_enabled {
+                self.file_drop_overlay
+            } else {
+                None
             })
             .when(has_suffix, |this| {
                 this.pr(self.size.input_px()).child(

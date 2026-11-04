@@ -48,6 +48,8 @@ Free-form HTML may still express exploratory ideas, but it cannot serve as an im
 
 ## Controls, forms, and states
 
+Editable text inputs accept native file drops. While local files are over an enabled input, show a flat, neutral drop overlay with a dashed focus-strength border, leading attachment icon and “Drop files here” label; keep the field’s layout and draft intact. Feedback follows the pointer immediately and disappears on leave, cancel or drop. Disabled, loading, masked and constrained numeric inputs reject drops. Ordinary text inputs insert local file paths at the caret without replacing selected text; multi-line inputs separate multiple paths by line, single-line inputs by spaces. Conversation composers use the existing file/image attachment pipeline, draft ownership and pending-work locks for both Codex and Claude. A drop never sends a message. Existing attachment removal and text undo remain available.
+
 | Need | Shared recipe | Contract |
 |---|---|---|
 | Header/icon action | `header_control`, `header_control_with_label_tooltip`, `header_control_with_tooltip` | Stable icon slot and accessible name; tooltip is an explicit opt-in when needed. Owner supplies missing focus/activation behavior. |

@@ -1267,6 +1267,7 @@ impl CodexView {
             InputState::new(window, cx)
                 .auto_grow(3, 10)
                 .accept_image_paste(true)
+                .accept_file_drop(true)
                 .markdown_auto_continue(true)
                 .submit_on_enter(true)
                 .placeholder(placeholder)
@@ -1309,6 +1310,9 @@ impl CodexView {
                         secondary: false,
                         shift: false,
                     } => this.submit(window, cx),
+                    InputEvent::DropFiles(paths) => {
+                        this.attach_paths(paths.clone(), window, cx);
+                    }
                     InputEvent::PasteImages(images) => {
                         this.paste_images(images.clone(), window, cx);
                     }
@@ -6137,6 +6141,11 @@ impl Render for CodexView {
                             ))
                             .child(
                                 Input::new(&self.input)
+                                    .when(!self.pending_attachment_picker, |input| {
+                                        input.file_drop_overlay(
+                                            crate::views::components::file_drop_overlay(),
+                                        )
+                                    })
                                     .disabled(
                                         self.submitted.is_some()
                                             || self.edit_request_pending
@@ -9060,6 +9069,39 @@ impl CodexView {
                 });
                 return;
             };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.pending_attachment_picker = false;
+                this.attach_paths(paths, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Picker and native drops share image preparation and draft ownership locks.
+    fn attach_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty()
+            || self.submitted.is_some()
+            || self.pending_attachment_picker
+            || self.edit_request_pending
+            || self.edit_confirmation.is_some()
+            || self.session.read(cx).state.saved.pending_edit.is_some()
+            || self
+                .queue_editor
+                .as_ref()
+                .is_some_and(|editor| !editor.loaded || editor.saving)
+        {
+            return;
+        }
+        self.set_composer_collapsed(false, cx);
+        self.pending_attachment_picker = true;
+        let editor = self.queue_editor.as_ref().map(|editor| editor.id);
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
             let attachments = cx
                 .background_executor()
                 .spawn(async move {
@@ -9091,7 +9133,11 @@ impl CodexView {
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.pending_attachment_picker = false;
-                if this.submitted.is_some() {
+                if this.submitted.is_some()
+                    || this.edit_request_pending
+                    || this.session.read(cx).state.saved.pending_edit.is_some()
+                    || this.queue_editor.as_ref().map(|editor| editor.id) != editor
+                {
                     return;
                 }
                 let (references, images) = attachments;
@@ -9100,12 +9146,14 @@ impl CodexView {
                 }
                 if !references.is_empty() {
                     this.input.update(cx, |input, cx| {
-                        input.replace(format!(" {references} "), window, cx);
+                        input.insert(format!(" {references} "), window, cx);
                     });
                 }
                 let text = this.input.read(cx).value().to_string();
-                this.session
-                    .update(cx, |session, cx| session.send(Action::Draft(text), cx));
+                if this.queue_editor.is_none() {
+                    this.session
+                        .update(cx, |session, cx| session.send(Action::Draft(text), cx));
+                }
                 this.input.focus_handle(cx).focus(window, cx);
                 cx.notify();
             });
@@ -10854,6 +10902,9 @@ impl CodexView {
                                         )
                                         .child(
                                             Input::new(&field_draft.input)
+                                                .file_drop_overlay(
+                                                    crate::views::components::file_drop_overlay(),
+                                                )
                                                 .aria_label(field.title.clone())
                                                 .disabled(draft.submitting)
                                                 .appearance(false)
@@ -11295,6 +11346,7 @@ impl CodexView {
                         )
                         .child(
                             Input::new(&draft.input)
+                                .file_drop_overlay(crate::views::components::file_drop_overlay())
                                 .aria_label("Tool input JSON")
                                 .disabled(draft.submitting)
                                 .appearance(false)
@@ -11334,6 +11386,7 @@ impl CodexView {
                         )
                         .child(
                             Input::new(&draft.feedback)
+                                .file_drop_overlay(crate::views::components::file_drop_overlay())
                                 .aria_label("Feedback if denied")
                                 .disabled(draft.submitting)
                                 .appearance(false)
@@ -12158,6 +12211,7 @@ impl CodexView {
                         })
                         .child(
                             Input::new(&question_draft.input)
+                                .file_drop_overlay(crate::views::components::file_drop_overlay())
                                 .disabled(submitting)
                                 .aria_label(format!("Answer: {}", question.text))
                                 .appearance(false)
@@ -22181,6 +22235,72 @@ mod tests {
                 assert!(image.left() >= row.left() && image.right() <= row.right());
                 assert!(image.top() >= row.top() && image.bottom() <= row.bottom());
             }
+        }
+    }
+
+    #[gpui::test]
+    fn file_drop_composer_preserves_text_attaches_images_and_never_sends(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, actions, _updates) = fixture(cx);
+            let dir = tempfile::tempdir().unwrap();
+            let image_path = dir.path().join("screenshot.png");
+            fs_err::write(&image_path, test_image(image::ImageFormat::Png)).unwrap();
+            let text_path = dir.path().join("design notes.md");
+            fs_err::write(&text_path, "Reference material").unwrap();
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session
+                        .update(cx, |session, _| session.state.saved.provider = provider);
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("Keep this draft", window, cx)
+                    });
+                })
+            });
+            draw(cx);
+            let position = cx.debug_bounds("codex-composer-input").unwrap().center();
+            cx.simulate_event(gpui::FileDropEvent::Entered {
+                position,
+                paths: gpui::ExternalPaths(vec![text_path.clone(), image_path].into()),
+            });
+            draw(cx);
+            cx.simulate_event(gpui::FileDropEvent::Pending { position });
+            draw(cx);
+            // Drag exit must not change the draft or create an attachment.
+            cx.simulate_event(gpui::FileDropEvent::Exited);
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.input.read(cx).value().as_ref(), "Keep this draft");
+                assert!(view.images.is_empty());
+            });
+            cx.simulate_event(gpui::FileDropEvent::Entered {
+                position,
+                paths: gpui::ExternalPaths(
+                    vec![text_path.clone(), dir.path().join("screenshot.png")].into(),
+                ),
+            });
+            draw(cx);
+            cx.simulate_event(gpui::FileDropEvent::Submit { position });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                let text = view.input.read(cx).value();
+                assert!(text.contains("Keep this draft"), "{provider:?}: {text}");
+                assert!(
+                    text.contains(&format!("@{}", text_path.display())),
+                    "{provider:?}: {text}"
+                );
+                assert_eq!(view.images.len(), 1, "{provider:?}");
+                assert!(view.images[0].starts_with("data:image/png;base64,"));
+            });
+            let emitted: Vec<_> = actions.try_iter().collect();
+            assert!(emitted
+                .iter()
+                .any(|action| matches!(action, Action::DraftImages(images) if images.len() == 1)));
+            assert!(emitted.iter().any(|action| matches!(action, Action::Draft(text) if text.contains(&format!("@{}", text_path.display())))));
+            assert!(!emitted
+                .iter()
+                .any(|action| matches!(action, Action::Submit { .. })));
         }
     }
 

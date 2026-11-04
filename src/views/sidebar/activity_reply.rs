@@ -572,6 +572,9 @@ impl Sidebar {
                                     .child(
                                         div().flex_1().min_w_0().child(
                                             Input::new(&input)
+                                                .file_drop_overlay(
+                                                    crate::views::components::file_drop_overlay(),
+                                                )
                                                 .aria_label("Activity reply")
                                                 .text_size(rpx(TEXT_BODY))
                                                 .line_height(rpx(TEXT_BODY + SPACE_SM))

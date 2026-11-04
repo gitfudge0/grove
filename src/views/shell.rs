@@ -1409,6 +1409,9 @@ impl Shell {
                                 .child(icon("search", ICON_MD, c::FG_DIM()))
                                 .child(
                                     Input::new(&self.switcher_input)
+                                        .file_drop_overlay(
+                                            crate::views::components::file_drop_overlay(),
+                                        )
                                         .aria_label("Find a workspace or session")
                                         .appearance(false)
                                         .bordered(false)

@@ -303,6 +303,7 @@ impl SettingsPanel {
             body = body.child(
                 super::components::project_field_well(false, false).child(
                     Input::new(input)
+                        .file_drop_overlay(crate::views::components::file_drop_overlay())
                         .aria_label("Search themes")
                         .appearance(false)
                         .bordered(false)

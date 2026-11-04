@@ -781,7 +781,7 @@ impl Render for ModelPicker {
                             })
                             .child(crate::icons::icon("search", ICON_SM, c::FG_DIM()))
                             .child(
-                                Input::new(&self.search)
+                                Input::new(&self.search).file_drop_overlay(crate::views::components::file_drop_overlay())
                                     .aria_label("Search models")
                                     .appearance(false)
                                     .bordered(false)
