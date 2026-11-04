@@ -1126,11 +1126,16 @@ impl Sidebar {
             .selection
             .as_ref()
             .is_some_and(|selection| match selection {
-                Selection::Session(id) => !self
-                    .snapshot
-                    .projects
-                    .iter()
-                    .any(|p| p.sessions.contains(id)),
+                Selection::Session(id) => {
+                    !registry
+                        .meta(*id)
+                        .is_some_and(|meta| meta.project.is_empty())
+                        && !self
+                            .snapshot
+                            .projects
+                            .iter()
+                            .any(|p| p.sessions.contains(id))
+                }
                 Selection::Home(id) => !registry.home_terminals().iter().any(|m| m.id == *id),
                 Selection::Project(idx) | Selection::Worktree(idx, _) => !ids.contains(idx),
             })
@@ -1321,7 +1326,7 @@ impl Sidebar {
         let mut sessions: Vec<_> = registry
             .all()
             .iter()
-            .filter(|meta| projects.contains(meta.project.as_str()))
+            .filter(|meta| meta.project.is_empty() || projects.contains(meta.project.as_str()))
             .map(|meta| (meta.id, false))
             .collect();
         sessions.extend(

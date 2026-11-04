@@ -351,3 +351,5 @@ Composer `@` file completion fuzzy searches worktree-relative paths recursively,
 Editable Markdown code spans and fenced blocks use a persistent neutral code surface and visible outline, including an unfinished fenced block. Rendered code blocks use the same code surface with a bounded border and existing code padding; inline code has a neutral backplate and medium weight. Styling updates immediately without motion or changing source bytes.
 
 Home composer project selection offers New project through the existing project setup flow and No project. No project uses the current OS user home directory, preserves the draft when selected, and omits checkout/worktree selection and creation. It remains available with no registered projects. Destination selection is immediate, with no motion delay.
+
+Sessions launched with No project appear in Home Activity across workspaces, including when no projects are registered. They retain session selection and canvas access without project membership; project-owned Activity entries remain restricted to the active workspace.

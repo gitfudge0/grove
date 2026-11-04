@@ -893,10 +893,12 @@ impl Sidebar {
             .all()
             .iter()
             .filter(|meta| {
-                self.snapshot
-                    .projects
-                    .iter()
-                    .any(|project| project.sessions.contains(&meta.id))
+                meta.project.is_empty()
+                    || self
+                        .snapshot
+                        .projects
+                        .iter()
+                        .any(|project| project.sessions.contains(&meta.id))
             })
             .map(|meta| {
                 let (status, _) = self.status(meta, cx);
@@ -1038,7 +1040,11 @@ impl Sidebar {
                             },
                         );
                         let metadata = super::dashboard_timeline::RowMetadata {
-                            project: meta.project.clone(),
+                            project: if meta.project.is_empty() {
+                                "No project".into()
+                            } else {
+                                meta.project.clone()
+                            },
                             worktree,
                             provider,
                             model,
@@ -1267,8 +1273,9 @@ fn seed_activity_fixture(
     });
     let registry = sidebar.runtime.read(cx).registry.clone();
     let cwd = session.read(cx).state.saved.cwd.clone();
+    let project = session.read(cx).state.saved.project.clone();
     let id = registry.update(cx, |registry, _| {
-        let id = registry.insert_meta("Dashboard visual fixture".into(), cwd, provider.agent());
+        let id = registry.insert_meta(project, cwd, provider.agent());
         registry.attach_codex(id, session.clone(), handle);
         id
     });
@@ -1283,6 +1290,67 @@ fn seed_activity_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn activity_includes_projectless_codex_and_claude_without_other_workspace_sessions(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        let (visible, hidden) = cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.open_dashboard(window, cx);
+                let registry = sidebar.runtime.read(cx).registry.clone();
+                let ids = registry.update(cx, |registry, cx| {
+                    let visible = [Agent::Codex, Agent::Claude].map(|agent| {
+                        registry.insert_meta(String::new(), dashboard_home_dir(), agent)
+                    });
+                    let hidden = registry.insert_meta(
+                        "Other workspace".into(),
+                        "/tmp/other-workspace".into(),
+                        Agent::Codex,
+                    );
+                    cx.notify();
+                    (visible, hidden)
+                });
+                sidebar.sync(window, cx);
+                ids
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        for id in visible {
+            assert!(cx
+                .debug_bounds(Box::leak(
+                    format!("dashboard-terminal-session-{}", id.raw()).into_boxed_str()
+                ))
+                .is_some());
+        }
+        assert!(cx
+            .debug_bounds(Box::leak(
+                format!("dashboard-terminal-session-{}", hidden.raw()).into_boxed_str()
+            ))
+            .is_none());
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let canvas = sidebar.active_canvas_sessions(cx);
+                assert!(visible.iter().all(|id| canvas.contains(&(*id, false))));
+                assert!(!canvas.contains(&(hidden, false)));
+                sidebar.select(Selection::Session(visible[0]), cx);
+                sidebar.sync(window, cx);
+                assert_eq!(sidebar.selection, Some(Selection::Session(visible[0])));
+            });
+        });
+    }
 
     #[gpui::test]
     fn project_picker_destination_preserves_codex_and_claude_composer(
@@ -2181,6 +2249,8 @@ mod native_snapshots {
             c::sync_component_theme(cx);
         });
         for (state, width) in [
+            ("activity-projectless-codex", 1100.),
+            ("activity-projectless-claude-narrow", 760.),
             ("activity-codex", 1100.),
             ("activity-claude-narrow", 760.),
             ("activity-codex-history", 1100.),
@@ -2230,6 +2300,17 @@ mod native_snapshots {
                         } else {
                             grove_core::codex::Provider::Codex
                         };
+                        if state.contains("projectless") {
+                            sidebar
+                                .dashboard
+                                .as_ref()
+                                .unwrap()
+                                .session
+                                .update(cx, |s, _| {
+                                    s.state.saved.project.clear();
+                                    s.state.saved.cwd = dashboard_home_dir();
+                                });
+                        }
                         let id = seed_activity_fixture(sidebar, provider, window, cx);
                         if state.ends_with("history") {
                             sidebar
