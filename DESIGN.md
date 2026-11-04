@@ -349,3 +349,5 @@ Home Activity Mark reviewed saves immediately and shows the current status in pl
 Composer `@` file completion fuzzy searches worktree-relative paths recursively, prioritizing filename matches. It includes tracked and non-ignored untracked files from the current checkout and retains relative directory completion.
 
 Editable Markdown code spans and fenced blocks use a persistent neutral code surface and visible outline, including an unfinished fenced block. Rendered code blocks use the same code surface with a bounded border and existing code padding; inline code has a neutral backplate and medium weight. Styling updates immediately without motion or changing source bytes.
+
+Home composer project selection offers New project through the existing project setup flow and No project (home). No project uses the current OS user home directory, preserves the draft when selected, and omits checkout/worktree selection and creation. It remains available with no registered projects. Destination selection is immediate, with no motion delay.

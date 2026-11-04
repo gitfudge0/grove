@@ -3,6 +3,15 @@ use super::*;
 use crate::entities::codex_session::CodexSession;
 use crate::views::codex_view::{CodexView, CodexViewEvent, CHAT_MAX_W};
 
+const NO_PROJECT: usize = usize::MAX;
+
+fn dashboard_home_dir() -> String {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.25;
 
 /// Preferences for a fresh dashboard draft after adopting the previous one.
@@ -26,6 +35,8 @@ pub(crate) enum DestinationEvent {
     Project(usize, String),
     Worktree(String),
     NewWorktree,
+    NewProject,
+    Home,
 }
 pub(crate) struct DestinationTray {
     projects: Vec<(usize, String, String)>,
@@ -81,6 +92,17 @@ impl DestinationTray {
                 .scrollable(true)
                 .max_h(rpx(MODAL_SCROLL_MAX_H).to_pixels(window.rem_size()));
             if project {
+                let home_owner = owner.clone();
+                menu = menu
+                    .item(
+                        PopupMenuItem::new("No project (home)")
+                            .checked(selected_project == NO_PROJECT)
+                            .on_click(move |_, _, cx| {
+                                let _ =
+                                    home_owner.update(cx, |_, cx| cx.emit(DestinationEvent::Home));
+                            }),
+                    )
+                    .separator();
                 for (idx, name, path) in projects {
                     let owner = owner.clone();
                     menu = menu.item(
@@ -93,6 +115,11 @@ impl DestinationTray {
                             }),
                     );
                 }
+                menu = menu
+                    .separator()
+                    .item(PopupMenuItem::new("New project").on_click(move |_, _, cx| {
+                        let _ = owner.update(cx, |_, cx| cx.emit(DestinationEvent::NewProject));
+                    }));
             } else {
                 for (path, name) in worktrees {
                     let owner = owner.clone();
@@ -148,7 +175,7 @@ impl Render for DestinationTray {
             .projects
             .iter()
             .find(|p| p.0 == self.project)
-            .map_or_else(|| "Select project".into(), |p| p.1.clone());
+            .map_or_else(|| "No project (home)".into(), |p| p.1.clone());
         let worktree = self
             .worktrees
             .iter()
@@ -178,6 +205,9 @@ impl Render for DestinationTray {
                 .into_iter()
                 .enumerate()
         {
+            if !is_project && self.project == NO_PROJECT {
+                continue;
+            }
             let bounds = self.bounds[idx].clone();
             let foreground = if self.hovered[idx] || self.open_selector == Some(idx) {
                 c::FG()
@@ -379,13 +409,20 @@ impl Sidebar {
                 .as_ref()
                 .and_then(|defaults| projects.iter().find(|(idx, _, _)| *idx == defaults.project))
                 .or_else(|| projects.first());
-            let Some((idx, _, _)) = selected else {
-                self.dashboard_open = true;
-                cx.notify();
-                return;
-            };
-            let idx = *idx;
-            let project = cx.global::<SettingsState>().store.projects[idx].clone();
+            let idx = defaults
+                .as_ref()
+                .filter(|d| d.project == NO_PROJECT)
+                .map_or_else(|| selected.map_or(NO_PROJECT, |p| p.0), |_| NO_PROJECT);
+            let project = cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .get(idx)
+                .cloned();
+            let project_path = project
+                .as_ref()
+                .map(|p| p.path.clone())
+                .unwrap_or_else(dashboard_home_dir);
             let provider = defaults
                 .as_ref()
                 .map_or(grove_core::codex::Provider::Codex, |defaults| {
@@ -394,7 +431,7 @@ impl Sidebar {
             let checkout = defaults
                 .as_ref()
                 .filter(|defaults| defaults.project == idx)
-                .map_or_else(|| project.path.clone(), |defaults| defaults.path.clone());
+                .map_or_else(|| project_path.clone(), |defaults| defaults.path.clone());
             let key = match grove_core::identity::random_id() {
                 Ok(key) => key,
                 Err(error) => {
@@ -421,7 +458,7 @@ impl Sidebar {
                     .unwrap_or_default(),
                 context: None,
                 key,
-                project: project.name,
+                project: project.map(|p| p.name).unwrap_or_default(),
                 cwd: checkout.clone(),
                 label: provider.label().into(),
                 title: None,
@@ -481,6 +518,21 @@ impl Sidebar {
                 }),
                 cx.subscribe_in(&tray, window, |this, _, event, window, cx| {
                     match event {
+                        DestinationEvent::NewProject => this.add_project(window, cx),
+                        DestinationEvent::Home => {
+                            if let Some(d) = &this.dashboard {
+                                d.tray.update(cx, |t, cx| {
+                                    t.project = NO_PROJECT;
+                                    t.path = dashboard_home_dir();
+                                    t.generation = t.generation.wrapping_add(1);
+                                    t.worktrees.clear();
+                                    t.loading = false;
+                                    t.error = None;
+                                    cx.notify();
+                                });
+                            }
+                            this.refresh_dashboard_catalog(cx);
+                        }
                         DestinationEvent::Project(idx, expected_path) => {
                             let Some(path) = cx
                                 .global::<SettingsState>()
@@ -541,8 +593,8 @@ impl Sidebar {
         let mut destination_changed = false;
         if let Some(d) = &self.dashboard {
             let current = d.tray.read(cx).project;
-            let fallback = projects.first().map(|p| p.0);
-            let selected = if projects.iter().any(|p| p.0 == current) {
+            let fallback = Some(NO_PROJECT);
+            let selected = if current == NO_PROJECT || projects.iter().any(|p| p.0 == current) {
                 Some(current)
             } else {
                 fallback
@@ -553,8 +605,17 @@ impl Sidebar {
                 if let Some(idx) = selected {
                     if t.project != idx {
                         t.project = idx;
-                        t.path
-                            .clone_from(&cx.global::<SettingsState>().store.projects[idx].path);
+                        t.path = cx
+                            .global::<SettingsState>()
+                            .store
+                            .projects
+                            .get(idx)
+                            .map(|p| p.path.clone())
+                            .unwrap_or_else(dashboard_home_dir);
+                        t.generation = t.generation.wrapping_add(1);
+                        t.worktrees.clear();
+                        t.loading = false;
+                        t.error = None;
                     }
                 }
                 cx.notify();
@@ -580,7 +641,16 @@ impl Sidebar {
             (t.project, t.path.clone())
         };
         let provider = d.session.read(cx).state.saved.provider;
-        let Some((name, path, _)) = self.launch_target(idx, path, provider.agent(), cx) else {
+        let Some((name, path, _)) = (if idx == NO_PROJECT {
+            let home = dashboard_home_dir();
+            (path == home && std::path::Path::new(&home).is_dir()).then_some((
+                String::new(),
+                home,
+                provider.agent(),
+            ))
+        } else {
+            self.launch_target(idx, path, provider.agent(), cx)
+        }) else {
             self.content_error = Some("Select an available project and worktree.".into());
             cx.notify();
             return;
@@ -786,11 +856,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(d) = self
-            .dashboard
-            .as_ref()
-            .filter(|d| !d.tray.read(cx).projects.is_empty())
-        else {
+        let Some(d) = self.dashboard.as_ref() else {
             return div()
                 .size_full()
                 .flex()
