@@ -23,6 +23,8 @@ pub(super) struct ActivityReply {
     pending: Option<u64>,
     error: Option<String>,
     receipt: Option<&'static str>,
+    receipt_closing: bool,
+    receipt_height: std::rc::Rc<std::cell::Cell<gpui::Pixels>>,
     mode: SubmissionMode,
     submitted_mode: SubmissionMode,
     turn: Option<String>,
@@ -83,6 +85,8 @@ impl Sidebar {
                 pending: None,
                 error: None,
                 receipt: None,
+                receipt_closing: false,
+                receipt_height: Default::default(),
                 mode: SubmissionMode::Steer,
                 submitted_mode: SubmissionMode::Steer,
                 turn: None,
@@ -199,6 +203,7 @@ impl Sidebar {
                 reply.pending = Some(id);
                 reply.error = None;
                 reply.receipt = None;
+                reply.receipt_closing = false;
                 reply.timeout = Some(timeout);
             }
             Err(error) => {
@@ -229,14 +234,35 @@ impl Sidebar {
             reply.pending = None;
             reply.timeout = Some(cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor().timer(REPLY_RECEIPT_DURATION).await;
+                let animate = this
+                    .update(cx, |this, cx| {
+                        if let Some(reply) = this.dashboard_timelines.replies.get_mut(&key) {
+                            if cx.reduce_motion() {
+                                reply.receipt = None;
+                            } else {
+                                reply.receipt_closing = true;
+                            }
+                        }
+                        cx.notify();
+                        !cx.reduce_motion()
+                    })
+                    .unwrap_or(false);
+                if !animate {
+                    return;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(REPLY_MOTION_MS))
+                    .await;
                 let _ = this.update(cx, |this, cx| {
                     if let Some(reply) = this.dashboard_timelines.replies.get_mut(&key) {
                         reply.receipt = None;
+                        reply.receipt_closing = false;
                     }
                     cx.notify();
                 });
             }));
             reply.error = None;
+            reply.receipt_closing = false;
             reply.receipt = Some("Session is being steered");
             reply
                 .input
@@ -318,18 +344,31 @@ impl Sidebar {
             .debug_selector(move || format!("activity-reply-frame-{}", key.1.raw()))
             .w_full()
             .child(row);
-        if let Some(receipt) = self
-            .dashboard_timelines
-            .replies
-            .get(&key)
-            .and_then(|r| r.receipt)
-        {
-            frame = frame.child(
-                div()
+        if let Some(reply) = self.dashboard_timelines.replies.get(&key) {
+            if let Some(receipt) = reply.receipt {
+                let height = reply.receipt_height.clone();
+                let measured = height.clone();
+                let label = div()
                     .pl(rpx(ICON_LG + SPACE_LG))
                     .text_size(rpx(TEXT_SMALL))
-                    .child(receipt),
-            );
+                    .child(receipt)
+                    .on_prepaint(move |bounds, _, _| measured.set(bounds.size.height));
+                let body = div().w_full().overflow_hidden().child(label);
+                frame = if reply.receipt_closing && !cx.reduce_motion() {
+                    frame.child(
+                        body.with_animation(
+                            format!("activity-receipt-exit-{}", key.1.raw()),
+                            gpui::Animation::new(Duration::from_millis(REPLY_MOTION_MS))
+                                .with_easing(motion::ease_standard),
+                            move |body, t| body.h(height.get() * (1. - t)).opacity(1. - t),
+                        ),
+                    )
+                } else if reply.receipt_closing {
+                    frame
+                } else {
+                    frame.child(body)
+                };
+            }
         }
         let closing = self
             .dashboard_timelines
@@ -889,6 +928,7 @@ mod tests {
                     Some("Session is being steered")
                 );
             });
+            cx.update(|_, cx| cx.set_reduce_motion(provider == Provider::Claude));
             cx.executor().advance_clock(Duration::from_millis(2999));
             cx.run_until_parked();
             cx.update(|_, cx| {
@@ -901,12 +941,28 @@ mod tests {
             cx.executor().advance_clock(Duration::from_millis(1));
             cx.run_until_parked();
             cx.update(|_, cx| {
-                assert!(
-                    probe.read(cx).sidebar.read(cx).dashboard_timelines.replies[&key]
-                        .receipt
-                        .is_none()
-                );
+                let sidebar = probe.read(cx).sidebar.read(cx);
+                let reply = &sidebar.dashboard_timelines.replies[&key];
+                if provider == Provider::Claude {
+                    assert!(
+                        reply.receipt.is_none(),
+                        "reduced motion removes immediately"
+                    );
+                    assert!(!reply.receipt_closing);
+                } else {
+                    assert!(reply.receipt.is_some(), "receipt survives through collapse");
+                    assert!(reply.receipt_closing);
+                }
             });
+            cx.executor()
+                .advance_clock(Duration::from_millis(REPLY_MOTION_MS));
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                let sidebar = probe.read(cx).sidebar.read(cx);
+                assert!(sidebar.dashboard_timelines.replies[&key].receipt.is_none());
+                assert!(!sidebar.dashboard_timelines.replies[&key].receipt_closing);
+            });
+            cx.update(|_, cx| cx.set_reduce_motion(true));
             cx.update(|window, cx| {
                 probe.read(cx).sidebar.clone().update(cx, |sidebar, cx| {
                     sidebar.open_activity_reply(key, window, cx)

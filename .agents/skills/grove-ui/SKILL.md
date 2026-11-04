@@ -35,6 +35,10 @@ Classify each affected target as an inline disclosure/link, bounded action, navi
 
 Inspect rest, pointer hover, keyboard focus, expanded/open, selected, pressed/released, disabled/loading, and relevant combinations in the actual native view. Exercise normal and narrow widths, long labels, light and dark themes, and changed rem zoom as relevant. Check that focus remains visible and unobscured, distinguishable against adjacent colors in every affected theme and selected state, and that visual state is also conveyed semantically. Document measured contrast and real native evidence; source inspection and fixture assertions alone do not establish visual compliance. Report unobserved provider and platform paths explicitly.
 
+## Choose motion deliberately
+
+For every new or changed UI, identify meaningful state changes and select the suitable shared motion before implementation. Use Make room when entering/exiting content displaces neighbors, restrained fades for transient surfaces/replacement, and state transitions for feedback. Cover both entrance and dismissal, retain passive exit content through collapse, and keep keys stable across redraws. Static treatment needs a concrete reason (reduced motion, unchanged content, or immediate input/focus/output/layout/resizing feedback). Check interruption, repeated updates, neighbor movement, and reduced-motion immediate endpoints without scheduled animation frames. Avoid decorative motion.
+
 ## Choose the relevant checks
 
 Inspect the actual native rendering against the selected reference at normal and narrower widths, with long names where applicable. Check spacing, type, contrast, glyphs, clipping, and stable columns. Audit text-and-icon buttons, including directional and custom actions: the icon must precede the label with the shared `SPACE_SM` gap. Measure rendered glyph/label bounds at default and changed rem zoom; disabled and loading states retain their leading slot. Distinguish buttons from non-button field indicators and metadata before moving trailing glyphs. Exercise the states changed by the task rather than every screen on every edit:
