@@ -5,10 +5,13 @@ use crate::views::components::transcript_action;
 const TERMINAL_PANE_H: f32 = 220.;
 const TERMINAL_HEADER_H: f32 = 36.;
 const TERMINAL_MAX_FRACTION: f32 = 0.45;
+const TERMINAL_MIN_H: f32 = 100.;
 
 #[derive(Default)]
 pub(super) struct WorktreeTerminal {
     shown: HashSet<String>,
+    heights: HashMap<String, f32>,
+    resize_drag: Option<(String, f32, f32)>,
     pub(super) views: HashMap<SessionId, Entity<TerminalView>>,
     pending_focus: Option<String>,
     observers: HashMap<SessionId, gpui::Subscription>,
@@ -245,15 +248,61 @@ impl Sidebar {
             view.focus_handle(cx).focus(window, cx);
             self.worktree_terminal.pending_focus = None;
         }
+        let height = self
+            .worktree_terminal
+            .heights
+            .get(&path)
+            .copied()
+            .unwrap_or(TERMINAL_PANE_H);
+        let resize_path = path.clone();
+        let key_path = path.clone();
+        let splitter = div()
+            .id("worktree-terminal-resize")
+            .debug_selector(|| "worktree-terminal-resize".into())
+            .role(gpui::Role::Splitter)
+            .aria_label("Resize terminal. Use Up and Down arrows.")
+            .tab_index(0)
+            .h(rpx(DIVIDER_DRAG_HIT_W))
+            .w_full()
+            .flex_shrink_0()
+            .cursor_row_resize()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                    this.worktree_terminal.resize_drag =
+                        Some((resize_path.clone(), f32::from(event.position.y), height));
+                    cx.stop_propagation();
+                }),
+            )
+            .on_key_down(
+                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                    let delta = match event.keystroke.key.as_str() {
+                        "up" => 20.,
+                        "down" => -20.,
+                        _ => return,
+                    };
+                    let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+                    let max = (f32::from(window.viewport_size().height) / scale
+                        * TERMINAL_MAX_FRACTION)
+                        .max(TERMINAL_MIN_H);
+                    this.worktree_terminal.heights.insert(
+                        key_path.clone(),
+                        (height + delta).clamp(TERMINAL_MIN_H, max),
+                    );
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            );
         let hide_path = path.clone();
         let pane_contents = div()
             .w_full()
-            .h(rpx(TERMINAL_PANE_H))
+            .h(rpx(height))
             .max_h_full()
             .min_h_0()
             .flex()
             .flex_col()
             .bg(c::BG())
+            .child(splitter)
             .child(
                 div()
                     .id("worktree-terminal-header")
@@ -309,7 +358,7 @@ impl Sidebar {
             .aria_label(format!("Terminal in {path}"))
             .debug_selector(|| "worktree-terminal-pane".into())
             .w_full()
-            .h(rpx(TERMINAL_PANE_H * fraction))
+            .h(rpx(height * fraction))
             .max_h(gpui::relative(TERMINAL_MAX_FRACTION * fraction))
             .flex_shrink_0()
             .min_h_0()
@@ -320,6 +369,34 @@ impl Sidebar {
             .when(shown, |pane| pane.child(pane_contents));
         div()
             .id("worktree-terminal-layout")
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                    let Some((path, origin, initial)) = this.worktree_terminal.resize_drag.clone()
+                    else {
+                        return;
+                    };
+                    if !event.dragging() {
+                        this.worktree_terminal.resize_drag = None;
+                        return;
+                    }
+                    let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
+                    let max = (f32::from(window.viewport_size().height) / scale
+                        * TERMINAL_MAX_FRACTION)
+                        .max(TERMINAL_MIN_H);
+                    let height = (initial + (origin - f32::from(event.position.y)) / scale)
+                        .clamp(TERMINAL_MIN_H, max);
+                    this.worktree_terminal.heights.insert(path, height);
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, _| this.worktree_terminal.resize_drag = None),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, _| this.worktree_terminal.resize_drag = None),
+            )
             .debug_selector(|| "worktree-terminal-layout".into())
             .size_full()
             .min_h_0()
