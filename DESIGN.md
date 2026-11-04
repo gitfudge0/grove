@@ -345,3 +345,7 @@ Home Activity structured-session rows expose an icon-only Respond action. It ope
 Activity’s first group heading uses only the panel’s top inset. Reply acceptance confirmations align with the session content column, use the Review text size, and disappear after three seconds.
 
 Home Activity Mark reviewed saves immediately and shows the current status in place. Its row retains its previous grouping and ordering until the pointer has left the complete item for 400 ms; returning cancels the delay. Keyboard activation also waits for focus to leave the item before starting that delay. Focus left by a mouse click does not block pointer-driven settling. Newly active work or requests for attention bypass this hold. This settling delay also applies with Reduce motion and does not animate the row.
+
+Composer `@` file completion fuzzy searches worktree-relative paths recursively, prioritizing filename matches. It includes tracked and non-ignored untracked files from the current checkout and retains relative directory completion.
+
+Editable Markdown code spans and fenced blocks use a persistent neutral code surface and visible outline, including an unfinished fenced block. Rendered code blocks use the same code surface with a bounded border and existing code padding; inline code has a neutral backplate and medium weight. Styling updates immediately without motion or changing source bytes.

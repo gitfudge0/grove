@@ -72,7 +72,9 @@ pub(super) fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
                 });
             }
             Node::InlineCode(_) | Node::Code(_) => {
-                style.background_color = Some(c::BG_HOVER());
+                style.background_color = Some(c::CODE_FILL());
+                style.color = Some(c::FG());
+                style.font_weight = Some(gpui::FontWeight::MEDIUM);
             }
             _ => {}
         }
@@ -84,7 +86,12 @@ pub(super) fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
             if let Some(position) = node.position() {
                 let range = position.start.offset..position.end.offset;
                 if !range.is_empty() {
-                    out.push(TextDecoration::new(range, style));
+                    let decoration = TextDecoration::new(range, style);
+                    out.push(if matches!(node, Node::InlineCode(_) | Node::Code(_)) {
+                        decoration.bordered(gpui::px(1.), c::BORDER_STRONG())
+                    } else {
+                        decoration
+                    });
                 }
             }
         }
@@ -10206,7 +10213,9 @@ pub(super) fn markdown_style(window: &Window) -> TextViewStyle {
     style.highlight_theme = c::highlight_theme();
     style.paragraph_gap = rpx(SPACE_2XL);
     style.code_block = div()
-        .bg(c::FIELD_FILL())
+        .bg(c::CODE_FILL())
+        .border_1()
+        .border_color(c::BORDER_STRONG())
         .text_color(c::FG())
         .p(rpx(SPACE_2XL))
         .rounded(rpx(RADIUS_GROUP))
@@ -10434,42 +10443,82 @@ fn trailing_trigger(text: &str) -> Option<(char, &str)> {
         None
     }
 }
+/// Search only the active checkout, including untracked but non-ignored files.
 fn file_choices(cwd: &str, query: &str) -> Vec<String> {
-    let path = std::path::Path::new(query);
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new(""));
-    let (directory, prefix) = if query.ends_with('/') {
-        (path, "")
+    let root = std::path::Path::new(cwd);
+    let output = std::process::Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ".",
+        ])
+        .current_dir(root)
+        .output();
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(output) = output.ok().filter(|output| output.status.success()) {
+        for path in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+        {
+            let path = String::from_utf8_lossy(path).into_owned();
+            if root.join(&path).is_file() {
+                paths.insert(path);
+            }
+        }
     } else {
-        (
-            parent,
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(""),
-        )
-    };
-    let Ok(entries) = fs_err::read_dir(std::path::Path::new(cwd).join(directory)) else {
-        return Vec::new();
-    };
-    let mut choices = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !name.to_lowercase().starts_with(&prefix.to_lowercase())
-                || (name.starts_with('.') && !prefix.starts_with('.'))
-            {
-                return None;
+        // Ordinary directories also support completion. Do not follow directory
+        // symlinks, which may escape the checkout or form cycles.
+        let mut directories = vec![std::path::PathBuf::new()];
+        while let Some(directory) = directories.pop() {
+            let Ok(entries) = fs_err::read_dir(root.join(&directory)) else {
+                continue;
+            };
+            for entry in entries.filter_map(Result::ok) {
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                let relative = directory.join(name);
+                if kind.is_dir() {
+                    directories.push(relative);
+                } else if kind.is_file() {
+                    paths.insert(relative.to_string_lossy().replace('\\', "/"));
+                }
             }
-            let mut display = directory.join(name).to_string_lossy().to_string();
-            if entry.file_type().ok()?.is_dir() {
-                display.push('/');
-            }
-            Some(display)
+        }
+    }
+    // Keep directory completion available alongside recursive filename lookup.
+    for path in paths.clone() {
+        let mut parent = std::path::Path::new(&path).parent();
+        while let Some(directory) = parent.filter(|p| !p.as_os_str().is_empty()) {
+            paths.insert(format!("{}/", directory.to_string_lossy()));
+            parent = directory.parent();
+        }
+    }
+    let mut matches = paths
+        .into_iter()
+        .filter_map(|path| {
+            let name = path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or(&path);
+            let score = crate::launcher::fuzzy_score(query, name, "", "")
+                .map(|score| score + 200)
+                .or_else(|| crate::launcher::fuzzy_score(query, &path, "", ""))?;
+            Some((score, path))
         })
-        .take(100)
         .collect::<Vec<_>>();
-    choices.sort();
-    choices.truncate(8);
-    choices
+    matches.sort_by(|(a_score, a), (b_score, b)| b_score.cmp(a_score).then_with(|| a.cmp(b)));
+    matches.into_iter().take(8).map(|(_, path)| path).collect()
 }
 
 impl CodexView {
@@ -12361,6 +12410,23 @@ mod tests {
     }
 
     #[test]
+    fn composer_code_has_visible_surface_and_outline() {
+        for source in [
+            "before `é🦀` after",
+            "```rust\nlet x = 1;\n```",
+            "```\nstill typing",
+        ] {
+            let decorations = super::composer_markdown_decorations(source);
+            let code = decorations.iter().find(|d| d.border.is_some()).unwrap();
+            assert_eq!(code.style.background_color, Some(c::CODE_FILL()));
+            assert_eq!(code.style.color, Some(c::FG()));
+            assert_eq!(code.border, Some((gpui::px(1.), c::BORDER_STRONG())));
+            assert!(source.get(code.range.clone()).is_some());
+        }
+        assert!(super::composer_markdown_decorations("ordinary text").is_empty());
+    }
+
+    #[test]
     fn composer_markdown_projects_headings_lists_and_inline_syntax() {
         let source = "## Heading 2\n- A **bold** item with `code` and [link](https://example.com)\n1. Ordered 🦀";
         let replacements = super::composer_markdown_replacements(source);
@@ -12433,6 +12499,40 @@ mod tests {
         assert!(long.chars().count() <= 240);
         assert!(long.ends_with('…'));
         assert_eq!(review_overview("  "), "");
+    }
+
+    #[test]
+    fn attachment_file_choices_search_nested_worktree_files() {
+        let checkout = tempfile::tempdir().unwrap();
+        let root = checkout.path();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        fs_err::create_dir_all(root.join("src/services/tasks")).unwrap();
+        fs_err::write(root.join("src/services/tasks/add_task_service.js"), "").unwrap();
+        fs_err::write(root.join(".gitignore"), "ignored/\n").unwrap();
+        fs_err::create_dir_all(root.join("ignored")).unwrap();
+        fs_err::write(root.join("ignored/add_task.js"), "").unwrap();
+        let cwd = root.to_str().unwrap();
+        for query in [
+            "add_task",
+            "ADD_TASK",
+            "adtsk",
+            "src/services/tasks/add",
+            "tasks/",
+        ] {
+            assert!(
+                file_choices(cwd, query).contains(&"src/services/tasks/add_task_service.js".into()),
+                "{query}"
+            );
+        }
+        assert!(!file_choices(cwd, "add_task").contains(&"ignored/add_task.js".into()));
+        assert!(file_choices(cwd, "no_such_file").is_empty());
+        let other = tempfile::tempdir().unwrap();
+        assert!(file_choices(other.path().to_str().unwrap(), "add_task").is_empty());
     }
 
     #[gpui::test]

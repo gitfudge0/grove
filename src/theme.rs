@@ -744,6 +744,11 @@ pub fn highlight_theme() -> Arc<gpui_component::highlighter::HighlightTheme> {
     })
 }
 
+/// Persistent code surface, distinct from both prose and the enclosing input well.
+pub fn CODE_FILL() -> Hsla {
+    mix(FIELD_FILL().into(), FG().into(), 0.08).into()
+}
+
 /// Reference form surface, independent of the terminal palette.
 pub fn FIELD_FILL() -> Hsla {
     chrome(ChromeRole::Field)

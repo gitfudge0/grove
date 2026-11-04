@@ -917,6 +917,7 @@ impl Paragraph {
                     }
                     if style.code {
                         highlight.background_color = Some(cx.theme().accent);
+                        highlight.font_weight = Some(FontWeight::MEDIUM);
                     }
                     if let Some(color) = style.highlight {
                         highlight.background_color = Some(color);
@@ -1029,6 +1030,7 @@ impl Paragraph {
                     }
                     if style.code {
                         highlight.background_color = Some(cx.theme().accent);
+                        highlight.font_weight = Some(FontWeight::MEDIUM);
                     }
                     if let Some(color) = style.highlight {
                         highlight.background_color = Some(color);
