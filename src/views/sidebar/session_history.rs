@@ -200,28 +200,31 @@ impl Sidebar {
         use gpui_component::{input::Input, Sizable};
         let store = &cx.global::<SettingsState>().store;
         let query = self.history_search.read(cx).value().trim().to_lowercase();
+        let in_scope = |project: &str, cwd: &str, apply_filter: bool| {
+            history_in_scope(
+                store,
+                self.active_workspace,
+                project,
+                cwd,
+                if apply_filter {
+                    self.history_project_filter.as_deref()
+                } else {
+                    None
+                },
+            )
+        };
         let matches = |title: &str, project: &str, cwd: &str, agent: Agent| {
-            let owner = grove_core::session_meta::project_owner(&store.projects, cwd).ok();
-            owner.is_some_and(|owner| {
-                store.project_workspace_id(&owner.path) == self.active_workspace
-                    && self
-                        .history_project_filter
-                        .as_ref()
-                        .is_none_or(|path| path == &owner.path)
-            }) && self
-                .history_provider_filter
-                .is_none_or(|filter| filter == agent)
+            in_scope(project, cwd, true)
+                && self
+                    .history_provider_filter
+                    .is_none_or(|filter| filter == agent)
                 && (query.is_empty() || history_matches(&query, title, project, cwd))
         };
         let all_native = self
             .session_history
             .iter()
             .filter(|saved| {
-                grove_core::session_meta::project_owner(&store.projects, &saved.cwd)
-                    .ok()
-                    .is_some_and(|owner| {
-                        store.project_workspace_id(&owner.path) == self.active_workspace
-                    })
+                in_scope(&saved.project, &saved.cwd, false)
                     && !self
                         .runtime
                         .read(cx)
@@ -244,13 +247,7 @@ impl Sidebar {
         let all_cli = self
             .cli_session_history
             .iter()
-            .filter(|saved| {
-                grove_core::session_meta::project_owner(&store.projects, &saved.cwd)
-                    .ok()
-                    .is_some_and(|owner| {
-                        store.project_workspace_id(&owner.path) == self.active_workspace
-                    })
-            })
+            .filter(|saved| in_scope(&saved.project, &saved.cwd, false))
             .collect::<Vec<_>>();
         let records = all_native
             .iter()
@@ -262,17 +259,10 @@ impl Sidebar {
                     &s.cwd,
                     s.provider.agent(),
                 ) || (!query.is_empty() && transcript_match(s, &query).is_some() && {
-                    let owner =
-                        grove_core::session_meta::project_owner(&store.projects, &s.cwd).ok();
-                    owner.is_some_and(|owner| {
-                        store.project_workspace_id(&owner.path) == self.active_workspace
-                            && self
-                                .history_project_filter
-                                .as_ref()
-                                .is_none_or(|path| path == &owner.path)
-                    }) && self
-                        .history_provider_filter
-                        .is_none_or(|filter| filter == s.provider.agent())
+                    in_scope(&s.project, &s.cwd, true)
+                        && self
+                            .history_provider_filter
+                            .is_none_or(|filter| filter == s.provider.agent())
                 })
             })
             .collect::<Vec<_>>();
@@ -1195,5 +1185,49 @@ mod history_filter_tests {
         assert!(history_matches("main", "Fix", "Grove", "/tmp/Main"));
         assert!(!history_matches("other", "Fix", "Grove", "/tmp/Main"));
         assert!(history_matches("", "Fix", "Grove", "/tmp/Main"));
+    }
+}
+
+fn history_in_scope(
+    store: &grove_core::storage::Store,
+    workspace: u64,
+    project: &str,
+    cwd: &str,
+    project_filter: Option<&str>,
+) -> bool {
+    if project.is_empty() {
+        return project_filter.is_none();
+    }
+    grove_core::session_meta::project_owner(&store.projects, cwd)
+        .ok()
+        .is_some_and(|owner| {
+            store.project_workspace_id(&owner.path) == workspace
+                && project_filter.is_none_or(|path| path == owner.path)
+        })
+}
+
+#[cfg(test)]
+mod projectless_history_tests {
+    #[test]
+    fn projectless_history_is_global_but_excluded_by_project_filter() {
+        let store = grove_core::storage::Store::default();
+        let workspace = store.workspaces.active;
+        assert!(super::history_in_scope(
+            &store,
+            workspace,
+            "",
+            "/home/user",
+            None
+        ));
+        assert!(!super::history_in_scope(
+            &store,
+            workspace,
+            "",
+            "/home/user",
+            Some("/project")
+        ));
+        assert!(!super::history_in_scope(
+            &store, workspace, "Missing", "/missing", None
+        ));
     }
 }

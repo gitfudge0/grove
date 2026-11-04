@@ -233,21 +233,17 @@ impl Runtime {
     ) {
         use crate::project_service::ProjectEvent;
         self.script_runs.retain(|run| {
-            let exists = cx
+            let project = cx
                 .global::<SettingsState>()
                 .store
-                .projects
-                .iter()
-                .any(|project| {
-                    project.path == run.project_path
-                        && !project.archived
-                        && project.scripts.effective_entries().iter().any(|entry| {
-                            entry.id == run.script_id
-                                && matches!(
-                                    entry.kind,
-                                    grove_core::storage::ProjectActionKind::Shell { .. }
-                                )
-                        })
+                .script_project(&run.project_path);
+            let exists = !project.archived
+                && project.scripts.effective_entries().iter().any(|entry| {
+                    entry.id == run.script_id
+                        && matches!(
+                            entry.kind,
+                            grove_core::storage::ProjectActionKind::Shell { .. }
+                        )
                 })
                 && std::path::Path::new(&run.checkout_path).exists();
             if !exists {
@@ -565,8 +561,19 @@ impl Runtime {
             return Ok(id);
         }
         let projects = &cx.global::<SettingsState>().store.projects;
-        let owner = grove_core::session_meta::project_owner(projects, &saved.cwd)?;
-        for wt in std::iter::once(saved.cwd.as_str())
+        let owner = if saved.project.is_empty() {
+            None
+        } else {
+            Some(grove_core::session_meta::project_owner(
+                projects, &saved.cwd,
+            )?)
+        };
+        if !std::path::Path::new(&saved.cwd).is_dir() {
+            return Err("Restore the session directory before reopening the session.".into());
+        }
+        for wt in owner
+            .iter()
+            .map(|_| saved.cwd.as_str())
             .chain(saved.roots.iter().map(|root| root.wt_path.as_str()))
         {
             let project = grove_core::session_meta::project_owner(projects, wt)?;
@@ -597,7 +604,9 @@ impl Runtime {
         ) {
             return Err(error);
         }
-        saved.project.clone_from(&owner.name);
+        if let Some(owner) = owner {
+            saved.project.clone_from(&owner.name);
+        }
         grove_core::codex::prepare_history_reopen(&saved)?;
         let key = saved.key.clone();
         let id = self.attach_native_codex(saved, Vec::new(), cx);
@@ -764,13 +773,8 @@ impl Runtime {
                         }
                         for mut saved in recovery.sessions {
                             let projects = &cx.global::<SettingsState>().store.projects;
-                            if let Ok(owner) =
-                                grove_core::session_meta::project_owner(projects, &saved.cwd)
-                            {
-                                if !owner.archived && std::path::Path::new(&saved.cwd).is_dir() {
-                                    saved.project.clone_from(&owner.name);
-                                    runtime.attach_native_codex(saved, Vec::new(), cx);
-                                }
+                            if restore_session_project(&mut saved, projects) {
+                                runtime.attach_native_codex(saved, Vec::new(), cx);
                             }
                         }
                     }
@@ -1068,6 +1072,23 @@ impl Runtime {
         cx.notify();
     }
 
+    fn directory_tools_available(&self, path: &str, cx: &gpui::App) -> bool {
+        std::path::Path::new(path).is_dir()
+            && (path == crate::entities::session_registry::home_dir()
+                || self
+                    .registry
+                    .read(cx)
+                    .all()
+                    .iter()
+                    .any(|meta| meta.project.is_empty() && meta.wt_path == path))
+            && !cx
+                .global::<SettingsState>()
+                .store
+                .projects
+                .iter()
+                .any(|p| p.path == path)
+    }
+
     pub fn spawn_wt_shell(&mut self, wt_path: &str, cx: &mut Context<Self>) -> bool {
         let target = (|| -> Result<(), String> {
             if let Some(error) = crate::entities::codex_session::workspace_restore_error(
@@ -1080,6 +1101,9 @@ impl Runtime {
                 .map_err(|_| format!("{wt_path}: worktree is no longer available"))?;
             if !canonical.is_dir() {
                 return Err(format!("{wt_path}: checkout is not a directory"));
+            }
+            if self.directory_tools_available(wt_path, cx) {
+                return Ok(());
             }
             let projects = &cx.global::<SettingsState>().store.projects;
             let project = projects
@@ -1181,15 +1205,11 @@ impl Runtime {
         let command = cx
             .global::<SettingsState>()
             .store
-            .projects
-            .iter()
-            .find(|p| p.path == project_path)
-            .and_then(|p| {
-                p.scripts
-                    .effective_entries()
-                    .into_iter()
-                    .find(|e| e.id == entry_id)
-            })
+            .script_project(project_path)
+            .scripts
+            .effective_entries()
+            .into_iter()
+            .find(|e| e.id == entry_id)
             .and_then(|e| match e.kind {
                 grove_core::storage::ProjectActionKind::Shell { command } => Some(command),
                 grove_core::storage::ProjectActionKind::Prompt { .. } => None,
@@ -1227,6 +1247,16 @@ impl Runtime {
                 None,
             ) {
                 return Err(error);
+            }
+            if project_path == wt_path && self.directory_tools_available(wt_path, cx) {
+                if command.trim().is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some((
+                    String::new(),
+                    wt_path.to_owned(),
+                    command.to_owned(),
+                )));
             }
             let projects = &cx.global::<SettingsState>().store.projects;
             let project = projects
@@ -1285,16 +1315,11 @@ impl Runtime {
             let name = cx
                 .global::<SettingsState>()
                 .store
-                .projects
-                .iter()
-                .find(|project| project.path == project_path)
-                .and_then(|project| {
-                    project
-                        .scripts
-                        .effective_entries()
-                        .into_iter()
-                        .find(|entry| entry.id == script_id)
-                })
+                .script_project(project_path)
+                .scripts
+                .effective_entries()
+                .into_iter()
+                .find(|entry| entry.id == script_id)
                 .map_or_else(|| "Script".to_string(), |entry| entry.name);
             self.projects.update(cx, |projects, _| {
                 projects.track_inline_script(project_path.to_owned(), cwd.clone(), &session);
@@ -1794,6 +1819,33 @@ mod tests {
     }
 
     #[gpui::test]
+    fn projectless_directory_runs_scripts_and_terminal(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_str().unwrap();
+        cx.update(|cx| {
+            let project = script_project(path, "echo directory-script");
+            let scripts = project.scripts.clone();
+            let runtime = init_script_runtime(cx, project);
+            cx.global_mut::<SettingsState>().store.projects.clear();
+            cx.global_mut::<SettingsState>()
+                .store
+                .directory_scripts
+                .insert(path.into(), scripts.clone());
+            runtime.read(cx).registry.clone().update(cx, |registry, _| {
+                registry.insert_meta(String::new(), path.into(), Agent::Codex);
+            });
+            let id = scripts.effective_entries()[0].id.clone();
+            assert!(runtime.update(cx, |runtime, cx| runtime.spawn_wt_shell(path, cx)));
+            assert!(runtime.update(cx, |runtime, cx| runtime
+                .spawn_project_script(path, path, &id, cx)));
+            assert_eq!(runtime.read(cx).script_runs.len(), 1);
+            assert!(cx.global::<SettingsState>().store.projects.is_empty());
+            let run = runtime.read(cx).script_runs[0].clone();
+            run.terminal.update(cx, TerminalSession::stop_script);
+        });
+    }
+
+    #[gpui::test]
     fn blank_run_script_does_not_spawn_or_register(cx: &mut gpui::TestAppContext) {
         let repo = git_fixture();
         let canonical = repo.path().canonicalize().unwrap();
@@ -2235,5 +2287,53 @@ mod tests {
             registry.read_with(cx, |registry, _| registry.meta(id).unwrap().id),
             id
         );
+    }
+}
+
+// Empty project identity is intentional, even when the directory later belongs
+// to a registered project. Never infer membership for a No project session.
+fn restore_session_project(
+    saved: &mut grove_core::codex::SavedSession,
+    projects: &[grove_core::storage::Project],
+) -> bool {
+    if !std::path::Path::new(&saved.cwd).is_dir() {
+        return false;
+    }
+    if saved.project.is_empty() {
+        return true;
+    }
+    match grove_core::session_meta::project_owner(projects, &saved.cwd) {
+        Ok(owner) if !owner.archived => {
+            saved.project.clone_from(&owner.name);
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod projectless_recovery_tests {
+    #[test]
+    fn projectless_recovery_preserves_codex_and_claude_identity_and_draft() {
+        let directory = tempfile::tempdir().unwrap();
+        for provider in ["codex", "claude"] {
+            let mut saved: grove_core::codex::SavedSession =
+                serde_json::from_value(serde_json::json!({
+                    "key": "projectless-fixture", "provider": provider, "project": "",
+                    "cwd": directory.path(), "label": "Session", "draft": "keep this draft",
+                    "thread_id": "retained-thread", "roots": [], "items": []
+                }))
+                .unwrap();
+            assert!(super::restore_session_project(&mut saved, &[]));
+            assert!(saved.project.is_empty());
+            assert_eq!(saved.draft, "keep this draft");
+            assert_eq!(saved.thread_id.as_deref(), Some("retained-thread"));
+            saved.cwd = directory
+                .path()
+                .join("missing")
+                .to_string_lossy()
+                .into_owned();
+            assert!(!super::restore_session_project(&mut saved, &[]));
+        }
     }
 }

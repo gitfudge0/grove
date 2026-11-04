@@ -519,11 +519,15 @@ impl Sidebar {
                             this.selection = selection;
                         }
                         let source_exists = this.project_return_path.take().is_none_or(|path| {
-                            cx.global::<SettingsState>()
-                                .store
-                                .projects
+                            this.checkout_targets(cx)
                                 .iter()
-                                .any(|p| p.path == path && !p.archived)
+                                .any(|(_, target)| target == &path)
+                                || cx
+                                    .global::<SettingsState>()
+                                    .store
+                                    .projects
+                                    .iter()
+                                    .any(|p| p.path == path && !p.archived)
                         });
                         if source_exists {
                             if let Some(f) = this.project_return_focus.take() {

@@ -391,7 +391,11 @@ impl Sidebar {
 
     pub(super) fn checkout_targets(&self, cx: &App) -> Vec<(usize, String)> {
         if self.dashboard_open {
-            return self.dashboard_checkout(cx).into_iter().collect();
+            return self
+                .dashboard_checkout(cx)
+                .or_else(|| Some((usize::MAX, crate::entities::session_registry::home_dir())))
+                .into_iter()
+                .collect();
         }
         if let Some(Selection::Worktree(idx, path)) = &self.selection {
             return self
@@ -410,7 +414,13 @@ impl Sidebar {
         }
         if let Some(Selection::Session(id) | Selection::Home(id)) = self.selection {
             let registry = self.runtime.read(cx).registry.read(cx);
-            if let Some(meta) = registry.meta(id) {
+            if let Some(meta) = registry
+                .meta(id)
+                .or_else(|| registry.home_terminals().iter().find(|meta| meta.id == id))
+            {
+                if meta.project.is_empty() {
+                    return vec![(usize::MAX, meta.wt_path.clone())];
+                }
                 let mut paths = vec![meta.wt_path.clone()];
                 paths.extend(meta.context_roots.iter().map(|root| root.wt_path.clone()));
                 paths.sort();
@@ -2562,7 +2572,7 @@ impl Sidebar {
                 if self.checkout_panel.local_refresh_due() {
                     self.checkout_load(path.clone(), cx);
                 }
-                let project = cx.global::<SettingsState>().store.projects[idx].clone();
+                let project = cx.global::<SettingsState>().store.script_project(&path);
                 let target = path.clone();
                 card = card.child(
                     checkout_row("checkout-finder", "Open in Finder", "folder", window, cx)
@@ -2582,179 +2592,191 @@ impl Sidebar {
                 card = card
                     .child(checkout_divider("checkout-scripts-divider"))
                     .child(self.render_checkout_scripts(&project, &path, window, cx));
-                card = card
-                    .child(checkout_divider("checkout-divider"))
-                    .child(checkout_git_heading());
-                let state = self.checkout_panel.state.clone().and_then(Result::ok);
-                let branch_label = state.as_ref().map_or_else(
-                    || {
-                        if self
-                            .checkout_panel
-                            .state
-                            .as_ref()
-                            .is_some_and(Result::is_err)
-                        {
-                            "Branch unavailable".to_owned()
-                        } else {
-                            "Branch unavailable".to_owned()
-                        }
-                    },
-                    |state| {
-                        state.branch.clone().unwrap_or_else(|| {
-                            state.head.as_deref().map_or_else(
-                                || "No commits yet".to_owned(),
-                                |head| format!("Detached HEAD · {}", &head[..head.len().min(7)]),
-                            )
-                        })
-                    },
-                );
-                let history = self.render_branch_history_entry(
-                    path.clone(),
-                    branch_label,
-                    state.as_ref().map(CheckoutGitState::target_identity),
-                    window,
-                    cx,
-                );
-                let menu_path = path.clone();
-                card = card.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .w_full()
-                        .min_w_0()
-                        .child(div().flex_1().min_w_0().child(history))
-                        .child(
-                            checkout_action(
-                                "checkout-recovery-menu",
-                                "Branch recovery actions",
-                                false,
-                                window,
-                                cx,
-                            )
-                            .debug_selector(|| "checkout-recovery-menu".into())
-                            .icon_only()
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path("icons/more.svg")
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .with_focus_handle(
-                                self.checkout_panel.trigger_focus["recovery"].clone(),
-                            )
-                            .tooltip("Discard local edits or revert a commit")
-                            .mr(rpx(SPACE_2XL))
-                            .relative()
-                            .child({
-                                let bounds = self.checkout_panel.source_bounds["recovery"].clone();
-                                gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                if self
+                    .checkout_panel
+                    .state
+                    .as_ref()
+                    .is_some_and(Result::is_ok)
+                {
+                    card = card
+                        .child(checkout_divider("checkout-divider"))
+                        .child(checkout_git_heading());
+                    let state = self.checkout_panel.state.clone().and_then(Result::ok);
+                    let branch_label = state.as_ref().map_or_else(
+                        || {
+                            if self
+                                .checkout_panel
+                                .state
+                                .as_ref()
+                                .is_some_and(Result::is_err)
+                            {
+                                "Branch unavailable".to_owned()
+                            } else {
+                                "Branch unavailable".to_owned()
+                            }
+                        },
+                        |state| {
+                            state.branch.clone().unwrap_or_else(|| {
+                                state.head.as_deref().map_or_else(
+                                    || "No commits yet".to_owned(),
+                                    |head| {
+                                        format!("Detached HEAD · {}", &head[..head.len().min(7)])
+                                    },
+                                )
+                            })
+                        },
+                    );
+                    let history = self.render_branch_history_entry(
+                        path.clone(),
+                        branch_label,
+                        state.as_ref().map(CheckoutGitState::target_identity),
+                        window,
+                        cx,
+                    );
+                    let menu_path = path.clone();
+                    card = card.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .w_full()
+                            .min_w_0()
+                            .child(div().flex_1().min_w_0().child(history))
+                            .child(
+                                checkout_action(
+                                    "checkout-recovery-menu",
+                                    "Branch recovery actions",
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .debug_selector(|| "checkout-recovery-menu".into())
+                                .icon_only()
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path("icons/more.svg")
+                                        .size(rpx(ICON_SM)),
+                                )
+                                .with_focus_handle(
+                                    self.checkout_panel.trigger_focus["recovery"].clone(),
+                                )
+                                .tooltip("Discard local edits or revert a commit")
+                                .mr(rpx(SPACE_2XL))
+                                .relative()
+                                .child({
+                                    let bounds =
+                                        self.checkout_panel.source_bounds["recovery"].clone();
+                                    gpui::canvas(
+                                        move |rect, _, _| bounds.set(rect),
+                                        |_, (), _, _| {},
+                                    )
                                     .absolute()
                                     .inset_0()
-                            })
-                            .disabled(self.checkout_panel.operation.busy || state.is_none())
-                            .on_click(cx.listener(
-                                move |this, event: &gpui::ClickEvent, window, cx| {
-                                    this.checkout_menu(
-                                        false,
-                                        idx,
-                                        menu_path.clone(),
-                                        event.position(),
-                                        window,
-                                        cx,
-                                    )
-                                },
-                            )),
-                        ),
-                );
-                if let Some(state) = state.as_ref() {
-                    let identity = state.target_identity();
-                    if self.checkout_panel.pr_identity.as_ref() != Some(&identity) {
-                        self.checkout_panel.pr_identity = Some(identity);
-                        self.checkout_panel.pr_checked_at = None;
-                    }
-                    if !self.checkout_panel.pr_loading
-                        && self
-                            .checkout_panel
-                            .pr_checked_at
-                            .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
-                    {
-                        self.checkout_load_pr(path.clone(), state.clone(), cx);
-                    }
-                }
-                if let Some(state) = state.as_ref() {
-                    if self
-                        .checkout_panel
-                        .main_checked_at
-                        .is_none_or(|t| t.elapsed() >= REMOTE_REFRESH_INTERVAL)
-                    {
-                        self.checkout_load_main(path.clone(), state.clone(), cx);
-                    }
-                }
-                let target = path.clone();
-                let busy = self.checkout_panel.operation.busy;
-                let same_job =
-                    self.checkout_panel.operation.commit_job_path.as_ref() == Some(&path);
-                let same_network = self.checkout_panel.operation.network_target.is_some();
-                let (base_label, base_glyph, base_enabled) = commit_row_state(state.as_ref());
-                let initial_loading =
-                    self.checkout_panel.loading && self.checkout_panel.state.is_none();
-                let (label, glyph, enabled, loading) = if let Some((label, glyph)) = self
-                    .checkout_panel
-                    .operation
-                    .network_action
-                    .filter(|_| busy && same_network)
-                {
-                    (label, glyph, false, false)
-                } else if initial_loading {
-                    ("Git status not yet available", "git", false, false)
-                } else {
-                    match self.checkout_panel.operation.commit_status {
-                        CommitUi::Generating if same_job => {
-                            ("Commit requested · Cancel", "git", true, false)
-                        }
-                        CommitUi::Canceling if same_job => {
-                            ("Cancel requested", "stop", false, false)
-                        }
-                        CommitUi::Committing if same_job => {
-                            ("Commit requested", "git", false, false)
-                        }
-                        CommitUi::Succeeded => {
-                            (base_label, base_glyph, base_enabled && !busy, false)
-                        }
-                        CommitUi::Failed => ("Retry commit", "git", !busy, false),
-                        _ => (base_label, base_glyph, base_enabled && !busy, false),
-                    }
-                };
-                let label = if !loading && base_label == "Push commits" && label == base_label {
-                    format!(
-                        "Push {} commit{}",
-                        state.as_ref().and_then(|s| s.ahead).unwrap_or_default(),
-                        if state.as_ref().and_then(|s| s.ahead) == Some(1) {
-                            ""
-                        } else {
-                            "s"
-                        }
-                    )
-                } else {
-                    label.to_string()
-                };
-                let publish = state.as_ref().is_some_and(|state| {
-                    !state.dirty
-                        && state.upstream.is_none()
-                        && state.branch.is_some()
-                        && state.head.is_some()
-                        && !state.remotes.is_empty()
-                });
-                let dirty = state.as_ref().is_some_and(|state| state.dirty);
-                let retry = matches!(
-                    self.checkout_panel.operation.commit_status,
-                    CommitUi::Failed
-                );
-                let cancel = same_job
-                    && matches!(
-                        self.checkout_panel.operation.commit_status,
-                        CommitUi::Generating
+                                })
+                                .disabled(self.checkout_panel.operation.busy || state.is_none())
+                                .on_click(cx.listener(
+                                    move |this, event: &gpui::ClickEvent, window, cx| {
+                                        this.checkout_menu(
+                                            false,
+                                            idx,
+                                            menu_path.clone(),
+                                            event.position(),
+                                            window,
+                                            cx,
+                                        )
+                                    },
+                                )),
+                            ),
                     );
-                card = card.child(checkout_loading_row("checkout-commit-publish", label, glyph, loading, window, cx)
+                    if let Some(state) = state.as_ref() {
+                        let identity = state.target_identity();
+                        if self.checkout_panel.pr_identity.as_ref() != Some(&identity) {
+                            self.checkout_panel.pr_identity = Some(identity);
+                            self.checkout_panel.pr_checked_at = None;
+                        }
+                        if !self.checkout_panel.pr_loading
+                            && self
+                                .checkout_panel
+                                .pr_checked_at
+                                .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+                        {
+                            self.checkout_load_pr(path.clone(), state.clone(), cx);
+                        }
+                    }
+                    if let Some(state) = state.as_ref() {
+                        if self
+                            .checkout_panel
+                            .main_checked_at
+                            .is_none_or(|t| t.elapsed() >= REMOTE_REFRESH_INTERVAL)
+                        {
+                            self.checkout_load_main(path.clone(), state.clone(), cx);
+                        }
+                    }
+                    let target = path.clone();
+                    let busy = self.checkout_panel.operation.busy;
+                    let same_job =
+                        self.checkout_panel.operation.commit_job_path.as_ref() == Some(&path);
+                    let same_network = self.checkout_panel.operation.network_target.is_some();
+                    let (base_label, base_glyph, base_enabled) = commit_row_state(state.as_ref());
+                    let initial_loading =
+                        self.checkout_panel.loading && self.checkout_panel.state.is_none();
+                    let (label, glyph, enabled, loading) = if let Some((label, glyph)) = self
+                        .checkout_panel
+                        .operation
+                        .network_action
+                        .filter(|_| busy && same_network)
+                    {
+                        (label, glyph, false, false)
+                    } else if initial_loading {
+                        ("Git status not yet available", "git", false, false)
+                    } else {
+                        match self.checkout_panel.operation.commit_status {
+                            CommitUi::Generating if same_job => {
+                                ("Commit requested · Cancel", "git", true, false)
+                            }
+                            CommitUi::Canceling if same_job => {
+                                ("Cancel requested", "stop", false, false)
+                            }
+                            CommitUi::Committing if same_job => {
+                                ("Commit requested", "git", false, false)
+                            }
+                            CommitUi::Succeeded => {
+                                (base_label, base_glyph, base_enabled && !busy, false)
+                            }
+                            CommitUi::Failed => ("Retry commit", "git", !busy, false),
+                            _ => (base_label, base_glyph, base_enabled && !busy, false),
+                        }
+                    };
+                    let label = if !loading && base_label == "Push commits" && label == base_label {
+                        format!(
+                            "Push {} commit{}",
+                            state.as_ref().and_then(|s| s.ahead).unwrap_or_default(),
+                            if state.as_ref().and_then(|s| s.ahead) == Some(1) {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        )
+                    } else {
+                        label.to_string()
+                    };
+                    let publish = state.as_ref().is_some_and(|state| {
+                        !state.dirty
+                            && state.upstream.is_none()
+                            && state.branch.is_some()
+                            && state.head.is_some()
+                            && !state.remotes.is_empty()
+                    });
+                    let dirty = state.as_ref().is_some_and(|state| state.dirty);
+                    let retry = matches!(
+                        self.checkout_panel.operation.commit_status,
+                        CommitUi::Failed
+                    );
+                    let cancel = same_job
+                        && matches!(
+                            self.checkout_panel.operation.commit_status,
+                            CommitUi::Generating
+                        );
+                    card = card.child(checkout_loading_row("checkout-commit-publish", label, glyph, loading, window, cx)
                 .disabled(!enabled || self.checkout_panel.state_error.is_some())
                 .with_focus_handle(self.checkout_panel.trigger_focus["commit"].clone())
                 .relative()
@@ -2771,292 +2793,323 @@ impl Sidebar {
                     else if publish { this.checkout_menu(true, idx, target.clone(), event.position(), window, cx); }
                     else { this.checkout_run(target.clone(), GitAction::Push, cx); }
                 })));
-                let summary = self
-                    .checkout_panel
-                    .summary
-                    .clone()
-                    .filter(|summary| dirty && summary.files > 0);
-                let totals = match &summary {
-                    Some(summary) => Some(summary.groups.iter().fold((0u32, 0u32), |(a, r), g| {
-                        (a.saturating_add(g.1), r.saturating_add(g.2))
-                    })),
-                    None => {
-                        let git = self.runtime.read(cx).tree.read(cx).git_states();
-                        git.get(crate::paths::normalize_wt_path(&path))
-                            .filter(|changes| {
-                                changes.dirty || changes.added > 0 || changes.removed > 0
-                            })
-                            .map(|changes| (changes.added, changes.removed))
-                    }
-                };
-                let stat_widths = change_stat_widths(totals, summary.as_ref(), window);
-                let changes_label = match &summary {
-                    Some(summary) if summary.files == 1 => "1 file".to_owned(),
-                    Some(summary) => format!("{} files", summary.files),
-                    None => "Changes".to_owned(),
-                };
-                let mut changes_row = checkout_loading_row(
-                    "checkout-changes",
-                    changes_label,
-                    "unified",
-                    false,
-                    window,
-                    cx,
-                )
-                .disabled(state.is_none());
-                if let Some((added, removed)) = totals {
-                    changes_row =
-                        changes_row.child(change_stat_counts(added, removed, stat_widths));
-                }
-                let target = path.clone();
-                card = card.child(
-                    changes_row.on_click(cx.listener(move |this, _, window, cx| {
-                        this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
-                    })),
-                );
-                if let Some(summary) = summary {
-                    for &(group, added, removed) in &summary.groups {
-                        let children: Vec<_> = summary
-                            .subgroups
-                            .iter()
-                            .filter(|(parent, _, _, _)| *parent == group)
-                            .collect();
-                        let expanded = self.checkout_panel.expanded_categories.contains(&group);
-                        let target = path.clone();
-                        let classifier = summary.classifier.clone();
-                        let mut row = div().flex().items_center().px(rpx(SPACE_2XL));
-                        if !children.is_empty() {
-                            row = row.child(
-                                checkout_action(
-                                    format!("checkout-category-toggle-{}", group.label()),
-                                    format!(
-                                        "{} {} subcategories",
-                                        if expanded { "Hide" } else { "Show" },
-                                        group.label()
-                                    ),
-                                    false,
-                                    window,
-                                    cx,
-                                )
-                                .debug_selector(move || {
-                                    format!("checkout-category-toggle-{}", group.label())
-                                })
-                                .icon(
-                                    gpui_component::Icon::default()
-                                        .path(if expanded {
-                                            "icons/chev-down.svg"
-                                        } else {
-                                            "icons/chev-right.svg"
-                                        })
-                                        .size(rpx(ICON_SM)),
-                                )
-                                .icon_only()
-                                .w(rpx(CONTROL_H))
-                                .h(rpx(CARD_LINE_SM_H))
-                                .flex_shrink_0()
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        if !this.checkout_panel.expanded_categories.remove(&group) {
-                                            this.checkout_panel.expanded_categories.insert(group);
-                                        }
-                                        cx.notify();
-                                    },
-                                )),
-                            );
-                        } else {
-                            row = row.child(div().w(rpx(CONTROL_H)).flex_shrink_0());
+                    let summary = self
+                        .checkout_panel
+                        .summary
+                        .clone()
+                        .filter(|summary| dirty && summary.files > 0);
+                    let totals = match &summary {
+                        Some(summary) => {
+                            Some(summary.groups.iter().fold((0u32, 0u32), |(a, r), g| {
+                                (a.saturating_add(g.1), r.saturating_add(g.2))
+                            }))
                         }
-                        row = row.child(
-                            checkout_action(
-                                format!("checkout-category-{}", group.label()),
-                                format!("Show {} changes", group.label()),
-                                false,
-                                window,
-                                cx,
-                            )
-                            .debug_selector(move || group.label().into())
-                            .icon_only()
-                            .flex_1()
-                            .min_w_0()
-                            .h(rpx(CARD_LINE_SM_H))
-                            .px(rpx(SPACE_XS))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
-                                    .group_hover("neutral-control", |text| text.text_color(c::FG()))
-                                    .child(group.label()),
-                            )
-                            .child(change_stat_counts(added, removed, stat_widths))
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
-                                    if let Some(viewer) = &this.diff_viewer {
-                                        viewer.update(cx, |viewer, cx| {
-                                            viewer.set_category(
-                                                group,
-                                                None,
-                                                classifier.clone(),
-                                                cx,
-                                            );
-                                        });
-                                    }
-                                },
-                            )),
-                        );
-                        card = card.child(row);
-                        if expanded {
-                            for (_, child, added, removed) in children {
-                                let target = path.clone();
-                                let child = child.clone();
-                                let label = child.clone();
-                                let selector =
-                                    format!("checkout-subcategory-{}-{child}", group.label());
-                                let classifier = summary.classifier.clone();
-                                card = card.child(
+                        None => {
+                            let git = self.runtime.read(cx).tree.read(cx).git_states();
+                            git.get(crate::paths::normalize_wt_path(&path))
+                                .filter(|changes| {
+                                    changes.dirty || changes.added > 0 || changes.removed > 0
+                                })
+                                .map(|changes| (changes.added, changes.removed))
+                        }
+                    };
+                    let stat_widths = change_stat_widths(totals, summary.as_ref(), window);
+                    let changes_label = match &summary {
+                        Some(summary) if summary.files == 1 => "1 file".to_owned(),
+                        Some(summary) => format!("{} files", summary.files),
+                        None => "Changes".to_owned(),
+                    };
+                    let mut changes_row = checkout_loading_row(
+                        "checkout-changes",
+                        changes_label,
+                        "unified",
+                        false,
+                        window,
+                        cx,
+                    )
+                    .disabled(state.is_none());
+                    if let Some((added, removed)) = totals {
+                        changes_row =
+                            changes_row.child(change_stat_counts(added, removed, stat_widths));
+                    }
+                    let target = path.clone();
+                    card = card.child(changes_row.on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            this.act(Action::OpenWorktreeDiff(target.clone()), window, cx);
+                        },
+                    )));
+                    if let Some(summary) = summary {
+                        for &(group, added, removed) in &summary.groups {
+                            let children: Vec<_> = summary
+                                .subgroups
+                                .iter()
+                                .filter(|(parent, _, _, _)| *parent == group)
+                                .collect();
+                            let expanded = self.checkout_panel.expanded_categories.contains(&group);
+                            let target = path.clone();
+                            let classifier = summary.classifier.clone();
+                            let mut row = div().flex().items_center().px(rpx(SPACE_2XL));
+                            if !children.is_empty() {
+                                row = row.child(
                                     checkout_action(
-                                        selector.clone(),
-                                        format!("Show {}: {child} changes", group.label()),
+                                        format!("checkout-category-toggle-{}", group.label()),
+                                        format!(
+                                            "{} {} subcategories",
+                                            if expanded { "Hide" } else { "Show" },
+                                            group.label()
+                                        ),
                                         false,
                                         window,
                                         cx,
                                     )
-                                    .debug_selector(move || selector.clone())
-                                    .icon_only()
-                                    .w_full()
-                                    .h(rpx(CARD_LINE_SM_H))
-                                    .px(rpx(SPACE_2XL))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .pl(rpx(CONTROL_H + SPACE_LG))
-                                            .truncate()
-                                            .text_size(rpx(TEXT_SMALL))
-                                            .text_color(c::FG_DIM())
-                                            .group_hover("neutral-control", |text| {
-                                                text.text_color(c::FG())
+                                    .debug_selector(move || {
+                                        format!("checkout-category-toggle-{}", group.label())
+                                    })
+                                    .icon(
+                                        gpui_component::Icon::default()
+                                            .path(if expanded {
+                                                "icons/chev-down.svg"
+                                            } else {
+                                                "icons/chev-right.svg"
                                             })
-                                            .child(label),
+                                            .size(rpx(ICON_SM)),
                                     )
-                                    .child(change_stat_counts(*added, *removed, stat_widths))
+                                    .icon_only()
+                                    .w(rpx(CONTROL_H))
+                                    .h(rpx(CARD_LINE_SM_H))
+                                    .flex_shrink_0()
                                     .on_click(cx.listener(
-                                        move |this, _, window, cx| {
-                                            this.act(
-                                                Action::OpenWorktreeDiff(target.clone()),
-                                                window,
-                                                cx,
-                                            );
-                                            if let Some(viewer) = &this.diff_viewer {
-                                                viewer.update(cx, |viewer, cx| {
-                                                    viewer.set_category(
-                                                        group,
-                                                        Some(child.clone()),
-                                                        classifier.clone(),
-                                                        cx,
-                                                    );
-                                                });
+                                        move |this, _, _, cx| {
+                                            if !this
+                                                .checkout_panel
+                                                .expanded_categories
+                                                .remove(&group)
+                                            {
+                                                this.checkout_panel
+                                                    .expanded_categories
+                                                    .insert(group);
                                             }
+                                            cx.notify();
                                         },
                                     )),
                                 );
+                            } else {
+                                row = row.child(div().w(rpx(CONTROL_H)).flex_shrink_0());
+                            }
+                            row = row.child(
+                                checkout_action(
+                                    format!("checkout-category-{}", group.label()),
+                                    format!("Show {} changes", group.label()),
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .debug_selector(move || group.label().into())
+                                .icon_only()
+                                .flex_1()
+                                .min_w_0()
+                                .h(rpx(CARD_LINE_SM_H))
+                                .px(rpx(SPACE_XS))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(rpx(TEXT_SMALL))
+                                        .text_color(c::FG_DIM())
+                                        .group_hover("neutral-control", |text| {
+                                            text.text_color(c::FG())
+                                        })
+                                        .child(group.label()),
+                                )
+                                .child(change_stat_counts(added, removed, stat_widths))
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.act(
+                                            Action::OpenWorktreeDiff(target.clone()),
+                                            window,
+                                            cx,
+                                        );
+                                        if let Some(viewer) = &this.diff_viewer {
+                                            viewer.update(cx, |viewer, cx| {
+                                                viewer.set_category(
+                                                    group,
+                                                    None,
+                                                    classifier.clone(),
+                                                    cx,
+                                                );
+                                            });
+                                        }
+                                    },
+                                )),
+                            );
+                            card = card.child(row);
+                            if expanded {
+                                for (_, child, added, removed) in children {
+                                    let target = path.clone();
+                                    let child = child.clone();
+                                    let label = child.clone();
+                                    let selector =
+                                        format!("checkout-subcategory-{}-{child}", group.label());
+                                    let classifier = summary.classifier.clone();
+                                    card = card.child(
+                                        checkout_action(
+                                            selector.clone(),
+                                            format!("Show {}: {child} changes", group.label()),
+                                            false,
+                                            window,
+                                            cx,
+                                        )
+                                        .debug_selector(move || selector.clone())
+                                        .icon_only()
+                                        .w_full()
+                                        .h(rpx(CARD_LINE_SM_H))
+                                        .px(rpx(SPACE_2XL))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .pl(rpx(CONTROL_H + SPACE_LG))
+                                                .truncate()
+                                                .text_size(rpx(TEXT_SMALL))
+                                                .text_color(c::FG_DIM())
+                                                .group_hover("neutral-control", |text| {
+                                                    text.text_color(c::FG())
+                                                })
+                                                .child(label),
+                                        )
+                                        .child(change_stat_counts(*added, *removed, stat_widths))
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.act(
+                                                    Action::OpenWorktreeDiff(target.clone()),
+                                                    window,
+                                                    cx,
+                                                );
+                                                if let Some(viewer) = &this.diff_viewer {
+                                                    viewer.update(cx, |viewer, cx| {
+                                                        viewer.set_category(
+                                                            group,
+                                                            Some(child.clone()),
+                                                            classifier.clone(),
+                                                            cx,
+                                                        );
+                                                    });
+                                                }
+                                            }),
+                                        ),
+                                    );
+                                }
                             }
                         }
                     }
-                }
-                card = card
-                    .child(checkout_divider("checkout-pr-divider"))
-                    .child(self.render_checkout_pr(&path, state.as_ref(), window, cx));
-                if state
-                    .as_ref()
-                    .is_some_and(|s| s.behind.is_some_and(|n| n > 0))
-                {
-                    let target = path.clone();
-                    let count = state.as_ref().and_then(|s| s.behind).unwrap_or(0);
-                    card = card.child(
-                        checkout_row(
-                            "checkout-pull",
-                            format!("Pull {count} remote commits"),
-                            "chev-down",
-                            window,
-                            cx,
-                        )
-                        .disabled(
-                            self.checkout_panel.operation.busy
-                                || self.checkout_panel.state_error.is_some()
-                                || state.as_ref().is_none_or(|s| s.dirty || s.ahead != Some(0)),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.checkout_run(target.clone(), GitAction::Pull, cx)
-                        })),
-                    );
-                }
-                if let Some(Ok(Some(main))) = self.checkout_panel.main_state.clone() {
-                    if main.behind > 0
-                        && !state.as_ref().is_some_and(|state| {
-                            state.upstream.as_deref()
-                                == Some(format!("{}/{}", main.remote, main.branch).as_str())
-                        })
+                    card = card
+                        .child(checkout_divider("checkout-pr-divider"))
+                        .child(self.render_checkout_pr(&path, state.as_ref(), window, cx));
+                    if state
+                        .as_ref()
+                        .is_some_and(|s| s.behind.is_some_and(|n| n > 0))
                     {
-                        let request = main.clone();
-                        let expected = state.clone();
+                        let target = path.clone();
+                        let count = state.as_ref().and_then(|s| s.behind).unwrap_or(0);
                         card = card.child(
                             checkout_row(
-                                "checkout-main",
-                                format!("{} · {} new commits", main.branch, main.behind),
-                                "git-branch",
+                                "checkout-pull",
+                                format!("Pull {count} remote commits"),
+                                "chev-down",
                                 window,
                                 cx,
                             )
-                            .with_focus_handle(self.checkout_panel.trigger_focus["main"].clone())
-                            .relative()
-                            .child({
-                                let bounds = self.checkout_panel.source_bounds["main"].clone();
-                                gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
-                                    .absolute()
-                                    .inset_0()
-                            })
                             .disabled(
                                 self.checkout_panel.operation.busy
-                                    || self.checkout_panel.main_error.is_some()
-                                    || self.checkout_panel.state_error.is_some(),
+                                    || self.checkout_panel.state_error.is_some()
+                                    || state.as_ref().is_none_or(|s| s.dirty || s.ahead != Some(0)),
                             )
                             .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    if let Some(expected) = expected.clone() {
-                                        this.checkout_panel.recovery =
-                                            Some(CheckoutRecovery::Main(expected, request.clone()));
-                                        this.checkout_panel.return_focus =
-                                            this.checkout_panel.trigger_focus.get("main").cloned();
-                                        let focus = this
-                                            .checkout_panel
-                                            .confirmation_focus
-                                            .get_or_insert_with(|| cx.focus_handle());
-                                        focus.focus(window, cx);
-                                        cx.notify();
-                                    }
+                                move |this, _, _, cx| {
+                                    this.checkout_run(target.clone(), GitAction::Pull, cx)
                                 },
                             )),
                         );
                     }
-                }
-                let diagnostic = self
-                    .checkout_panel
-                    .state_error
-                    .as_ref()
-                    .map(|error| ("Git status unavailable", error))
-                    .or_else(|| {
-                        self.checkout_panel
-                            .main_error
-                            .as_ref()
-                            .map(|error| ("Remote unavailable · last known status", error))
-                    });
-                if let Some((label, error)) = diagnostic {
-                    card = card.child(
-                        checkout_row("checkout-status-error", label, "status-unknown", window, cx)
+                    if let Some(Ok(Some(main))) = self.checkout_panel.main_state.clone() {
+                        if main.behind > 0
+                            && !state.as_ref().is_some_and(|state| {
+                                state.upstream.as_deref()
+                                    == Some(format!("{}/{}", main.remote, main.branch).as_str())
+                            })
+                        {
+                            let request = main.clone();
+                            let expected = state.clone();
+                            card = card.child(
+                                checkout_row(
+                                    "checkout-main",
+                                    format!("{} · {} new commits", main.branch, main.behind),
+                                    "git-branch",
+                                    window,
+                                    cx,
+                                )
+                                .with_focus_handle(
+                                    self.checkout_panel.trigger_focus["main"].clone(),
+                                )
+                                .relative()
+                                .child({
+                                    let bounds = self.checkout_panel.source_bounds["main"].clone();
+                                    gpui::canvas(
+                                        move |rect, _, _| bounds.set(rect),
+                                        |_, (), _, _| {},
+                                    )
+                                    .absolute()
+                                    .inset_0()
+                                })
+                                .disabled(
+                                    self.checkout_panel.operation.busy
+                                        || self.checkout_panel.main_error.is_some()
+                                        || self.checkout_panel.state_error.is_some(),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        if let Some(expected) = expected.clone() {
+                                            this.checkout_panel.recovery = Some(
+                                                CheckoutRecovery::Main(expected, request.clone()),
+                                            );
+                                            this.checkout_panel.return_focus = this
+                                                .checkout_panel
+                                                .trigger_focus
+                                                .get("main")
+                                                .cloned();
+                                            let focus = this
+                                                .checkout_panel
+                                                .confirmation_focus
+                                                .get_or_insert_with(|| cx.focus_handle());
+                                            focus.focus(window, cx);
+                                            cx.notify();
+                                        }
+                                    },
+                                )),
+                            );
+                        }
+                    }
+                    let diagnostic = self
+                        .checkout_panel
+                        .state_error
+                        .as_ref()
+                        .map(|error| ("Git status unavailable", error))
+                        .or_else(|| {
+                            self.checkout_panel
+                                .main_error
+                                .as_ref()
+                                .map(|error| ("Remote unavailable · last known status", error))
+                        });
+                    if let Some((label, error)) = diagnostic {
+                        card = card.child(
+                            checkout_row(
+                                "checkout-status-error",
+                                label,
+                                "status-unknown",
+                                window,
+                                cx,
+                            )
                             .tooltip(error.clone())
                             .disabled(
                                 self.checkout_panel.main_loading || self.checkout_panel.loading,
@@ -3066,34 +3119,35 @@ impl Sidebar {
                                 this.checkout_panel.main_checked_at = None;
                                 cx.notify();
                             })),
-                    );
-                }
-                if !self.checkout_confirmation_open()
-                    && self
-                        .checkout_panel
-                        .operation
-                        .message
-                        .as_ref()
-                        .is_some_and(|m| !m.is_empty())
-                    && matches!(
-                        self.checkout_panel.operation.commit_status,
-                        CommitUi::Failed | CommitUi::Idle
-                    )
-                {
-                    card = card.child(
-                        div()
-                            .pl(rpx(CHECKOUT_LABEL_INSET))
-                            .pr(rpx(SPACE_2XL))
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_DIM())
-                            .child(
-                                self.checkout_panel
-                                    .operation
-                                    .message
-                                    .clone()
-                                    .unwrap_or_default(),
-                            ),
-                    );
+                        );
+                    }
+                    if !self.checkout_confirmation_open()
+                        && self
+                            .checkout_panel
+                            .operation
+                            .message
+                            .as_ref()
+                            .is_some_and(|m| !m.is_empty())
+                        && matches!(
+                            self.checkout_panel.operation.commit_status,
+                            CommitUi::Failed | CommitUi::Idle
+                        )
+                    {
+                        card = card.child(
+                            div()
+                                .pl(rpx(CHECKOUT_LABEL_INSET))
+                                .pr(rpx(SPACE_2XL))
+                                .text_size(rpx(TEXT_SMALL))
+                                .text_color(c::FG_DIM())
+                                .child(
+                                    self.checkout_panel
+                                        .operation
+                                        .message
+                                        .clone()
+                                        .unwrap_or_default(),
+                                ),
+                        );
+                    }
                 }
             } else {
                 let target = targets.first().cloned();
@@ -3161,17 +3215,6 @@ impl Sidebar {
                             .disabled(true),
                     );
             }
-        }
-        if no_project {
-            card = card.child(
-                div()
-                    .debug_selector(|| "checkout-no-project".into())
-                    .px(rpx(SPACE_2XL))
-                    .py(rpx(SPACE_SM))
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Project tools are unavailable without a project checkout."),
-            );
         }
         if let Some(plan) = (!self.dashboard_open)
             .then(|| self.render_checkout_plan(window, cx))
@@ -3294,9 +3337,13 @@ impl Sidebar {
         }
         let owner = cx.entity().downgrade();
         let state = self.checkout_panel.state.clone().and_then(Result::ok);
-        let project_path = cx.global::<SettingsState>().store.projects[idx]
-            .path
-            .clone();
+        let project_path = cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .get(idx)
+            .map(|project| project.path.clone())
+            .unwrap_or_else(|| path.clone());
         let targets = self.checkout_targets(cx);
         let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
             popup = crate::views::components::dropdown_menu(popup, window);
@@ -3344,7 +3391,7 @@ impl Sidebar {
                         }));
                     }
                 }
-                if state.as_ref().is_some_and(|state| state.head.is_some()) {
+                if idx != usize::MAX && state.as_ref().is_some_and(|state| state.head.is_some()) {
                     let owner = owner.clone();
                     let project_path = project_path.clone();
                     popup = popup.item(PopupMenuItem::new("New worktree…").on_click(
@@ -3919,6 +3966,33 @@ fn commit_row_state(state: Option<&CheckoutGitState>) -> (&'static str, &'static
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn projectless_provider_sessions_keep_directory_targets(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let mut sidebar = Sidebar::new(runtime.clone(), window, cx);
+            sidebar.dashboard_open = false;
+            for agent in [Agent::Codex, Agent::Claude] {
+                let id = runtime.read(cx).registry.clone().update(cx, |registry, _| {
+                    registry.insert_meta(String::new(), "/tmp/projectless-fixture".into(), agent)
+                });
+                sidebar.selection = Some(Selection::Session(id));
+                assert_eq!(
+                    sidebar.checkout_targets(cx),
+                    vec![(usize::MAX, "/tmp/projectless-fixture".into())]
+                );
+            }
+            sidebar
+        });
+        let _ = cx;
+    }
+
     #[test]
     fn invalidated_cached_status_is_polled_again() {
         let mut panel = CheckoutPanel::default();

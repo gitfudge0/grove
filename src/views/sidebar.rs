@@ -2351,10 +2351,12 @@ impl Sidebar {
             .all()
             .iter()
             .filter(|meta| {
-                self.snapshot
-                    .projects
-                    .iter()
-                    .any(|project| project.sessions.contains(&meta.id))
+                meta.project.is_empty()
+                    || self
+                        .snapshot
+                        .projects
+                        .iter()
+                        .any(|project| project.sessions.contains(&meta.id))
             })
             .map(|meta| SessionListEntry {
                 id: meta.id,
@@ -3067,7 +3069,12 @@ impl Sidebar {
                 self.open_project_panel(projects::Page::Edit(path), window, cx);
             }
             Action::EditProjectScripts(path, add) => {
-                if !self.project_path_is_active(&path, cx) {
+                if !self.project_path_is_active(&path, cx)
+                    && !self
+                        .checkout_targets(cx)
+                        .iter()
+                        .any(|(_, target)| target == &path)
+                {
                     return;
                 }
                 self.open_project_panel(projects::Page::Edit(path), window, cx);
@@ -3338,16 +3345,12 @@ impl Sidebar {
                 let entry = cx
                     .global::<SettingsState>()
                     .store
-                    .projects
-                    .iter()
-                    .find(|project| project.path == project_path)
-                    .and_then(|project| {
-                        project
-                            .scripts
-                            .effective_entries()
-                            .into_iter()
-                            .find(|entry| entry.id == id)
-                    });
+                    .script_project(&project_path)
+                    .scripts
+                    .effective_entries()
+                    .into_iter()
+                    .find(|entry| entry.id == id);
+
                 if let Some(grove_core::storage::ProjectAction {
                     kind: grove_core::storage::ProjectActionKind::Prompt { template },
                     ..

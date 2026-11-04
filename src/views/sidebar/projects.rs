@@ -110,10 +110,8 @@ impl ProjectPanel {
             Page::Edit(path) | Page::Remove(path) | Page::Move(path) => cx
                 .global::<SettingsState>()
                 .store
-                .projects
-                .iter()
-                .find(|p| &p.path == path)
-                .cloned(),
+                .script_project(path)
+                .into(),
             Page::Archived => None,
         };
         let values = project.as_ref().map_or_else(
@@ -325,6 +323,19 @@ impl ProjectPanel {
             }
             self.error = Some(error);
             cx.notify();
+            return;
+        }
+        if !cx
+            .global::<SettingsState>()
+            .store
+            .projects
+            .iter()
+            .any(|p| p.path == path)
+        {
+            SettingsState::update(cx, |store| {
+                store.directory_scripts.insert(path, scripts);
+            });
+            cx.emit(ProjectPanelEvent::Closed);
             return;
         }
         match self.service.update(cx, |service, cx| {
@@ -611,16 +622,11 @@ impl ProjectPanel {
                     Page::Edit(path) => cx
                         .global::<SettingsState>()
                         .store
-                        .projects
+                        .script_project(path)
+                        .scripts
+                        .effective_entries()
                         .iter()
-                        .find(|project| &project.path == path)
-                        .is_some_and(|project| {
-                            project
-                                .scripts
-                                .effective_entries()
-                                .iter()
-                                .any(|entry| &entry.id == id)
-                        }),
+                        .any(|entry| &entry.id == id),
                     _ => false,
                 };
                 if saved { "Edit script" } else { "New script" }.into()
@@ -1200,47 +1206,52 @@ impl Render for ProjectPanel {
                     let invalid_name = !grove_core::git::valid_project_name(
                         self.fields[0].read(cx).value().as_ref(),
                     );
-                    content = content
-                        .child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(rpx(SPACE_2XL))
-                                .child(div().min_w_0().w_full().child(project_form_field(
-                                    "project-name",
-                                    "Project name",
-                                    &self.fields[0],
-                                    if invalid_name {
-                                        self.error.as_deref()
-                                    } else {
-                                        None
-                                    },
-                                    window,
-                                    cx,
-                                )))
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .w_full()
-                                        .debug_selector(|| "Project folder".into())
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(c::FG_DIM())
-                                        .child("Project folder")
-                                        .child(
-                                            crate::views::components::readonly_value(
-                                                "project-folder-path",
-                                                path.clone(),
-                                            )
+                    if project.is_some() {
+                        content = content
+                            .child(
+                                div()
+                                    .w_full()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(rpx(SPACE_2XL))
+                                    .child(div().min_w_0().w_full().child(project_form_field(
+                                        "project-name",
+                                        "Project name",
+                                        &self.fields[0],
+                                        if invalid_name {
+                                            self.error.as_deref()
+                                        } else {
+                                            None
+                                        },
+                                        window,
+                                        cx,
+                                    )))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .w_full()
+                                            .debug_selector(|| "Project folder".into())
                                             .text_size(rpx(TEXT_SMALL))
-                                            .line_height(rpx(CARD_LINE_SM_H))
-                                            .text_color(c::FG_DIM()),
-                                        ),
-                                ),
-                        )
-                        .child(self.render_lifecycle(window, cx))
-                        .child(self.render_scripts(window, cx));
+                                            .text_color(c::FG_DIM())
+                                            .child("Project folder")
+                                            .child(
+                                                crate::views::components::readonly_value(
+                                                    "project-folder-path",
+                                                    path.clone(),
+                                                )
+                                                .text_size(rpx(TEXT_SMALL))
+                                                .line_height(rpx(CARD_LINE_SM_H))
+                                                .text_color(c::FG_DIM()),
+                                            ),
+                                    ),
+                            )
+                            .child(self.render_lifecycle(window, cx));
+                    } else {
+                        heading = "Directory scripts".into();
+                        description = "Reusable actions for this directory.".into();
+                    }
+                    content = content.child(self.render_scripts(window, cx));
                     if project.is_some() {
                         content = content.child(div().w_full().py(rpx(SPACE_3XL)).border_t_1()
                             .border_color(c::BORDER_SOFT()).flex().items_center().gap(rpx(SPACE_2XL))

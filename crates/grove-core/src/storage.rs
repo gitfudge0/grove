@@ -476,6 +476,9 @@ pub struct Store {
     pub project_workspaces: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     pub projects: Vec<Project>,
+    /// Scripts for directories used without registering a project.
+    #[serde(default)]
+    pub directory_scripts: std::collections::BTreeMap<String, ProjectScripts>,
     #[serde(default)]
     pub default_agent: Option<Agent>,
     #[serde(default, skip_serializing)]
@@ -549,6 +552,24 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn script_project(&self, path: &str) -> Project {
+        self.projects
+            .iter()
+            .find(|p| p.path == path)
+            .cloned()
+            .unwrap_or_else(|| Project {
+                name: "Directory scripts".into(),
+                path: path.into(),
+                scripts: self
+                    .directory_scripts
+                    .get(path)
+                    .cloned()
+                    .unwrap_or_default(),
+                archived: false,
+                worktree_dir: None,
+            })
+    }
+
     pub fn is_model_favorite(&self, provider: crate::codex::Provider, model: &str) -> bool {
         self.model_favorites
             .iter()

@@ -64,9 +64,9 @@ fn closed_cli_record(
     native: bool,
     closed_at: std::time::SystemTime,
 ) -> Option<session_meta::ClosedCliSession> {
-    // Home terminals live outside `order`; the empty project guard also keeps
-    // accidentally routed standalone terminals out of agent History.
-    if native || meta.project.is_empty() {
+    // Home and panel shells have their own collections. Managed agent
+    // sessions retain History even when they have no project.
+    if native || (meta.project.is_empty() && meta.agent == Agent::Terminal) {
         return None;
     }
     let elapsed = closed_at
@@ -780,7 +780,10 @@ mod tests {
                 .starts_with(&format!("cli-{}-{}-", std::process::id(), id.raw())));
             let mut standalone = meta.clone();
             standalone.project.clear();
-            assert!(closed_cli_record(&standalone, false, when).is_none());
+            assert_eq!(
+                closed_cli_record(&standalone, false, when).is_some(),
+                agent != Agent::Terminal
+            );
         }
     }
 

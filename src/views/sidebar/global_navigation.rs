@@ -409,44 +409,65 @@ impl Sidebar {
                 let registry = self.runtime.read(cx).registry.read(cx);
                 let mut groups = Vec::<((String, String), String, Vec<SessionId>)>::new();
                 let mut seen = HashSet::new();
-                for project in &self.snapshot.projects {
-                    for id in &project.sessions {
-                        if !seen.insert(*id) {
-                            continue;
-                        }
-                        let Some(meta) = registry.meta(*id) else {
-                            continue;
-                        };
-                        // Project and full checkout path own identity. Equal branch names
-                        // in distinct repositories or checkouts must never merge.
-                        let key = (meta.project.clone(), meta.wt_path.clone());
-                        if let Some((_, _, ids)) =
-                            groups.iter_mut().find(|(identity, _, _)| *identity == key)
-                        {
-                            ids.push(*id);
-                            continue;
-                        }
-                        let name = self
-                            .snapshot
-                            .projects
+                for id in self
+                    .snapshot
+                    .projects
+                    .iter()
+                    .flat_map(|project| project.sessions.iter())
+                    .chain(
+                        registry
+                            .all()
                             .iter()
-                            .find(|owner| owner.name == meta.project)
-                            .and_then(|owner| {
-                                owner.worktrees.iter().find(|wt| wt.path == meta.wt_path)
-                            })
-                            .map_or_else(
-                                || {
-                                    std::path::Path::new(&meta.wt_path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .into_owned()
-                                },
-                                |wt| wt.name.clone(),
-                            );
-                        groups.push((key, format!("{} / {}", meta.project, name), vec![*id]));
+                            .filter(|meta| meta.project.is_empty())
+                            .map(|meta| &meta.id),
+                    )
+                {
+                    if !seen.insert(*id) {
+                        continue;
                     }
+                    let Some(meta) = registry.meta(*id) else {
+                        continue;
+                    };
+                    // Project and full checkout path own identity. Equal branch names
+                    // in distinct repositories or checkouts must never merge.
+                    let key = (meta.project.clone(), meta.wt_path.clone());
+                    if let Some((_, _, ids)) =
+                        groups.iter_mut().find(|(identity, _, _)| *identity == key)
+                    {
+                        ids.push(*id);
+                        continue;
+                    }
+                    let name = self
+                        .snapshot
+                        .projects
+                        .iter()
+                        .find(|owner| owner.name == meta.project)
+                        .and_then(|owner| owner.worktrees.iter().find(|wt| wt.path == meta.wt_path))
+                        .map_or_else(
+                            || {
+                                std::path::Path::new(&meta.wt_path)
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned()
+                            },
+                            |wt| wt.name.clone(),
+                        );
+                    groups.push((
+                        key,
+                        format!(
+                            "{} / {}",
+                            if meta.project.is_empty() {
+                                "No project"
+                            } else {
+                                &meta.project
+                            },
+                            name
+                        ),
+                        vec![*id],
+                    ));
                 }
+
                 groups
                     .into_iter()
                     .map(|(_, label, ids)| (label, ids))
@@ -808,6 +829,54 @@ mod tests {
             );
         });
         assert!(cx.debug_bounds("dashboard-summary").is_some());
+    }
+
+    #[gpui::test]
+    fn projectless_sessions_stay_in_sidebar_groups_and_select(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                cx.global_mut::<SettingsState>().store.projects.clear();
+                sidebar.snapshot.projects.clear();
+                let registry = sidebar.runtime.read(cx).registry.clone();
+                let ids = registry.update(cx, |registry, _| {
+                    [Agent::Codex, Agent::Claude].map(|agent| {
+                        registry.insert_meta(
+                            String::new(),
+                            "/tmp/projectless-sidebar".into(),
+                            agent,
+                        )
+                    })
+                });
+                for worktrees in [false, true] {
+                    SettingsState::update(cx, |store| store.sidebar_group_by_worktree = worktrees);
+                    let groups = sidebar.sidebar_session_groups(cx);
+                    let visible: Vec<_> = groups
+                        .iter()
+                        .flat_map(|(_, ids)| ids.iter().copied())
+                        .collect();
+                    assert_eq!(visible.len(), 2);
+                    for id in ids {
+                        assert!(visible.contains(&id));
+                    }
+                    if worktrees {
+                        assert_eq!(
+                            groups,
+                            vec![("No project / projectless-sidebar".into(), ids.to_vec())]
+                        );
+                    }
+                    for id in ids {
+                        sidebar.select_session_id(id, window, cx);
+                        assert_eq!(sidebar.selection, Some(Selection::Session(id)));
+                    }
+                }
+                assert!(cx.global::<SettingsState>().store.projects.is_empty());
+            });
+        });
     }
 
     #[gpui::test]
