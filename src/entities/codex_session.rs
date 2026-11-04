@@ -485,6 +485,14 @@ impl CodexSession {
     pub fn send(&mut self, action: Action, cx: &mut Context<Self>) {
         if self.is_deferred() {
             match action {
+                Action::SetTitle(title) => {
+                    grove_core::session_title::set_manual_title(&mut self.state.saved, &title);
+                    self.state.title_generation_pending = false;
+                    self.dashboard_title_waiting = None;
+                }
+                Action::RegenerateTitle => {
+                    grove_core::session_title::request_regeneration(&mut self.state.saved);
+                }
                 Action::Draft(text) => self.state.saved.draft = text,
                 Action::SideChat { checkout, chat } => {
                     self.state.saved.side_chats.insert(checkout, chat);
@@ -977,6 +985,38 @@ mod dashboard_tests {
             composer: codex::ComposerSettings::default(),
             context: None,
         }
+    }
+
+    #[gpui::test]
+    fn deferred_title_edits_preserve_manual_ownership_and_composer(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let session = cx.new(|cx| CodexSession::draft(saved(provider), Vec::new(), cx));
+                session.update(cx, |session, cx| {
+                    session.send(Action::Draft("Keep my draft".into()), cx);
+                    session.send(Action::SetTitle("  My session title  ".into()), cx);
+                    assert_eq!(
+                        session.state.saved.title.as_deref(),
+                        Some("My session title")
+                    );
+                    assert!(session.state.saved.title_generation.is_some());
+                    assert_eq!(session.state.saved.draft, "Keep my draft");
+                    assert!(session.is_deferred());
+                    assert!(!session.state.title_generation_pending);
+                    session.send(Action::SetTitle("  ".into()), cx);
+                    assert_eq!(
+                        session.state.saved.title.as_deref(),
+                        Some("My session title")
+                    );
+                    let restored = serde_json::from_value::<SavedSession>(
+                        serde_json::to_value(&session.state.saved).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(restored.title.as_deref(), Some("My session title"));
+                    assert_eq!(restored.provider, provider);
+                });
+            }
+        });
     }
 
     #[gpui::test]

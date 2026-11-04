@@ -955,7 +955,7 @@ pub struct Snapshot {
     pub reconnecting: bool,
     restored_subagents: HashSet<String>,
     pub saved: SavedSession,
-    /// A title request is running before any generated title; never persisted across reconnects.
+    /// A title request is running; never persisted across reconnects.
     pub title_generation_pending: bool,
     pub subagent_activity: HashMap<String, SubagentActivity>,
     pub subagent_activity_evicted: HashSet<String>,
@@ -1047,6 +1047,16 @@ pub(crate) fn next_interaction_epoch() -> u64 {
     EPOCH.fetch_add(1, Ordering::Relaxed)
 }
 impl Snapshot {
+    /// Only the first title request animates its prompt-derived placeholder.
+    pub fn initial_title_pending(&self) -> bool {
+        self.title_generation_pending
+            && self
+                .saved
+                .title_generation
+                .as_ref()
+                .is_none_or(|generation| !generation.generated)
+    }
+
     pub fn accept_submission(&mut self, id: u64) {
         self.accepted_submission = Some(id);
         self.accepted_submissions.insert(id);
@@ -3163,6 +3173,10 @@ fn prompt_input(text: &str, images: Vec<String>) -> Vec<Value> {
     input
 }
 pub enum Action {
+    /// Explicitly chosen title; automatic generation must preserve it.
+    SetTitle(String),
+    /// Regenerate from bounded conversation context and resume automatic naming.
+    RegenerateTitle,
     /// A receipt for the exact completed result displayed by the native UI.
     MarkReviewed {
         work_period: usize,
@@ -4884,6 +4898,8 @@ impl Actor {
                 Action::Reconnect
                     | Action::Stop { .. }
                     | Action::Draft(_)
+                    | Action::SetTitle(_)
+                    | Action::RegenerateTitle
                     | Action::SideChat { .. }
                     | Action::SideChatDraft { .. }
                     | Action::DraftImages(_)
@@ -5303,6 +5319,16 @@ impl Actor {
                     }
                 }
                 self.state.saved.draft_images = images;
+            }
+            Action::RegenerateTitle => {
+                self.title_generator.cancel();
+                crate::session_title::request_regeneration(&mut self.state.saved);
+            }
+            Action::SetTitle(title) => {
+                if !crate::session_title::set_manual_title(&mut self.state.saved, &title) {
+                    return Err("Title must contain 1–80 characters".into());
+                }
+                self.title_generator.cancel();
             }
             Action::Draft(text) => {
                 if let Some(edit) = &mut self.state.saved.pending_edit {

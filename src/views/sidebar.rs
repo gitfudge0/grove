@@ -21,6 +21,7 @@ mod session_history;
 mod session_motion;
 mod side_chat;
 mod task_glance;
+mod title_edit;
 mod worktree_form;
 mod worktree_terminal;
 use super::{motion, rpx, terminal_view::TerminalView, tokens::*};
@@ -517,6 +518,8 @@ pub struct Sidebar {
     grid_drag: Option<grid::GridDrag>,
     grid_session_drag: Option<grid::GridSessionDrag>,
     grid_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    title_edit: Option<title_edit::TitleEdit>,
+    title_edit_focus: HashMap<SessionId, FocusHandle>,
     canvas_close_anchor: Option<SessionId>,
     canvas_close_focus: HashMap<(SessionId, bool), FocusHandle>,
     canvas_breadcrumb_focus: HashMap<(SessionId, bool), FocusHandle>,
@@ -762,6 +765,8 @@ impl Sidebar {
             grid_drag: None,
             grid_session_drag: None,
             grid_bounds: std::rc::Rc::default(),
+            title_edit: None,
+            title_edit_focus: HashMap::new(),
             canvas_close_anchor: None,
             canvas_close_focus: HashMap::new(),
             canvas_breadcrumb_focus: HashMap::new(),
@@ -1095,6 +1100,14 @@ impl Sidebar {
             .map(|meta| meta.id)
             .collect();
         self.canvas_bounds.retain(|id, _| live.contains(id));
+        self.title_edit_focus.retain(|id, _| live.contains(id));
+        if self
+            .title_edit
+            .as_ref()
+            .is_some_and(|edit| !live.contains(&edit.session))
+        {
+            self.title_edit = None;
+        }
         self.canvas_close_focus
             .retain(|(id, _), _| live.contains(id));
         self.canvas_breadcrumb_focus
@@ -3781,7 +3794,7 @@ impl Sidebar {
             .registry
             .read(cx)
             .codex(id)
-            .is_some_and(|session| session.read(cx).state.title_generation_pending);
+            .is_some_and(|session| session.read(cx).state.initial_title_pending());
         super::components::shimmer_label(
             (surface, id.raw()).into(),
             single_line_session_title(title),

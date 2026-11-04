@@ -1962,6 +1962,8 @@ impl Actor {
                 Action::Reconnect
                     | Action::Stop { .. }
                     | Action::Draft(_)
+                    | Action::SetTitle(_)
+                    | Action::RegenerateTitle
                     | Action::SideChat { .. }
                     | Action::SideChatDraft { .. }
                     | Action::DraftImages(_)
@@ -2233,6 +2235,16 @@ impl Actor {
                     )?;
                 }
                 self.state.saved.draft_reference = reference;
+            }
+            Action::RegenerateTitle => {
+                self.title_generator.cancel();
+                crate::session_title::request_regeneration(&mut self.state.saved);
+            }
+            Action::SetTitle(title) => {
+                if !crate::session_title::set_manual_title(&mut self.state.saved, &title) {
+                    return Err("Title must contain 1–80 characters".into());
+                }
+                self.title_generator.cancel();
             }
             Action::Draft(text) => {
                 if text.len() > 512 * 1024 {

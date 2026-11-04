@@ -89,6 +89,17 @@ pub fn header_control_with_hover(
     header_control_frame(id, label, hover)
 }
 
+/// Unavailable header action preserves geometry without pointer or keyboard activation.
+pub fn disabled_header_control(
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
+) -> Stateful<Div> {
+    inline_disclosure_frame(id, label)
+        .cursor_default()
+        .opacity(0.5)
+        .group("disabled-control")
+}
+
 /// Header action with an explicitly requested text tooltip.
 pub fn header_control_with_label_tooltip(id: &'static str, label: &'static str) -> Stateful<Div> {
     header_control(id, label).tooltip(move |window, cx| tooltip(label, window).build(window, cx))
@@ -244,6 +255,11 @@ pub fn form_field(
 
 /// Compact search field for navigation lists. The well owns its border and focus ring.
 pub fn search_field_well(focused: bool) -> Div {
+    compact_field_well(focused)
+}
+
+/// Compact single-line field for constrained chrome. The well owns its border and fill.
+pub fn compact_field_well(focused: bool) -> Div {
     div()
         .h(rpx(ROW_MIN_H))
         .flex_shrink_0()

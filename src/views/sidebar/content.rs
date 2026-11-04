@@ -1100,23 +1100,13 @@ impl Sidebar {
                                     ),
                             )
                             .child(agent_icon)
-                            .child(
-                                div()
-                                    .debug_selector(move || {
-                                        format!("session-header-title-{}", id.raw())
-                                    })
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(c::FG())
-                                    .child(self.session_title_label(
-                                        id,
-                                        &task,
-                                        "session-header-title-shimmer",
-                                        cx,
-                                    )),
-                            ),
+                            .child(self.session_header_title(
+                                id,
+                                &task,
+                                native.is_some(),
+                                window,
+                                cx,
+                            )),
                     ),
             )
             .child(
@@ -2798,6 +2788,18 @@ mod tests {
     }
     #[gpui::test]
     fn native_codex_keeps_shared_header_and_grid_drag_controls(cx: &mut gpui::TestAppContext) {
+        native_header_title_edit_fixture(cx, grove_core::codex::Provider::Codex);
+    }
+
+    #[gpui::test]
+    fn native_claude_keeps_shared_header_and_grid_drag_controls(cx: &mut gpui::TestAppContext) {
+        native_header_title_edit_fixture(cx, grove_core::codex::Provider::Claude);
+    }
+
+    fn native_header_title_edit_fixture(
+        cx: &mut gpui::TestAppContext,
+        provider: grove_core::codex::Provider,
+    ) {
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(SettingsState::new(grove_core::storage::Store {
@@ -2821,7 +2823,7 @@ mod tests {
                 registry.insert_meta(
                     "demo".into(),
                     "/grove-native-chrome-feature".into(),
-                    Agent::Codex,
+                    provider.agent(),
                 )
             });
             let saved = grove_core::codex::SavedSession {
@@ -2833,7 +2835,7 @@ mod tests {
                 edit_checkpoints: Vec::new(),
                 pending_edit: None,
                 rewind_drafts: Vec::new(),
-                provider: grove_core::codex::Provider::Codex,
+                provider,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
                 key: "native-chrome".into(),
@@ -2880,6 +2882,60 @@ mod tests {
                 "missing shared native session control: {selector}"
             );
         }
+        // Header editing uses the real native input but a captured provider action channel.
+        let id = crate::entities::session_registry::SessionId::from_raw(1);
+        let edit = cx.debug_bounds("edit-session-title-1").unwrap();
+        let title_before = cx.debug_bounds("session-header-title-1").unwrap();
+        cx.simulate_mouse_move(edit.center(), None, gpui::Modifiers::default());
+        draw(cx);
+        assert_eq!(
+            title_before,
+            cx.debug_bounds("session-header-title-1").unwrap()
+        );
+        cx.simulate_click(edit.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+            "cmd-a"
+        } else {
+            "ctrl-a"
+        });
+        cx.simulate_input("A new title with spaces");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(actions.try_iter().any(|action| matches!(action, grove_core::codex::Action::SetTitle(title) if title == "A new title with spaces")));
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.title_edit.is_none()));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.simulate_input("discard");
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar.title_edit.is_none()));
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, grove_core::codex::Action::SetTitle(_))));
+        // Leaving and returning retains the originating session's independent editor.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.select(Selection::Project(0), cx);
+            });
+        });
+        draw(cx);
+        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
+            .title_edit
+            .as_ref()
+            .is_some_and(|edit| edit.session == id)));
+        cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.select(Selection::Session(id), cx));
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.finish_title_edit(id, false, window, cx)
+            });
+        });
+        draw(cx);
         cx.update(|_, cx| {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.mode = ViewMode::Grid;
