@@ -134,6 +134,8 @@ Structured session headers place a Side chat toggle beside the right-panel contr
 
 ## Workspace and checkout flows
 
+A session launched from the main-screen composer stays busy through provider initialization and the first prompt handoff. Internal readiness must not briefly expose Ready before that prompt starts; launch failures remain visible.
+
 ### Workspace controls and input copy
 
 Dropdown triggers and menu items use neutral pointer hover highlights and neutral selected/open/keyboard-focus fills, with stable borders and no white or foreground-colored outline. Preserve keyboard navigation and accessible names. Other controls retain their keyboard focus rings.

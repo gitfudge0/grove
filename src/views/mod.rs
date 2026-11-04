@@ -20,6 +20,8 @@ pub mod tokens;
 mod worktree_launcher;
 
 mod codex_view;
+#[cfg(test)]
+pub(crate) use codex_view::CodexView;
 mod review_summary;
 pub mod components;
 mod inline_html;

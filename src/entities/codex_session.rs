@@ -49,6 +49,13 @@ impl DerefMut for SessionSnapshot {
         Rc::make_mut(&mut self.0)
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DashboardLaunch {
+    Starting,
+    Ready,
+    Submitted,
+}
+
 pub struct CodexSession {
     pub state: SessionSnapshot,
     pub catalog_loading: bool,
@@ -60,6 +67,7 @@ pub struct CodexSession {
     catalog_scope: Option<Scope>,
     catalog_selection_error: bool,
     dashboard_title_waiting: Option<String>,
+    dashboard_launch: Option<DashboardLaunch>,
 }
 impl CodexSession {
     /// A retained transcript for read-only History. No actor, capability
@@ -80,6 +88,7 @@ impl CodexSession {
             catalog_error: None,
             catalog_selection_error: false,
             dashboard_title_waiting: None,
+            dashboard_launch: None,
         }
     }
 
@@ -109,6 +118,7 @@ impl CodexSession {
             catalog_error: None,
             catalog_selection_error: false,
             dashboard_title_waiting: None,
+            dashboard_launch: None,
         };
         // The startup dashboard is created before model browsing. Warm the other
         // provider concurrently; the selected provider is loaded by refresh below.
@@ -370,6 +380,7 @@ impl CodexSession {
             .map(|line| line.chars().take(80).collect::<String>());
         let connection = codex::connect(saved.clone(), args);
         *self = Self::from_connection(Snapshot::new(saved), connection, cx);
+        self.dashboard_launch = Some(DashboardLaunch::Starting);
         self.dashboard_title_waiting = pending_title;
         if let Some(title) = &self.dashboard_title_waiting {
             self.state.saved.title = Some(title.clone());
@@ -420,9 +431,28 @@ impl CodexSession {
             catalog_error: None,
             catalog_selection_error: false,
             dashboard_title_waiting: None,
+            dashboard_launch: None,
         }
     }
+    pub(crate) fn dashboard_submission_ready(&self) -> bool {
+        self.dashboard_launch == Some(DashboardLaunch::Ready)
+    }
     fn accept_snapshot(&mut self, mut state: Snapshot) {
+        if let Some(launch) = self.dashboard_launch {
+            match state.status {
+                codex::Status::Idle
+                    if state.error.is_none() && state.rejected_submission.is_none() =>
+                {
+                    // Readiness is an internal handoff, not a user-visible idle period.
+                    if launch == DashboardLaunch::Starting {
+                        self.dashboard_launch = Some(DashboardLaunch::Ready);
+                    }
+                    state.status = codex::Status::Working;
+                }
+                codex::Status::Starting => {}
+                _ => self.dashboard_launch = None,
+            }
+        }
         if let Some(title) = &self.dashboard_title_waiting {
             if (state.title_generation_pending && state.saved.title.is_some())
                 || state.saved.title_generation.is_some()
@@ -445,6 +475,9 @@ impl CodexSession {
         self.state = state.into();
     }
     pub(crate) fn cancel_dashboard_title_waiting(&mut self) {
+        if self.dashboard_launch.take() == Some(DashboardLaunch::Ready) {
+            self.state.status = codex::Status::Idle;
+        }
         if self.dashboard_title_waiting.take().is_some() {
             self.state.title_generation_pending = false;
         }
@@ -631,6 +664,7 @@ impl CodexSession {
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
         codex::validate_prompt(&text, &images)?;
+        let dashboard_ready = self.dashboard_submission_ready();
         if (self.state.saved.provider == codex::Provider::Codex
             && self.state.saved.thread_id.is_none())
             || matches!(
@@ -640,7 +674,7 @@ impl CodexSession {
         {
             return Err("Reconnect before sending a prompt".into());
         }
-        if self.state.status.busy() || self.state.turn_id.is_some() {
+        if (!dashboard_ready && self.state.status.busy()) || self.state.turn_id.is_some() {
             return Err(format!(
                 "Wait for or interrupt the current {} turn",
                 self.state.saved.provider.label()
@@ -665,6 +699,9 @@ impl CodexSession {
             0
         };
         self.state.clear_error();
+        if dashboard_ready {
+            self.dashboard_launch = Some(DashboardLaunch::Submitted);
+        }
         self.state.status = codex::Status::Working;
         cx.notify();
         Ok(submission)
@@ -679,6 +716,131 @@ impl Drop for CodexSession {
 #[cfg(test)]
 mod dashboard_tests {
     use super::*;
+
+    #[gpui::test]
+    fn dashboard_view_sends_ready_launch_as_first_turn(cx: &mut gpui::TestAppContext) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|cx| {
+                gpui_component::init(cx);
+                cx.set_global(crate::settings::SettingsState::new(
+                    grove_core::storage::Store::default(),
+                ));
+            });
+            let (handle, actions) = Handle::channel();
+            let (_updates, receive) = std::sync::mpsc::channel();
+            let mut initial = Snapshot::new(saved(provider));
+            initial.saved.draft = "First dashboard prompt".into();
+            let mut session_entity = None;
+            let (view, window_cx) = cx.add_window_view(|window, cx| {
+                let session = cx.new(|cx| {
+                    let mut session = CodexSession::from_connection(
+                        initial,
+                        codex::Connection {
+                            handle,
+                            updates: receive.into(),
+                        },
+                        cx,
+                    );
+                    session.dashboard_launch = Some(DashboardLaunch::Starting);
+                    session
+                });
+                session_entity = Some(session.clone());
+                crate::views::CodexView::new(session, window, cx)
+            });
+            window_cx
+                .update(|window, cx| view.update(cx, |view, cx| view.launch_dashboard(window, cx)));
+            let session = session_entity.unwrap();
+            window_cx.update(|_, cx| {
+                session.update(cx, |session, cx| {
+                    let mut ready = (*session.state).clone();
+                    ready.status = codex::Status::Idle;
+                    ready.saved.thread_id = Some("ready-thread".into());
+                    session.accept_snapshot(ready);
+                    assert_eq!(session.state.session_status(), "Working");
+                    cx.notify();
+                })
+            });
+            window_cx.run_until_parked();
+            let dispatched = actions.try_iter().collect::<Vec<_>>();
+            assert_eq!(
+                dispatched
+                    .iter()
+                    .filter(|action| matches!(action, Action::Submit { .. }))
+                    .count(),
+                1,
+                "{provider:?} must send, not enqueue"
+            );
+            assert_eq!(
+                session.read_with(window_cx, |s, _| s.state.session_status()),
+                "Working"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn dashboard_launch_never_publishes_ready_before_first_prompt(cx: &mut gpui::TestAppContext) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|cx| {
+                let (handle, actions) = Handle::channel();
+                let (_updates, receive) = std::sync::mpsc::channel();
+                let initial = Snapshot::new(saved(provider));
+                let session = cx.new(|cx| {
+                    CodexSession::from_connection(
+                        initial.clone(),
+                        codex::Connection {
+                            handle,
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                session.update(cx, |session, cx| {
+                    session.dashboard_launch = Some(DashboardLaunch::Starting);
+                    let mut ready = initial;
+                    ready.status = codex::Status::Idle;
+                    ready.saved.thread_id = Some("ready-thread".into());
+                    session.accept_snapshot(ready.clone());
+                    assert_eq!(session.state.session_status(), "Working", "{provider:?}");
+                    assert!(session.dashboard_submission_ready());
+                    session
+                        .queue_prompt("First prompt".into(), Vec::new(), true, cx)
+                        .unwrap();
+                    assert!(actions
+                        .try_iter()
+                        .any(|action| matches!(action, Action::Submit { .. })));
+                    // A delayed idle snapshot must not undo the optimistic send state.
+                    session.accept_snapshot(ready.clone());
+                    assert_eq!(session.state.session_status(), "Working");
+                    assert!(!session.dashboard_submission_ready());
+                    let mut working = ready.clone();
+                    working.status = codex::Status::Working;
+                    session.accept_snapshot(working);
+                    session.accept_snapshot(ready.clone());
+                    assert_eq!(
+                        session.state.session_status(),
+                        "Ready",
+                        "later idle is real"
+                    );
+                    for status in [
+                        codex::Status::Failed,
+                        codex::Status::Disconnected,
+                        codex::Status::Interrupted,
+                    ] {
+                        session.dashboard_launch = Some(DashboardLaunch::Starting);
+                        let mut failed = ready.clone();
+                        failed.status = status;
+                        session.accept_snapshot(failed);
+                        assert_eq!(session.state.status, status);
+                        assert!(session.dashboard_launch.is_none());
+                    }
+                    session.dashboard_launch = Some(DashboardLaunch::Starting);
+                    session.accept_snapshot(ready);
+                    session.cancel_dashboard_title_waiting();
+                    assert_eq!(session.state.session_status(), "Ready");
+                });
+            });
+        }
+    }
 
     #[gpui::test]
     fn history_snapshot_has_no_transport_or_catalog_for_codex_and_claude(

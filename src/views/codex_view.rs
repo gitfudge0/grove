@@ -4295,7 +4295,8 @@ impl CodexView {
         if self.dashboard_pending
             && (self.session.read(cx).state.saved.provider == codex::Provider::Claude
                 || self.session.read(cx).state.saved.thread_id.is_some())
-            && self.session.read(cx).state.status == codex::Status::Idle
+            && (self.session.read(cx).dashboard_submission_ready()
+                || self.session.read(cx).state.status == codex::Status::Idle)
         {
             self.dashboard_pending = false;
             self.submit(window, cx);
@@ -4352,7 +4353,9 @@ impl CodexView {
         if self.draft_action_pending(cx) {
             return;
         }
-        let mode = if self.session.read(cx).state.status.busy() {
+        let mode = if self.session.read(cx).state.status.busy()
+            && !self.session.read(cx).dashboard_submission_ready()
+        {
             SubmissionMode::Queue
         } else {
             SubmissionMode::Send
