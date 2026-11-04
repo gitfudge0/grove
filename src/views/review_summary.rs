@@ -54,7 +54,54 @@ fn destination(target: &str, cwd: &Path) -> Option<String> {
     } else {
         Url::from_directory_path(cwd).ok()?.join(target).ok()?
     };
-    matches!(url.scheme(), "http" | "https" | "mailto" | "file").then(|| url.to_string())
+    match url.scheme() {
+        "http" | "https" | "mailto" => Some(url.to_string()),
+        "file" => {
+            let path = url.to_file_path().ok()?;
+            let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+            // Source files and editor line references are not external artifacts.
+            // Keep the shelf limited to documents browsers or desktop viewers open.
+            (matches!(
+                extension.as_str(),
+                "html"
+                    | "htm"
+                    | "pdf"
+                    | "txt"
+                    | "md"
+                    | "csv"
+                    | "rtf"
+                    | "doc"
+                    | "docx"
+                    | "odt"
+                    | "xls"
+                    | "xlsx"
+                    | "ods"
+                    | "ppt"
+                    | "pptx"
+                    | "odp"
+                    | "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "webp"
+                    | "svg"
+                    | "bmp"
+                    | "tif"
+                    | "tiff"
+                    | "mp3"
+                    | "wav"
+                    | "ogg"
+                    | "flac"
+                    | "m4a"
+                    | "mp4"
+                    | "webm"
+                    | "mov"
+                    | "m4v"
+            ) && path.is_file())
+            .then(|| url.to_string())
+        }
+        _ => None,
+    }
 }
 impl ReviewSummary {
     pub fn parse(source: &str, cwd: &Path) -> Self {
@@ -233,9 +280,18 @@ impl ReviewSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn artifacts() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["mock.html", "mock file.html", "notes.md"] {
+            std::fs::write(dir.path().join(name), "fixture").unwrap();
+        }
+        dir
+    }
     #[test]
     fn review_summary_separates_multiple_artifacts_from_concise_prose() {
-        let summary = ReviewSummary::parse("[View mock](</tmp/Long path/mock.html>)\n\n**Added review summaries.**\nThey stay visible with tasks collapsed.\n\n[Design notes](notes.md#checks) · [Website](https://example.com)\n\n[Duplicate](notes.md#checks)\n\n[Unsafe](javascript:alert)\n\n```md\n[Example](https://ignored.example)\n```", Path::new("/checkout"));
+        let dir = artifacts();
+        let source = "[View mock](</tmp/Long path/mock.html>)\n\n**Added review summaries.**\nThey stay visible with tasks collapsed.\n\n[Design notes](notes.md#checks) · [Website](https://example.com)\n\n[Duplicate](notes.md#checks)\n\n[Unsafe](javascript:alert)\n\n```md\n[Example](https://ignored.example)\n```".replace("/tmp/Long path/mock.html", &dir.path().join("mock.html").to_string_lossy());
+        let summary = ReviewSummary::parse(&source, dir.path());
         assert_eq!(
             summary.text,
             "Added review summaries. They stay visible with tasks collapsed."
@@ -245,11 +301,17 @@ mod tests {
             vec![
                 ReviewLink {
                     label: "View mock".into(),
-                    url: "file:///tmp/Long%20path/mock.html".into()
+                    url: gpui::http_client::Url::from_file_path(dir.path().join("mock.html"))
+                        .unwrap()
+                        .to_string()
                 },
                 ReviewLink {
                     label: "Design notes".into(),
-                    url: "file:///checkout/notes.md#checks".into()
+                    url: format!(
+                        "{}#checks",
+                        gpui::http_client::Url::from_file_path(dir.path().join("notes.md"))
+                            .unwrap()
+                    )
                 },
                 ReviewLink {
                     label: "Website".into(),
@@ -260,19 +322,52 @@ mod tests {
     }
     #[test]
     fn review_summary_handles_link_only_responses_references_and_unicode() {
+        let dir = artifacts();
         let summary = ReviewSummary::parse(
-            "[View **mock**][artifact]\n\n[artifact]: /tmp/mock.html",
-            Path::new("/checkout"),
+            "[View **mock**][artifact]\n\n[artifact]: mock.html",
+            dir.path(),
         );
         assert!(summary.text.is_empty());
         assert_eq!(summary.links[0].label, "View mock");
-        assert_eq!(summary.links[0].url, "file:///tmp/mock.html");
+        assert_eq!(
+            summary.links[0].url,
+            gpui::http_client::Url::from_file_path(dir.path().join("mock.html"))
+                .unwrap()
+                .to_string()
+        );
         let summary = ReviewSummary::parse(&"界 ".repeat(300), Path::new("/checkout"));
         assert!(summary.text.chars().count() <= 240);
         assert!(summary.text.ends_with('…'));
         assert_eq!(
             ReviewSummary::parse("", Path::new("/checkout")),
             ReviewSummary::default()
+        );
+    }
+    #[test]
+    fn review_links_only_include_openable_artifacts_for_codex_and_claude() {
+        let dir = artifacts();
+        for name in [
+            "install.sh",
+            "ci.yml",
+            "main.rs",
+            "mock.html:250",
+            "image.PNG",
+            "report.pdf",
+        ] {
+            std::fs::write(dir.path().join(name), "fixture").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("directory.html")).unwrap();
+        let summary = ReviewSummary::parse(
+            "Done. [script](install.sh) [workflow](ci.yml) [source](main.rs) [line](mock.html:250) [missing](missing.pdf) [dir](directory.html) [image](image.PNG) [pdf](report.pdf) [html](mock.html#review) [web](https://example.com) [mail](mailto:test@example.com) [unsafe](javascript:alert) [anchor](#review)",
+            dir.path(),
+        );
+        assert_eq!(
+            summary
+                .links
+                .iter()
+                .map(|link| link.label.as_str())
+                .collect::<Vec<_>>(),
+            ["image", "pdf", "html", "web", "mail"]
         );
     }
     struct Probe {
@@ -294,7 +389,7 @@ mod tests {
     ) {
         cx.update(gpui_component::init);
         let (view, cx) = cx.add_window_view(|_, _| Probe {
-            summary: ReviewSummary::parse("Added a review summary.\n\n[View the long mock artifact label](</tmp/mock file.html>) [Read notes](https://example.com/notes)", Path::new("/checkout")),
+            summary: ReviewSummary::parse("Added a review summary.\n\n[View the long mock artifact label](https://example.com/mock%20file.html) [Read notes](https://example.com/notes)", Path::new("/checkout")),
             focus: HashMap::new(),
         });
         for (width, rem) in [(800., 16.), (280., 20.)] {
@@ -320,7 +415,7 @@ mod tests {
                 assert_eq!(
                     cx.opened_url().as_deref(),
                     Some(if index == 0 {
-                        "file:///tmp/mock%20file.html"
+                        "https://example.com/mock%20file.html"
                     } else {
                         "https://example.com/notes"
                     })
@@ -329,13 +424,13 @@ mod tests {
             // Explicit focus of the first artifact exercises its own key route.
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {
-                    view.focus["review-test:file:///tmp/mock%20file.html"].focus(window, cx)
+                    view.focus["review-test:https://example.com/mock%20file.html"].focus(window, cx)
                 })
             });
             cx.simulate_keystrokes("enter");
             assert_eq!(
                 cx.opened_url().as_deref(),
-                Some("file:///tmp/mock%20file.html")
+                Some("https://example.com/mock%20file.html")
             );
         }
     }

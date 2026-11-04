@@ -12325,9 +12325,12 @@ mod tests {
     #[test]
     fn review_summary_uses_current_completion_for_codex_and_claude() {
         use super::super::review_summary::ReviewSummary;
+        let artifacts = tempfile::tempdir().unwrap();
+        std::fs::write(artifacts.path().join("mock.html"), "mock").unwrap();
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             let mut state = snapshot();
             state.saved.provider = provider;
+            state.saved.cwd = artifacts.path().to_string_lossy().into_owned();
             state.saved.items = vec![
                     json!({"type":"agentMessage", "text":"Old result"}),
                     json!({"type":"agentMessage", "phase":"final_answer", "text":"Added review links.\n\n[View mock](mock.html)"}),
@@ -12343,7 +12346,12 @@ mod tests {
                 Some(codex::ReviewCompletion { id: 42, period: 0 });
             let summary = ReviewSummary::from_snapshot(&state).unwrap();
             assert_eq!(summary.text, "Added review links.");
-            assert_eq!(summary.links[0].url, "file:///unused/mock.html");
+            assert_eq!(
+                summary.links[0].url,
+                gpui::http_client::Url::from_file_path(artifacts.path().join("mock.html"))
+                    .unwrap()
+                    .to_string()
+            );
             state.status = Status::Working;
             assert!(ReviewSummary::from_snapshot(&state).is_none());
             state.status = Status::Done;
