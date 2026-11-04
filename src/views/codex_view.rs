@@ -7867,6 +7867,7 @@ impl CodexView {
                                         .id("codex-card-model-label")
                                         .debug_selector(|| "codex-card-model-label".into())
                                         .w(model_width)
+                                        .text_size(rpx(TEXT_SMALL))
                                         .flex_shrink_0()
                                         .truncate()
                                         .child(model_name),
@@ -8083,12 +8084,7 @@ impl CodexView {
                             .id(summary_id)
                             .debug_selector(move || summary_id.into())
                             .when(menu == ComposerMenu::Settings, |label| {
-                                label
-                                    .w(label_width
-                                        .min(rpx(MODEL_EFFORT_CARD_W).to_pixels(window.rem_size())))
-                                    .max_w(rpx(MODEL_EFFORT_CARD_W))
-                                    .flex_shrink_0()
-                                    .truncate()
+                                label.w(label_width).flex_shrink_0().truncate()
                             })
                             .when(menu != ComposerMenu::Settings, |label| {
                                 label
@@ -19735,6 +19731,45 @@ mod tests {
         assert_eq!(effort_key_index("right", 0, 1), None);
         assert_eq!(effort_key_index("end", 0, 3), Some(2));
         assert_eq!(effort_key_index("left", 0, 3), Some(0));
+    }
+
+    #[gpui::test]
+    fn model_labels_fit_across_zoom_for_both_providers(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for zoom in [0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.25, 1.5, 2.0] {
+                cx.update(|window, cx| {
+                    window.set_rem_size(gpui::px(crate::zoom::REM_BASE * zoom));
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            session.state.models = vec![json!({"model":"test", "displayName":"GPT-6.1 Terra", "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]})];
+                            session.state.model = Some("test".into());
+                            session.state.effort = Some("medium".into());
+                            cx.notify();
+                        });
+                        view.open_menu(ComposerMenu::Settings, window, cx);
+                    });
+                });
+                draw(cx);
+                let bounds = cx.debug_bounds("codex-card-model-label").unwrap();
+                cx.update(|window, _| {
+                    let label = "GPT-6.1 Terra";
+                    let mut run = window.text_style().to_run(label.len());
+                    run.font.family = crate::fonts::UI_FAMILY.into();
+                    let required = truncation_safe_label_width(
+                        label,
+                        rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+                        &run,
+                        window.text_system(),
+                    );
+                    assert!(
+                        bounds.size.width + gpui::px(0.5) >= required,
+                        "{provider:?} at {zoom}"
+                    );
+                });
+            }
+        }
     }
 
     #[gpui::test]
