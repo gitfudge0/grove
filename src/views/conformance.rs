@@ -428,11 +428,7 @@ fn button_cursor_policy_covers_shared_recipes_and_vendor_states() {
 #[test]
 fn text_icon_action_regressions_use_the_leading_vendor_slot() {
     for (file, start, end) in [
-        (
-            "src/views/native_plan.rs",
-            "format!(\"lines-next-{target}\")",
-            ".disabled(",
-        ),
+        ("src/views/native_plan.rs", "\"plan-approve\"", ".disabled("),
         (
             "src/views/sidebar/project_setup.rs",
             "form_action(\"project-choose\"",

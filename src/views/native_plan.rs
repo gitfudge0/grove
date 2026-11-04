@@ -1,7 +1,7 @@
 //! Native review of validated, immutable session plan snapshots.
 use super::status::{self, StatusKind};
 use super::{
-    components::{header_control_frame, project_field_well, question_choice, transcript_action},
+    components::{project_field_well, question_choice, transcript_action},
     rpx,
     tokens::*,
 };
@@ -13,7 +13,7 @@ use gpui::{
 use gpui_component::{
     input::{Input, InputEvent, InputState},
     text::TextView,
-    Disableable, Selectable,
+    Disableable,
 };
 use grove_core::codex::Action;
 use serde_json::{json, Value};
@@ -48,19 +48,109 @@ pub(super) fn blocks_inline_html(cx: &App) -> bool {
         .is_some_and(|ui| ui.peek.is_some() || ui.expanded.is_some())
 }
 
-pub(super) fn inline(plan: &Entity<NativePlan>, cx: &App) -> AnyElement {
+pub(super) fn inline(plan: &Entity<NativePlan>, window: &Window, cx: &App) -> AnyElement {
+    if plan.read(cx).snapshot(cx)["document"]["markdown"].is_string()
+        && !plan.read(cx).is_expanded(cx)
+    {
+        return plan.clone().into_any_element();
+    }
     if cx
         .try_global::<PlanUi>()
         .and_then(|ui| ui.expanded.as_ref().or(ui.peek.as_ref()))
         .is_some_and(|p| p.entity_id() == plan.entity_id())
     {
+        let view = plan.read(cx);
+        let markdown = serde_json::from_value::<grove_core::rich_plan::PlanDocument>(
+            view.snapshot(cx)["document"].clone(),
+        )
+        .map(|document| document.markdown_body())
+        .unwrap_or_default();
         div()
-            .text_color(c::FG_DIM())
-            .child("Plan open beside the conversation")
+            .min_w_0()
+            .w_full()
+            .child(
+                TextView::markdown(
+                    format!(
+                        "inline-plan-reference-{}-{}",
+                        view.plan_id, view.revision_id
+                    ),
+                    markdown,
+                )
+                .style(super::codex_view::markdown_style(window))
+                .selectable(true),
+            )
             .into_any_element()
     } else {
         plan.clone().into_any_element()
     }
+}
+
+/// A separate reference surface keeps the inline plan and its draft mounted.
+pub(super) fn render_peek(plan: &Entity<NativePlan>, window: &Window, cx: &App) -> AnyElement {
+    let view = plan.read(cx);
+    let snapshot = view.snapshot(cx);
+    let Some(markdown) = snapshot["document"]["markdown"].as_str() else {
+        return plan.clone().into_any_element();
+    };
+    let target = plan.clone();
+    div()
+        .id("native-plan-reference")
+        .debug_selector(|| "native-plan-reference".into())
+        .size_full()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .bg(c::BG())
+        .child(
+            div()
+                .debug_selector(|| "native-plan-header".into())
+                .flex_shrink_0()
+                .flex()
+                .items_start()
+                .gap(rpx(SPACE_LG))
+                .p(rpx(SPACE_3XL))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(rpx(TEXT_TITLE))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(string(&snapshot["document"], "title")),
+                )
+                .child(
+                    transcript_action("plan-reference-expand", "Expand", false, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/zen.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .debug_selector(|| "native-plan-expand".into())
+                        .on_click(move |_, window, cx| {
+                            target.update(cx, |view, cx| view.reveal(window, cx))
+                        }),
+                ),
+        )
+        .child(
+            div()
+                .id("native-plan-reference-body")
+                .debug_selector(|| "native-plan-body".into())
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .track_scroll(&view.scroll)
+                .p(rpx(SPACE_3XL))
+                .pt_0()
+                .child(
+                    TextView::markdown(
+                        format!("plan-reference-{}-{}", view.plan_id, view.revision_id),
+                        markdown.to_owned(),
+                    )
+                    .style(super::codex_view::markdown_style(window))
+                    .selectable(true),
+                ),
+        )
+        .into_any_element()
 }
 
 pub(super) fn render_expanded(cx: &mut App) -> Option<AnyElement> {
@@ -101,12 +191,9 @@ pub(super) struct NativePlan {
     review_open: bool,
     local_review: Option<grove_core::rich_plan::ReviewState>,
     restored: bool,
+    images: HashMap<String, std::sync::Arc<gpui::Image>>,
     send_pending: bool,
     pending_approval: bool,
-    images: HashMap<String, std::sync::Arc<gpui::Image>>,
-    line_pages: HashMap<String, usize>,
-    fit_images: HashSet<String>,
-    selected_states: HashMap<String, String>,
     expand_focus: FocusHandle,
     return_focus: FocusHandle,
     source_focus: Option<FocusHandle>,
@@ -185,17 +272,6 @@ fn decision_counts(claims: &Value, review: &Value) -> (usize, usize) {
     (total, unanswered)
 }
 
-fn decision_status(total: usize, unanswered: usize) -> String {
-    if total == 0 {
-        "No decisions requested".into()
-    } else {
-        format!(
-            "{unanswered} unanswered · {total} {}",
-            if total == 1 { "decision" } else { "decisions" }
-        )
-    }
-}
-
 fn initial_claims(claims: &Value, open: &mut HashSet<String>) {
     for claim in entries(claims) {
         open.insert(target_key("claim", &string(&claim, "id")));
@@ -218,6 +294,7 @@ fn visible_decisions(claims: &Value, open: &HashSet<String>, viewed: &mut Vec<Va
     }
 }
 
+#[cfg(test)]
 fn code_markdown(text: &str, language: &str) -> String {
     let mut longest = 0;
     let mut run = 0;
@@ -308,12 +385,9 @@ impl NativePlan {
             review_open: false,
             local_review: None,
             restored: false,
+            images: HashMap::new(),
             send_pending: false,
             pending_approval: false,
-            images: HashMap::new(),
-            line_pages: HashMap::new(),
-            fit_images: HashSet::new(),
-            selected_states: HashMap::new(),
             expand_focus: cx.focus_handle().tab_stop(true),
             return_focus: cx.focus_handle().tab_stop(true),
             source_focus: None,
@@ -391,6 +465,7 @@ impl NativePlan {
         self.save_review(review, cx);
     }
 
+    #[cfg(test)]
     fn toggle(&mut self, id: &str, cx: &mut Context<Self>) {
         if !self.open.remove(id) {
             self.open.insert(id.to_owned());
@@ -767,393 +842,56 @@ impl NativePlan {
         section.into_any_element()
     }
 
-    fn html_link(
-        &self,
-        link: &Value,
-        _snapshot: &Value,
-        window: &Window,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let asset_id = string(link, "path");
-        let label = string(link, "label");
-        let source = self
+    // Old documents retain immutable asset snapshots even though their text is Markdown.
+    fn legacy_assets(&mut self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let assets = self
             .session
             .read(cx)
             .state
             .saved
             .rich_plans
-            .revisions
-            .iter()
-            .find(|r| {
-                r.document.plan_id == self.plan_id && r.document.revision_id == self.revision_id
-            })
-            .and_then(|r| r.assets.iter().find(|asset| asset.path == asset_id))
-            .and_then(|asset| std::str::from_utf8(&asset.bytes).ok())
-            .map(str::to_owned);
-        let key = format!("plan:{}", json!([self.plan_id, self.revision_id, asset_id]));
-        transcript_action(
-            key.clone(),
-            if label.is_empty() {
-                "Open linked HTML".to_owned()
-            } else {
-                label
-            },
-            false,
-            window,
-            cx,
-        )
-        .icon(
-            gpui_component::Icon::default()
-                .path("icons/external-link.svg")
-                .size(rpx(ICON_SM)),
-        )
-        .disabled(source.is_none())
-        .on_click(cx.listener(move |this, _, window, cx| {
-            if let Some(source) = source.clone() {
-                this.html.update(cx, |html, cx| {
-                    html.open_snapshot(key.clone(), source, window, cx);
-                });
-            }
-        }))
-        .into_any_element()
-    }
-
-    fn exhibit(
-        &mut self,
-        exhibit: &Value,
-        target: &str,
-        snapshot: &Value,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_LG))
-            .p(rpx(SPACE_2XL))
-            .bg(c::BG_RAIL())
-            .rounded(rpx(RADIUS_GROUP));
-        match exhibit["kind"].as_str().unwrap_or_default() {
-            "code" | "schema" => {
-                let text = string(exhibit, "text");
-                body = body.child(
-                    TextView::markdown(
-                        format!("plan-code-{target}"),
-                        code_markdown(&text, &string(exhibit, "language")),
-                    )
-                    .style(super::codex_view::markdown_style(window))
-                    .selectable(true),
-                );
-                let lines_target = target_key("line_picker", target);
-                let show_lines = lines_target.clone();
-                body = body.child(
-                    transcript_action(
-                        format!("comment-{lines_target}"),
-                        "Comment on a line",
-                        false,
-                        window,
-                        cx,
-                    )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/plus.svg")
-                            .size(rpx(ICON_SM)),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.comments_open.remove(&show_lines) {
-                            this.comments_open.insert(show_lines.clone());
-                        }
-                        cx.notify();
-                    })),
-                );
-                if self.comments_open.contains(&lines_target) {
-                    const LINES_PER_PAGE: usize = 40;
-                    let lines = text.lines().collect::<Vec<_>>();
-                    let page = self.line_pages.get(target).copied().unwrap_or_default();
-                    for (index, line) in lines
-                        .iter()
-                        .enumerate()
-                        .skip(page * LINES_PER_PAGE)
-                        .take(LINES_PER_PAGE)
-                    {
-                        let line_id = target_key("line", &json!([target, index + 1]).to_string());
-                        let toggle = line_id.clone();
-                        body = body.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(rpx(SPACE_LG))
-                                .child(div().text_color(c::FG_DIM()).child((index + 1).to_string()))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .child((*line).to_owned()),
-                                )
-                                .child(
-                                    transcript_action(
-                                        format!("comment-{line_id}"),
-                                        "Comment on line",
-                                        false,
-                                        window,
-                                        cx,
-                                    )
-                                    .icon_only()
-                                    .tooltip("Comment on line")
-                                    .child(crate::icons::icon("plus", ICON_MD, c::FG_DIM()))
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            if !this.comments_open.remove(&toggle) {
-                                                this.comments_open.insert(toggle.clone());
-                                            }
-                                            cx.notify();
-                                        },
-                                    )),
-                                ),
-                        );
-                        if self.comments_open.contains(&line_id) {
-                            body = body.child(self.comment(&line_id, snapshot, window, cx));
-                        }
-                    }
-                    let previous = target.to_owned();
-                    let next = target.to_owned();
-                    body = body.child(
-                        div()
-                            .flex()
-                            .gap(rpx(SPACE_LG))
-                            .child(
-                                transcript_action(
-                                    format!("lines-previous-{target}"),
-                                    "Previous lines",
-                                    false,
-                                    window,
-                                    cx,
-                                )
-                                .icon(
-                                    gpui_component::Icon::default()
-                                        .path("icons/arrow-left.svg")
-                                        .size(rpx(ICON_SM)),
-                                )
-                                .disabled(page == 0)
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.line_pages
-                                            .insert(previous.clone(), page.saturating_sub(1));
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                            .child(
-                                transcript_action(
-                                    format!("lines-next-{target}"),
-                                    "Next lines",
-                                    false,
-                                    window,
-                                    cx,
-                                )
-                                .icon(gpui_component::Icon::default().path("icons/arrow-right.svg"))
-                                .disabled((page + 1) * LINES_PER_PAGE >= lines.len())
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.line_pages.insert(next.clone(), page + 1);
-                                        cx.notify();
-                                    },
-                                )),
-                            ),
-                    );
-                }
-                if !exhibit["source"].is_null() {
-                    body = body.child(
-                        div()
-                            .text_color(c::FG_DIM())
-                            .child(string(exhibit, "source")),
-                    );
-                }
-            }
-            "calls" => {
-                for row in entries(&exhibit["entries"]) {
-                    let id = target_key("call", &json!([target, string(&row, "id")]).to_string());
-                    let toggle = id.clone();
-                    body = body.child(
-                        transcript_action(id.clone(), string(&row, "title"), false, window, cx)
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path(gpui::SharedString::from(format!(
-                                        "icons/{}.svg",
-                                        if self.open.contains(&id) {
-                                            "chev-down"
-                                        } else {
-                                            "chev-right"
-                                        }
-                                    )))
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle, cx))),
-                    );
-                    if self.open.contains(&id) {
-                        body = body.child(self.text(
-                            id,
-                            format!("{}\n{}", string(&row, "detail"), row["source"]),
-                            window,
-                        ));
-                    }
-                }
-            }
-            "state_machine" => {
-                let states = entries(&exhibit["states"]);
-                let selected = self
-                    .selected_states
-                    .get(target)
-                    .cloned()
-                    .unwrap_or_else(|| string(exhibit, "initial"));
-                let mut tabs = div().flex().flex_wrap().gap(rpx(SPACE_LG));
-                for state in &states {
-                    let id = string(state, "id");
-                    let key = target.to_owned();
-                    let pick = id.clone();
-                    tabs = tabs.child(
-                        transcript_action(
-                            format!("state-{target}-{id}"),
-                            string(state, "label"),
-                            false,
-                            window,
-                            cx,
-                        )
-                        .selected(id == selected)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.selected_states.insert(key.clone(), pick.clone());
-                            cx.notify();
-                        })),
-                    );
-                }
-                body = body.child(tabs);
-                if let Some(state) = states.iter().find(|s| s["id"] == selected) {
-                    body = body.child(self.text(
-                        format!("state-description-{target}"),
-                        string(state, "description"),
-                        window,
-                    ));
-                    if !state["screen"].is_null() {
-                        body = body.child(self.exhibit(
-                            &state["screen"],
-                            &target_key("screen", &json!([target, selected]).to_string()),
-                            snapshot,
-                            window,
-                            cx,
-                        ));
-                    }
-                }
-                for edge in entries(&exhibit["transitions"]) {
-                    body = body.child(format!(
-                        "{} → {} · {}",
-                        string(&edge, "from"),
-                        string(&edge, "to"),
-                        string(&edge, "label")
-                    ));
-                }
-            }
-            "html_link" => body = body.child(self.html_link(exhibit, snapshot, window, cx)),
-            "image" => {
-                let id = string(exhibit, "path");
-                if !self.images.contains_key(&id) {
+            .revision(&self.plan_id, &self.revision_id)
+            .map(|r| r.assets.clone())
+            .unwrap_or_default();
+        let mut body = div().flex().flex_col().gap(rpx(SPACE_LG)).min_w_0();
+        for asset in assets {
+            if asset.mime.starts_with("image/") {
+                if let Some(format) = gpui::ImageFormat::from_mime_type(&asset.mime) {
                     let image = self
-                        .session
-                        .read(cx)
-                        .state
-                        .saved
-                        .rich_plans
-                        .revisions
-                        .iter()
-                        .find(|r| {
-                            r.document.plan_id == self.plan_id
-                                && r.document.revision_id == self.revision_id
+                        .images
+                        .entry(asset.path.clone())
+                        .or_insert_with(|| {
+                            std::sync::Arc::new(gpui::Image::from_bytes(
+                                format,
+                                (*asset.bytes).clone(),
+                            ))
                         })
-                        .and_then(|r| r.assets.iter().find(|a| a.path == id))
-                        .and_then(|a| {
-                            gpui::ImageFormat::from_mime_type(&a.mime).map(|format| {
-                                std::sync::Arc::new(gpui::Image::from_bytes(
-                                    format,
-                                    (*a.bytes).clone(),
-                                ))
-                            })
-                        });
-                    if let Some(image) = image {
-                        self.images.insert(id.clone(), image);
-                    }
-                }
-                if let Some(image) = self.images.get(&id) {
+                        .clone();
                     body = body.child(
-                        gpui::img(image.clone())
+                        gpui::img(image)
                             .max_w_full()
-                            .max_h(rpx(MODAL_SCROLL_MAX_H))
-                            .when(self.fit_images.contains(&id), gpui::Styled::w_full)
                             .object_fit(gpui::ObjectFit::Contain),
                     );
                 }
-                body = body.child(div().text_color(c::FG_DIM()).child(string(exhibit, "alt")));
-                let fit = id.clone();
+            } else if asset.mime == "text/html" {
+                let path = asset.path.clone();
+                let source = String::from_utf8_lossy(&asset.bytes).into_owned();
+                let key = format!("plan:{}:{}:{}", self.plan_id, self.revision_id, path);
                 body = body.child(
                     transcript_action(
-                        format!("image-fit-{target}"),
-                        if self.fit_images.contains(&id) {
-                            "Original size"
-                        } else {
-                            "Fit to width"
-                        },
+                        format!("legacy-plan-asset-{}", path),
+                        format!("Open saved attachment: {}", path),
                         false,
                         window,
                         cx,
                     )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/zen.svg")
-                            .size(rpx(ICON_SM)),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.fit_images.remove(&fit) {
-                            this.fit_images.insert(fit.clone());
-                        }
-                        cx.notify();
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.html.update(cx, |html, cx| {
+                            html.open_snapshot(key.clone(), source.clone(), window, cx)
+                        });
                     })),
                 );
             }
-            "layout" => {
-                for node in entries(&exhibit["nodes"]) {
-                    body = body.child(self.layout(&node, target, window));
-                }
-            }
-            _ => body = body.child("Unsupported exhibit"),
-        }
-        body.into_any_element()
-    }
-
-    fn layout(&self, node: &Value, target: &str, window: &Window) -> AnyElement {
-        let mut body = div().flex().gap(rpx(SPACE_LG)).min_w_0();
-        if node["kind"] != "row" {
-            body = body.flex_col();
-        }
-        if node["kind"] == "surface" {
-            body = body
-                .p(rpx(SPACE_2XL))
-                .bg(c::FIELD_FILL())
-                .rounded(rpx(RADIUS_GROUP));
-        }
-        if node["kind"] == "control" {
-            body = body
-                .p(rpx(SPACE_LG))
-                .bg(c::FIELD_FILL())
-                .rounded(rpx(RADIUS_CONTROL))
-                .child(string(node, "text"));
-        } else if node["kind"] == "text" {
-            body = body.child(self.text(
-                format!("layout-{target}-{}", string(node, "id")),
-                string(node, "text"),
-                window,
-            ));
-        }
-        for child in entries(&node["children"]) {
-            body = body.child(self.layout(&child, target, window));
         }
         body.into_any_element()
     }
@@ -1293,209 +1031,6 @@ impl NativePlan {
             .anchor_scroll(Some(anchor))
             .into_any_element()
     }
-
-    fn claim(
-        &mut self,
-        claim: &Value,
-        number: String,
-        snapshot: &Value,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id = string(claim, "id");
-        let claim_key = target_key("claim", &id);
-        let toggle = claim_key.clone();
-        let comment = claim_key.clone();
-        let open = self.open.contains(&claim_key);
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .border_b_1()
-            .border_color(c::BORDER_SOFT())
-            .py(rpx(SPACE_20))
-            .gap(rpx(SPACE_2XL));
-        body = body.child(
-            div()
-                .flex()
-                .items_start()
-                .gap(rpx(SPACE_LG))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(rpx(TEXT_TITLE))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(self.text(
-                            format!("claim-text-{id}"),
-                            string(claim, "text"),
-                            window,
-                        )),
-                )
-                .child(
-                    transcript_action(
-                        format!("comment-{id}"),
-                        "Comment on claim",
-                        false,
-                        window,
-                        cx,
-                    )
-                    .icon_only()
-                    .tooltip("Comment on claim")
-                    .child(crate::icons::icon("plus", ICON_MD, c::FG_DIM()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.comments_open.remove(&comment) {
-                            this.comments_open.insert(comment.clone());
-                        }
-                        cx.notify();
-                    })),
-                ),
-        );
-        let (total, unanswered) = decision_counts(&json!([claim]), &snapshot["review"]);
-        if total > 0 {
-            body = body.child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_SM))
-                    .text_color(if unanswered > 0 {
-                        StatusKind::NeedsInput.color()
-                    } else {
-                        StatusKind::Success.color()
-                    })
-                    .child(status::mark(
-                        format!("claim-decision-status-{claim_key}"),
-                        if unanswered > 0 {
-                            StatusKind::NeedsInput
-                        } else {
-                            StatusKind::Success
-                        },
-                        ICON_SM,
-                        cx,
-                    ))
-                    .child(decision_status(total, unanswered)),
-            );
-        }
-        if self.comments_open.contains(&claim_key) {
-            body = body.child(self.comment(&claim_key, snapshot, window, cx));
-        }
-        if open {
-            if let Some(detail) = claim["detail"].as_str().filter(|s| !s.is_empty()) {
-                body = body.child(self.text(format!("claim-detail-{id}"), detail.into(), window));
-            }
-            if !claim["exhibit"].is_null() {
-                body = body.child(
-                    div()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("Evidence"),
-                );
-                body =
-                    body.child(self.exhibit(&claim["exhibit"], &claim_key, snapshot, window, cx));
-                let target = target_key("exhibit", &claim_key);
-                let toggle = target.clone();
-                body = body.child(
-                    div().flex().child(
-                        transcript_action(
-                            format!("comment-{target}"),
-                            "Comment on exhibit",
-                            false,
-                            window,
-                            cx,
-                        )
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/plus.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if !this.comments_open.remove(&toggle) {
-                                this.comments_open.insert(toggle.clone());
-                            }
-                            cx.notify();
-                        })),
-                    ),
-                );
-                if self.comments_open.contains(&target) {
-                    body = body.child(self.comment(&target, snapshot, window, cx));
-                }
-            }
-            for link in entries(&claim["html_links"]) {
-                body = body.child(self.html_link(&link, snapshot, window, cx));
-            }
-            for decision in entries(&claim["decisions"]) {
-                body = body.child(self.decision(&decision, snapshot, window, cx));
-            }
-            for (index, child) in entries(&claim["children"]).iter().enumerate() {
-                body = body.child(div().pl(rpx(SPACE_3XL)).child(self.claim(
-                    child,
-                    format!("{number}.{}", index + 1),
-                    snapshot,
-                    window,
-                    cx,
-                )));
-            }
-        }
-        div()
-            .flex()
-            .items_start()
-            .gap(rpx(SPACE_LG))
-            .min_w_0()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .flex_shrink_0()
-                    .w(rpx(ICON_BTN_W))
-                    .py(rpx(SPACE_20))
-                    .gap(rpx(SPACE_SM))
-                    .child(
-                        div()
-                            .text_size(rpx(TEXT_TITLE))
-                            .text_color(c::FG_DIM())
-                            .child(number),
-                    )
-                    .child(
-                        header_control_frame(
-                            format!("claim-{id}"),
-                            format!(
-                                "{} {}",
-                                if open { "Collapse" } else { "Expand" },
-                                string(claim, "text")
-                            ),
-                            c::BG_HOVER(),
-                        )
-                        .aria_expanded(open)
-                        .tab_index(0)
-                        .focus_visible(|s| s.bg(c::BG_HOVER()))
-                        .child(crate::icons::icon(
-                            if open { "chev-down" } else { "chev-right" },
-                            ICON_MD,
-                            c::FG_DIM(),
-                        ))
-                        .on_key_down(cx.listener({
-                            let key = claim_key.clone();
-                            move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                let selected = match event.keystroke.key.as_str() {
-                                    "right" => !this.open.contains(&key),
-                                    "left" => this.open.contains(&key),
-                                    "space" | "enter" => true,
-                                    _ => false,
-                                };
-                                if selected {
-                                    this.toggle(&key, cx);
-                                    cx.stop_propagation();
-                                }
-                            }
-                        }))
-                        .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle, cx))),
-                    ),
-            )
-            .child(body.flex_1().min_w_0())
-            .into_any_element()
-    }
 }
 
 impl Render for NativePlan {
@@ -1506,7 +1041,8 @@ impl Render for NativePlan {
         let peek = cx
             .try_global::<PlanUi>()
             .and_then(|ui| ui.peek.as_ref())
-            .is_some_and(|p| p.entity_id() == self.identity);
+            .is_some_and(|p| p.entity_id() == self.identity)
+            && doc["markdown"].is_null();
         if !self.restored {
             self.restored = true;
             self.open.extend(
@@ -1548,7 +1084,11 @@ impl Render for NativePlan {
                 TEXT_TITLE
             }))
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .child(string(doc, "title"));
+            .child(if !expanded && !peek {
+                "Plan".to_owned()
+            } else {
+                string(doc, "title")
+            });
         let navigation = transcript_action(
             "plan-expand",
             if expanded {
@@ -1591,9 +1131,7 @@ impl Render for NativePlan {
                 body = body.child(header);
             }
         }
-        if let Some(summary) = doc["summary"].as_str().filter(|s| !s.is_empty()) {
-            body = body.child(self.text("plan-summary".into(), summary.into(), window));
-        }
+
         body = body.child(
             div()
                 .text_color(c::FG_DIM())
@@ -1617,19 +1155,6 @@ impl Render for NativePlan {
                     self.revision_id
                 )),
         );
-        if !expanded && !peek {
-            return div()
-                .id("native-plan-card")
-                .debug_selector(|| "native-plan-card".into())
-                .child(
-                    body.child(
-                        div()
-                            .text_color(c::FG_DIM())
-                            .text_size(rpx(TEXT_SMALL))
-                            .child(decision_status(total, unanswered)),
-                    ),
-                );
-        }
         let response = self
             .session
             .read(cx)
@@ -1645,89 +1170,54 @@ impl Render for NativePlan {
                 r.response_text()
             })
             .unwrap_or_default();
-        if self.review_open {
+        let reference = peek && doc["markdown"].is_string();
+        if self.review_open && !reference {
             // Review occupies the same body, rather than being appended after a long plan.
             body = div().flex().flex_col().gap(rpx(SPACE_2XL)).min_w_0().w_full()
                 .when(expanded, |s| s.max_w(rpx(PLAN_READING_WIDTH)).mx_auto()).p(rpx(SPACE_3XL))
                 .child(div().text_size(rpx(TEXT_TITLE)).font_weight(gpui::FontWeight::SEMIBOLD).child("Review your response"))
                 .child(div().text_color(c::FG_DIM()).child("Exact feedback to your agent. Sending feedback does not approve implementation."))
                 .child(self.text("plan-response-text".into(), response.clone(), window));
-        } else if peek {
-            body = body.child(
-                div()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .child("Main changes"),
-            );
-            for claim in entries(&doc["claims"]) {
-                body = body.child(self.text(
-                    format!("peek-claim-{}", string(&claim, "id")),
-                    string(&claim, "text"),
-                    window,
-                ));
-            }
-            let decisions = flattened_decisions(&doc["claims"]);
-            let active = self
-                .active_decision
-                .as_ref()
-                .and_then(|id| decisions.iter().find(|(d, _)| string(d, "id") == *id))
-                .or_else(|| {
-                    decisions
-                        .iter()
-                        .find(|(d, _)| !decision_answered(d, &snapshot["review"]))
-                })
-                .or_else(|| decisions.first());
-            if let Some((decision, _)) = active {
-                self.active_decision = Some(string(decision, "id"));
-                body = body.child(self.decision(decision, &snapshot, window, cx));
-            }
-            if total == 0 {
-                body = body.child(self.plan_comment_action(
-                    target_key("body", ""),
-                    &snapshot,
-                    window,
-                    cx,
-                ));
-            }
         } else {
-            let why = target_key("why", "");
-            let toggle = why.clone();
-            body = body.child(
-                div().flex().child(
-                    transcript_action(why.clone(), "Why · original requests", false, window, cx)
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/question.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| this.toggle(&toggle, cx))),
-                ),
-            );
-            if self.open.contains(&why) {
-                for (i, source) in entries(&doc["sources"]).iter().enumerate() {
-                    body = body.child(self.text(
-                        format!("quote-{i}"),
-                        format!(
-                            "{}: {}",
-                            string(source, "attribution"),
-                            string(source, "text")
-                        ),
-                        window,
-                    ));
+            let markdown =
+                serde_json::from_value::<grove_core::rich_plan::PlanDocument>(doc.clone())
+                    .map(|document| document.markdown_body())
+                    .unwrap_or_default();
+            if peek {
+                let decisions = flattened_decisions(&doc["claims"]);
+                let active = self
+                    .active_decision
+                    .as_ref()
+                    .and_then(|id| decisions.iter().find(|(d, _)| string(d, "id") == *id))
+                    .or_else(|| {
+                        decisions
+                            .iter()
+                            .find(|(d, _)| !decision_answered(d, &snapshot["review"]))
+                    })
+                    .or_else(|| decisions.first());
+                if let Some((decision, _)) = active {
+                    self.active_decision = Some(string(decision, "id"));
+                    body = body.child(self.decision(decision, &snapshot, window, cx));
                 }
             }
-            for (i, claim) in entries(&doc["claims"]).iter().enumerate() {
-                body =
-                    body.child(self.claim(claim, format!("{:02}", i + 1), &snapshot, window, cx));
+            body = body.child(
+                TextView::markdown(
+                    format!("plan-markdown-{}-{}", self.plan_id, self.revision_id),
+                    markdown,
+                )
+                .style(super::codex_view::markdown_style(window))
+                .selectable(true),
+            );
+            if doc["markdown"].is_null() {
+                body = body.child(self.legacy_assets(window, cx));
             }
-            for scope in entries(&doc["scope"]) {
-                body = body.child(
-                    div()
-                        .text_color(c::FG_DIM())
-                        .child(scope.as_str().unwrap_or_default().to_owned()),
-                );
+            // Legacy decisions retain their native answer controls and approval gates.
+            if !peek {
+                for (decision, _) in flattened_decisions(&doc["claims"]) {
+                    body = body.child(self.decision(&decision, &snapshot, window, cx));
+                }
             }
-            if total == 0 {
+            if !reference {
                 body = body.child(self.plan_comment_action(
                     target_key("body", ""),
                     &snapshot,
@@ -1954,7 +1444,8 @@ impl Render for NativePlan {
         div()
             .id("native-plan-card")
             .debug_selector(|| "native-plan-card".into())
-            .size_full()
+            .w_full()
+            .when(expanded || peek, |s| s.h_full())
             .min_h_0()
             .flex()
             .flex_col()
@@ -1974,23 +1465,28 @@ impl Render for NativePlan {
                 div()
                     .id("native-plan-body")
                     .debug_selector(|| "native-plan-body".into())
-                    .overflow_hidden()
-                    .min_h_0()
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
+                    .min_w_0()
+                    .when(expanded || peek, |s| {
+                        s.overflow_hidden()
+                            .min_h_0()
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                    })
                     .child(body),
             )
-            .child(
-                div()
-                    .id("native-plan-footer")
-                    .debug_selector(|| "native-plan-footer".into())
-                    .flex_shrink_0()
-                    .bg(c::SURFACE_RAISED())
-                    .border_t_1()
-                    .border_color(c::BORDER_SOFT())
-                    .child(footer),
-            )
+            .when(!reference, |surface| {
+                surface.child(
+                    div()
+                        .id("native-plan-footer")
+                        .debug_selector(|| "native-plan-footer".into())
+                        .flex_shrink_0()
+                        .bg(c::SURFACE_RAISED())
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .child(footer),
+                )
+            })
             .on_key_down(
                 cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" && expanded {

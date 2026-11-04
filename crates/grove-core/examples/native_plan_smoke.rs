@@ -119,7 +119,7 @@ fn main() -> Result<(), String> {
         return Err("Codex did not confirm the requested workspace-write sandbox".into());
     }
     let thread = ready.saved.thread_id.clone();
-    let prompt = r#"This is a bounded native-plan review smoke test. Only write the following schema-v1 JSON document atomically to smoke.grove-plan.json in this disposable working directory, then reply with a Markdown link to it. Do not implement anything or access other directories. JSON: {"schema_version":1,"plan_id":"smoke","revision_id":"r1","title":"Native plan smoke","claims":[{"id":"claim","text":"On explicit approval, implement only by writing approval-result.txt in this disposable cwd with exactly APPROVAL_SMOKE_OK and a newline. Do not access other directories or change any other files.","decisions":[{"id":"choice","prompt":"Review choice","options":[{"id":"keep","label":"Keep scope"}],"default":"keep"}]}]}"#;
+    let prompt = r##"This is a bounded native-plan review smoke test. Only write the following schema-v1 JSON document atomically to smoke.grove-plan.json in this disposable working directory, then reply with a Markdown link to it. Do not implement anything or access other directories. JSON: {"schema_version":1,"plan_id":"smoke","revision_id":"r1","title":"Native plan smoke","markdown":"# Native plan smoke\n\nOn explicit approval, implement only by writing approval-result.txt in this disposable cwd with exactly APPROVAL_SMOKE_OK and a newline. Do not access other directories or change any other files.\n\n## Verification\nRead the result file and confirm its exact content."}"##;
     connection.handle.send(Action::Prompt(prompt.into()))?;
     let imported = wait(&connection, |s| {
         !s.rich_plan_empty() && s.status == Status::Done
@@ -128,7 +128,7 @@ fn main() -> Result<(), String> {
     println!(
         "PASS {provider:?} generated and linked plan imported by production actor in {thread:?}"
     );
-    connection.handle.send(Action::Prompt("Make the same plan revision r2, preserving all claim/decision IDs. Atomically rewrite smoke.grove-plan.json and link it. Do not implement anything.".into()))?;
+    connection.handle.send(Action::Prompt("Make the same plan revision r2, preserving the plan ID and Markdown body. Atomically rewrite smoke.grove-plan.json and link it. Do not implement anything.".into()))?;
     let revised = wait(&connection, |s| {
         s.status == Status::Done && s.saved.rich_plans.revisions.len() == 2
     })?;
@@ -139,9 +139,8 @@ fn main() -> Result<(), String> {
     }
     println!("PASS {provider:?} immutable r1 retained while r2 imported");
     let mut review = ReviewState::default();
-    review.answers.insert("choice".into(), "keep".into());
     review.comments.insert(
-        "claim".into(),
+        "plan".into(),
         "NATIVE_REVIEW_MARIGOLD: acknowledge this review only; no implementation.".into(),
     );
     connection.handle.send(Action::Draft(

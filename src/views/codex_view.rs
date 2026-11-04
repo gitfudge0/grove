@@ -3735,7 +3735,11 @@ impl CodexView {
                     .collect();
                 for (plan_id, revision_id) in plans {
                     let key = (plan_id, revision_id);
-                    row = row.child(super::native_plan::inline(&self.native_plans[&key], cx));
+                    row = row.child(super::native_plan::inline(
+                        &self.native_plans[&key],
+                        window,
+                        cx,
+                    ));
                 }
                 let errors = state.saved.rich_plans.errors.clone();
                 for error in errors

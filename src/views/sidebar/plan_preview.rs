@@ -382,7 +382,7 @@ impl Sidebar {
                     cx.stop_propagation();
                 }
             }))
-            .child(plan)
+            .child(crate::views::native_plan::render_peek(&plan, window, cx))
             .when(closing, |panel| {
                 panel.relative().child(
                     div()
@@ -471,12 +471,10 @@ mod tests {
         let (_updates, receive) = std::sync::mpsc::channel();
         let mut saved = saved(provider);
         if !decisions {
-            saved.rich_plans.revisions[0].document.claims[0]
-                .decisions
-                .clear();
-            saved.rich_plans.revisions[0].document.claims[0]
-                .children
-                .clear();
+            let document = &mut saved.rich_plans.revisions[0].document;
+            document.title = "Keep drafts when switching sessions".into();
+            document.markdown = Some("# Keep drafts when switching sessions\n\nKeep each session’s text and attachments intact when navigating between conversations.\n\n## Approach\n1. Save composer changes to the originating draft.\n2. Bind image loading to that same draft.\n3. Restore text, images, and references together.\n\n## Ownership boundary\n```text\nDrop in A → capture draft ID → update A\n```\n\n## Verification\n| Check | Expected |\n|---|---|\n| Switch A → B → A | Both drafts survive |\n| Finish image loading in B | Image appears only in A |\n\nRepeat with **Codex and Claude**.".into());
+            document.claims.clear();
         }
         let mut snapshot = Snapshot::new(saved);
         snapshot.status = Status::Idle;
@@ -503,6 +501,92 @@ mod tests {
             sidebar
         });
         (sidebar, actions)
+    }
+
+    /// Real Linux rendering of production plan surfaces, isolated from user sessions.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens an isolated native plan QA window for desktop inspection"]
+    fn markdown_plan_desktop_preview() {
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(|cx| {
+                init(cx);
+                crate::fonts::register(cx).unwrap();
+                let theme = std::env::var("GROVE_PLAN_QA_THEME").unwrap_or("grove-dark".into());
+                grove_core::theme::set(grove_core::theme::by_name(&theme).unwrap());
+                c::sync_component_theme(cx);
+                let width = std::env::var("GROVE_PLAN_QA_WIDTH")
+                    .ok()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(1280.);
+                cx.open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                            gpui::point(gpui::px(60.), gpui::px(60.)),
+                            gpui::size(gpui::px(width), gpui::px(900.)),
+                        ))),
+                        titlebar: Some(gpui::TitlebarOptions {
+                            title: Some("Grove Markdown Plan QA".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let provider =
+                            if std::env::var("GROVE_PLAN_QA_PROVIDER").as_deref() == Ok("claude") {
+                                Provider::Claude
+                            } else {
+                                Provider::Codex
+                            };
+                        let (sidebar, actions) = sidebar(provider, false, window, cx);
+                        // Keep the fake transport alive without starting a provider.
+                        std::mem::forget(actions);
+                        cx.new(|cx| gpui_component::Root::new(sidebar, window, cx))
+                    },
+                )
+                .unwrap();
+                cx.activate(true);
+            });
+    }
+
+    #[gpui::test]
+    fn latest_markdown_revision_remains_available_after_approval(cx: &mut gpui::TestAppContext) {
+        cx.update(init);
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut captured = None;
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let view = sidebar(provider, false, window, cx).0;
+                captured = Some(view.clone());
+                gpui_component::Root::new(view, window, cx)
+            });
+            let view = captured.unwrap();
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                view.update(cx, |sidebar, cx| {
+                    let Some(Selection::Session(id)) = sidebar.selection else { unreachable!() };
+                    let session = sidebar.runtime.read(cx).registry.read(cx).codex(id).unwrap().clone();
+                    session.update(cx, |session, cx| {
+                        let mut revision = session.state.saved.rich_plans.revisions[0].clone();
+                        revision.document.revision_id = "r2".into();
+                        revision.document.title = "Latest approved plan".into();
+                        revision.document.markdown = Some("# Latest approved plan\n\nKeep this as a reference while work proceeds.".into());
+                        revision.review.approval = grove_core::rich_plan::ResponseDelivery::Sent { id: 12 };
+                        session.state.saved.rich_plans.revisions.push(revision);
+                        cx.notify();
+                    });
+                });
+            });
+            cx.run_until_parked();
+            cx.update(|_, cx| {
+                let plans = view.read(cx).selected_native_plans(cx);
+                assert_eq!(plans.len(), 1, "only latest revision of each plan");
+                assert_eq!(
+                    plans[0].1.read(cx).title_and_status(cx).0,
+                    "Latest approved plan"
+                );
+            });
+        }
     }
 
     /// Provider fixtures exercise native ownership, geometry and explicit actions;
@@ -663,23 +747,32 @@ mod tests {
                 .debug_bounds("plan-peek")
                 .expect("row opens anchored peek");
             let body = cx.debug_bounds("native-plan-body").unwrap();
-            let footer = cx.debug_bounds("native-plan-footer").unwrap();
             let header = cx.debug_bounds("native-plan-header").unwrap();
             assert!(
                 header.bottom() <= body.top(),
                 "scroll body starts below fixed title"
             );
-            assert!(
-                body.bottom() <= footer.top(),
-                "actions stay outside body scrolling"
-            );
-            assert!(footer.bottom() <= peek.bottom());
-            let progress = cx.debug_bounds("native-plan-progress").unwrap();
-            let line_height = cx.update(|window, _| rpx(CONTROL_H).to_pixels(window.rem_size()));
-            assert!(
-                progress.size.height <= line_height,
-                "progress must remain a readable line"
-            );
+            if decisions {
+                let footer = cx.debug_bounds("native-plan-footer").unwrap();
+                assert!(
+                    body.bottom() <= footer.top(),
+                    "actions stay outside body scrolling"
+                );
+                assert!(footer.bottom() <= peek.bottom());
+                let progress = cx.debug_bounds("native-plan-progress").unwrap();
+                let line_height =
+                    cx.update(|window, _| rpx(CONTROL_H).to_pixels(window.rem_size()));
+                assert!(
+                    progress.size.height <= line_height,
+                    "progress must remain a readable line"
+                );
+            } else {
+                assert!(
+                    cx.debug_bounds("native-plan-reference").is_some(),
+                    "Markdown hover uses a separate read-only reference"
+                );
+                assert!(body.size.height > gpui::px(0.));
+            }
             if decisions {
                 let approve = cx.debug_bounds("native-plan-approve").unwrap();
                 cx.simulate_click(approve.center(), gpui::Modifiers::default());

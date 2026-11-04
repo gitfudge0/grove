@@ -8,38 +8,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub const GUIDANCE: &str = r#"Grove supports native rich plans (schema_version 1). When authoring an interactive plan or decision review, atomically write a local .grove-plan.json file and include a Markdown link to its absolute path in a completed assistant message. A bare path or a path in backticks will not import the plan.
-Use the exact v1 JSON shapes below; valid JSON syntax alone does not establish schema validity. Required top-level fields: schema_version:1, plan_id, immutable revision_id, title. Include at least one claim. Optional summary is a string describing the outcome. Optional sources is an array of {text,attribution} quote objects (not file references). Optional changes is one counts object {files,changed,new,deleted}, all nonnegative integers (not an array of file changes). Optional scope is an array of strings (not an object). Omitted sources, claims and scope default to []; omitted changes defaults to zero counts.
-Claims have stable id, text (the heading), optional detail (the explanation), optional exhibit, html_links:[{path,label}], decisions and children. Decisions have id,prompt,options:[{id,label,description}], optional default containing an option ID. Claim, decision, call entry, layout node and state IDs must be nonempty and globally unique across the document; option IDs need only be unique within their decision. Change revision_id whenever document content or assets change.
-Every exhibit is an object tagged by "kind" (never "type"). Its remaining fields depend on kind: code {language,text, optional source}; schema {text}; calls {entries:[{id,title,detail, optional source}]}; state_machine {states:[{id,label, optional screen:another kind-tagged exhibit}],initial,transitions:[{from,to,label}]}; image {path,alt}; layout {nodes:[{id,kind,text,children}]}; html_link {path,label}. Layout node kind is row,column,text,surface or control; every node requires text, including containers (use ""), and children is an optional array of nodes. Never embed HTML/scripts in native layouts.
-Complete valid example (adapt its content and IDs):
+pub const GUIDANCE: &str = r##"Grove renders plans inline as Markdown, with native feedback and approval controls. Write a local .grove-plan.json envelope and link its absolute path in a completed assistant message. Use this envelope:
 ```json
-{
-  "schema_version": 1,
-  "plan_id": "example-plan",
-  "revision_id": "r1",
-  "title": "Example outcome",
-  "summary": "What this plan achieves",
-  "sources": [{"text": "Requested outcome", "attribution": "User request"}],
-  "changes": {"files": 2, "changed": 1, "new": 1, "deleted": 0},
-  "claims": [{
-    "id": "outcome", "text": "Deliver the outcome", "detail": "Why and how it works",
-    "exhibit": {"kind": "layout", "nodes": [{
-      "id": "preview", "kind": "column", "text": "", "children": [
-        {"id": "preview-label", "kind": "text", "text": "Preview", "children": []}
-      ]
-    }]},
-    "html_links": [],
-    "decisions": [{"id": "direction", "prompt": "Which direction?", "options": [
-      {"id": "proceed", "label": "Proceed", "description": "Use the proposed direction"},
-      {"id": "revise", "label": "Revise", "description": "Adjust the direction"}
-    ], "default": "proceed"}],
-    "children": []
-  }],
-  "scope": ["Included outcome"]
-}
+{"schema_version":1,"plan_id":"stable-plan-id","revision_id":"r1","title":"Outcome","markdown":"# Outcome\n\nApproach, implementation steps, and verification"}
 ```
-Before linking, check the artifact against these v1 shapes and constraints, including nested exhibits and layout nodes. Do not claim importer validation from a JSON syntax check alone. Assets must be local raster images or HTML under registered checkout roots; paths resolve relative to the document. HTML opens separately in a sandbox. Keep document below 1 MiB, text fields below 64 KiB, total decoded raster assets below 20 MiB, 200 claims, three claim levels, at most five top-level claims and at most five children per claim. Direct the reader to Review response and Send response. Native review feedback requires explicit Send response and never authorizes implementation. Approve & implement is a separate explicit user action authorizing the reviewed revision and resolved decisions in the same session; it does not change sandbox or tool permissions. Legacy packed HTML remains supported for explicit user requests or content the native format cannot represent."#;
+Change revision_id whenever the content changes. The markdown field is the complete readable document: use ordinary headings, lists, tables, fenced code, and file links. Scale detail to the work. Put consequential unresolved questions in the document; readers answer through plan feedback. Do not author HTML, claim/exhibit trees, or separate viewers. Keep the document below 1 MiB and each text field below 64 KiB. Review response and explicit Send response deliver feedback only. Approve & implement separately authorizes the immutable revision in the same owning session without changing sandbox or tool permissions. Existing structured plan documents remain supported for compatibility."##;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PlanStore {
     #[serde(default)]
@@ -75,6 +48,8 @@ pub struct PlanDocument {
     pub revision_id: String,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     #[serde(default)]
     pub sources: Vec<Quote>,
@@ -84,6 +59,117 @@ pub struct PlanDocument {
     pub claims: Vec<Claim>,
     #[serde(default)]
     pub scope: Vec<String>,
+}
+impl PlanDocument {
+    /// A single readable body shared by the transcript and sidebar reference.
+    pub fn markdown_body(&self) -> String {
+        if let Some(markdown) = &self.markdown {
+            return markdown.clone();
+        }
+        fn exhibit(value: &Exhibit, out: &mut String) {
+            match value {
+                Exhibit::Code { language, text, .. } => {
+                    let mut longest = 0;
+                    let mut run = 0;
+                    for ch in text.chars() {
+                        if ch == '`' {
+                            run += 1;
+                            longest = longest.max(run);
+                        } else {
+                            run = 0;
+                        }
+                    }
+                    let fence = "`".repeat(longest.max(2) + 1);
+                    let language: String = language
+                        .chars()
+                        .filter(char::is_ascii_alphanumeric)
+                        .collect();
+                    let _ = writeln!(out, "\n{fence}{language}\n{text}\n{fence}");
+                }
+                Exhibit::Schema { text } => {
+                    let _ = writeln!(out, "\n{text}");
+                }
+                Exhibit::Calls { entries } => {
+                    for entry in entries {
+                        let _ = writeln!(out, "\n- **{}**: {}", entry.title, entry.detail);
+                    }
+                }
+                Exhibit::StateMachine {
+                    states,
+                    transitions,
+                    ..
+                } => {
+                    for state in states {
+                        let _ = writeln!(out, "\n- **{}**", state.label);
+                        if let Some(screen) = &state.screen {
+                            exhibit(screen, out);
+                        }
+                    }
+                    for edge in transitions {
+                        let _ = writeln!(out, "\n{} → {}: {}", edge.from, edge.to, edge.label);
+                    }
+                }
+                Exhibit::Image { alt, .. } => {
+                    let _ = writeln!(out, "\n{alt}");
+                }
+                Exhibit::HtmlLink { label, .. } => {
+                    let _ = writeln!(out, "\n{label}");
+                }
+                Exhibit::Layout { nodes } => {
+                    fn node(nodes: &[LayoutNode], out: &mut String) {
+                        for n in nodes {
+                            if !n.text.is_empty() {
+                                let _ = writeln!(out, "\n{}", n.text);
+                            }
+                            node(&n.children, out);
+                        }
+                    }
+                    node(nodes, out);
+                }
+            }
+        }
+        fn claims(items: &[Claim], depth: usize, out: &mut String) {
+            for claim in items {
+                let _ = writeln!(out, "\n{} {}\n", "#".repeat(depth.min(6)), claim.text);
+                if let Some(detail) = &claim.detail {
+                    let _ = writeln!(out, "{detail}");
+                }
+                if let Some(value) = &claim.exhibit {
+                    exhibit(value, out);
+                }
+                for d in &claim.decisions {
+                    let _ = writeln!(out, "\n**{}**", d.prompt);
+                    for option in &d.options {
+                        let _ = writeln!(out, "- **{}** — {}", option.label, option.description);
+                    }
+                }
+                for link in &claim.html_links {
+                    let _ = writeln!(out, "\n{} (saved attachment)", link.label);
+                }
+                claims(&claim.children, depth + 1, out);
+            }
+        }
+        let mut out = format!("# {}\n", self.title);
+        if let Some(summary) = &self.summary {
+            let _ = writeln!(out, "\n{summary}");
+        }
+        for source in &self.sources {
+            let _ = writeln!(
+                out,
+                "\n> {} — {}",
+                source.text.replace('\n', "\n> "),
+                source.attribution
+            );
+        }
+        claims(&self.claims, 2, &mut out);
+        if !self.scope.is_empty() {
+            out.push_str("\n## Scope\n");
+            for scope in &self.scope {
+                let _ = writeln!(out, "- {scope}");
+            }
+        }
+        out
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
@@ -431,8 +517,14 @@ impl PlanStore {
                 serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             validate_strings(&value, 0)?;
             let doc: PlanDocument = serde_json::from_value(value).map_err(|e| e.to_string())?;
-            if doc.claims.is_empty() {
-                return Err("Plan needs at least one claim".into());
+            if doc.claims.is_empty() && doc.markdown.as_deref().is_none_or(|s| s.trim().is_empty())
+            {
+                return Err("Plan needs Markdown content or at least one legacy claim".into());
+            }
+            if let Some(markdown) = &doc.markdown {
+                if markdown.trim().is_empty() || !doc.claims.is_empty() {
+                    return Err("Use a nonblank Markdown body or legacy claims, not both".into());
+                }
             }
             if doc.schema_version != 1 {
                 return Err("Unsupported plan schema version".into());
@@ -1220,23 +1312,37 @@ mod tests {
         let mut store = PlanStore::default();
         import(&mut store, dir.path()).unwrap();
         let doc = &store.revisions[0].document;
-        assert_eq!(doc.sources[0].attribution, "User request");
-        assert_eq!(doc.changes.files, 2);
-        assert_eq!(doc.changes.changed, 1);
-        assert_eq!(doc.changes.new, 1);
-        assert_eq!(doc.changes.deleted, 0);
-        assert_eq!(doc.scope, ["Included outcome"]);
-        let Some(Exhibit::Layout { nodes }) = &doc.claims[0].exhibit else {
-            panic!("example must demonstrate the kind-tagged layout exhibit");
-        };
-        assert_eq!(nodes[0].kind, "column");
-        assert_eq!(nodes[0].text, "");
-        assert_eq!(nodes[0].children[0].text, "Preview");
-        let decision = &doc.claims[0].decisions[0];
-        assert_eq!(decision.default.as_deref(), Some("proceed"));
-        assert_eq!(decision.options[0].id, "proceed");
+        assert!(doc.claims.is_empty());
+        assert!(doc.markdown_body().starts_with("# Outcome"));
+        assert!(doc.markdown_body().contains("verification"));
         assert!(store.errors.is_empty());
     }
+    #[test]
+    fn markdown_plans_preserve_exact_body_and_immutable_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "# Search\n\n| Metric | Target |\n|---|---|\n| p95 | 50 ms |\n\n```rust\nfn main() {}\n```";
+        let mut doc = serde_json::json!({"schema_version":1,"plan_id":"markdown","revision_id":"r1","title":"Search","markdown":body});
+        let path = dir.path().join("plan.grove-plan.json");
+        fs_err::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        let mut store = PlanStore::default();
+        import(&mut store, dir.path()).unwrap();
+        assert_eq!(store.revisions[0].document.markdown_body(), body);
+        assert!(store.revisions[0]
+            .approval_text()
+            .unwrap()
+            .contains("Search"));
+        doc["markdown"] = "Changed".into();
+        fs_err::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(import(&mut store, dir.path())
+            .unwrap_err()
+            .contains("immutable"));
+        assert_eq!(store.revisions[0].document.markdown_body(), body);
+        doc["revision_id"] = "r2".into();
+        doc["markdown"] = "   ".into();
+        fs_err::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        assert!(import(&mut store, dir.path()).is_err());
+    }
+
     fn approval_store() -> PlanStore {
         let mut store = PlanStore::default();
         store.revisions.push(PlanRevision {
