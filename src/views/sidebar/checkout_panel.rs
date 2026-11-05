@@ -194,11 +194,38 @@ struct CheckoutOperation {
     busy: bool,
     network_action: Option<(&'static str, &'static str)>,
     network_target: Option<(String, u64)>,
+    push_confirmation: Option<(u64, Instant)>,
     message: Option<String>,
     commit_status: CommitUi,
     commit_job: u64,
     commit_job_path: Option<String>,
     commit_control: Option<std::sync::Arc<CommitControl>>,
+}
+
+const PUSH_CHECK_DRAW: Duration = Duration::from_millis(440);
+const PUSH_CONFIRM_HOLD: Duration = Duration::from_secs(3);
+
+impl CheckoutOperation {
+    fn finish_push(&mut self, success: bool, now: Instant) {
+        self.push_confirmation = success.then_some((self.revision, now));
+    }
+
+    fn push_feedback(&self, now: Instant) -> Option<(u64, Instant)> {
+        self.push_confirmation.filter(|(revision, started)| {
+            !self.busy
+                && *revision == self.revision
+                && now.duration_since(*started) < PUSH_CHECK_DRAW + PUSH_CONFIRM_HOLD
+        })
+    }
+
+    fn expire_push_feedback(&mut self, revision: u64) {
+        if self
+            .push_confirmation
+            .is_some_and(|(owner, _)| owner == revision)
+        {
+            self.push_confirmation = None;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1650,8 +1677,11 @@ impl Sidebar {
             return;
         };
         let generation = self.checkout_panel.generation;
+        let is_push = matches!(action, GitAction::Push);
+        self.checkout_panel.operation.push_confirmation = None;
         self.checkout_panel.operation.revision =
             self.checkout_panel.operation.revision.wrapping_add(1);
+        let revision = self.checkout_panel.operation.revision;
         self.checkout_panel.operation.busy = true;
         self.checkout_panel.operation.network_target = Some((path.clone(), generation));
         self.checkout_panel.operation.network_action = Some(match action {
@@ -1675,6 +1705,9 @@ impl Sidebar {
                         panel.operation.busy = false;
                         panel.operation.network_action = None;
                         panel.operation.network_target = None;
+                        if is_push {
+                            panel.operation.finish_push(result.is_ok(), Instant::now());
+                        }
                         if current {
                             panel.checked_at = Some(Instant::now());
                             panel.state = Some(state);
@@ -1692,9 +1725,18 @@ impl Sidebar {
                 cx.notify();
             });
             cx.background_executor()
-                .timer(STATUS_REFRESH_INTERVAL)
+                .timer(if is_push {
+                    PUSH_CHECK_DRAW + PUSH_CONFIRM_HOLD
+                } else {
+                    STATUS_REFRESH_INTERVAL
+                })
                 .await;
-            let _ = this.update(cx, |_, cx| cx.notify());
+            let _ = this.update(cx, |this, cx| {
+                this.checkout_panel.update_operation(&path, |panel, _| {
+                    panel.operation.expire_push_feedback(revision);
+                });
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -2751,6 +2793,15 @@ impl Sidebar {
                     let (base_label, base_glyph, base_enabled) = commit_row_state(state.as_ref());
                     let initial_loading =
                         self.checkout_panel.loading && self.checkout_panel.state.is_none();
+                    let confirmation = self
+                        .checkout_panel
+                        .operation
+                        .push_feedback(Instant::now())
+                        .filter(|_| {
+                            !state
+                                .as_ref()
+                                .is_some_and(|s| s.dirty || s.ahead.is_some_and(|ahead| ahead > 0))
+                        });
                     let (label, glyph, enabled, loading) = if let Some((label, glyph)) = self
                         .checkout_panel
                         .operation
@@ -2758,6 +2809,8 @@ impl Sidebar {
                         .filter(|_| busy && same_network)
                     {
                         (label, glyph, false, glyph == "git-push")
+                    } else if confirmation.is_some() {
+                        ("Pushed", "status-success", false, false)
                     } else if initial_loading {
                         ("Git status not yet available", "git", false, false)
                     } else {
@@ -2808,7 +2861,7 @@ impl Sidebar {
                             self.checkout_panel.operation.commit_status,
                             CommitUi::Generating
                         );
-                    card = card.child(checkout_loading_row("checkout-commit-publish", label, glyph, loading, window, cx)
+                    card = card.child(checkout_feedback_row("checkout-commit-publish", label, glyph, loading, confirmation, window, cx)
                 .disabled(!enabled || self.checkout_panel.state_error.is_some())
                 .with_focus_handle(self.checkout_panel.trigger_focus["commit"].clone())
                 .relative()
@@ -3786,11 +3839,48 @@ fn checkout_push_mark(id: &'static str, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// Draw the catalog check in place; an absolute receipt clock survives redraws/navigation.
+fn checkout_drawn_check(id: &'static str, revision: u64, started: Instant, cx: &App) -> AnyElement {
+    let elapsed = started.elapsed();
+    if cx.reduce_motion() || elapsed >= PUSH_CHECK_DRAW {
+        return icon("status-success", ICON_MD, c::STATUS_SUCCESS()).into_any_element();
+    }
+    div()
+        .size(rpx(ICON_MD))
+        .with_animation(
+            SharedString::from(format!("{id}-confirmed-{revision}")),
+            gpui::Animation::new(PUSH_CHECK_DRAW - elapsed),
+            move |el, _| {
+                let progress =
+                    (started.elapsed().as_secs_f32() / PUSH_CHECK_DRAW.as_secs_f32()).min(1.);
+                let frame = (progress * crate::icons::SUCCESS_DRAW_FRAMES as f32).floor() as usize;
+                el.child(icon(
+                    &format!("status-success-draw-{frame}"),
+                    ICON_MD,
+                    c::STATUS_SUCCESS(),
+                ))
+            },
+        )
+        .into_any_element()
+}
+
 fn checkout_loading_row(
     id: &'static str,
     label: impl Into<SharedString>,
     glyph: &'static str,
     loading: bool,
+    window: &Window,
+    cx: &App,
+) -> gpui_component::button::Button {
+    checkout_feedback_row(id, label, glyph, loading, None, window, cx)
+}
+
+fn checkout_feedback_row(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    glyph: &'static str,
+    loading: bool,
+    confirmation: Option<(u64, Instant)>,
     window: &Window,
     cx: &App,
 ) -> gpui_component::button::Button {
@@ -3814,7 +3904,9 @@ fn checkout_loading_row(
                         .debug_selector(move || format!("{id}-icon"))
                         .w(rpx(ICON_LG))
                         .flex_shrink_0()
-                        .child(if loading && glyph == "git-push" {
+                        .child(if let Some((revision, started)) = confirmation {
+                            checkout_drawn_check(id, revision, started, cx)
+                        } else if loading && glyph == "git-push" {
                             checkout_push_mark(id, cx)
                         } else if loading {
                             super::super::status::mark(
@@ -4418,6 +4510,52 @@ mod tests {
             CommitEvent::Progress(CommitPhase::Generating),
         );
         assert!(matches!(panel.operation.commit_status, CommitUi::Succeeded));
+    }
+
+    #[test]
+    fn push_confirmation_holds_after_drawing_and_rejects_stale_expiry() {
+        let now = Instant::now();
+        let mut operation = CheckoutOperation::default();
+        operation.revision = 1;
+        operation.finish_push(true, now);
+        assert!(operation
+            .push_feedback(now + PUSH_CHECK_DRAW + PUSH_CONFIRM_HOLD - Duration::from_millis(1))
+            .is_some());
+        assert!(operation
+            .push_feedback(now + PUSH_CHECK_DRAW + PUSH_CONFIRM_HOLD)
+            .is_none());
+        operation.busy = true;
+        assert!(operation.push_feedback(now).is_none());
+        operation.busy = false;
+        operation.revision = 2;
+        assert!(operation.push_feedback(now).is_none());
+        operation.finish_push(true, now);
+        operation.expire_push_feedback(1);
+        assert!(operation.push_feedback(now).is_some());
+        operation.expire_push_feedback(2);
+        assert!(operation.push_feedback(now).is_none());
+        operation.finish_push(false, now);
+        assert!(operation.push_feedback(now).is_none());
+    }
+
+    #[test]
+    fn push_confirmation_and_expiry_stay_with_their_checkout() {
+        let now = Instant::now();
+        let mut panel = CheckoutPanel::default();
+        panel.select_path(Some("/one".into()));
+        panel.operation.revision = 7;
+        panel.select_path(Some("/two".into()));
+        panel.update_operation("/one", |panel, current| {
+            assert!(!current);
+            panel.operation.finish_push(true, now);
+        });
+        assert!(panel.operation.push_feedback(now).is_none());
+        panel.select_path(Some("/one".into()));
+        assert!(panel.operation.push_feedback(now).is_some());
+        panel.select_path(Some("/two".into()));
+        panel.update_operation("/one", |panel, _| panel.operation.expire_push_feedback(7));
+        panel.select_path(Some("/one".into()));
+        assert!(panel.operation.push_feedback(now).is_none());
     }
 
     #[test]

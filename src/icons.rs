@@ -86,10 +86,31 @@ pub fn spinner(size: f32, color: Hsla, tick: u64) -> Svg {
         .text_color(color)
 }
 
-/// The SVG text for `path`, or `None` when `path` is not an icon path. This is
-/// the whole of grove-gpui's in-memory asset branch.
+pub const SUCCESS_DRAW_FRAMES: usize = 24;
+
+/// The SVG text for `path`, or `None` when `path` is not an icon path.
 pub fn svg_for_path(path: &str) -> Option<String> {
     let name = path.strip_prefix("icons/")?.strip_suffix(".svg")?;
+    if let Some(frame) = name.strip_prefix("status-success-draw-") {
+        let frame: usize = frame.parse().ok()?;
+        if frame > SUCCESS_DRAW_FRAMES {
+            return None;
+        }
+        // Catalog check follows (5,8) -> (7,10) -> (11,6), at constant path speed.
+        let distance = frame as f32 / SUCCESS_DRAW_FRAMES as f32 * 3.;
+        let check = if distance <= 1. {
+            format!("M5 8L{} {}", 5. + 2. * distance, 8. + 2. * distance)
+        } else {
+            format!(
+                "M5 8L7 10L{} {}",
+                7. + 2. * (distance - 1.),
+                10. - 2. * (distance - 1.)
+            )
+        };
+        return Some(wrap_svg(&format!(
+            r#"<circle cx="8" cy="8" r="6"/><path d="{check}"/>"#
+        )));
+    }
     if let Some(frame) = name.strip_prefix("spinner-") {
         let frame: u64 = frame.parse().ok()?;
         if frame >= SPINNER_FRAMES {
@@ -387,6 +408,24 @@ fn svg_for(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn success_draw_frames_preserve_ring_and_finish_at_catalog_endpoint() {
+        for frame in 0..=super::SUCCESS_DRAW_FRAMES {
+            let svg =
+                super::svg_for_path(&format!("icons/status-success-draw-{frame}.svg")).unwrap();
+            assert!(svg.contains(r#"<circle cx="8" cy="8" r="6"/>"#));
+            assert!(svg.contains("M5 8"));
+        }
+        let last = super::svg_for_path(&format!(
+            "icons/status-success-draw-{}.svg",
+            super::SUCCESS_DRAW_FRAMES
+        ))
+        .unwrap();
+        assert!(last.contains("M5 8L7 10L11 6"));
+        assert!(super::svg_for_path("icons/status-success-draw-25.svg").is_none());
+        assert!(super::svg_for_path("icons/status-success-draw-invalid.svg").is_none());
+    }
+
     use super::*;
 
     #[test]

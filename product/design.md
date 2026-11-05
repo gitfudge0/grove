@@ -20,6 +20,10 @@ Use the [project UI skill](../.agents/skills/grove-ui/SKILL.md) for implementati
 
 - Fields/cards are flat, without bevels or inset shadows. Surface steps and neutral seams establish hierarchy; floating menus, tooltips, and panels use their shared recipes. Grid tiles meet flush with subtle seams, including the top edge, without item gaps or heavy tile borders.
 
+## Action feedback cycle
+
+User-triggered asynchronous actions follow available → activated → in progress → confirmed → current base state. Confirm success only after the operation succeeds, using a check and past-tense label in the action's existing space. Keep a brief readable confirmation before returning to current data, without moving neighboring content. New work supersedes stale receipts; failures retain actionable error/retry feedback instead of success. Reduced motion skips drawing/transitions while preserving the reading interval. Apply this rule to new and revised action feedback; individual domains own their completion facts and receipt lifetime.
+
 ## Interaction highlights
 
 Choose feedback by the control’s purpose and actual state, not by whether its hit area spans a row. Do not use a fill to imply that expanded content is selected. Use existing semantic theme colors and shared control geometry; interaction feedback must not move content or obscure labels, status, or adjacent controls.
@@ -391,4 +395,4 @@ The persistent right-panel control uses the right-panel glyph, Files uses the fo
 
 Transcript user-message and response footers expose a keyboard-accessible Fork session action beside Copy. Forks retain the project, checkout and context roots, copy only the selected completed prefix, and appear as ordinary sessions in Sidebar and Activity. A user-message fork excludes the selected message from history and restores its text and attachments to the composer; a response fork opens an empty composer. Forking never restores checkout files. The title contains “Forked” until the first new prompt is accepted, then automatic naming resumes. Source conversations remain unchanged. Forking is unavailable during provider work or startup.
 
-Checkout push operations show “Pushing…” with a blue push glyph while the Git operation is busy. The upstream bar stays fixed while its arrow gently rises and fades in a repeating cycle; the icon slot, label and adjacent rows remain stationary. Reduce motion shows the complete static glyph without scheduling animation frames. Completion or failure immediately restores the existing checkout action/result state.
+Checkout push operations show “Pushing…” with a blue push glyph while the Git operation is busy. The upstream bar stays fixed while its arrow gently rises and fades in a repeating cycle; the icon slot, label and adjacent rows remain stationary. Reduce motion shows the complete static glyph without scheduling animation frames. Successful push completion draws the green circle-check over 440 ms, holds “Pushed” for three seconds after the draw, then restores the current checkout state. Failures retain the existing error/retry behavior. Receipts belong to the checkout and operation revision; new work supersedes them. Reduce motion shows the complete check immediately, with the same confirmation reading time.
