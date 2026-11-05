@@ -418,3 +418,16 @@ separate editable reader state with an accessible field name, explicit Update an
 Cancel actions, unchanged PR title and preserved original context. Back/Escape
 return through diff/preview to the description, then restore the actual invoking
 control, including the Codex or Claude composer.
+
+## Change-review reader
+
+Review changes uses the change-description reader's placement and shared native
+controls. Scope, source focus, in-flight generation and results remain owned by
+session, checkout and scope. Priority groups are plain supporting labels; finding
+severity also appears as text. File disclosures stay transparent, with fixed
+trailing change counts. Expanded findings show exact captured line references,
+rationale and next step before their captured diff action. Summary and coverage
+remain readable without expanding every file. Empty findings never use a merge
+approval or unqualified clean-state label. Stale results remain copyable and
+clearly identify their snapshot. Opening/closing uses restrained shared reader
+motion; focus, file disclosure and read-only diff selection are immediate.

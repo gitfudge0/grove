@@ -594,7 +594,12 @@ impl Actor {
             crate::reports::REPORT_GUIDANCE,
             crate::activity::GUIDANCE,
             crate::describe_skill::GUIDANCE,
-            crate::describe_skill::SKILL,
+            format!(
+                "{}\n\n{}\n{}",
+                crate::describe_skill::SKILL,
+                crate::review_skill::GUIDANCE,
+                crate::review_skill::SKILL
+            ),
             crate::rich_plan::GUIDANCE
         ));
         if let Some(roots) = writable_roots {

@@ -169,3 +169,31 @@ usage. This is a user-invoked Grove skill, not an autonomous model tool; provide
 global skill directories remain unchanged, and read-only side conversations do
 not receive it. Codex and Claude generation uses their existing authenticated CLIs
 with tools, integrations and startup hooks disabled in a private temporary cwd.
+
+## Review changes
+
+Checkout's **Review changes**, `/review [local|pr]`, and `$review [local|pr]`
+open the same native read-only review for Codex and Claude. Local scope captures
+staged, unstaged and nonignored untracked edits against HEAD; PR scope captures
+the attached GitHub PR against its base. The scopes never combine. Command drafts,
+images and quoted references remain intact; attachments/references are rejected
+with an explanation rather than sent to a provider. Invoking with Checkout hidden
+uses the selected checkout, not a cached panel identity.
+
+Reviews belong to their session, checkout and scope for the app lifetime.
+Generation runs through the existing isolated, tool-disabled authenticated CLI
+boundary and never changes the main conversation, working files, index or PR.
+The model is asked to identify introduced, actionable defects with a concrete
+trigger and consequence, rather than style preferences or speculative issues.
+Each finding has a P0–P3 priority, rationale, next step and captured old/new-side
+line range. Paths must be supplied complete patches; validated line ranges must
+overlap changed lines in the captured hunk. File disclosures group findings by
+priority and open the captured read-only diff, not a later live file.
+
+Coverage explicitly lists omitted, partial and model-unreviewed files. An empty
+finding list means no findings were identified in the reviewed patches; it is
+neither merge approval nor a guarantee of correctness. No tests are executed.
+**Copy Markdown** includes findings and coverage. Regeneration, cancellation,
+retry and stale/unverifiable states retain the previous result; Escape returns
+from a captured diff to the review, then restores the invoking control's focus.
+This version does not post GitHub reviews, apply suggestions, or run fixes.

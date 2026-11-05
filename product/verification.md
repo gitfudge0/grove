@@ -269,3 +269,44 @@ export-refresh test, which passed in isolation. These broader failures remain
 unresolved. Strict core/UI Clippy also reports existing diagnostics outside the
 new feature modules; the final reader and engine files have no reported lint
 diagnostics. Formatting, compilation, and repository-artifact checks passed.
+
+## Review changes
+
+Linux focused evidence passed eight core review tests covering old/new changed-line
+grounding, declared hunk bounds, unknown/omitted paths, duplicate or empty
+coverage, scoped no-findings output, pre-call cancellation and literal Markdown
+context fences. Four shared-skill parser/completion checks passed after correcting
+a copied test query. A native test run passed 33 tests with three ignored;
+subsequent focused final-reader tests passed three with one capture ignored, and
+four Describe-reader regressions passed. Coverage includes file disclosure,
+captured-diff navigation/Escape, stale read-only results/source-focus restoration,
+hidden Checkout routing and Files navigation yielding the canvas. Codex/Claude
+composer fixtures verify command interception, preserved drafts, attachment
+rejection, argument usage and duplicate-free completion. These are not a live
+main-composer-to-provider end-to-end check.
+
+Live Codex generation against disposable repositories passed coverage/freshness
+and preserved HEAD, index and working state. An additional obvious authorization
+regression fixture produced a grounded P1 finding at the changed line with a
+concrete member-role trigger, deletion-permission consequence and corrective next
+step. This is one observed model result, not a quality benchmark. Claude live
+generation remains unverified: `claude auth status` reported signed out. No real
+GitHub review or PR write was performed.
+
+Corrected Linux native fixture captures were inspected for a result, expanded
+finding, stale result at 320 logical pixels, and a captured diff in light
+appearance at rem 20. Normal captures measured about 570 logical pixels wide.
+The initial narrow capture retained the previous frame; explicitly refreshing the
+window corrected the capture harness, and the final narrow frame was inspected.
+Sampled foreground/background contrast from captures: dark main 17.64:1, dark
+supporting 8.18:1, light main 18.40:1 and light supporting 5.70:1. Native fixtures
+use reduced-motion static endpoints. Complete session/Checkout shell flows,
+animated transitions, live main-composer handoff, macOS and Windows remain
+untested. These isolated fixtures are not participant testing.
+
+Formatting, compilation and artifact checks passed. Strict core/UI Clippy attempts
+remain blocked by 21 inherited core diagnostics in unrelated code; no diagnostics
+were reported in the new review/skill modules or changed feature lines. The UI
+Clippy attempt did not reach the application crate because the core dependency
+failed. Existing broad-suite failures documented under Describe changes remain
+outside this feature's verification claim.
