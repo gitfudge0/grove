@@ -1,7 +1,8 @@
 //! Grove-owned Claude Code sessions using the CLI's streaming SDK transport.
 //! The subprocess owns credentials, tools, permissions, and conversation persistence.
-use crate::codex::{
-    self, Action, Connection, EditCheckpoint, Handle, PendingEdit, QuestionRequest, QueuedPrompt,
+use crate::provider;
+use crate::provider::{
+    Action, Connection, EditCheckpoint, Handle, PendingEdit, QuestionRequest, QueuedPrompt,
     SavedSession, Snapshot, Status, SubagentStatus, SubmissionMode,
 };
 use serde_json::{json, Value};
@@ -152,7 +153,7 @@ pub fn connect(saved: SavedSession, args: Vec<String>) -> Connection {
 
 /// Subscription-authenticated side conversation using the regular SDK transport.
 pub(crate) fn connect_side_chat(mut saved: SavedSession) -> Connection {
-    saved.composer = codex::ComposerSettings {
+    saved.composer = provider::ComposerSettings {
         model: Some("haiku".into()),
         access: Some("dontAsk".into()),
         ..Default::default()
@@ -194,6 +195,8 @@ struct Process {
     child: Child,
     input: ChildStdin,
     lines: mpsc::Receiver<Result<Value, String>>,
+    capture: crate::provider_diagnostics::Capture,
+    ownership: Option<crate::provider_ownership::ThreadOwnership>,
 }
 impl Drop for Process {
     fn drop(&mut self) {
@@ -320,21 +323,24 @@ fn launch_command_profile(
         "GROVE_CONFIG_DIR",
         crate::storage::config_dir().map_err(|e| e.to_string())?,
     );
-    let pending_resume = saved.pending_edit.as_ref().map(|edit| codex::ClaudeResume {
-        original_session: saved.claude_resume.as_ref().map_or_else(
-            || saved.thread_id.clone(),
-            |resume| resume.original_session.clone(),
-        ),
-        assistant_uuid: saved
-            .items
-            .iter()
-            .skip(edit.target)
-            .find(|item| item["type"] == "userMessage")
-            .and_then(|item| item["claudePreviousAssistantUuid"].as_str())
-            .map(str::to_owned),
-        human_uuid: edit.turn_id.clone(),
-        fork_id: edit.claude_fork_id.clone().unwrap_or_default(),
-    });
+    let pending_resume = saved
+        .pending_edit
+        .as_ref()
+        .map(|edit| provider::ClaudeResume {
+            original_session: saved.claude_resume.as_ref().map_or_else(
+                || saved.thread_id.clone(),
+                |resume| resume.original_session.clone(),
+            ),
+            assistant_uuid: saved
+                .items
+                .iter()
+                .skip(edit.target)
+                .find(|item| item["type"] == "userMessage")
+                .and_then(|item| item["claudePreviousAssistantUuid"].as_str())
+                .map(str::to_owned),
+            human_uuid: edit.turn_id.clone(),
+            fork_id: edit.claude_fork_id.clone().unwrap_or_default(),
+        });
     if let Some(resume) = pending_resume.as_ref().or(saved.claude_resume.as_ref()) {
         command.arg("--session-id").arg(&resume.fork_id);
         if let Some(anchor) = &resume.assistant_uuid {
@@ -420,6 +426,12 @@ fn spawn_profile(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
+    let mut ownership =
+        crate::provider_ownership::ThreadOwnership::new(crate::provider::Provider::Claude)?;
+    if let Some(id) = crate::provider_ownership::native_write_target(saved) {
+        ownership.claim(id)?;
+    }
+    let ownership = Some(ownership);
     let mut child = command.spawn().map_err(|e| format!("Cannot launch Claude Code. Install the Claude Code CLI and sign in with `claude auth login`: {e}"))?;
     let input = child.stdin.take().ok_or("Claude Code stdin unavailable")?;
     let stdout = child
@@ -448,12 +460,17 @@ fn spawn_profile(
             }
         }
     });
+    let capture = crate::provider_diagnostics::Capture::from_env("claude");
+    let incoming_capture = capture.clone();
     let (send, lines) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let parsed = line.map_err(|e| e.to_string()).and_then(|line| {
                 serde_json::from_str(&line).map_err(|e| format!("Invalid Claude Code stream: {e}"))
             });
+            if let Ok(value) = &parsed {
+                incoming_capture.record(false, value);
+            }
             if send.send(parsed).is_err() {
                 return;
             }
@@ -470,6 +487,8 @@ fn spawn_profile(
         child,
         input,
         lines,
+        capture,
+        ownership,
     })
 }
 fn permission_modes_from_help(help: &str) -> Vec<String> {
@@ -586,7 +605,7 @@ pub fn can_select_permission_mode(saved: &SavedSession, mode: &str) -> bool {
     while let Some(option) = options.get(index) {
         match option.as_str() {
             "--dangerously-skip-permissions" | "--allow-dangerously-skip-permissions" => {
-                return true
+                return true;
             }
             "--strict-mcp-config" | "--disable-slash-commands" | "--chrome" | "--no-chrome" => {
                 index += 1;
@@ -636,7 +655,7 @@ fn user_content(text: &str, images: &[String]) -> Vec<Value> {
 #[derive(Default)]
 struct ChildTranscript {
     transcript: crate::claude_transcript::ClaudeTranscriptState,
-    items: codex::TranscriptItems,
+    items: provider::TranscriptItems,
     message_id: String,
     blocks: HashMap<u64, String>,
 }
@@ -1050,7 +1069,7 @@ impl Actor {
         self.process.take();
         self.pid.store(0, Ordering::SeqCst);
         let outcome = if forget && !self.side_chat {
-            codex::archive_closed_session(&self.state.saved)
+            provider::archive_closed_session(&self.state.saved)
         } else {
             self.save();
             Ok(())
@@ -1179,7 +1198,7 @@ impl Actor {
             return;
         }
         self.last_persist = Instant::now();
-        if let Err(error) = codex::persist(&self.state.saved) {
+        if let Err(error) = provider::persist(&self.state.saved) {
             self.state.error = Some(error);
         } else {
             self.dirty = false;
@@ -1279,7 +1298,9 @@ impl Actor {
             .input
             .write_all(b"\n")
             .and_then(|()| process.input.flush())
-            .map_err(|e| format!("Cannot send to Claude Code: {e}"))
+            .map_err(|e| format!("Cannot send to Claude Code: {e}"))?;
+        process.capture.record(true, &value);
+        Ok(())
     }
     fn control(&mut self, request: Value) -> Result<(), String> {
         self.control_id += 1;
@@ -1310,7 +1331,7 @@ impl Actor {
                 .iter()
                 .map(|root| std::path::PathBuf::from(&root.wt_path)),
         );
-        if codex::workspace_recovery_blocked(&roots, Some(&self.state.saved.key))? {
+        if provider::workspace_recovery_blocked(&roots, Some(&self.state.saved.key))? {
             return Err("Another conversation has unresolved workspace recovery in this directory. Reconnect to that conversation before starting work here.".into());
         }
         if self.restore_reservation.is_none() {
@@ -1391,7 +1412,7 @@ impl Actor {
         self.interaction_children = crate::interaction::Children::default();
         self.state.interaction_owners.clear();
         self.state.retired_interactions.clear();
-        self.state.interaction_epoch = codex::next_interaction_epoch();
+        self.state.interaction_epoch = provider::next_interaction_epoch();
         self.state.approvals.clear();
         self.state.questions.clear();
         self.state.elicitations.clear();
@@ -1420,8 +1441,9 @@ impl Actor {
         if let Some(speed) = self.state.saved.composer.speed {
             // False is explicit Standard; null would remove the session overlay
             // and could expose an inherited fastMode=true user setting.
-            settings["fastMode"] =
-                json!(speed == codex::Speed::Fast && self.state.speed_unavailable(speed).is_none());
+            settings["fastMode"] = json!(
+                speed == provider::Speed::Fast && self.state.speed_unavailable(speed).is_none()
+            );
         }
         self.control(json!({"subtype":"apply_flag_settings","settings":settings}))?;
         Ok(())
@@ -1464,7 +1486,7 @@ impl Actor {
         });
     }
     fn redirect(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
-        codex::validate_prompt(&text, &images)?;
+        provider::validate_prompt(&text, &images)?;
         if !self.initialized
             || !self.state.status.busy()
             || self.state.turn_id.is_none()
@@ -1538,7 +1560,7 @@ impl Actor {
         if item["id"] != message_id {
             return Err("This message changed; select Edit again.".into());
         }
-        let text = codex::item_text(item);
+        let text = provider::item_text(item);
         let images = item["content"]
             .as_array()
             .into_iter()
@@ -1581,7 +1603,7 @@ impl Actor {
         });
         // Persist the complete original transcript and recovery snapshot before
         // touching files. Fork failure cannot destroy the original conversation.
-        codex::persist(&self.state.saved)?;
+        provider::persist(&self.state.saved)?;
         if restore_files {
             if let Err(error) = checkpoint
                 .files
@@ -1601,7 +1623,9 @@ impl Actor {
                 self.state.status = Status::Disconnected;
                 self.initialized = false;
                 self.recover_edit()?;
-                return Err(format!("Claude rewind failed; reconnect to continue the original conversation: {error}"));
+                return Err(format!(
+                    "Claude rewind failed; reconnect to continue the original conversation: {error}"
+                ));
             }
         };
         self.pid.store(process.child.id(), Ordering::SeqCst);
@@ -1622,7 +1646,9 @@ impl Actor {
             self.process.take();
             self.pid.store(0, Ordering::SeqCst);
             self.state.status = Status::Disconnected;
-            return Err(format!("Claude rewind startup is uncertain. Reconnect to recover the original conversation: {error}"));
+            return Err(format!(
+                "Claude rewind startup is uncertain. Reconnect to recover the original conversation: {error}"
+            ));
         }
         Ok(())
     }
@@ -1643,7 +1669,7 @@ impl Actor {
         }
         let mut saved = self.state.saved.clone();
         saved.pending_edit = None;
-        if let Err(error) = codex::persist(&saved) {
+        if let Err(error) = provider::persist(&saved) {
             self.state.status = Status::Disconnected;
             return Err(format!(
                 "Edit recovery could not be saved. Reconnect to reconcile: {error}"
@@ -1658,7 +1684,7 @@ impl Actor {
             return Ok(());
         };
         let mut saved = self.state.saved.clone();
-        saved.claude_resume = Some(codex::ClaudeResume {
+        saved.claude_resume = Some(provider::ClaudeResume {
             original_session: saved.claude_resume.as_ref().map_or_else(
                 || saved.thread_id.clone(),
                 |resume| resume.original_session.clone(),
@@ -1700,7 +1726,7 @@ impl Actor {
         }
         saved.pending_edit = None;
         saved.context = None;
-        if let Err(error) = codex::persist(&saved) {
+        if let Err(error) = provider::persist(&saved) {
             self.state.status = Status::Disconnected;
             return Err(format!(
                 "Edit recovery could not be saved. Reconnect to reconcile: {error}"
@@ -1735,7 +1761,7 @@ impl Actor {
         result
     }
     fn submit_inner(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
-        codex::validate_prompt(&text, &images)?;
+        provider::validate_prompt(&text, &images)?;
         if !self.initialized || self.state.status.busy() || self.deferred.is_some() {
             return Err(
                 "Claude Code is busy; queue this message to send it after the current turn".into(),
@@ -1861,10 +1887,10 @@ impl Actor {
             || self.pending_completion.is_some()
             || (self.tracks_session_state && !self.session_idle)
         {
-            return Err(codex::CLEAR_BUSY.into());
+            return Err(provider::CLEAR_BUSY.into());
         }
         if self.process.is_none() {
-            return Err(codex::CLEAR_DISCONNECTED.into());
+            return Err(provider::CLEAR_DISCONNECTED.into());
         }
         let args = launch_options(&self.args)?.0;
         let saved = self.state.saved.fresh_conversation();
@@ -1995,20 +2021,20 @@ impl Actor {
                     .saved
                     .rich_plans
                     .update_review(&plan_id, &revision_id, review)?;
-                codex::persist(&self.state.saved)?;
+                provider::persist(&self.state.saved)?;
             }
             Action::RetryPlanImport { message_id, source } => {
                 crate::rich_plan::retry_import(&mut self.state.saved, &message_id, &source)?;
-                codex::persist(&self.state.saved)?;
+                provider::persist(&self.state.saved)?;
             }
             Action::ApprovePlan {
                 plan_id,
                 revision_id,
-            } => self.deliver_plan(&plan_id, &revision_id, true, codex::persist)?,
+            } => self.deliver_plan(&plan_id, &revision_id, true, provider::persist)?,
             Action::SendPlanResponse {
                 plan_id,
                 revision_id,
-            } => self.send_plan_response(&plan_id, &revision_id, codex::persist)?,
+            } => self.send_plan_response(&plan_id, &revision_id, provider::persist)?,
             Action::RewindMessageReserved {
                 index,
                 message_id,
@@ -2053,7 +2079,7 @@ impl Actor {
             Action::RestoreRewindDraft { id } => {
                 let mut saved = self.state.saved.clone();
                 saved.restore_rewind_draft(&id)?;
-                codex::persist(&saved)?;
+                provider::persist(&saved)?;
                 self.state.saved = saved;
                 self.state.edited_messages += 1;
             }
@@ -2079,7 +2105,7 @@ impl Actor {
                 self.state.saved.draft_images = draft.1;
             }
             Action::ClearConversation => {
-                self.clear_conversation(codex::persist)?;
+                self.clear_conversation(provider::persist)?;
                 if let Err(error) = self.start() {
                     self.fail(error);
                 }
@@ -2087,18 +2113,18 @@ impl Actor {
             Action::Prompt(text) => self.submit(0, text, Vec::new())?,
             Action::Compact => {
                 if self.process.is_none() {
-                    return Err(codex::COMPACT_DISCONNECTED.into());
+                    return Err(provider::COMPACT_DISCONNECTED.into());
                 }
                 if self.state.status.busy() || self.in_flight.is_some() {
-                    return Err(codex::COMPACT_BUSY.into());
+                    return Err(provider::COMPACT_BUSY.into());
                 }
                 if !self.initialized {
-                    return Err(codex::COMPACT_DISCONNECTED.into());
+                    return Err(provider::COMPACT_DISCONNECTED.into());
                 }
                 if self.state.saved.thread_id.is_none()
-                    || !codex::has_conversation(&self.state.saved.items)
+                    || !provider::has_conversation(&self.state.saved.items)
                 {
-                    return Err(codex::NOTHING_TO_COMPACT.into());
+                    return Err(provider::NOTHING_TO_COMPACT.into());
                 }
                 // Claude Code's own slash command, through the ordinary prompt path.
                 self.submit(0, COMPACT_COMMAND.into(), Vec::new())?;
@@ -2113,7 +2139,7 @@ impl Actor {
                 expected_turn,
             } => {
                 let result = (|| {
-                    codex::validate_prompt(&text, &[])?;
+                    provider::validate_prompt(&text, &[])?;
                     if mode == SubmissionMode::Steer {
                         if expected_turn.is_none()
                             || self.state.turn_id != expected_turn
@@ -2145,7 +2171,7 @@ impl Actor {
                 }
             }
             Action::ProjectPrompt { id, text } => {
-                codex::validate_prompt(&text, &[])?;
+                provider::validate_prompt(&text, &[])?;
                 if self.state.status == Status::Disconnected {
                     self.state.rejected_submission = Some(id);
                     return Err("Reconnect before sending a prompt".into());
@@ -2171,7 +2197,7 @@ impl Actor {
                     }
                 }
                 SubmissionMode::Queue => {
-                    if let Err(error) = codex::validate_prompt(&text, &images) {
+                    if let Err(error) = provider::validate_prompt(&text, &images) {
                         self.state.rejected_submission = Some(id);
                         return Err(error);
                     }
@@ -2233,7 +2259,7 @@ impl Actor {
             }
             Action::DraftReference(reference) => {
                 if let Some(reference) = &reference {
-                    codex::validate_prompt(
+                    provider::validate_prompt(
                         &reference.serialize(&self.state.saved.draft),
                         &self.state.saved.draft_images,
                     )?;
@@ -2273,7 +2299,7 @@ impl Actor {
                     .draft = draft;
             }
             Action::DraftImages(images) => {
-                codex::validate_images(&images)?;
+                provider::validate_images(&images)?;
                 if let Some(edit) = &mut self.state.saved.pending_edit {
                     if let Some((_, draft_images)) = &mut edit.composer_draft {
                         draft_images.clone_from(&images);
@@ -2364,7 +2390,7 @@ impl Actor {
                 self.pending_access = None;
                 self.permission_changes.clear();
                 self.reset_configuration = true;
-                self.state.saved.composer = codex::ComposerSettings::default();
+                self.state.saved.composer = provider::ComposerSettings::default();
                 self.state.model = None;
                 self.state.effort = None;
                 self.state.access = None;
@@ -2537,7 +2563,7 @@ impl Actor {
             .items
             .iter()
             .find(|old| old["id"] == item["id"]);
-        codex::stamp_message_received(&mut item, previous.map(AsRef::as_ref));
+        provider::stamp_message_received(&mut item, previous.map(AsRef::as_ref));
         if let Some(existing) = self
             .state
             .saved
@@ -2683,9 +2709,9 @@ impl Actor {
                 _ => None,
             } {
                 let kind = if block["type"] == "text" {
-                    crate::codex::SubagentActivityKind::Commentary
+                    crate::provider::SubagentActivityKind::Commentary
                 } else {
-                    crate::codex::SubagentActivityKind::Tool
+                    crate::provider::SubagentActivityKind::Tool
                 };
                 let key = block["id"]
                     .as_str()
@@ -2734,7 +2760,7 @@ impl Actor {
         self.state.observe_subagent(
             id,
             &format!("child-final-report:{text}"),
-            crate::codex::SubagentActivityKind::Commentary,
+            crate::provider::SubagentActivityKind::Commentary,
             text,
         );
     }
@@ -2975,6 +3001,9 @@ impl Actor {
                     return Ok(());
                 }
             } else {
+                if let Some(ownership) = self.process.as_mut().and_then(|p| p.ownership.as_mut()) {
+                    ownership.claim(session)?;
+                }
                 self.state.saved.thread_id = Some(session.into());
             }
         }
@@ -3097,7 +3126,7 @@ impl Actor {
                     if let Some(models) = data["models"].as_array() {
                         self.state.models=models.iter().map(|m| json!({"model":m["value"],"resolvedModel":m["resolvedModel"],"displayName":m["displayName"],"description":m["description"],"supportsFastMode":m["supportsFastMode"],"supportedReasoningEfforts":m["supportedEffortLevels"].as_array().map(|values| values.iter().map(|v| json!({"reasoningEffort":v})).collect::<Vec<_>>()).unwrap_or_default()})).collect();
                     }
-                    if self.state.saved.composer.speed == Some(codex::Speed::Fast) {
+                    if self.state.saved.composer.speed == Some(provider::Speed::Fast) {
                         self.reconfigure = true;
                     }
                     if let Some(speed) = data["fast_mode_state"].as_str() {
@@ -3120,6 +3149,7 @@ impl Actor {
                 match value["state"].as_str() {
                     Some("idle") if !self.configuring => {
                         if let Some(status) = self.pending_completion.take() {
+                            self.settle_root_items(status);
                             self.state.finish_work();
                             self.state.status = status;
                             if status == Status::Done {
@@ -3378,7 +3408,7 @@ impl Actor {
                     Some("allowed")
                         if self.state.effective_notice().is_some_and(|notice| {
                             notice.provider == "Claude"
-                                && (notice.kind == codex::SessionNoticeKind::UsageLimit
+                                && (notice.kind == provider::SessionNoticeKind::UsageLimit
                                     || notice.reset_at.is_some())
                         }) =>
                     {
@@ -3468,6 +3498,8 @@ impl Actor {
                 }
             }
             "result" => {
+                let result_failed =
+                    value["is_error"] == true || value["terminal_reason"] == "api_error";
                 if let Some(models) = value["modelUsage"].as_object() {
                     let window = self
                         .context_model
@@ -3553,18 +3585,18 @@ impl Actor {
                     .retain(|_, owner| owner.thread != root);
                 self.state.status = if self.interrupting {
                     Status::Interrupted
-                } else if value["is_error"] == true {
+                } else if result_failed {
                     Status::Failed
                 } else {
                     Status::Done
                 };
-                if value["is_error"] == true && !self.interrupting {
+                if result_failed && !self.interrupting {
                     // The terminal result often has a generic subtype. Retain
                     // a preceding explicit rejection's category/reset metadata.
                     let usage_notice = self
                         .state
                         .effective_notice()
-                        .filter(|notice| notice.kind == codex::SessionNoticeKind::UsageLimit)
+                        .filter(|notice| notice.kind == provider::SessionNoticeKind::UsageLimit)
                         .cloned();
                     self.state.error = Some(
                         value["errors"]
@@ -3577,9 +3609,21 @@ impl Actor {
                                     .join("\n")
                             })
                             .filter(|s| !s.is_empty())
-                            .or_else(|| value["result"].as_str().map(str::to_owned))
+                            .or_else(|| {
+                                value["result"]
+                                    .as_str()
+                                    .filter(|s| !s.is_empty())
+                                    .map(str::to_owned)
+                            })
+                            .or_else(|| self.state.error.clone())
                             .unwrap_or_else(|| {
-                                format!("Claude Code ended with {}", value["subtype"])
+                                format!(
+                                    "Claude Code ended with {}",
+                                    value["terminal_reason"]
+                                        .as_str()
+                                        .or_else(|| value["subtype"].as_str())
+                                        .unwrap_or("an unknown error")
+                                )
                             }),
                     );
                     if let Some(body) = self.state.error.clone() {
@@ -3596,21 +3640,10 @@ impl Actor {
                         );
                     }
                     self.queue_ready = false;
-                } else if value["is_error"] != true && self.state.effective_notice().is_some() {
+                } else if !result_failed && self.state.effective_notice().is_some() {
                     self.state.clear_error();
                 }
-                for item in &mut self.state.saved.items {
-                    if item["status"] == "inProgress" {
-                        item["status"] = json!(if self.interrupting {
-                            "interrupted"
-                        } else if value["is_error"] == true {
-                            "failed"
-                        } else {
-                            "completed"
-                        });
-                    }
-                }
-                if value["is_error"] != true && !self.interrupting {
+                if !result_failed && !self.interrupting {
                     crate::rich_plan::import_completed(&mut self.state.saved);
                 }
                 if self.tracks_session_state && !self.session_idle {
@@ -3620,6 +3653,7 @@ impl Actor {
                     // session_state_changed idle is the authoritative boundary.
                     self.state.turn_id = Some("awaiting-session-idle".into());
                 } else {
+                    self.settle_root_items(self.state.status);
                     self.state.finish_work();
                     if self.state.status == Status::Done {
                         self.state.completed_for_review();
@@ -3633,6 +3667,20 @@ impl Actor {
         self.state.refresh_interaction_status();
         self.configure_pending_access()?;
         Ok(())
+    }
+    /// Only an authoritative terminal boundary may settle still-open root tools.
+    /// Real tool results arriving before idle retain their own status and output.
+    fn settle_root_items(&mut self, status: Status) {
+        let terminal = match status {
+            Status::Interrupted => "interrupted",
+            Status::Failed => "failed",
+            _ => "completed",
+        };
+        for item in &mut self.state.saved.items {
+            if item["status"] == "inProgress" {
+                item["status"] = json!(terminal);
+            }
+        }
     }
     fn assistant_block_id(
         &self,
@@ -3903,7 +3951,7 @@ mod tests {
         actor
             .action(super::Action::SideChat {
                 checkout: "/checkout".into(),
-                chat: crate::codex::SavedSideChat {
+                chat: crate::provider::SavedSideChat {
                     session: None,
                     draft: "draft".into(),
                     messages: vec![("user".into(), "question".into())],
@@ -4046,7 +4094,9 @@ mod tests {
         ];
         actor.state.saved.draft = "preserve".into();
         actor.state.resolved_access = Some("plan".into());
-        actor.action(Action::SetSpeed(codex::Speed::Fast)).unwrap();
+        actor
+            .action(Action::SetSpeed(provider::Speed::Fast))
+            .unwrap();
         actor.configure_live().unwrap();
         let request = read(&mut reader);
         assert_eq!(request["request"]["settings"]["fastMode"], true);
@@ -4066,24 +4116,30 @@ mod tests {
         );
         actor.message(json!({"type":"system","subtype":"init","model":"claude-opus-test","fast_mode_state":"off","fast_mode_disabled_reason":"extra_usage_disabled"})).unwrap();
         assert_eq!(actor.state.reported_speed.as_deref(), Some("off"));
-        assert_eq!(actor.state.saved.composer.speed, Some(codex::Speed::Fast));
+        assert_eq!(
+            actor.state.saved.composer.speed,
+            Some(provider::Speed::Fast)
+        );
         actor.action(Action::ResetModelEffort).unwrap();
-        assert_eq!(actor.state.saved.composer.speed, Some(codex::Speed::Fast));
+        assert_eq!(
+            actor.state.saved.composer.speed,
+            Some(provider::Speed::Fast)
+        );
         assert_eq!(actor.state.saved.draft, "preserve");
         actor
-            .action(Action::SetSpeed(codex::Speed::Standard))
+            .action(Action::SetSpeed(provider::Speed::Standard))
             .unwrap();
         actor.configure_live().unwrap();
         let request = read(&mut reader);
         assert_eq!(request["request"]["settings"]["fastMode"], false);
         assert!(actor
-            .action(Action::SetSpeed(codex::Speed::Ultrafast))
+            .action(Action::SetSpeed(provider::Speed::Ultrafast))
             .is_err());
     }
     #[test]
     fn speed_launch_overlay_preserves_settings_and_never_enables_fast_before_catalog() {
         let mut actor = actor();
-        actor.state.saved.composer.speed = Some(codex::Speed::Fast);
+        actor.state.saved.composer.speed = Some(provider::Speed::Fast);
         let cmd = launch_command(
             &[
                 "--settings".into(),
@@ -4124,7 +4180,7 @@ mod tests {
         assert!(actor.state.error.is_none());
         actor.message(json!({"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","resetsAt":1234}})).unwrap();
         let notice = actor.state.effective_notice().unwrap();
-        assert_eq!(notice.kind, codex::SessionNoticeKind::UsageLimit);
+        assert_eq!(notice.kind, provider::SessionNoticeKind::UsageLimit);
         assert_eq!(notice.reset_at, Some(1234));
         assert_eq!(actor.state.status, Status::Working);
         actor
@@ -4134,7 +4190,7 @@ mod tests {
         actor.message(json!({"type":"result","is_error":true,"subtype":"error_during_execution","errors":["Request rejected"]})).unwrap();
         assert_eq!(
             actor.state.effective_notice().unwrap().kind,
-            codex::SessionNoticeKind::UsageLimit
+            provider::SessionNoticeKind::UsageLimit
         );
         assert_eq!(actor.state.effective_notice().unwrap().reset_at, Some(1234));
     }
@@ -4170,7 +4226,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             actor.state.effective_notice().unwrap().kind,
-            codex::SessionNoticeKind::Stopped
+            provider::SessionNoticeKind::Stopped
         );
         assert!(actor.state.effective_notice().unwrap().usage_url.is_none());
         actor.state.error = None;
@@ -4186,7 +4242,7 @@ mod tests {
         );
         assert_eq!(
             actor.state.effective_notice().unwrap().kind,
-            codex::SessionNoticeKind::Stopped
+            provider::SessionNoticeKind::Stopped
         );
     }
     #[test]
@@ -4211,7 +4267,12 @@ mod tests {
     }
     #[test]
     fn claude_mode_discovery_requires_advertised_choices() {
-        assert_eq!(permission_modes_from_help("--permission-mode <mode> Permission mode (choices: \"acceptEdits\", \"manual\", \"plan\")"), vec!["acceptEdits", "manual", "plan"]);
+        assert_eq!(
+            permission_modes_from_help(
+                "--permission-mode <mode> Permission mode (choices: \"acceptEdits\", \"manual\", \"plan\")"
+            ),
+            vec!["acceptEdits", "manual", "plan"]
+        );
         assert!(permission_modes_from_help("unknown CLI version").is_empty());
     }
     #[test]
@@ -4821,7 +4882,7 @@ mod tests {
 
     #[test]
     fn child_history_roundtrip_restores_full_messages_tools_and_alias_updates() {
-        use crate::codex::SubagentTranscriptAvailability as Availability;
+        use crate::provider::SubagentTranscriptAvailability as Availability;
         let mut actor = actor();
         actor.state.begin_work();
         actor.register_subagent(&json!({"id":"child","name":"Agent","input":{"name":"Ada","subagent_type":"Explore","description":"Inspect directory"}}));
@@ -4850,7 +4911,7 @@ mod tests {
         );
         let bytes = serde_json::to_vec(&actor.state.saved).unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE"));
-        let mut restored = actor_with_saved(codex::recover_saved_for_test(&actor.state.saved));
+        let mut restored = actor_with_saved(provider::recover_saved_for_test(&actor.state.saved));
         assert_eq!(
             restored.state.subagent_transcript_availability("child"),
             Availability::Restored
@@ -4877,7 +4938,7 @@ mod tests {
             restored.state.saved.work_periods[0].subagents[0].status,
             SubagentStatus::Completed
         );
-        let complete = actor_with_saved(codex::recover_saved_for_test(&restored.state.saved));
+        let complete = actor_with_saved(provider::recover_saved_for_test(&restored.state.saved));
         assert_eq!(
             complete.state.saved.work_periods[0].subagents[0].status,
             SubagentStatus::Completed
@@ -4942,12 +5003,12 @@ mod tests {
         assert_eq!(activity.events.len(), 2);
         assert_eq!(
             activity.events[0].kind,
-            crate::codex::SubagentActivityKind::Tool
+            crate::provider::SubagentActivityKind::Tool
         );
         assert!(activity.events[0].text.contains("src/main.rs"));
         assert_eq!(
             activity.events[1].kind,
-            crate::codex::SubagentActivityKind::Commentary
+            crate::provider::SubagentActivityKind::Commentary
         );
         assert!(!activity
             .events
@@ -5035,10 +5096,10 @@ mod tests {
         let mut reader = transport(&mut actor);
         actor.initialized = true;
         actor.state.status = Status::Idle;
-        let reference = codex::ReferenceDraft {
+        let reference = provider::ReferenceDraft {
             id: "quote-only".into(),
             thread_id: None,
-            sources: vec![codex::ReferenceSource {
+            sources: vec![provider::ReferenceSource {
                 message_id: "source".into(),
                 role: "assistant".into(),
             }],
@@ -5068,10 +5129,10 @@ mod tests {
         let mut reader = transport(&mut actor);
         actor.initialized = true;
         actor.state.status = Status::Idle;
-        let reference = codex::ReferenceDraft {
+        let reference = provider::ReferenceDraft {
             id: "old".into(),
             thread_id: None,
-            sources: vec![codex::ReferenceSource {
+            sources: vec![provider::ReferenceSource {
                 message_id: "source".into(),
                 role: "assistant".into(),
             }],
@@ -5198,7 +5259,7 @@ mod tests {
         let recovery = crate::checkpoint::capture(std::slice::from_ref(&root)).unwrap();
         let mut actor = actor();
         actor.state.saved.key = format!("test-claude-edit-{}", nonce());
-        let journal = codex::recovery_dir()
+        let journal = provider::recovery_dir()
             .unwrap()
             .join(format!("{}.json", actor.state.saved.key));
         actor.state.saved.thread_id = Some("original".into());
@@ -5234,7 +5295,7 @@ mod tests {
         }
         assert!(args.iter().any(|arg| arg == "--fork-session"));
         assert!(!args.iter().any(|arg| arg == "--resume-drops-turn"));
-        codex::persist(&actor.state.saved).unwrap();
+        provider::persist(&actor.state.saved).unwrap();
         fs_err::write(&file, "pre target snapshot").unwrap();
         actor.recover_edit().unwrap();
         assert_eq!(fs_err::read_to_string(&file).unwrap(), "current workspace");
@@ -5341,7 +5402,7 @@ mod tests {
             .rewind_files_unavailable(2)
             .unwrap()
             .contains("No workspace checkpoint"));
-        let journal = codex::recovery_dir()
+        let journal = provider::recovery_dir()
             .unwrap()
             .join(format!("{}.json", actor.state.saved.key));
         let pending = PendingEdit {
@@ -5442,7 +5503,7 @@ mod tests {
     fn claude_fork_recipe_survives_save_and_reconnect_before_first_prompt() {
         let mut actor = actor();
         actor.state.saved.thread_id = Some("fork-id".into());
-        actor.state.saved.claude_resume = Some(codex::ClaudeResume {
+        actor.state.saved.claude_resume = Some(provider::ClaudeResume {
             original_session: Some("original-id".into()),
             assistant_uuid: Some("assistant-id".into()),
             human_uuid: "human-id".into(),
@@ -5550,7 +5611,7 @@ mod tests {
         actor.in_flight.is_none()
             && actor.state.accepted_submission == Some(2)
             && actor.state.saved.items.iter().any(|item| {
-                item["type"] == "userMessage" && codex::item_text(item) == "use the other branch"
+                item["type"] == "userMessage" && provider::item_text(item) == "use the other branch"
             })
     }
 
@@ -5676,7 +5737,7 @@ mod tests {
     #[test]
     fn historical_claude_messages_require_new_anchors_before_editing() {
         let mut actor = actor();
-        actor.state.saved.provider = codex::Provider::Claude;
+        actor.state.saved.provider = provider::Provider::Claude;
         actor.state.status = Status::Idle;
         actor
             .state
@@ -5905,7 +5966,7 @@ mod tests {
             .state
             .saved
             .claude_subagents
-            .insert("old-child".into(), codex::SavedClaudeSubagent::default());
+            .insert("old-child".into(), provider::SavedClaudeSubagent::default());
         actor
             .subagent_tasks
             .insert("old-task".into(), "old-child".into());
@@ -5916,7 +5977,7 @@ mod tests {
         let mut restored = None;
         actor
             .clear_conversation(|saved| {
-                restored = Some(codex::recover_saved_for_test(saved));
+                restored = Some(provider::recover_saved_for_test(saved));
                 Ok(())
             })
             .unwrap();
@@ -5959,12 +6020,12 @@ mod tests {
         actor.state.status = Status::Working;
         assert_eq!(
             actor.action(Action::ClearConversation).unwrap_err(),
-            codex::CLEAR_BUSY
+            provider::CLEAR_BUSY
         );
         actor.state.status = Status::Done;
         assert_eq!(
             actor.action(Action::ClearConversation).unwrap_err(),
-            codex::CLEAR_DISCONNECTED
+            provider::CLEAR_DISCONNECTED
         );
         let _reader = transport(&mut actor);
         assert!(actor
@@ -6072,6 +6133,8 @@ mod tests {
             child,
             input,
             lines,
+            capture: crate::provider_diagnostics::Capture::default(),
+            ownership: None,
         });
         output
     }
@@ -6085,10 +6148,10 @@ mod tests {
         actor.state.turn_id = Some("busy".into());
         actor.state.saved.draft = "same text".into();
         actor.state.saved.draft_images = vec!["data:image/png;base64,aGVsbG8=".into()];
-        actor.state.saved.draft_reference = Some(codex::ReferenceDraft {
+        actor.state.saved.draft_reference = Some(provider::ReferenceDraft {
             id: "reference".into(),
             thread_id: Some("source-thread".into()),
-            sources: vec![codex::ReferenceSource {
+            sources: vec![provider::ReferenceSource {
                 message_id: "source-message".into(),
                 role: "assistant".into(),
             }],
@@ -6553,7 +6616,7 @@ mod tests {
                 .message(json!({"type":"user","uuid":sent["uuid"]}))
                 .unwrap();
             assert_eq!(actor.state.accepted_submission, Some(42));
-            let recovered = codex::recover_saved_for_test(&actor.state.saved);
+            let recovered = provider::recover_saved_for_test(&actor.state.saved);
             assert_eq!(recovered.draft, if newer { "new unsent draft" } else { "" });
             assert_eq!(
                 recovered.draft_images,
@@ -6580,7 +6643,7 @@ mod tests {
             assert_eq!(actor.state.accepted_submission, Some(42));
             assert_eq!(actor.state.queued_prompts.len(), 1);
             assert_eq!(actor.state.queued_prompts[0].images, images);
-            let recovered = codex::recover_saved_for_test(&actor.state.saved);
+            let recovered = provider::recover_saved_for_test(&actor.state.saved);
             assert_eq!(recovered.draft, if newer { "new unsent draft" } else { "" });
             assert_eq!(
                 recovered.draft_images,
@@ -6769,6 +6832,49 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
         assert_eq!(restored.args, vec!["--model", "sonnet", "--chrome"]);
+    }
+    #[test]
+    fn pending_tools_wait_for_idle_and_keep_late_results() {
+        let mut actor = actor();
+        actor.tracks_session_state = true;
+        actor.session_idle = false;
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("turn".into());
+        actor.state.saved.items.push(json!({"id":"late", "type":"commandExecution", "status":"inProgress", "aggregatedOutput":""}));
+        actor
+            .state
+            .saved
+            .items
+            .push(json!({"id":"unresolved", "type":"commandExecution", "status":"inProgress"}));
+        actor
+            .message(json!({"type":"result", "is_error":false}))
+            .unwrap();
+        assert_eq!(actor.state.saved.items[0]["status"], "inProgress");
+        actor.tool_result(&json!({"type":"tool_result", "tool_use_id":"late", "is_error":true, "content":"late failure output"}));
+        actor
+            .message(json!({"type":"system", "subtype":"session_state_changed", "state":"idle"}))
+            .unwrap();
+        assert_eq!(actor.state.status, Status::Done);
+        assert_eq!(actor.state.saved.items[0]["status"], "failed");
+        assert_eq!(
+            actor.state.saved.items[0]["aggregatedOutput"],
+            "late failure output"
+        );
+        assert_eq!(actor.state.saved.items[1]["status"], "completed");
+    }
+    #[test]
+    fn api_error_terminal_reason_cannot_report_success() {
+        let mut actor = actor();
+        actor.state.status = Status::Working;
+        actor.state.turn_id = Some("turn".into());
+        actor.message(json!({"type":"result", "subtype":"success", "terminal_reason":"api_error", "is_error":false, "errors":["Login expired"]})).unwrap();
+        assert_eq!(actor.state.status, Status::Failed);
+        assert!(actor
+            .state
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Login expired"));
     }
     #[test]
     fn queue_waits_for_authoritative_idle_after_result() {
@@ -7036,7 +7142,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             actor.state.saved.context,
-            Some(codex::ContextUsage {
+            Some(provider::ContextUsage {
                 used: 25_583,
                 window: 1_000_000
             })
@@ -7052,12 +7158,12 @@ mod tests {
         actor.state.saved.thread_id = Some("session".into());
         assert_eq!(
             actor.action(Action::Compact).unwrap_err(),
-            codex::NOTHING_TO_COMPACT
+            provider::NOTHING_TO_COMPACT
         );
         actor.state.saved.items.push(
             json!({"id":"u","type":"userMessage","content":[{"type":"text","text":"Reply OK"}]}),
         );
-        actor.state.saved.context = Some(codex::ContextUsage {
+        actor.state.saved.context = Some(provider::ContextUsage {
             used: 25_583,
             window: 1_000_000,
         });
@@ -7068,7 +7174,7 @@ mod tests {
         let uuid = sent["uuid"].clone();
         assert_eq!(
             actor.action(Action::Compact).unwrap_err(),
-            codex::COMPACT_BUSY
+            provider::COMPACT_BUSY
         );
         // Claude Code 2.1.302, captured verbatim in shape (bulky fields elided).
         for frame in [
@@ -7107,15 +7213,15 @@ mod tests {
         // The divider stands in for the command; no "/compact" bubble or summary leaks in.
         assert_eq!(actor.state.saved.items.len(), 2);
         let divider = &actor.state.saved.items[1];
-        assert_eq!(divider["type"], codex::COMPACTION_ITEM);
+        assert_eq!(divider["type"], provider::COMPACTION_ITEM);
         assert_eq!(
-            codex::compaction_label(divider),
+            provider::compaction_label(divider),
             "Context compacted \u{b7} manual"
         );
         actor.message(json!({"type":"control_response","response":{"subtype":"success","request_id":probe["request_id"],
             "response":{"totalTokens":23327,"maxTokens":1000000,"percentage":2}}})).unwrap();
         assert_eq!(
-            codex::compaction_label(&actor.state.saved.items[1]),
+            provider::compaction_label(&actor.state.saved.items[1]),
             "Context compacted \u{b7} manual \u{b7} 26k \u{2192} 23k"
         );
         assert_eq!(actor.state.saved.context.unwrap().used, 23_327);
@@ -7136,13 +7242,13 @@ mod tests {
         assert!(actor.state.error.is_none());
         assert!(actor.process.is_some());
         assert_eq!(
-            codex::compaction_label(&actor.state.saved.items[0]),
+            provider::compaction_label(&actor.state.saved.items[0]),
             "Context compacted \u{b7} auto"
         );
         actor.message(json!({"type":"assistant","message":{"id":"m","model":"claude-opus-5-5","content":[],
             "usage":{"input_tokens":4000,"cache_read_input_tokens":20000,"output_tokens":10}}})).unwrap();
         assert_eq!(
-            codex::compaction_label(&actor.state.saved.items[0]),
+            provider::compaction_label(&actor.state.saved.items[0]),
             "Context compacted \u{b7} auto \u{b7} 182k \u{2192} 24k"
         );
     }

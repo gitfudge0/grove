@@ -13,6 +13,7 @@ verification records are evidence, not competing specifications.
 | Plans, reports or change categories | [Feature behavior](features.md) |
 | GPUI APIs, state, async work or rendering | [Development guidance](development.md) |
 | A measured native/HTML component reference | [Reference workflow](ui-reference.md) |
+| Native provider contracts, completion, ownership or diagnostics | [Provider guidance](providers.md) |
 | Validation, provider smoke checks or known verification gaps | [Verification](verification.md) |
 
 `design.md` is the normative semantic UI contract. Exact values and complete

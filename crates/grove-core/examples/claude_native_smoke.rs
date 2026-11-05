@@ -2,6 +2,15 @@
 //! Use a disposable empty cwd and GROVE_CONFIG_DIR; authenticates using the installed CLI.
 use grove_core::codex::{self, Action, Connection, SavedSession, Snapshot, Status};
 use std::time::{Duration, Instant};
+struct StopOnDrop(grove_core::provider::Handle);
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .stop_completion(true)
+            .recv_timeout(Duration::from_secs(5));
+    }
+}
 fn wait(
     connection: &Connection,
     predicate: impl Fn(&Snapshot) -> bool,
@@ -54,6 +63,7 @@ fn main() -> Result<(), String> {
         claude_resume: None,
         edit_checkpoints: Vec::new(),
         pending_edit: None,
+        rewind_drafts: Vec::new(),
         provider: grove_core::codex::Provider::Claude,
         composer: grove_core::codex::ComposerSettings::default(),
         context: None,
@@ -81,6 +91,7 @@ fn main() -> Result<(), String> {
         activity_reporting: false,
     };
     let connection = codex::connect(saved, Vec::new());
+    let _connection_cleanup = StopOnDrop(connection.handle.clone());
     if permissions_only {
         let outcome = (|| -> Result<(), String> {
             wait(&connection, |s| s.status == Status::Idle)?;
@@ -159,6 +170,23 @@ fn main() -> Result<(), String> {
         "PASS initialized thread {}",
         ready.saved.thread_id.as_deref().unwrap_or_default()
     );
+    // The same native thread under a different app-session identity must refuse
+    // a second writer while the original process remains usable.
+    let mut duplicate = ready.saved.clone();
+    duplicate.key = grove_core::identity::random_id()?;
+    let contested = codex::connect(duplicate, Vec::new());
+    let refusal = wait(&contested, |s| s.status == Status::Idle)
+        .err()
+        .ok_or("Duplicate native thread unexpectedly opened")?;
+    contested
+        .handle
+        .stop_completion(true)
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    if !refusal.contains("already open") {
+        return Err(format!("Unexpected ownership refusal: {refusal}"));
+    }
+    println!("PASS duplicate native thread refused without replacing its identity");
     connection.handle.send(Action::Prompt("Remember the word MARIGOLD for this conversation. Run exactly `pwd` once in the working directory, then reply only MARIGOLD. Do not modify files or access other directories.".into()))?;
     let done = wait(&connection, |s| s.status == Status::Done)?;
     let mut assistant_blocks = std::collections::HashSet::new();
@@ -209,6 +237,7 @@ fn main() -> Result<(), String> {
         return Err("Persisted thread identity changed".into());
     }
     let resumed = codex::connect(restored, Vec::new());
+    let _resumed_cleanup = StopOnDrop(resumed.handle.clone());
     wait(&resumed, |s| s.status == Status::Idle)?;
     resumed.handle.send(Action::Prompt("What word did I ask you to remember? Reply only that word. Do not use tools or modify files.".into()))?;
     let done = wait(&resumed, |s| s.status == Status::Done)?;
