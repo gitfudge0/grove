@@ -168,6 +168,7 @@ impl Sidebar {
         source: FocusHandle,
         cx: &mut Context<Self>,
     ) {
+        self.hide_questions();
         let targets = self.checkout_targets(cx);
         let Some((_, path)) = super::checkout_panel::selected_checkout(
             &targets,
@@ -258,6 +259,7 @@ impl Sidebar {
         source: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
+        self.hide_questions();
         let provider = match self.checkout_commit_provider(cx) {
             Ok(p) => p,
             Err(error) => {

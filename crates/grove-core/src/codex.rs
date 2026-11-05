@@ -582,7 +582,7 @@ impl Actor {
             });
         }
         params["developerInstructions"] = json!(format!(
-            "{}{}{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            "{}{}{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
             self.developer_instructions,
             if self.developer_instructions.is_empty() {
                 ""
@@ -600,6 +600,8 @@ impl Actor {
                 crate::review_skill::GUIDANCE,
                 crate::review_skill::SKILL
             ),
+            crate::ask_skill::GUIDANCE,
+            crate::ask_skill::SKILL,
             crate::rich_plan::GUIDANCE
         ));
         if let Some(roots) = writable_roots {

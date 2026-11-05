@@ -197,3 +197,35 @@ neither merge approval nor a guarantee of correctness. No tests are executed.
 retry and stale/unverifiable states retain the previous result; Escape returns
 from a captured diff to the review, then restores the invoking control's focus.
 This version does not post GitHub reviews, apply suggestions, or run fixes.
+
+## Ask about changes
+
+Checkout offers **Ask about changes** for local edits or an attached GitHub PR.
+Choose a scope, enter a question in the native reader, then **Ask question** (or
+Control/Command+Enter). `/ask [local|pr] [question]` and `$ask [local|pr] [question]`
+in either Codex or Claude's composer invoke the same reader; omitting the question
+opens its field without calling a model. `local`/`pr` are reserved first words;
+to ask a question beginning with one of those words, select the scope explicitly.
+The native action works with Checkout hidden, preserves the command draft, and
+rejects attachments or quoted references without discarding them. Provider skill
+catalogs cannot duplicate the reserved `ask` completion. Read-only side chats do
+not receive this bundled skill.
+
+Each submission independently captures its scope using the Describe snapshot
+engine: local staged/unstaged/nonignored-untracked changes against HEAD, or the
+attached PR's base-to-head diff. No conversational follow-up context is implied.
+Answers, questions and in-flight work belong to session, checkout and scope for
+the app lifetime. Questions and previous answers survive errors/cancellation;
+a successful new answer replaces the previous one for that scope. No repository,
+index, main conversation or PR writes occur. The authenticated provider CLI is
+called with tools/integrations/hooks disabled in a private temporary directory.
+
+The reader shows selectable Markdown, explicit file coverage and limitations,
+and references validated against exact old/new source lines present in complete
+captured patches. **Open reference** displays that captured patch, rather than a
+live file. Citations establish location, not that the model's interpretation is
+correct. Missing/partial/binary patches cannot count as examined. Ask does not run
+tests or inspect unchanged repository files. Freshness checks mark changed or
+unverifiable snapshots; old answers remain readable/copyable and **Ask question**
+captures a fresh diff. Escape returns from a captured patch to the answer, then
+to the actual invoking control. Questions and answers are not persisted on disk.

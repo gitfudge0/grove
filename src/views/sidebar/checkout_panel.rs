@@ -3599,7 +3599,8 @@ impl Sidebar {
             let pr = self.checkout_description_pr();
             card =
                 card.child(self.render_description_controls(&path, local, pr.clone(), window, cx));
-            card = card.child(self.render_review_controls(&path, local, pr, window, cx));
+            card = card.child(self.render_review_controls(&path, local, pr.clone(), window, cx));
+            card = card.child(self.render_question_controls(&path, local, pr, window, cx));
         }
         if let Some(plan) = (!self.dashboard_open)
             .then(|| self.render_checkout_plan(window, cx))
