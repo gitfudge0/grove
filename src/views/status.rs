@@ -85,6 +85,40 @@ pub fn codex_kind(status: grove_core::codex::Status) -> StatusKind {
         Status::Idle => StatusKind::Idle,
     }
 }
+pub const CHECK_DRAW_DURATION: std::time::Duration = std::time::Duration::from_millis(440);
+
+/// A one-shot catalog check reveal, anchored to the real receipt clock.
+pub fn drawn_check(
+    id: impl Into<SharedString>,
+    revision: u64,
+    started: std::time::Instant,
+    size: f32,
+    cx: &App,
+) -> AnyElement {
+    const DRAW: std::time::Duration = CHECK_DRAW_DURATION;
+    let elapsed = started.elapsed();
+    if cx.reduce_motion() || elapsed >= DRAW {
+        return icon("status-success", size, c::STATUS_SUCCESS()).into_any_element();
+    }
+    let id = id.into();
+    div()
+        .size(rpx(size))
+        .with_animation(
+            SharedString::from(format!("{id}-confirmed-{revision}")),
+            gpui::Animation::new(DRAW - elapsed),
+            move |el, _| {
+                let progress = (started.elapsed().as_secs_f32() / DRAW.as_secs_f32()).min(1.);
+                let frame = (progress * crate::icons::SUCCESS_DRAW_FRAMES as f32).floor() as usize;
+                el.child(icon(
+                    &format!("status-success-draw-{frame}"),
+                    size,
+                    c::STATUS_SUCCESS(),
+                ))
+            },
+        )
+        .into_any_element()
+}
+
 /// Fixed-size icon slot; reduced motion never schedules animation.
 pub fn mark(id: impl Into<SharedString>, kind: StatusKind, size: f32, cx: &App) -> AnyElement {
     let id = id.into();

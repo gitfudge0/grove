@@ -656,6 +656,44 @@ impl TerminalSession {
         self.spawn_error.as_deref()
     }
 
+    /// Request termination but retain the PTY until its actual exit is observed.
+    pub(crate) fn request_script_stop(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if self.script_session && !self.exited {
+            if let Some(pty) = &mut self.pty {
+                pty.kill()
+                    .map_err(|error| format!("Could not stop script: {error}"))?;
+            }
+            // A descendant may retain the slave PTY after the owning shell exits.
+            // Observe the child status as well as EOF; neither a kill request nor
+            // reader ownership alone establishes process completion.
+            cx.spawn(async move |this, cx| loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(25))
+                    .await;
+                let done = this
+                    .update(cx, |this, cx| {
+                        if this.exited {
+                            return true;
+                        }
+                        let exited = this
+                            .pty
+                            .as_mut()
+                            .is_some_and(|pty| pty.exit_code().ok().flatten().is_some());
+                        if exited {
+                            this.reader_closed(cx);
+                        }
+                        exited || this.pty.is_none()
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
+            })
+            .detach();
+        }
+        Ok(())
+    }
+
     pub(crate) fn stop_script(&mut self, cx: &mut Context<Self>) {
         if self.script_session && !self.exited {
             self.pty.take();
@@ -673,6 +711,9 @@ impl TerminalSession {
     }
 
     fn reader_closed(&mut self, cx: &mut Context<Self>) {
+        if self.exited {
+            return;
+        }
         self.exit_code = self.exit_code.or_else(|| {
             self.pty
                 .as_mut()
@@ -958,6 +999,35 @@ mod tests {
         let result = session.update(cx, |session, _| session.send_checked(b"literal input\n"));
         assert!(result.unwrap_err().contains("no input sent"));
         assert!(session.read_with(cx, |session, _| session.is_pending_attach()));
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn requested_script_stop_waits_for_observed_process_exit(cx: &mut gpui::TestAppContext) {
+        use gpui::AppContext as _;
+        let session = cx.new(|cx| super::TerminalSession::spawn_script("sleep 30", "/tmp", cx));
+        assert!(session.read_with(cx, |session, _| session.spawn_error().is_none()));
+        assert!(!session.read_with(cx, |session, _| session.has_exited()));
+        session
+            .update(cx, |session, cx| session.request_script_stop(cx))
+            .unwrap();
+        // The request cannot synthesize an exit; the PTY remains until EOF/exit polling.
+        assert!(!session.read_with(cx, |session, _| session.has_exited()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !session.read_with(cx, |session, _| session.has_exited())
+            && std::time::Instant::now() < deadline
+        {
+            cx.run_until_parked();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let exited = session.read_with(cx, |session, _| session.has_exited());
+        session.update(cx, super::TerminalSession::stop_script);
+        assert!(
+            exited,
+            "PTY termination was not observed within five seconds"
+        );
     }
 
     #[gpui::test]

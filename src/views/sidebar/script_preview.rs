@@ -31,22 +31,160 @@ impl Sidebar {
         cx.notify();
     }
 
-    fn remove_script_run(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        self.dismiss_script_peek(window, cx);
+    fn forget_script_run(&mut self, id: u64, cx: &mut Context<Self>) {
         self.runtime.update(cx, |runtime, cx| {
-            if let Some(run) = runtime.script_runs.iter().find(|run| run.id == id) {
-                run.terminal.update(
-                    cx,
-                    crate::entities::terminal_session::TerminalSession::stop_script,
-                );
-            }
             runtime.script_runs.retain(|run| run.id != id);
             cx.notify();
         });
         self.checkout_panel.script_terminals.remove(&id);
         self.checkout_panel.script_peek_focus.remove(&id);
         self.checkout_panel.script_peek_bounds.remove(&id);
+        self.checkout_panel.script_feedback_observers.remove(&id);
+        self.checkout_panel.stopping_runs.remove(&id);
+        self.checkout_panel.script_feedback_tokens.remove(&id);
         cx.notify();
+    }
+
+    pub(super) fn watch_script_feedback(&mut self, run: &ScriptRun, cx: &mut Context<Self>) {
+        if self
+            .checkout_panel
+            .script_feedback_observers
+            .contains_key(&run.id)
+        {
+            return;
+        }
+        let path = run.checkout_path.clone();
+        let action = format!("script-{}", run.script_id);
+        let run_action = format!("run-{}", run.id);
+        let token = self.begin_panel_feedback(&path, &action, "Running…", cx);
+        let run_token = self.begin_panel_feedback(&path, &run_action, "Running", cx);
+        let id = run.id;
+        self.checkout_panel.script_feedback_tokens.insert(id, token);
+        let observer = cx.observe(&run.terminal, move |this, terminal, cx| {
+            if !terminal.read(cx).has_exited() {
+                return;
+            }
+            if this.checkout_panel.stopping_runs.contains(&id) {
+                this.finish_stopped_script(id, &path, &action, cx);
+                return;
+            }
+            let success = terminal.read(cx).exit_code() == Some(0);
+            // Once latched, normal output notifications must not restart the receipt.
+            let Some(active) = this
+                .checkout_panel
+                .feedback
+                .get(&path, &run_action)
+                .filter(|feedback| feedback.completed.is_none())
+            else {
+                return;
+            };
+            this.finish_panel_feedback(
+                &path,
+                &action,
+                token,
+                success.then_some("Script completed"),
+                cx,
+            );
+            this.finish_panel_feedback(
+                &path,
+                &run_action,
+                active.token,
+                success.then_some("Completed · exit 0"),
+                cx,
+            );
+        });
+        self.checkout_panel
+            .script_feedback_observers
+            .insert(id, observer);
+        if run.terminal.read(cx).has_exited() {
+            let success = run.terminal.read(cx).exit_code() == Some(0);
+            self.finish_panel_feedback(
+                &run.checkout_path,
+                &format!("script-{}", run.script_id),
+                token,
+                success.then_some("Script completed"),
+                cx,
+            );
+            self.finish_panel_feedback(
+                &run.checkout_path,
+                &format!("run-{id}"),
+                run_token,
+                success.then_some("Completed · exit 0"),
+                cx,
+            );
+        }
+    }
+
+    fn remove_script_run(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.checkout_panel.stopping_runs.contains(&id) {
+            return;
+        }
+        self.dismiss_script_peek(window, cx);
+        let run = self
+            .runtime
+            .read(cx)
+            .script_runs
+            .iter()
+            .find(|run| run.id == id)
+            .cloned();
+        let Some(run) = run else {
+            return;
+        };
+        if run.terminal.read(cx).has_exited() {
+            self.forget_script_run(id, cx);
+            return;
+        }
+        self.checkout_panel.stopping_runs.insert(id);
+        let action = format!("run-{id}");
+        let token = self.begin_panel_feedback(&run.checkout_path, &action, "Stopping run…", cx);
+        let result = run
+            .terminal
+            .update(cx, |terminal, cx| terminal.request_script_stop(cx));
+        if let Err(error) = result {
+            self.checkout_panel.stopping_runs.remove(&id);
+            self.finish_panel_feedback(&run.checkout_path, &action, token, None, cx);
+            self.begin_panel_feedback(&run.checkout_path, &action, "Running", cx);
+            self.content_error = Some(error);
+        } else if run.terminal.read(cx).has_exited() {
+            self.finish_stopped_script(
+                id,
+                &run.checkout_path,
+                &format!("script-{}", run.script_id),
+                cx,
+            );
+        }
+        cx.notify();
+    }
+
+    fn finish_stopped_script(
+        &mut self,
+        id: u64,
+        path: &str,
+        script_action: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let action = format!("run-{id}");
+        let Some(feedback) = self
+            .checkout_panel
+            .feedback
+            .get(path, &action)
+            .filter(|f| f.completed.is_none())
+        else {
+            return;
+        };
+        self.finish_panel_feedback(path, &action, feedback.token, Some("Run stopped"), cx);
+        if let Some(feedback) = self.checkout_panel.feedback.get(path, script_action) {
+            if self.checkout_panel.script_feedback_tokens.get(&id) == Some(&feedback.token) {
+                self.finish_panel_feedback(path, script_action, feedback.token, None, cx);
+            }
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(super::action_feedback::LIFETIME + super::action_feedback::COLLAPSE)
+                .await;
+            let _ = this.update(cx, |this, cx| this.forget_script_run(id, cx));
+        })
+        .detach();
     }
 
     fn open_script_peek(
@@ -135,12 +273,13 @@ impl Sidebar {
         }));
     }
 
-    pub(super) fn script_run_row(
-        &mut self,
-        run: ScriptRun,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
+    pub(super) fn script_run_row(&mut self, run: ScriptRun, cx: &mut Context<Self>) -> AnyElement {
+        self.watch_script_feedback(&run, cx);
         let id = run.id;
+        let feedback = self
+            .checkout_panel
+            .feedback
+            .get(&run.checkout_path, &format!("run-{id}"));
         let terminal = run.terminal.read(cx);
         let (kind, label) = if !terminal.has_exited() {
             (
@@ -174,11 +313,18 @@ impl Sidebar {
             .clone();
         let hover_run = run.clone();
         let click_run = run.clone();
-        div()
+        let retained = feedback.clone();
+        let row = div()
             .id(SharedString::from(format!("script-run-{id}")))
             .debug_selector(move || format!("script-run-{id}"))
             .role(gpui::Role::Button)
-            .aria_label(format!("Run {} · {label} · Preview output", id + 1))
+            .aria_label(format!(
+                "Run {} · {} · Preview output",
+                id + 1,
+                feedback
+                    .as_ref()
+                    .map_or(label.as_str(), |feedback| feedback.label.as_str())
+            ))
             .tab_index(0)
             .track_focus(&focus)
             .relative()
@@ -202,15 +348,38 @@ impl Sidebar {
                     .text_color(c::FG_DIM())
                     .child(format!("Run {}", id + 1)),
             )
-            .child(super::super::status::label(
-                SharedString::from(format!("script-run-status-{id}")),
-                kind,
-                label,
-                ICON_SM,
-                cx,
-            ))
+            .child(if let Some(feedback) = feedback {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(SPACE_SM))
+                    .text_color(if feedback.completed.is_some() {
+                        c::STATUS_SUCCESS()
+                    } else {
+                        c::STATUS_INFO()
+                    })
+                    .child(super::action_feedback::mark(
+                        format!("run-feedback-{id}"),
+                        &feedback,
+                        ICON_SM,
+                        cx,
+                    ))
+                    .child(feedback.label)
+                    .into_any_element()
+            } else {
+                super::super::status::label(
+                    SharedString::from(format!("script-run-status-{id}")),
+                    kind,
+                    label,
+                    ICON_SM,
+                    cx,
+                )
+                .into_any_element()
+            })
             .child(div().flex_1())
-            .child(
+            .child(if self.checkout_panel.stopping_runs.contains(&id) {
+                div().size(rpx(CHROME_CONTROL_H)).into_any_element()
+            } else {
                 super::super::components::header_control_frame(
                     SharedString::from(format!("script-run-close-{id}")),
                     "Stop and remove run",
@@ -231,8 +400,9 @@ impl Sidebar {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
                     this.remove_script_run(id, window, cx);
-                })),
-            )
+                }))
+                .into_any_element()
+            })
             .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
                 this.script_peek_hover(hover_run.clone(), *hovered, window, cx);
             }))
@@ -247,7 +417,8 @@ impl Sidebar {
                         cx.stop_propagation();
                     }
                 }),
-            )
+            );
+        super::action_feedback::retained_row(row, retained, cx)
     }
 
     pub(super) fn render_script_peek(

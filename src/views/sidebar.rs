@@ -1,4 +1,5 @@
 //! Workspace-scoped navigation. UI state is kept per workspace while processes keep running.
+mod action_feedback;
 mod activity_reply;
 mod agent_preview;
 mod branch_history;
@@ -3370,6 +3371,9 @@ impl Sidebar {
                     ..
                 }) = entry
                 {
+                    let feedback_action = format!("script-{id}");
+                    let token =
+                        self.begin_panel_feedback(&path, &feedback_action, "Sending prompt…", cx);
                     let result = match self.selection {
                         Some(Selection::Session(session_id)) => self
                             .runtime
@@ -3396,11 +3400,30 @@ impl Sidebar {
                             Err("Open a native Codex or Claude chat in this checkout first".into())
                         }
                     };
+                    self.finish_panel_feedback(
+                        &path,
+                        &feedback_action,
+                        token,
+                        result.is_ok().then_some("Prompt queued"),
+                        cx,
+                    );
+                    let error_key = (path.clone(), id.clone());
+                    if let Err(error) = &result {
+                        self.checkout_panel
+                            .script_errors
+                            .insert(error_key, error.clone());
+                    } else {
+                        self.checkout_panel.script_errors.remove(&error_key);
+                    }
                     self.content_error = result.err();
                     cx.notify();
                 } else if self.runtime.update(cx, |runtime, cx| {
                     runtime.spawn_project_script(&project_path, &path, &id, cx)
                 }) {
+                    let run = self.runtime.read(cx).script_runs.last().cloned();
+                    if let Some(run) = run {
+                        self.watch_script_feedback(&run, cx);
+                    }
                     if self.mode == ViewMode::Grid {
                         self.mode = self.last_mode;
                     }
