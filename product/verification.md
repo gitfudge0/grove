@@ -277,8 +277,9 @@ grounding, declared hunk bounds, unknown/omitted paths, duplicate or empty
 coverage, scoped no-findings output, pre-call cancellation and literal Markdown
 context fences. Four shared-skill parser/completion checks passed after correcting
 a copied test query. A native test run passed 33 tests with three ignored;
-subsequent focused final-reader tests passed three with one capture ignored, and
-four Describe-reader regressions passed. Coverage includes file disclosure,
+subsequent coordinator checks passed the four final-reader tests (with the
+native capture ignored), affected Describe regressions and source conformance.
+Core review, skill-parser and shared snapshot checks were also rerun successfully. Coverage includes file disclosure,
 captured-diff navigation/Escape, stale read-only results/source-focus restoration,
 hidden Checkout routing and Files navigation yielding the canvas. Codex/Claude
 composer fixtures verify command interception, preserved drafts, attachment
@@ -293,16 +294,24 @@ step. This is one observed model result, not a quality benchmark. Claude live
 generation remains unverified: `claude auth status` reported signed out. No real
 GitHub review or PR write was performed.
 
-Corrected Linux native fixture captures were inspected for a result, expanded
-finding, stale result at 320 logical pixels, and a captured diff in light
-appearance at rem 20. Normal captures measured about 570 logical pixels wide.
-The initial narrow capture retained the previous frame; explicitly refreshing the
-window corrected the capture harness, and the final narrow frame was inspected.
+Linux native fixture captures were inspected for a result, expanded finding,
+stale result constrained to 320 logical pixels, and a captured diff in light
+appearance at rem 20. Normal readers measured about 570 logical pixels wide.
+A separate single-state-process capture records the 320-pixel reader inside a
+569.6-pixel native window (1424 physical pixels); it does not establish an outer
+window width of 320. The back action remains visible. Native geometry tests at
+320 logical pixels and rem 16/20 also verify its bounds after body scrolling and
+captured-diff navigation. An earlier capture retained a previous frame; final
+evidence records actual PNG dimensions and both window and reader bounds.
 Sampled foreground/background contrast from captures: dark main 17.64:1, dark
 supporting 8.18:1, light main 18.40:1 and light supporting 5.70:1. Native fixtures
 use reduced-motion static endpoints. Complete session/Checkout shell flows,
 animated transitions, live main-composer handoff, macOS and Windows remain
 untested. These isolated fixtures are not participant testing.
+
+New review generation resets the previous run's freshness-in-flight state so an
+invalidated callback cannot permanently suppress checks after generation fails
+or is canceled. The previous review remains available.
 
 Formatting, compilation and artifact checks passed. Strict core/UI Clippy attempts
 remain blocked by 21 inherited core diagnostics in unrelated code; no diagnostics

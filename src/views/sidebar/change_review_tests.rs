@@ -1,7 +1,6 @@
 //! Native production-reader fixtures. They use frozen source data and never
 //! start a provider or perform a GitHub write.
 use super::*;
-use gpui::AppContext as _;
 use std::io::Write as _;
 
 const FIXTURE_PATH: &str = "/grove-review-fixture";
@@ -168,6 +167,13 @@ fn create_sidebar(window: &mut Window, cx: &mut App) -> (Entity<Sidebar>, FocusH
     (sidebar, source.unwrap())
 }
 fn fixture(cx: &mut gpui::TestAppContext) -> (Entity<Sidebar>, &mut gpui::VisualTestContext) {
+    fixture_sized(cx, 1100., 16.)
+}
+fn fixture_sized(
+    cx: &mut gpui::TestAppContext,
+    width: f32,
+    rem: f32,
+) -> (Entity<Sidebar>, &mut gpui::VisualTestContext) {
     cx.update(initialize);
     let mut sidebar = None;
     let (_, cx) = cx.add_window_view(|window, cx| {
@@ -176,14 +182,14 @@ fn fixture(cx: &mut gpui::TestAppContext) -> (Entity<Sidebar>, &mut gpui::Visual
         let fixture = cx.new(|_| ReviewReaderFixture {
             sidebar: view,
             source,
-            rem: 16.,
-            width: 1100.,
+            rem,
+            width,
             height: 1000.,
             measured: Default::default(),
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
     });
-    cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(1000.)));
+    cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1000.)));
     draw(cx);
     (sidebar.unwrap(), cx)
 }
@@ -372,6 +378,8 @@ fn review_changes_linux_native_capture() {
         .run(|cx| {
             initialize(cx);
             crate::fonts::register(cx).unwrap();
+            let capture_state = std::env::var("GROVE_REVIEW_CAPTURE_STATE").ok();
+            let initial_width = if capture_state.as_deref() == Some("stale") { 320. } else { 1100. };
             let mut sidebar_handle = None;
             let mut fixture_handle = None;
             let window = cx
@@ -379,7 +387,7 @@ fn review_changes_linux_native_capture() {
                     gpui::WindowOptions {
                         window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
                             gpui::point(gpui::px(20.), gpui::px(20.)),
-                            gpui::size(gpui::px(1100.), gpui::px(1000.)),
+                            gpui::size(gpui::px(initial_width), gpui::px(1000.)),
                         ))),
                         ..Default::default()
                     },
@@ -391,7 +399,7 @@ fn review_changes_linux_native_capture() {
                             sidebar,
                             source,
                             rem: 16.,
-                            width: 1100.,
+                            width: initial_width,
                             height: 800.,
                             measured: Default::default(),
                         });
@@ -411,6 +419,7 @@ fn review_changes_linux_native_capture() {
                     ("stale-narrow", "grove-dark", 16., 320., "stale"),
                     ("failure-dark", "grove-dark", 16., 1100., "error"),
                 ] {
+                    if capture_state.as_deref().is_some_and(|requested| requested != state) { continue; }
                     cx.update(|cx| {
                         grove_core::theme::set_by_name(theme);
                         c::sync_component_theme(cx);
@@ -469,21 +478,86 @@ fn review_changes_linux_native_capture() {
                     .join(format!("{name}.png"));
                     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
                     let measured = cx.update(|cx| fixture.read(cx).measured.get());
+                    let window_bounds = cx.update_window(window.into(), |_, window, _| window.bounds()).unwrap();
                     let mut meta = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
                         .open(output.parent().unwrap().join("metadata.txt"))
                         .unwrap();
-                    writeln!(meta, "{name}: requested {width}; measured {measured:?}").unwrap();
+                    writeln!(meta, "{name}: requested view {width}; measured view {measured:?}; window bounds {window_bounds:?}").unwrap();
                     assert!(std::process::Command::new("import")
                         .args(["-window", "Grove Review changes QA"])
-                        .arg(output)
+                        .arg(&output)
                         .status()
                         .unwrap()
                         .success());
+                    let dimensions = std::process::Command::new("identify").args(["-format", "%wx%h"]).arg(&output).output().unwrap();
+                    assert!(dimensions.status.success());
+                    writeln!(meta, "{name}: actual PNG {}", String::from_utf8_lossy(&dimensions.stdout)).unwrap();
                 }
                 cx.update(|cx| cx.quit());
             })
             .detach();
         });
+}
+
+#[gpui::test]
+fn narrow_review_back_action_stays_visible_after_scrolling_and_diff(cx: &mut gpui::TestAppContext) {
+    for rem in [16., 20.] {
+        let (sidebar, cx) = fixture_sized(cx, 320., rem);
+        let assert_back = |cx: &mut gpui::VisualTestContext| {
+            let reader = cx.debug_bounds("review-reader").unwrap();
+            let back = cx.debug_bounds("review-back").unwrap();
+            eprintln!("rem={rem}: reader={reader:?}; back={back:?}");
+            assert!(
+                back.size.width >= gpui::px(80.),
+                "back action collapsed at rem {rem}: {back:?}"
+            );
+            assert!(
+                back.size.height >= gpui::px(16.),
+                "back action lost its hit height at rem {rem}: {back:?}"
+            );
+            assert!(
+                back.origin.x >= reader.origin.x
+                    && back.origin.x + back.size.width <= reader.origin.x + reader.size.width,
+                "back escaped reader horizontally at rem {rem}: {back:?} / {reader:?}"
+            );
+            assert!(
+                back.origin.y >= reader.origin.y
+                    && back.origin.y + back.size.height <= reader.origin.y + reader.size.height,
+                "back escaped reader vertically at rem {rem}: {back:?} / {reader:?}"
+            );
+        };
+        assert_back(cx);
+        cx.update(|_, cx| {
+            sidebar.update(cx, |s, cx| {
+                s.reviews
+                    .entries
+                    .values()
+                    .next()
+                    .unwrap()
+                    .scroll
+                    .scroll_to_bottom();
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert_back(cx);
+        cx.update(|_, cx| {
+            sidebar.update(cx, |s, cx| {
+                let entry = s.reviews.entries.values_mut().next().unwrap();
+                let patch = entry.result.as_ref().unwrap().snapshot.files[0]
+                    .patch
+                    .clone();
+                entry.diff = Some((
+                    FIXTURE_FILE.into(),
+                    cx.new(|cx| TextViewState::markdown(&domain::patch_markdown(&patch), cx)),
+                ));
+                entry.diff_scroll.scroll_to_bottom();
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert_back(cx);
+    }
 }

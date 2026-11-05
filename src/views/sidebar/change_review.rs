@@ -275,6 +275,10 @@ impl Sidebar {
         entry.scope = Some(scope.clone());
         entry.cancel = Some(cancel.clone());
         entry.run = run;
+        // A callback from the previous run can no longer clear its in-flight flag.
+        entry.checking = false;
+        entry.checked_at = None;
+        entry.freshness = None;
         entry.error = None;
         entry.receipt = None;
         if let Some(source) = source {
