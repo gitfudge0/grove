@@ -42,15 +42,17 @@ impl Transition {
 #[derive(Default)]
 pub(super) struct SessionMotion {
     workspace: Option<u64>,
+    grouping: Option<global_navigation::SessionGrouping>,
     known: HashSet<SessionId>,
     pending_entries: HashSet<SessionId>,
     cards: HashMap<SessionId, CardSnapshot>,
     heights: HashMap<SessionId, Rc<Cell<f32>>>,
     transitions: HashMap<SessionId, Transition>,
+    departures: HashMap<SessionId, Transition>,
 }
 
 impl Sidebar {
-    /// Observe inventory, not status or grouping changes. Exiting rows are a
+    /// Observe inventory and settled activity-group changes. Exiting rows are a
     /// passive snapshot: the underlying session closes and releases input now.
     pub(super) fn sync_session_motion(
         &mut self,
@@ -61,11 +63,15 @@ impl Sidebar {
     ) {
         let registry = self.runtime.read(cx).registry.read(cx);
         let known: HashSet<_> = registry.all().iter().map(|meta| meta.id).collect();
-        let reset = self.session_motion.workspace != Some(self.active_workspace)
+        let grouping =
+            global_navigation::SessionGrouping::current(&cx.global::<SettingsState>().store);
+        let reset = self.session_motion.grouping != Some(grouping)
+            || self.session_motion.workspace != Some(self.active_workspace)
             || !visible
             || cx.reduce_motion();
         if reset {
             self.session_motion.transitions.clear();
+            self.session_motion.departures.clear();
             self.session_motion.pending_entries.clear();
         } else {
             self.session_motion
@@ -76,6 +82,7 @@ impl Sidebar {
                 .retain(|id| known.contains(id));
             for (&id, card) in &self.session_motion.cards {
                 if !known.contains(&id) && self.session_motion.known.contains(&id) {
+                    self.session_motion.departures.remove(&id);
                     let from = self
                         .session_motion
                         .transitions
@@ -90,6 +97,51 @@ impl Sidebar {
                             exiting: Some(card.clone()),
                         },
                     );
+                }
+            }
+            // Keep the old footprint passive while the destination makes room.
+            for (group, ids) in groups {
+                for id in ids {
+                    if let Some(card) = self.session_motion.cards.get(id) {
+                        if card.group != *group {
+                            let height =
+                                self.session_motion.heights.entry(*id).or_default().clone();
+                            let leaving = self
+                                .session_motion
+                                .transitions
+                                .get(id)
+                                .map_or(1., Transition::progress);
+                            let entering = self
+                                .session_motion
+                                .departures
+                                .get(id)
+                                .filter(|state| {
+                                    state
+                                        .exiting
+                                        .as_ref()
+                                        .is_some_and(|old| old.group == *group)
+                                })
+                                .map_or(0., Transition::progress);
+                            self.session_motion.departures.insert(
+                                *id,
+                                Transition {
+                                    started: Instant::now(),
+                                    height: height.clone(),
+                                    from: leaving,
+                                    exiting: Some(card.clone()),
+                                },
+                            );
+                            self.session_motion.transitions.insert(
+                                *id,
+                                Transition {
+                                    started: Instant::now(),
+                                    height,
+                                    from: entering,
+                                    exiting: None,
+                                },
+                            );
+                        }
+                    }
                 }
             }
             for (_, ids) in groups {
@@ -109,6 +161,7 @@ impl Sidebar {
             }
         }
         self.session_motion.workspace = Some(self.active_workspace);
+        self.session_motion.grouping = Some(grouping);
         self.session_motion.known = known;
         self.session_motion.cards.clear();
         if visible {
@@ -171,11 +224,15 @@ impl Sidebar {
         self.session_motion
             .transitions
             .retain(|_, state| state.started.elapsed() < DURATION);
+        self.session_motion
+            .departures
+            .retain(|_, state| state.started.elapsed() < DURATION);
         self.session_motion.heights.retain(|id, _| {
             self.session_motion.cards.contains_key(id)
                 || self.session_motion.transitions.contains_key(id)
         });
-        if !self.session_motion.transitions.is_empty() {
+        if !self.session_motion.transitions.is_empty() || !self.session_motion.departures.is_empty()
+        {
             window.request_animation_frame();
         }
     }
@@ -185,6 +242,7 @@ impl Sidebar {
             .session_motion
             .transitions
             .iter()
+            .chain(self.session_motion.departures.iter())
             .filter_map(|(&id, state)| state.exiting.as_ref().map(|card| (id, card)))
             .collect();
         ghosts.sort_by_key(|(id, card)| (card.group_position, card.position, id.raw()));
@@ -202,6 +260,30 @@ impl Sidebar {
                 );
             }
         }
+    }
+
+    pub(super) fn departing_session_row(
+        &self,
+        id: SessionId,
+        group: &str,
+        cx: &App,
+    ) -> Option<AnyElement> {
+        let state = self.session_motion.departures.get(&id)?;
+        let card = state.exiting.as_ref()?;
+        if card.group != group {
+            return None;
+        }
+        Some(
+            div()
+                .id(("sidebar-departure", id.raw()))
+                .w_full()
+                .min_h_0()
+                .overflow_hidden()
+                .max_h(gpui::px(state.height.get() * state.progress()))
+                .opacity(state.progress())
+                .child(self.snapshot_session_row(card, cx))
+                .into_any_element(),
+        )
     }
 
     pub(super) fn session_motion_row(&self, id: SessionId, row: AnyElement) -> AnyElement {
@@ -241,6 +323,11 @@ impl Sidebar {
 
     pub(super) fn exiting_session_row(&self, id: SessionId, cx: &App) -> Option<AnyElement> {
         let card = self.session_motion.transitions.get(&id)?.exiting.as_ref()?;
+        Some(self.snapshot_session_row(card, cx))
+    }
+
+    fn snapshot_session_row(&self, card: &CardSnapshot, cx: &App) -> AnyElement {
+        let id = card.meta.id;
         let meta = &card.meta;
         let content = div()
             .flex_1()
@@ -336,25 +423,23 @@ impl Sidebar {
                     .text_color(c::FG_DIM())
                     .child(root)
             }));
-        Some(
-            div()
-                .id(("sidebar-session-exit", id.raw()))
-                .debug_selector(move || format!("sidebar-session-exit-{}", id.raw()))
-                .flex()
-                .items_start()
-                .h_auto()
-                .min_h(rpx(SESSION_LIST_CARD_H))
-                .px(rpx(SPACE_XL))
-                .py(rpx(SPACE_LG))
-                .rounded(rpx(RADIUS_GROUP))
-                .bg(if card.selected {
-                    c::alpha(c::FG(), 0.14)
-                } else {
-                    c::alpha(c::BG(), 0.0)
-                })
-                .child(content)
-                .into_any_element(),
-        )
+        div()
+            .id(("sidebar-session-exit", id.raw()))
+            .debug_selector(move || format!("sidebar-session-exit-{}", id.raw()))
+            .flex()
+            .items_start()
+            .h_auto()
+            .min_h(rpx(SESSION_LIST_CARD_H))
+            .px(rpx(SPACE_XL))
+            .py(rpx(SPACE_LG))
+            .rounded(rpx(RADIUS_GROUP))
+            .bg(if card.selected {
+                c::alpha(c::FG(), 0.14)
+            } else {
+                c::alpha(c::BG(), 0.0)
+            })
+            .child(content)
+            .into_any_element()
     }
 }
 
@@ -378,8 +463,12 @@ mod tests {
                         .debug_selector(|| "motion-anchor".into())
                         .h(gpui::px(20.)),
                 );
-                for (_, ids) in displayed {
+                for (label, ids) in displayed {
                     for id in ids {
+                        if let Some(row) = sidebar.departing_session_row(id, &label, cx) {
+                            list = list.child(row);
+                            continue;
+                        }
                         let row = sidebar.exiting_session_row(id, cx).unwrap_or_else(|| {
                             div()
                                 .debug_selector(move || format!("motion-live-{}", id.raw()))
@@ -472,13 +561,58 @@ mod tests {
         );
         cx.update(|window, cx| {
             let sidebar = probe.read(cx).sidebar.clone();
-            // A change of group or title with unchanged inventory never restarts motion.
+            // A settled group change retains a passive old footprint and opens the destination.
             probe.update(cx, |probe, cx| {
                 probe.groups[0].0 = "Working".into();
                 cx.notify();
             });
             let _ = window.draw(cx);
-            assert!(sidebar.read(cx).session_motion.transitions.is_empty());
+            assert!(!sidebar.read(cx).session_motion.departures.is_empty());
+            assert!(sidebar
+                .read(cx)
+                .session_motion
+                .transitions
+                .values()
+                .all(|t| t.exiting.is_none()));
+            sidebar.update(cx, |sidebar, _| {
+                for state in sidebar
+                    .session_motion
+                    .transitions
+                    .values_mut()
+                    .chain(sidebar.session_motion.departures.values_mut())
+                {
+                    state.started = Instant::now() - DURATION / 2;
+                }
+            });
+            probe.update(cx, |probe, cx| {
+                probe.groups[0].0 = "Idle".into();
+                cx.notify();
+            });
+            let _ = window.draw(cx);
+            for state in sidebar
+                .read(cx)
+                .session_motion
+                .transitions
+                .values()
+                .chain(sidebar.read(cx).session_motion.departures.values())
+            {
+                assert!(
+                    state.from > 0. && state.from < 1.,
+                    "interrupted moves preserve current progress"
+                );
+            }
+            sidebar.update(cx, |sidebar, _| {
+                for state in sidebar
+                    .session_motion
+                    .transitions
+                    .values_mut()
+                    .chain(sidebar.session_motion.departures.values_mut())
+                {
+                    state.started = Instant::now() - DURATION;
+                }
+            });
+            let _ = window.draw(cx);
+            assert!(sidebar.read(cx).session_motion.departures.is_empty());
             let registry = sidebar.read(cx).runtime.read(cx).registry.clone();
             registry.update(cx, |registry, _| {
                 registry.remove(second);
@@ -525,6 +659,7 @@ mod tests {
             let _ = window.draw(cx);
             let sidebar = probe.read(cx).sidebar.read(cx);
             assert!(sidebar.session_motion.transitions.is_empty());
+            assert!(sidebar.session_motion.departures.is_empty());
         });
         assert!(cx.debug_bounds("sidebar-session-exit-2").is_none());
         assert_eq!(
@@ -581,10 +716,9 @@ mod tests {
             let _ = window.draw(cx);
         });
         assert!(cx.debug_bounds("session-1").is_some());
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
-            .session_motion
-            .transitions
-            .is_empty()));
+        assert!(sidebar.read_with(cx, |sidebar, _| {
+            sidebar.session_motion.transitions.is_empty()
+        }));
         let id = cx.update(|_, cx| {
             let registry = sidebar.read(cx).runtime.read(cx).registry.clone();
             registry.update(cx, |registry, cx| {
@@ -600,11 +734,13 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-        assert!(sidebar.read_with(cx, |sidebar, _| sidebar
-            .session_motion
-            .transitions
-            .get(&id)
-            .is_some_and(|state| state.exiting.is_none())));
+        assert!(sidebar.read_with(cx, |sidebar, _| {
+            sidebar
+                .session_motion
+                .transitions
+                .get(&id)
+                .is_some_and(|state| state.exiting.is_none())
+        }));
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar

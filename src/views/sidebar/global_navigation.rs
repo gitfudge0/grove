@@ -17,7 +17,7 @@ pub(super) enum SessionGrouping {
     Worktrees,
 }
 impl SessionGrouping {
-    fn current(store: &grove_core::storage::Store) -> Self {
+    pub(super) fn current(store: &grove_core::storage::Store) -> Self {
         if store.sidebar_group_by_worktree {
             Self::Worktrees
         } else {
@@ -318,10 +318,14 @@ impl Sidebar {
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_LG))
-                        .child(div().flex_1().min_w_0().truncate().child(label)),
+                        .child(div().flex_1().min_w_0().truncate().child(label.clone())),
                 );
             }
             for id in ids {
+                if let Some(row) = self.departing_session_row(id, &label, cx) {
+                    sessions = sessions.child(row);
+                    continue;
+                }
                 if let Some(meta) = self.runtime.read(cx).registry.read(cx).meta(id).cloned() {
                     count += 1;
                     let row = self.session_row(&meta, true, None, false, window, cx);

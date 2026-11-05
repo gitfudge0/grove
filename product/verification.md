@@ -115,3 +115,16 @@ Codex: live provider path untested. Claude: live provider path untested.
 Native category pointer crossing and visual inspection remain untested;
 macOS and Windows remain untested. The environment has no enabled native
 computer-use surface for this interaction check.
+
+## Sidebar activity-group settling and motion
+
+Activity-group placement now waits for a stable 500 ms destination, with immediate
+Needs you entry and live status marks. Linux pure state checks cover burst
+coalescing, cancellation and the exact settling boundary. Linux GPUI motion
+fixtures exercise Codex and Claude session metadata, passive departing rows,
+destination entrances, lifecycle closure and reduced-motion endpoints. These
+are fixture checks, not live provider-boundary verification: Codex live is
+untested; Claude live is untested. Native visual inspection, real pointer and
+keyboard focus across moves, light/dark themes, narrow widths and zoom remain
+untested; macOS and Windows remain untested. No enabled native computer-use
+surface is available for those visual checks in this session.

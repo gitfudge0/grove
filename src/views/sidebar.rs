@@ -20,6 +20,7 @@ mod script_preview;
 mod session_diff;
 mod session_history;
 mod session_motion;
+mod session_placement;
 mod side_chat;
 mod task_glance;
 mod title_edit;
@@ -152,13 +153,7 @@ fn group_sessions_for_list(
     let _ = now; // Activity clocks order rows; they never establish running work.
     let mut groups: [Vec<usize>; 4] = std::array::from_fn(|_| Vec::new());
     for (index, entry) in entries.iter().enumerate() {
-        let section = match entry.status {
-            "Approval needed" | "Answer needed" | "Needs you" | "Failed" | "Disconnected"
-            | "Reconnecting" | "Usage limit" | "Unknown" => 0,
-            "Done" | "Review" | "Review · unread" | "Plan ready" => 1,
-            "Starting" | "Working" | "Waiting" => 2,
-            _ => 3,
-        };
+        let section = session_placement::section(entry.status);
         groups[section].push(index);
     }
     for group in &mut groups[..2] {
@@ -555,6 +550,8 @@ pub struct Sidebar {
     header_tasks: task_glance::HeaderTasks,
     dashboard_timelines: dashboard_timeline::DashboardTimelines,
     session_motion: session_motion::SessionMotion,
+    session_placement: session_placement::SessionPlacement,
+    placement_timer: Option<gpui::Task<()>>,
     age_timer: Option<gpui::Task<()>>,
     #[cfg(test)]
     age_ticks: u64,
@@ -794,6 +791,8 @@ impl Sidebar {
             header_tasks: task_glance::HeaderTasks::default(),
             dashboard_timelines: dashboard_timeline::DashboardTimelines::default(),
             session_motion: session_motion::SessionMotion::default(),
+            session_placement: Default::default(),
+            placement_timer: None,
             age_timer: None,
             #[cfg(test)]
             age_ticks: 0,
@@ -2374,7 +2373,9 @@ impl Sidebar {
             .map(|meta| SessionListEntry {
                 id: meta.id,
                 state: activity.state_of(meta.id),
-                status: self.status(meta, cx).0,
+                status: self
+                    .session_placement
+                    .status(meta.id, self.status(meta, cx).0),
                 since: activity.since_of(meta.id),
                 active: activity.active_of(meta.id),
             })
@@ -5372,6 +5373,7 @@ impl Render for Sidebar {
             self.history_return_focus = None;
         }
         self.sync_age_timer(cx);
+        self.sync_session_placement(cx);
         if self.project_flyout.is_some() {
             let mut keys = HashSet::new();
             for project in self.project_navigation_snapshot(cx).projects {
