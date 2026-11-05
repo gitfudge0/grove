@@ -1,7 +1,8 @@
 //! Session-owned, read-only checkout browsing. Disk work is bounded and never blocks paint.
 use super::{
     components::{
-        header_control, header_control_frame, header_control_with_label_tooltip, transcript_action,
+        header_control, header_control_frame, header_control_with_label_tooltip,
+        project_field_well, transcript_action,
     },
     rpx,
     tokens::*,
@@ -585,32 +586,52 @@ impl FileBrowser {
                     ),
             )
             .child(
-                div().p(rpx(SPACE_LG)).child(
-                    Input::new(&self.query)
-                        .appearance(false)
-                        .bordered(false)
-                        .focus_bordered(false)
-                        .p_0()
-                        .aria_label("Filter visible files"),
-                ),
-            )
-            .child(
                 div()
-                    .px(rpx(SPACE_2XL))
-                    .py(rpx(SPACE_LG))
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .truncate()
-                    .child(root.to_string_lossy().into_owned()),
-            )
-            .child(
-                div()
-                    .id("file-explorer-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.explorer_scroll)
-                    .children(rows),
+                    .p(rpx(SPACE_3XL))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        project_field_well(false, false)
+                            .debug_selector(|| "file-explorer-card".into())
+                            .h_auto()
+                            .flex_1()
+                            .min_h_0()
+                            .justify_start()
+                            .px_0()
+                            .py(rpx(SPACE_SM))
+                            .gap(rpx(SPACE_XS))
+                            .overflow_hidden()
+                            .child(
+                                div().p(rpx(SPACE_LG)).child(
+                                    Input::new(&self.query)
+                                        .appearance(false)
+                                        .bordered(false)
+                                        .focus_bordered(false)
+                                        .p_0()
+                                        .aria_label("Filter visible files"),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .px(rpx(SPACE_2XL))
+                                    .py(rpx(SPACE_LG))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .truncate()
+                                    .child(root.to_string_lossy().into_owned()),
+                            )
+                            .child(
+                                div()
+                                    .id("file-explorer-scroll")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.explorer_scroll)
+                                    .children(rows),
+                            ),
+                    ),
             )
             .into_any_element()
     }
