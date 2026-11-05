@@ -953,7 +953,20 @@ impl Sidebar {
             );
         } else {
             for (group_index, (section, indices)) in groups.into_iter().enumerate() {
-                recent = recent.child(
+                let workspace = self.active_workspace;
+                let mut category = div()
+                    .id(gpui::SharedString::from(format!(
+                        "dashboard-category-{section}"
+                    )))
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .when(section == "Review", |category| {
+                        category.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            this.hover_review_category(workspace, *hovered, cx);
+                        }))
+                    });
+                category = category.child(
                     div()
                         .id(gpui::SharedString::from(format!(
                             "dashboard-section-{section}"
@@ -1052,7 +1065,7 @@ impl Sidebar {
                             review_completion,
                             age,
                         };
-                        recent = recent.child(
+                        category = category.child(
                             self.render_dashboard_progress(id, &title, &metadata, window, cx),
                         );
                         continue;
@@ -1131,8 +1144,9 @@ impl Sidebar {
                         window,
                         cx,
                     );
-                    recent = recent.child(terminal_row);
+                    category = category.child(terminal_row);
                 }
+                recent = recent.child(category);
             }
         }
         div()

@@ -103,3 +103,15 @@ fragmented outlines around each source line. Native visual inspection at normal
 and narrow widths, light/dark themes and rem zoom remains outstanding on Linux,
 macOS and Windows. Codex and Claude share this composer path; fixture checks
 do not establish live provider delivery or native visual appearance.
+
+## Activity category review settling
+
+The Review category retains pending reviewed rows while the pointer remains
+inside it, including sibling rows and gaps; leaving starts a fresh 400 ms delay.
+Linux GPUI timer-state checks cover category entry/return cancellation, the
+400 ms endpoint, keyboard focus gating, and new work bypassing the hold.
+These invoke the shared state handlers, not real pointer events or providers.
+Codex: live provider path untested. Claude: live provider path untested.
+Native category pointer crossing and visual inspection remain untested;
+macOS and Windows remain untested. The environment has no enabled native
+computer-use surface for this interaction check.

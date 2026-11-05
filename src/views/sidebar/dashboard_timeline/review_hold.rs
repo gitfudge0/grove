@@ -8,6 +8,7 @@ pub(in crate::views::sidebar) struct ReviewHolds {
     latest: HashMap<Scope, SessionListEntry>,
     held: HashMap<Scope, SessionListEntry>,
     hovered: HashSet<Scope>,
+    hovered_categories: HashSet<u64>,
     focused: HashSet<Scope>,
     keyboard: HashSet<Scope>,
     timers: HashMap<Scope, gpui::Task<()>>,
@@ -23,6 +24,7 @@ impl ReviewHolds {
         // A hidden destination must never retain a pointer/focus hold on return.
         self.held.retain(|key, _| key.0 == workspace);
         self.timers.retain(|key, _| key.0 == workspace);
+        self.hovered_categories.retain(|id| *id == workspace);
         entries
             .into_iter()
             .map(|entry| {
@@ -72,6 +74,7 @@ impl ReviewHolds {
         self.held.clear();
         self.timers.clear();
         self.hovered.clear();
+        self.hovered_categories.clear();
         self.focused.clear();
         self.keyboard.clear();
     }
@@ -83,15 +86,40 @@ impl ReviewHolds {
         self.timers.retain(|key, _| keep(key));
         self.focus.retain(|key, _| keep(key));
         self.hovered.retain(keep);
+        self.hovered_categories.retain(|id| workspaces.contains(id));
         self.focused.retain(keep);
         self.keyboard.retain(keep);
     }
 }
 
 impl Sidebar {
+    pub(in crate::views::sidebar) fn hover_review_category(
+        &mut self,
+        workspace: u64,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let holds = &mut self.dashboard_timelines.review_holds;
+        if hovered {
+            holds.hovered_categories.insert(workspace);
+        } else {
+            holds.hovered_categories.remove(&workspace);
+        }
+        let keys = holds
+            .held
+            .keys()
+            .copied()
+            .filter(|key| key.0 == workspace)
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.settle_review_hold(key, cx);
+        }
+    }
+
     fn settle_review_hold(&mut self, key: Scope, cx: &mut Context<Self>) {
         let holds = &mut self.dashboard_timelines.review_holds;
-        if holds.hovered.contains(&key)
+        if holds.hovered_categories.contains(&key.0)
+            || holds.hovered.contains(&key)
             || (holds.keyboard.contains(&key) && holds.focused.contains(&key))
         {
             holds.timers.remove(&key);
@@ -258,8 +286,43 @@ mod timer_tests {
             .review_holds
             .held
             .contains_key(&key)));
+        // Crossing to a sibling leaves the original row, but stays in Review.
         cx.update(|_, cx| {
             sidebar.update(cx, |this, cx| {
+                this.dashboard_timelines.review_holds.hovered.remove(&key);
+                this.hover_review_category(key.0, true, cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        assert!(sidebar.read_with(cx, |this, _| this
+            .dashboard_timelines
+            .review_holds
+            .held
+            .contains_key(&key)));
+        cx.update(|_, cx| {
+            sidebar.update(cx, |this, cx| this.hover_review_category(key.0, false, cx));
+        });
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(399));
+        cx.run_until_parked();
+        // Returning anywhere in the category cancels the nearly expired timer.
+        cx.update(|_, cx| {
+            sidebar.update(cx, |this, cx| this.hover_review_category(key.0, true, cx));
+        });
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.run_until_parked();
+        assert!(sidebar.read_with(cx, |this, _| this
+            .dashboard_timelines
+            .review_holds
+            .held
+            .contains_key(&key)));
+        cx.update(|_, cx| {
+            sidebar.update(cx, |this, cx| {
+                this.hover_review_category(key.0, false, cx);
                 let holds = &mut this.dashboard_timelines.review_holds;
                 holds.hovered.remove(&key);
                 holds.keyboard.insert(key);
