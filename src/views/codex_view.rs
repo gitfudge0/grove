@@ -4224,15 +4224,15 @@ impl CodexView {
             .py(rpx(SPACE_3XL));
         // Auto margins center short stacks and resolve to zero on overflow.
         // Override the shared header control's fixed height and flex basis so
-        // message glyphs retain a readable slot while the rail scrolls on overflow.
+        // markers form compact rows, compressing only to their minimum hit area.
         let marker_count = entries.len() as f32;
         let mut stack = div()
             .w_full()
             .flex()
             .flex_col()
             .my_auto()
-            .h(rpx(marker_count * ICON_SM))
-            .min_h(rpx(marker_count * ICON_SM))
+            .h(rpx(marker_count * SPACE_LG))
+            .min_h(rpx(marker_count * SPACE_SM))
             .flex_shrink_1();
         for entry in entries {
             let index = entry.item_index;
@@ -4269,12 +4269,12 @@ impl CodexView {
                 .cursor_pointer()
                 .debug_selector(move || format!("codex-minimap-message-{index}"))
                 .w_full()
-                .h(rpx(ICON_SM))
+                .h(rpx(SPACE_LG))
                 .flex_1()
-                .flex_basis(rpx(ICON_SM))
+                .flex_basis(rpx(SPACE_LG))
                 .flex_shrink_1()
-                .min_h(rpx(ICON_SM))
-                .max_h(rpx(ICON_SM))
+                .min_h(rpx(SPACE_SM))
+                .max_h(rpx(SPACE_LG))
                 .tab_index(0)
                 .aria_label(format!("Go to message: {}", entry.prompt))
                 .aria_description(format!("Response: {}", entry.response))
@@ -4282,11 +4282,13 @@ impl CodexView {
                     style.bg(c::BG_HOVER()).text_color(c::FG())
                 })
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
-                .child(crate::icons::icon(
-                    "message-circle",
-                    ICON_SM,
-                    if selected { c::FG() } else { c::FG_DIM() },
-                ))
+                .child(
+                    div()
+                        .w(rpx(if selected { SPACE_3XL } else { SPACE_LG }))
+                        .h(rpx(SPACE_XS))
+                        .bg(if selected { c::FG() } else { c::FG_DIM() })
+                        .group_hover("neutral-control", |style| style.bg(c::FG())),
+                )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.jump_to_transcript_item(index, window, cx);
                 }))
@@ -13016,11 +13018,11 @@ mod tests {
         let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
         let mark = cx.debug_bounds("codex-minimap-message-3").unwrap();
         let last = cx.debug_bounds("codex-minimap-message-5").unwrap();
-        let row_height = rpx(ICON_SM).to_pixels(gpui::px(16.0));
+        let row_height = rpx(SPACE_LG).to_pixels(gpui::px(16.0));
         assert!((mark.top() - first.bottom()).abs() < gpui::px(1.0));
         assert_eq!(
             mark.size.height, row_height,
-            "reserve the full message icon slot"
+            "preserve compact tick marker spacing"
         );
         for bounds in [first, mark, last] {
             assert!((bounds.center().x - rail.center().x).abs() < gpui::px(1.0));

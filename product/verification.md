@@ -24,6 +24,10 @@ scope. Historical logs remain in `.grove/qa/`; the method and limits are recorde
 
 ## Outstanding verification follow-ups
 
+Transcript minimap tick restoration: live Codex and Claude provider checks and
+native visual/interaction inspection are untested for this glyph-only rollback.
+The shared renderer restores the prior tick geometry; no installation was requested.
+
 Session-header title/status spacing: Codex and Claude GPUI fixtures verified the
 4px title-to-status gap, status-before-edit ordering, and existing title-edit
 interactions on Linux. Live Codex and Claude provider boundaries are untested
