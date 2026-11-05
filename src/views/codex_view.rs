@@ -1060,6 +1060,7 @@ fn snippet_shell_supported(language: &str) -> bool {
 
 pub(crate) enum CodexViewEvent {
     DashboardSubmit,
+    DescribeChanges(grove_core::describe_skill::ScopePreference, FocusHandle),
     ForkRequested(usize, bool),
     ScriptLaunched,
     FileOpened,
@@ -8303,12 +8304,12 @@ impl CodexView {
                 "Files and folders · relative to this worktree",
             ),
             '$' => (
-                state
-                    .skills
-                    .iter()
-                    .filter_map(|skill| {
+                grove_core::describe_skill::completion('$', query)
+                    .into_iter()
+                    .chain(state.skills.iter().filter_map(|skill| {
                         let name = skill["name"].as_str()?;
-                        (name.to_lowercase().contains(&query.to_lowercase())
+                        (name != grove_core::describe_skill::NAME
+                            && name.to_lowercase().contains(&query.to_lowercase())
                             && (state.saved.provider != codex::Provider::Claude
                                 || !host_command(name))
                             && skill["enabled"].as_bool() != Some(false))
@@ -8328,7 +8329,7 @@ impl CodexView {
                                 ),
                             )
                         })
-                    })
+                    }))
                     .take(8)
                     .collect(),
                 "Skills",
@@ -9028,6 +9029,31 @@ impl CodexView {
     }
 
     fn run_command(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let native_command = self.input.read(cx).value().to_string();
+        if grove_core::describe_skill::is_invocation(&native_command) {
+            if self.reference.is_some() || !self.images.is_empty() || self.pending_image_pastes > 0
+            {
+                self.session.update(cx, |session, cx| { session.state.error = Some("Describe changes uses the checkout diff. Remove attachments or the quoted reference before invoking it; your draft is preserved.".into()); cx.notify(); });
+                return true;
+            }
+            let Some(preference) = grove_core::describe_skill::invocation(&native_command) else {
+                self.session.update(cx, |session, cx| {
+                    session.state.error = Some(grove_core::describe_skill::USAGE.into());
+                    cx.notify();
+                });
+                return true;
+            };
+            self.session.update(cx, |session, cx| {
+                session.state.clear_error();
+                cx.notify();
+            });
+            cx.emit(CodexViewEvent::DescribeChanges(
+                preference,
+                self.input.focus_handle(cx),
+            ));
+            // Keep this command draft intact: native actions do not send or replace a provider prompt.
+            return true;
+        }
         if self.reference.is_some() {
             return false;
         }
@@ -10446,6 +10472,10 @@ fn effective_model(state: &codex::Snapshot) -> Option<&serde_json::Value> {
 /// Host commands first, then (for Claude) the CLI's own commands Grove does not host.
 fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> {
     let mut choices: Vec<(String, String)> = [
+        (
+            "/describe-changes",
+            "Describe the selected checkout or attached PR",
+        ),
         ("/model", "Choose model"),
         ("/effort", "Choose reasoning effort"),
         ("/access", "Choose access level"),
@@ -10481,7 +10511,7 @@ fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> 
 fn host_command(name: &str) -> bool {
     matches!(
         name,
-        "model" | "effort" | "access" | "stop" | "queue" | "clear" | "compact"
+        "describe-changes" | "model" | "effort" | "access" | "stop" | "queue" | "clear" | "compact"
     )
 }
 
@@ -14159,6 +14189,98 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn describe_skill_routes_both_providers_without_submitting_or_losing_drafts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                if let CodexViewEvent::DescribeChanges(scope, _) = event {
+                    observed.borrow_mut().push(*scope);
+                }
+            })
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, _| {
+                        session.state.saved.provider = provider;
+                        session.state.skills =
+                            vec![json!({"name":"describe-changes","enabled":true})];
+                    });
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("/describe-changes local", window, cx);
+                    });
+                    assert!(view.run_command(window, cx));
+                    assert_eq!(
+                        view.input.read(cx).value().as_ref(),
+                        "/describe-changes local"
+                    );
+                    view.pending_image_pastes = 1;
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("$describe-changes pr", window, cx)
+                    });
+                    assert!(view.run_command(window, cx));
+                    assert_eq!(view.pending_image_pastes, 1);
+                    assert_eq!(view.input.read(cx).value().as_ref(), "$describe-changes pr");
+                    assert!(view
+                        .session
+                        .read(cx)
+                        .state
+                        .error
+                        .as_ref()
+                        .is_some_and(|error| error.contains("draft is preserved")));
+                    view.pending_image_pastes = 0;
+                    assert!(view.run_command(window, cx));
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("/describe-changes invalid", window, cx)
+                    });
+                    assert!(view.run_command(window, cx));
+                    assert_eq!(
+                        view.session.read(cx).state.error.as_deref(),
+                        Some(grove_core::describe_skill::USAGE)
+                    );
+                    assert_eq!(
+                        slash_choices(&view.session.read(cx).state, "describe")
+                            .iter()
+                            .filter(|(name, _)| name == "/describe-changes")
+                            .count(),
+                        1
+                    );
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("$describe", window, cx);
+                        input.set_selected_range(9..9, cx);
+                    });
+                    let choices = view
+                        .suggestion_choices(&view.session.read(cx).state, cx)
+                        .unwrap()
+                        .0;
+                    assert_eq!(
+                        choices
+                            .iter()
+                            .filter(|(name, _)| name == "$describe-changes")
+                            .count(),
+                        1
+                    );
+                })
+            });
+        }
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                grove_core::describe_skill::ScopePreference::Local,
+                grove_core::describe_skill::ScopePreference::PullRequest,
+                grove_core::describe_skill::ScopePreference::Local,
+                grove_core::describe_skill::ScopePreference::PullRequest
+            ]
+        );
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Submit { .. })));
+    }
     fn fixture(
         cx: &mut gpui::TestAppContext,
     ) -> (

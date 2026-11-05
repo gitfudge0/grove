@@ -130,3 +130,42 @@ clang -fobjc-arc -fblocks scripts/verify-integrated-report-webkit.m \
 The macOS harness checks measured growth and shrinkage independent of viewport
 height and the absence of script-message handlers. CI runs the equivalent
 WebKitGTK and WebView2 harnesses.
+
+## Describe changes
+
+Checkout offers **Describe changes** when the selected checkout has local changes
+or an attached GitHub PR. Choose **Local changes** (staged, unstaged and nonignored
+untracked files against HEAD) or the attached **PR** (GitHub's base-to-head diff).
+The scopes are never combined. Descriptions are cached for the owning session,
+checkout and scope during the app lifetime; they do not alter the conversation,
+composer draft, index or working files.
+
+The native reader shows a behavior-focused summary, file walkthrough grouped by
+purpose, optional Mermaid flow and explicit coverage. File expansion exposes its
+summary and the captured read-only patch, not a subsequently changed live file.
+Binary, oversized, missing and model-omitted patches remain visible as coverage
+limits. No test execution is implied. Background freshness checks mark changed or
+unverifiable snapshots; stale results remain readable/copyable but cannot publish.
+Cancellation stops the generation process and preserves the previous description.
+
+**Copy Markdown** copies the generated result. **Update PR description** opens an
+editable native preview, preserves existing human context and the PR title, and
+publishes only after explicit confirmation. Publication rechecks checkout, PR
+head/base and the body captured for the preview. A competing write after that
+preflight cannot be atomically excluded by GitHub's body-update API. Successful
+updates retain their acknowledged body for later freshness checks. GitHub.com is
+supported; enterprise hosts report an unsupported URL rather than guessing.
+
+### Shared Codex and Claude skill
+
+Grove bundles `describe-changes/SKILL.md`. In either provider's Grove composer,
+`/describe-changes` or `$describe-changes` opens the same native workflow. Optional
+`local` or `pr` arguments select a scope; otherwise use Checkout's visible choice, defaulting to local changes before
+a scope has been selected.
+Completions reserve this name, and Grove intercepts the whole command before
+provider submission. The command draft stays intact; attachments and quoted
+references are rejected with an explanation and preserved. Invalid arguments show
+usage. This is a user-invoked Grove skill, not an autonomous model tool; provider
+global skill directories remain unchanged, and read-only side conversations do
+not receive it. Codex and Claude generation uses their existing authenticated CLIs
+with tools, integrations and startup hooks disabled in a private temporary cwd.

@@ -396,3 +396,25 @@ The persistent right-panel control uses the right-panel glyph, Files uses the fo
 Transcript user-message and response footers expose a keyboard-accessible Fork session action beside Copy. Forks retain the project, checkout and context roots, copy only the selected completed prefix, and appear as ordinary sessions in Sidebar and Activity. A user-message fork excludes the selected message from history and restores its text and attachments to the composer; a response fork opens an empty composer. Forking never restores checkout files. The title contains “Forked” until the first new prompt is accepted, then automatic naming resumes. Source conversations remain unchanged. Forking is unavailable during provider work or startup.
 
 Side-panel action feedback uses a rotating blue open ring during work and a green circle-check drawn over 440 ms on every acknowledged completion, including cancellation and stop acknowledgments. Hold the confirmation for three seconds after drawing, then restore current data. This applies to commit/cancel, push, publish, pull, main-branch integration, PR merge, discard/revert, shell run/stop, named prompts, PR-form opening, conflict-resolution session opening and CI handoff. Keep destructive confirmations and safety gates. A request to stop a script is not completion: wait for observed PTY exit. Shell success requires exit 0 and preserves output/exit status. Queue receipts confirm local chat acceptance, never the underlying PR/CI result; Create PR opens a browser form and confirms only that handoff. Receipts are checkout/action/run-owned with stale completion/expiry protection. New Git work supersedes old Git receipts; independent scripts and chat actions retain their own ownership. Disappearing Pull/integration/recovery/run rows retain their receipt, then collapse over 220 ms. Reduce motion shows static marks and immediate collapse endpoints without animation frames, preserving the reading interval. Errors remain visible and actionable.
+
+
+## Change-description reader
+
+Describe changes belongs to the selected Checkout card and appears for local
+changes or an attached PR. Scope choices use neutral selected controls; generation
+uses the shared dense action recipe and status marks. Its native reader replaces
+the main reading area while preserving Checkout and the conversation/draft.
+Descriptions, in-flight results, previews and feedback remain bound to session,
+checkout and scope across navigation; another selected checkout must not display
+the previous checkout's reader.
+
+The reader uses the existing selectable Markdown typography and Mermaid renderer,
+compact sentence-case headings, transparent file disclosures, fixed trailing
+change counts, and shared action controls. Opening and closing the reader use
+restrained shared motion; file selection and input focus are immediate. Snapshot
+metadata and coverage must stay visible. Stale/unverifiable descriptions preserve
+their content and expose regeneration, with publishing disabled. PR updates use a
+separate editable reader state with an accessible field name, explicit Update and
+Cancel actions, unchanged PR title and preserved original context. Back/Escape
+return through diff/preview to the description, then restore the actual invoking
+control, including the Codex or Claude composer.

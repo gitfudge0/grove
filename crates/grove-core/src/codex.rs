@@ -582,7 +582,7 @@ impl Actor {
             });
         }
         params["developerInstructions"] = json!(format!(
-            "{}{}{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            "{}{}{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
             self.developer_instructions,
             if self.developer_instructions.is_empty() {
                 ""
@@ -593,6 +593,8 @@ impl Actor {
             crate::tasks::CODEX_GUIDANCE,
             crate::reports::REPORT_GUIDANCE,
             crate::activity::GUIDANCE,
+            crate::describe_skill::GUIDANCE,
+            crate::describe_skill::SKILL,
             crate::rich_plan::GUIDANCE
         ));
         if let Some(roots) = writable_roots {
@@ -7743,6 +7745,7 @@ mod tests {
                 assert!(guidance.contains(crate::tasks::CODEX_GUIDANCE));
                 assert!(!guidance.contains(crate::tasks::CLAUDE_GUIDANCE));
                 assert!(guidance.contains(crate::reports::REPORT_GUIDANCE));
+                assert!(guidance.contains(crate::describe_skill::SKILL));
                 assert!(guidance.ends_with(crate::rich_plan::GUIDANCE));
                 if let Some(custom) = custom {
                     assert!(guidance.starts_with(&format!("{custom}\n\n")));

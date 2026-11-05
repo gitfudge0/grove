@@ -1901,7 +1901,10 @@ impl Sidebar {
         .detach();
     }
 
-    fn checkout_commit_provider(&self, cx: &App) -> Result<grove_core::codex::Provider, String> {
+    pub(super) fn checkout_commit_provider(
+        &self,
+        cx: &App,
+    ) -> Result<grove_core::codex::Provider, String> {
         let selected = match self.selection {
             Some(Selection::Session(id)) => self
                 .runtime
@@ -2069,6 +2072,14 @@ impl Sidebar {
             focus.focus(window, cx);
         }
         cx.notify();
+    }
+
+    pub(super) fn checkout_description_pr(&self) -> Option<PullRequest> {
+        self.checkout_panel
+            .pr_state
+            .as_ref()
+            .and_then(|state| state.as_ref().ok())
+            .and_then(Clone::clone)
     }
 
     pub(super) fn render_checkout_confirmation(
@@ -3579,6 +3590,15 @@ impl Sidebar {
                     );
             }
         }
+        if let Some(path) = self.checkout_panel.path.clone() {
+            let local = self
+                .checkout_panel
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.files > 0);
+            let pr = self.checkout_description_pr();
+            card = card.child(self.render_description_controls(&path, local, pr, window, cx));
+        }
         if let Some(plan) = (!self.dashboard_open)
             .then(|| self.render_checkout_plan(window, cx))
             .flatten()
@@ -4111,7 +4131,7 @@ pub(super) fn checkout_cycle_row(
     }
 }
 
-fn checkout_loading_row(
+pub(super) fn checkout_loading_row(
     id: &'static str,
     label: impl Into<SharedString>,
     glyph: &'static str,

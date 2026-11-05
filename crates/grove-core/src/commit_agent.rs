@@ -27,7 +27,7 @@ impl CommitControl {
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
-    fn canceled(&self) -> bool {
+    pub(crate) fn canceled(&self) -> bool {
         self.state.load(Ordering::Acquire) == 1
     }
     fn begin_commit(&self) -> Result<(), String> {
@@ -346,13 +346,18 @@ fn codex_args(schema: &Path, output: &Path, servers: &[String]) -> Vec<String> {
     args
 }
 
+#[cfg(test)]
 fn claude_args() -> Vec<String> {
+    claude_args_with_schema(MESSAGE_SCHEMA)
+}
+
+fn claude_args_with_schema(schema: &str) -> Vec<String> {
     [
         "-p",
         "--output-format",
         "json",
         "--json-schema",
-        MESSAGE_SCHEMA,
+        schema,
         "--model",
         CLAUDE_MODEL,
         "--tools",
@@ -371,6 +376,17 @@ fn claude_args() -> Vec<String> {
 }
 
 fn generate(provider: Provider, prompt: &str, cancel: &CommitControl) -> Result<Message, String> {
+    serde_json::from_value(generate_json(provider, prompt, MESSAGE_SCHEMA, cancel)?)
+        .map_err(|_| "Commit assistant returned an invalid commit message".into())
+}
+
+/// Authenticated, no-tool structured generation shared with change descriptions.
+pub(crate) fn generate_json(
+    provider: Provider,
+    prompt: &str,
+    schema_text: &str,
+    cancel: &CommitControl,
+) -> Result<serde_json::Value, String> {
     // An empty private cwd avoids loading checkout instruction files or exposing repository tools.
     let temporary = tempfile::tempdir().map_err(|_| "Could not prepare commit assistant")?;
     let text = match provider {
@@ -392,8 +408,7 @@ fn generate(provider: Provider, prompt: &str, cancel: &CommitControl) -> Result<
             let servers = enabled_servers(&output)?;
             let schema = temporary.path().join("schema.json");
             let output = temporary.path().join("message.json");
-            fs_err::write(&schema, MESSAGE_SCHEMA)
-                .map_err(|_| "Could not prepare commit schema")?;
+            fs_err::write(&schema, schema_text).map_err(|_| "Could not prepare commit schema")?;
             launch(
                 provider,
                 &codex_args(&schema, &output, &servers),
@@ -409,7 +424,7 @@ fn generate(provider: Provider, prompt: &str, cancel: &CommitControl) -> Result<
         }
         Provider::Claude => launch(
             provider,
-            &claude_args(),
+            &claude_args_with_schema(schema_text),
             temporary.path(),
             prompt,
             MODEL_TIMEOUT,
@@ -445,8 +460,7 @@ fn generate(provider: Provider, prompt: &str, cancel: &CommitControl) -> Result<
     } else {
         value
     };
-    serde_json::from_value(value)
-        .map_err(|_| "Commit assistant returned an invalid commit message".into())
+    Ok(value)
 }
 
 fn enabled_servers(text: &str) -> Result<Vec<String>, String> {

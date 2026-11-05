@@ -227,3 +227,45 @@ three: `rejects_browser_duplicate_and_oversized_requests`,
 `finder_path_resolves_standard_user_install_and_preserves_path_priority`, and
 `gh_uses_recovered_gui_environment`. The latter two were already documented
 above; this run does not establish the cause of the activity test failure.
+
+## Describe changes
+
+Thirteen focused snapshot-engine tests passed. The core run also passed all
+four shared-skill parser/completion tests and seven commit-helper regressions. Coverage includes
+staged/unstaged/untracked data without index mutation, bounded reads despite
+concurrent file growth and final-component symlink swaps, omitted/binary/oversized
+patches, immutable HEAD, cancellation of snapshot subprocesses, malformed model
+output, GitHub pagination/truncated patches, and head/base/body guards on a fake
+GitHub boundary. No real PR body was changed by verification.
+
+The shared Codex/Claude composer fixture passed: both invocation forms route to
+the native action without provider submission, preserve the command draft,
+reject/preserve attachments, show invalid-argument usage, and avoid duplicate
+built-in completions. Core startup fixtures also check both providers receive
+the bundled skill text. This does not establish a live main-composer-to-provider
+end-to-end path. Codex live generation on an isolated Git repository passed;
+Claude's live attempt failed and `claude auth status` reported signed out.
+
+Four Linux production-reader fixtures passed hidden/uninitialized Checkout skill
+routing, publication-error draft preservation, file disclosure, captured-diff navigation,
+Escape, stale publishing rejection, preview focus and source restoration.
+Native reader captures exposed a fixed-height multiline-preview overflow; the
+owning well now grows and a geometry regression checks input containment and a
+reachable, nonoverlapping confirmation action. Captures exercise the reader in
+an isolated native root, rather than the complete session/Checkout shell. They
+are not participant testing. The final constrained narrow capture measured
+320 logical pixels wide; the optional Mermaid capture retained an earlier diff
+frame, so native Mermaid appearance remains unverified. macOS and Windows
+remain untested.
+
+Broad checks are not green. The initial workspace run aborted in
+`activity_growth_keeps_heading_and_composer_anchored` after a stack overflow and
+reported failures in approvals, measured message slots, task-strip navigation,
+and a shell PTY fixture. The PTY and dashboard tests passed separately with a
+16 MiB test stack; the three CodexView geometry/focus tests still failed in
+isolation. The core run passed 817 tests with nine ignored and the two documented
+GUI-environment failures above. A run excluding those two encountered the tmux
+export-refresh test, which passed in isolation. These broader failures remain
+unresolved. Strict core/UI Clippy also reports existing diagnostics outside the
+new feature modules; the final reader and engine files have no reported lint
+diagnostics. Formatting, compilation, and repository-artifact checks passed.

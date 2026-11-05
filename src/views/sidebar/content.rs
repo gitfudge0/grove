@@ -723,6 +723,9 @@ impl Sidebar {
                         Err(error) => this.runtime.read(cx).toast.clone().update(cx, |toast, cx| toast.set_error(error, cx)),
                     }
                 }
+                CodexViewEvent::DescribeChanges(preference, source) if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
+                    this.invoke_description_skill(*preference, source.clone(), cx);
+                }
                 CodexViewEvent::ScriptLaunched => this.snippet_launched(id, cx),
                 CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     this.files_active = true;
@@ -1900,6 +1903,9 @@ impl Sidebar {
                 "project-panel-enter",
                 cx,
             );
+        }
+        if self.description_is_open(cx) {
+            return self.render_description(window, cx);
         }
         if self.pending_new_worktree.is_some() {
             let errors = validate_worktree_fields(
