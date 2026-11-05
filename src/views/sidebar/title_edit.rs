@@ -247,7 +247,7 @@ impl Sidebar {
                         2,
                         "regenerate-session-title",
                         "Regenerate title",
-                        "restart",
+                        "refresh",
                         self.runtime
                             .read(cx)
                             .registry

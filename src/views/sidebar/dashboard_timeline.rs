@@ -405,6 +405,47 @@ impl Sidebar {
             self.refresh_dashboard_timelines(cx);
         }
     }
+    pub(super) fn open_activity_link(
+        &mut self,
+        id: SessionId,
+        url: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let cwd = self
+            .runtime
+            .read(cx)
+            .registry
+            .read(cx)
+            .codex(id)
+            .map(|session| std::path::PathBuf::from(&session.read(cx).state.saved.cwd));
+        let Some(target) = cwd.and_then(|cwd| super::super::file_browser::local_target(url, &cwd))
+        else {
+            cx.open_url(url);
+            return;
+        };
+        if !self.navigation_available() {
+            return;
+        }
+        self.navigate_to_session(id, window, cx);
+        // Materialize the owning transcript before opening, including sessions
+        // that have never been visited in this app process.
+        let _ = self.terminal_content(id, false, window, cx);
+        if let Some(view) = self.codex_views.get(&id) {
+            view.read(cx)
+                .file_browser
+                .clone()
+                .update(cx, |browser, cx| {
+                    browser.open(target, window, cx);
+                });
+            self.files_active = true;
+            self.files_owner = Some(Selection::Session(id));
+            self.checkout_panel.side_chat_owner = None;
+            self.checkout_panel.hidden = false;
+            cx.notify();
+        }
+    }
+
     fn refresh_dashboard_timelines(&mut self, cx: &mut Context<Self>) {
         #[cfg(test)]
         {
@@ -480,6 +521,7 @@ impl Sidebar {
                 super::super::review_summary::ReviewSummary::from_snapshot(&session.read(cx).state)
             })
         });
+        let summary_owner = cx.entity().downgrade();
         let summary_view = review_summary.map(|summary| {
             summary.render(
                 &format!("dashboard-review-summary-{}", id.raw()),
@@ -491,6 +533,11 @@ impl Sidebar {
                     .review_disclosures
                     .entry(key)
                     .or_default(),
+                move |url, window, cx| {
+                    let _ = summary_owner.update(cx, |this, cx| {
+                        this.open_activity_link(id, url, window, cx);
+                    });
+                },
                 cx,
             )
         });

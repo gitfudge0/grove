@@ -215,8 +215,10 @@ impl ReviewSummary {
         key: &str,
         focus: &mut HashMap<String, FocusHandle>,
         disclosure: &mut Option<gpui::Entity<SummaryDisclosure>>,
+        open_link: impl Fn(&str, &mut gpui::Window, &mut App) + 'static,
         cx: &mut App,
     ) -> AnyElement {
+        let open_link = std::rc::Rc::new(open_link);
         focus.retain(|identity, _| {
             self.links
                 .iter()
@@ -236,6 +238,8 @@ impl ReviewSummary {
             let click_focus = handle.clone();
             let url = link.url.clone();
             let key_url = url.clone();
+            let click_link = open_link.clone();
+            let keyboard_link = open_link.clone();
             links = links.child(
                 inline_disclosure(id.clone(), link.label.clone())
                     .debug_selector(move || id.clone())
@@ -270,7 +274,7 @@ impl ReviewSummary {
                     .on_click(move |_, window, cx| {
                         cx.stop_propagation();
                         click_focus.focus(window, cx);
-                        cx.open_url(&url);
+                        click_link(&url, window, cx);
                     })
                     .on_key_down(move |event, window, cx| {
                         if !event.is_held
@@ -278,7 +282,7 @@ impl ReviewSummary {
                         {
                             window.prevent_default();
                             cx.stop_propagation();
-                            cx.open_url(&key_url);
+                            keyboard_link(&key_url, window, cx);
                         }
                     }),
             );
@@ -566,8 +570,13 @@ mod tests {
             _: &mut gpui::Window,
             cx: &mut gpui::Context<Self>,
         ) -> impl IntoElement {
-            self.summary
-                .render("review-test", &mut self.focus, &mut self.disclosure, cx)
+            self.summary.render(
+                "review-test",
+                &mut self.focus,
+                &mut self.disclosure,
+                |url, _, cx| cx.open_url(url),
+                cx,
+            )
         }
     }
     #[gpui::test]

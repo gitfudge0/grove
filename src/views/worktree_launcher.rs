@@ -1114,7 +1114,7 @@ impl Render for WorktreeLauncher {
                                     PaletteRow::TerminalWt => ("New worktree terminal".into(), "Open a terminal in the selected worktree".into(), "terminal", String::new()),
                                     PaletteRow::AddProject => ("Add project".into(), "Add a local project to this workspace".into(), "plus", String::new()),
                                     PaletteRow::RunScript => ("Run script".into(), "Run the selected worktree script".into(), "play", String::new()),
-                                    PaletteRow::ViewDiff => ("View diff".into(), "Open the selected session diff".into(), "git-branch", String::new()),
+                                    PaletteRow::ViewDiff => ("View diff".into(), "Open the selected session diff".into(), "diff", String::new()),
                                     PaletteRow::SwitchToSession => ("Switch workspace or session".into(), "Choose a workspace or a session in this workspace".into(), "list", String::new()),
                                     PaletteRow::Settings => ("Settings".into(), "App preferences".into(), "cog", String::new()),
                                     PaletteRow::Setting(setting) => (setting.label().into(), setting.section().into(), setting.icon_name(), String::new()),

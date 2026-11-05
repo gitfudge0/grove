@@ -616,6 +616,41 @@ fn r15_form_actions_share_the_small_recipe() {
         line.contains("FORM_BUTTON_H") || line.contains("FORM_ACTION_H")
     });
 }
+
+#[test]
+fn bottom_form_action_groups_do_not_fork_alignment() {
+    for (path, start, end) in [
+        (
+            "src/views/sidebar/project_setup.rs",
+            ".id(\"project-setup-footer\")",
+            "impl ProjectSetup {",
+        ),
+        (
+            "src/views/sidebar/checkout_panel.rs",
+            "pub(super) fn render_checkout_confirmation(",
+            "\"checkout-confirmation\"",
+        ),
+        (
+            "src/views/codex_view.rs",
+            "\"edit from here?\"",
+            "fn ensure_control_focus(",
+        ),
+    ] {
+        let text = source(path);
+        let Some((_, tail)) = text.split_once(start) else {
+            panic!("{path}: missing action owner {start}");
+        };
+        let body = tail.split(end).next().unwrap();
+        assert!(
+            body.contains("form_actions()"),
+            "{path}: use the shared bottom action row"
+        );
+        assert!(
+            !body.contains(".justify_between()") && !body.contains(".justify_end()"),
+            "{path}: bottom actions must stay together at the content inset"
+        );
+    }
+}
 #[test]
 fn r16_retired_footer_radius_stays_removed() {
     reject("R16 retired radius", |line| line.contains("RADIUS_FOOTER"));

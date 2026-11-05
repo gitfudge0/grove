@@ -1001,17 +1001,10 @@ impl Render for ProjectPanel {
             .flex()
             .flex_col()
             .gap(rpx(SPACE_2XL));
-        let mut footer = div()
+        let archived_page = matches!(page, Page::Archived) && self.decision.is_none();
+        let mut footer = crate::views::components::form_actions()
             .debug_selector(|| "project-panel-actions".into())
-            .flex_none()
-            .w_full()
-            .max_w(rpx(FORM_CONTENT_MAX_W))
-            .min_w_0()
-            .flex()
-            .items_center()
-            .justify_start()
-            .flex_wrap()
-            .gap(rpx(SPACE_2XL));
+            .max_w(rpx(FORM_CONTENT_MAX_W));
         let mut heading = title.to_owned();
         let mut description: String = match page {
             Page::Edit(_) => {
@@ -1814,23 +1807,6 @@ impl Render for ProjectPanel {
                         }
                         content = content.child(item);
                     }
-                    footer = footer
-                        .child(
-                            project_action(
-                                "project-panel-cancel".into(),
-                                if self.settings_origin {
-                                    "Back to General"
-                                } else {
-                                    "Back to Projects"
-                                },
-                                Some("icons/arrow-left.svg"),
-                                ProjectActionStyle::Quiet,
-                                window,
-                                cx,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
-                        )
-                        .child(div());
                 }
             }
         }
@@ -1899,16 +1875,27 @@ impl Render for ProjectPanel {
                 }
             }))
             .child(
-                div()
+                crate::views::components::content_header()
                     .h(rpx(FORM_PAGE_PADDING_Y))
-                    .flex_shrink_0()
                     .px(rpx(SPACE_3XL))
                     .border_b_1()
                     .border_color(c::BORDER_SOFT())
-                    .flex()
-                    .items_center()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(title),
+                    .when(archived_page, |header| {
+                        header.child(
+                            crate::views::components::back_action(
+                                "project-panel-cancel",
+                                if self.settings_origin {
+                                    "Back to General"
+                                } else {
+                                    "Back to Projects"
+                                },
+                                window,
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                        )
+                    })
+                    .child(crate::views::components::content_header_title(title)),
             )
             .child(
                 div()
@@ -1960,19 +1947,21 @@ impl Render for ProjectPanel {
                             .child(content),
                     ),
             )
-            .child(
-                div()
-                    .id("project-panel-footer")
-                    .debug_selector(|| "project-panel-footer".into())
-                    .flex_shrink_0()
-                    .border_t_1()
-                    .border_color(c::BORDER_SOFT())
-                    .px(rpx(SPACE_3XL))
-                    .py(rpx(SPACE_3XL))
-                    .flex()
-                    .justify_center()
-                    .child(footer),
-            )
+            .when(!archived_page, |panel| {
+                panel.child(
+                    div()
+                        .id("project-panel-footer")
+                        .debug_selector(|| "project-panel-footer".into())
+                        .flex_shrink_0()
+                        .border_t_1()
+                        .border_color(c::BORDER_SOFT())
+                        .px(rpx(SPACE_3XL))
+                        .py(rpx(SPACE_3XL))
+                        .flex()
+                        .justify_center()
+                        .child(footer),
+                )
+            })
     }
 }
 

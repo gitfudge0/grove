@@ -1,7 +1,6 @@
 //! Session-owned, read-only child activity preview.
 use super::checkout_panel::{checkout_agent_presentation, checkout_agent_row, AgentPeek};
 use super::*;
-use crate::views::components::transcript_action;
 const PEEK_WIDTH: f32 = 360.;
 const PEEK_HEIGHT: f32 = 360.;
 const HOVER_INTENT: Duration = Duration::from_millis(220);
@@ -380,55 +379,80 @@ impl Sidebar {
                 }
             }))
             .child(
-                div()
-                    .flex_shrink_0()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_XS))
+                super::super::components::content_header()
+                    .items_start()
                     .child(
                         div()
+                            .flex_1()
                             .min_w_0()
                             .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_SM))
-                            .text_size(rpx(TEXT_MICRO))
-                            .text_color(c::FG_DIM())
-                            .child(div().flex_shrink_0().child(icon(
-                                state.saved.provider.agent().icon_name(),
-                                ICON_SM,
-                                c::FG(),
-                            )))
-                            .when_some(agent.role.as_ref(), |row, role| {
-                                row.child(div().min_w_0().truncate().child(role.clone()))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_MD))
+                            .flex_col()
+                            .gap(rpx(SPACE_XS))
                             .child(
                                 div()
                                     .min_w_0()
-                                    .truncate()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(presentation.name.clone()),
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_SM))
+                                    .text_size(rpx(TEXT_MICRO))
+                                    .text_color(c::FG_DIM())
+                                    .child(div().flex_shrink_0().child(icon(
+                                        state.saved.provider.agent().icon_name(),
+                                        ICON_SM,
+                                        c::FG(),
+                                    )))
+                                    .when_some(agent.role.as_ref(), |row, role| {
+                                        row.child(div().min_w_0().truncate().child(role.clone()))
+                                    }),
                             )
                             .child(
-                                super::super::status::label(
-                                    format!("agent-preview-status-{}", agent.id),
-                                    super::super::status::session_kind(presentation.status),
-                                    presentation.status,
-                                    ICON_SM,
-                                    cx,
-                                )
-                                .items_center()
-                                .flex_shrink_0(),
+                                div()
+                                    .min_w_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_MD))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .child(presentation.name.clone()),
+                                    )
+                                    .child(
+                                        super::super::status::label(
+                                            format!("agent-preview-status-{}", agent.id),
+                                            super::super::status::session_kind(presentation.status),
+                                            presentation.status,
+                                            ICON_SM,
+                                            cx,
+                                        )
+                                        .items_center()
+                                        .flex_shrink_0(),
+                                    ),
                             ),
+                    )
+                    .child(
+                        super::super::components::header_control_with_label_tooltip(
+                            "agent-peek-close",
+                            "Close preview",
+                        )
+                        .debug_selector(|| "agent-peek-close".into())
+                        .tab_index(0)
+                        .focus_visible(|style| style.bg(c::BG_HOVER()))
+                        .child(icon("close", ICON_SM, c::FG_DIM()))
+                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.dismiss_agent_peek(window, cx);
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.dismiss_agent_peek(window, cx)),
+                        ),
                     ),
             );
+
         let (freshness, empty_message) = child_transcript_labels(state, &child);
         if let Some(activity) = &activity {
             if activity.refresh_error {
@@ -484,19 +508,6 @@ impl Sidebar {
                     .text_color(c::FG_DIM())
                     .debug_selector(|| "agent-peek-freshness".into())
                     .child(freshness),
-            )
-            .child(
-                transcript_action("agent-peek-close", "Close preview", false, window, cx)
-                    .debug_selector(|| "agent-peek-close".into())
-                    .flex_shrink_0()
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/close.svg")
-                            .size(rpx(ICON_SM)),
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.dismiss_agent_peek(window, cx)),
-                    ),
             );
         // Measure after anchoring, pixel rounding and window clamping. All
         // prepaint callbacks finish before any native HTML surface is painted.

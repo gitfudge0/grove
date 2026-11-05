@@ -626,7 +626,7 @@ impl Render for ModelPicker {
                                 .track_focus(&self.retry_focus[index(provider)])
                                 .tab_index(0)
                                 .gap(rpx(SPACE_SM))
-                                .child(crate::icons::icon("restart", ICON_SM, c::FG_DIM()))
+                                .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
                                 .child("Retry")
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.load(provider, cx)),

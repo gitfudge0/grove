@@ -368,11 +368,8 @@ impl Sidebar {
                 }
             }))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(div().min_w_0().truncate().child(format!(
+                super::super::components::content_header()
+                    .child(div().flex_1().min_w_0().truncate().child(format!(
                         "{} · Run {}",
                         run.name,
                         run.id + 1

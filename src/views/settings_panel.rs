@@ -17,6 +17,7 @@ use gpui::{
     ScrollHandle, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::Disableable;
 use grove_core::{agent::Agent, storage::Store};
 use grove_core::{app_theme, theme::ThemeKind};
 use std::collections::HashSet;
@@ -340,7 +341,7 @@ impl SettingsPanel {
             body = body.child(
                 div().flex().child(
                     self.button("theme-save-retry", "Retry saving theme", false, true)
-                        .child(crate::icons::icon("reset", ICON_MD, c::FG()))
+                        .child(crate::icons::icon("refresh", ICON_MD, c::FG()))
                         .child("Retry")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_theme(id, window, cx);
@@ -713,7 +714,7 @@ impl SettingsPanel {
                             cx,
                         )
                     } else {
-                        crate::icons::icon("reset", ICON_SM, c::FG_DIM()).into_any_element()
+                        crate::icons::icon("refresh", ICON_SM, c::FG_DIM()).into_any_element()
                     })
                     .child(if checking {
                         "Checking…"
@@ -843,7 +844,7 @@ impl SettingsPanel {
                         status::mark(format!("{id}-updating"), StatusKind::Working, ICON_SM, cx)
                     } else {
                         crate::icons::icon(
-                            if retry { "reset" } else { "arrow-up" },
+                            if retry { "refresh" } else { "arrow-up" },
                             ICON_SM,
                             c::FG_DIM(),
                         )
@@ -1063,7 +1064,7 @@ impl SettingsPanel {
             .child(control)
     }
 
-    fn settings_body(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn settings_body(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let store = &cx.global::<SettingsState>().store;
         let active_theme = grove_core::theme::current();
         let theme_label = app_theme::by_id(&active_theme.name).map_or("Grove", |item| item.label);
@@ -1294,7 +1295,7 @@ impl SettingsPanel {
                     false,
                     refresh_enabled,
                 )
-                .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
+                .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
                 .child(refresh_label)
                 .when(refresh_enabled, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| {
@@ -1416,28 +1417,39 @@ impl SettingsPanel {
         let mut actions = div().flex().flex_wrap().gap(rpx(SPACE_SM));
         if can_restart {
             actions = actions.child(
-                self.button("settings-update-restart", "Restart app", false, true)
-                    .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
-                    .child("Restart app")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if restart_available(this.runtime.read(cx).upgrade.read(cx).state()) {
-                            this.runtime
-                                .update(cx, |runtime, cx| runtime.request_exit(true, cx));
-                        }
-                    })),
+                super::components::form_action(
+                    "settings-update-restart",
+                    "Restart app",
+                    true,
+                    window,
+                    cx,
+                )
+                .icon(gpui_component::Icon::default().path("icons/restart.svg"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if restart_available(this.runtime.read(cx).upgrade.read(cx).state()) {
+                        this.runtime
+                            .update(cx, |runtime, cx| runtime.request_exit(true, cx));
+                    }
+                })),
             );
         }
         if has_update {
             actions = actions.child(
-                self.button("settings-update-now", "Update now", false, can_update)
-                    .child(crate::icons::icon("arrow-up", ICON_SM, c::FG_DIM()))
-                    .child("Update now")
-                    .when(can_update, |el| {
-                        el.on_click(cx.listener(|this, _, _, cx| {
-                            let upgrade = this.runtime.read(cx).upgrade.clone();
-                            upgrade.update(cx, crate::entities::upgrade::Upgrade::start_update);
-                        }))
-                    }),
+                super::components::form_action(
+                    "settings-update-now",
+                    "Update now",
+                    true,
+                    window,
+                    cx,
+                )
+                .icon(gpui_component::Icon::default().path("icons/arrow-up.svg"))
+                .disabled(!can_update)
+                .when(can_update, |el| {
+                    el.on_click(cx.listener(|this, _, _, cx| {
+                        let upgrade = this.runtime.read(cx).upgrade.clone();
+                        upgrade.update(cx, crate::entities::upgrade::Upgrade::start_update);
+                    }))
+                }),
             );
             actions = actions.child(
                 self.button("settings-update-skip", "Skip this version", false, true)
@@ -1472,7 +1484,7 @@ impl SettingsPanel {
                     false,
                     !checking && !can_restart,
                 )
-                .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
+                .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
                 .child("Check now")
                 .when(!checking && !can_restart, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| {
@@ -1691,7 +1703,7 @@ impl Focusable for SettingsPanel {
 }
 
 impl Render for SettingsPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.page == Page::Archived {
             return div()
                 .id("settings-archived-page")
@@ -1712,7 +1724,7 @@ impl Render for SettingsPanel {
             Page::Archived => "Archived projects",
         };
         let body = match self.page {
-            Page::Settings => self.settings_body(cx),
+            Page::Settings => self.settings_body(window, cx),
             Page::Shortcuts => self.shortcuts_body(cx),
             Page::Changelog => self.changelog_body(cx),
             Page::Themes => self.themes_body(cx),
@@ -1747,61 +1759,39 @@ impl Render for SettingsPanel {
                     .flex()
                     .flex_col()
                     .child(
-                        div()
+                        super::components::content_header()
                             .id("settings-heading")
                             .debug_selector(|| "settings-heading".into())
-                            .w_full()
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(rpx(SPACE_LG))
-                            .text_size(rpx(TEXT_TITLE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(title)
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(SPACE_LG))
-                                    .when(self.page != Page::Settings, |actions| {
-                                        actions.child(
-                                            self.button(
-                                                "settings-back",
-                                                "Back to settings",
-                                                false,
-                                                true,
-                                            )
-                                            .debug_selector(|| "settings-back".into())
-                                            .child(crate::icons::icon(
-                                                "arrow-left",
-                                                ICON_SM,
-                                                c::FG_DIM(),
-                                            ))
-                                            .child("Back")
-                                            .on_click(
-                                                cx.listener(|this, _, window, cx| {
-                                                    this.back(window, cx);
-                                                }),
-                                            ),
-                                        )
-                                    })
-                                    .child(
-                                        super::components::header_control_with_label_tooltip(
-                                            "settings-close",
-                                            "Close settings",
-                                        )
-                                        .tab_index(0)
-                                        .cursor_pointer()
-                                        .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                        .debug_selector(|| "settings-close".into())
-                                        .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
-                                        .on_click(
-                                            cx.listener(|this, _, window, cx| {
-                                                this.close(window, cx);
-                                            }),
-                                        ),
+                            .when(self.page != Page::Settings, |header| {
+                                header.child(
+                                    super::components::back_action(
+                                        "settings-back",
+                                        "Back to settings",
+                                        window,
+                                        cx,
+                                    )
+                                    .debug_selector(|| "settings-back".into())
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.back(window, cx)),
                                     ),
+                                )
+                            })
+                            .child(
+                                super::components::content_header_title(title)
+                                    .debug_selector(|| "settings-heading-title".into()),
+                            )
+                            .child(
+                                super::components::header_control_with_label_tooltip(
+                                    "settings-close",
+                                    "Close settings",
+                                )
+                                .tab_index(0)
+                                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                                .debug_selector(|| "settings-close".into())
+                                .child(crate::icons::icon("close", ICON_MD, c::FG_DIM()))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.close(window, cx)),
+                                ),
                             ),
                     )
                     .when(self.page == Page::Settings, |region| {
@@ -1957,6 +1947,76 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    /// Real GPUI surface capture; unlike VisualTestContext this exercises the
+    /// platform renderer and bundled fonts. Run with an isolated config dir.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens an isolated native X11 Settings window"]
+    fn settings_header_linux_capture() {
+        assert!(
+            std::env::var_os("GROVE_CONFIG_DIR").is_some(),
+            "use an isolated config directory"
+        );
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(|cx| {
+                setup(cx);
+                crate::fonts::register(cx).unwrap();
+                let window = cx
+                    .open_window(
+                        gpui::WindowOptions {
+                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                                gpui::point(gpui::px(40.), gpui::px(40.)),
+                                gpui::size(gpui::px(600.), gpui::px(650.)),
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            window.set_window_title("Grove header pattern QA");
+                            let runtime = cx.new(Runtime::new);
+                            let panel = cx.new(|cx| SettingsPanel::new(runtime, cx));
+                            panel.update(cx, |panel, cx| {
+                                panel.open(window, cx);
+                                panel.open_nested(Page::Shortcuts, window, cx);
+                            });
+                            cx.new(|cx| gpui_component::Root::new(panel, window, cx))
+                        },
+                    )
+                    .unwrap();
+                cx.activate(true);
+                cx.spawn(async move |cx| {
+                    for (theme, rem) in [
+                        ("grove-dark", 16.),
+                        ("grove-light", 16.),
+                        ("grove-dark", 24.),
+                    ] {
+                        cx.update(|cx| {
+                            grove_core::theme::set_by_name(theme);
+                            c::sync_component_theme(cx);
+                            gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                        });
+                        cx.update_window(window.into(), |_, window, _| {
+                            window.set_rem_size(gpui::px(rem));
+                            window.refresh();
+                        })
+                        .unwrap();
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(600))
+                            .await;
+                        let output = format!("/tmp/grove-settings-header-{theme}-{rem}.png");
+                        assert!(std::process::Command::new("import")
+                            .args(["-window", "Grove header pattern QA", &output])
+                            .status()
+                            .unwrap()
+                            .success());
+                        eprintln!("Native Settings header capture: {output}");
+                    }
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
     }
 
     #[gpui::test]
@@ -2327,6 +2387,15 @@ mod tests {
                         control.bottom() <= gpui::px(height),
                         "{selector} clips outside short window at {zoom}x"
                     );
+                }
+                let title = cx
+                    .debug_bounds("settings-heading-title")
+                    .expect("settings title");
+                let close = cx.debug_bounds("settings-close").unwrap();
+                assert!(title.right() <= close.left(), "title must yield to Close");
+                if page != Page::Settings {
+                    let back = cx.debug_bounds("settings-back").unwrap();
+                    assert!(back.right() <= title.left(), "Back must precede the title");
                 }
                 let scroll = cx
                     .debug_bounds("settings-scroll")

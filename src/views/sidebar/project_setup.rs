@@ -7,7 +7,9 @@ use crate::{
     settings::SettingsState,
     theme as c,
     views::{
-        components::{form_action, project_form_field},
+        components::{
+            content_header, content_header_title, form_action, form_actions, project_form_field,
+        },
         motion, rpx,
         tokens::*,
     },
@@ -680,17 +682,12 @@ impl Render for ProjectSetup {
                 }
             }))
             .child(
-                div()
+                content_header()
                     .h(rpx(HEADER_H))
-                    .flex_shrink_0()
                     .px(rpx(SPACE_3XL))
-                    .flex()
-                    .items_center()
                     .border_b_1()
                     .border_color(c::BORDER_SOFT())
-                    .text_size(rpx(TEXT_BODY))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(body_heading),
+                    .child(content_header_title(body_heading)),
             )
             .child(
                 div()
@@ -742,14 +739,8 @@ impl Render for ProjectSetup {
                     .flex()
                     .justify_center()
                     .child(
-                        div()
-                            .w_full()
+                        form_actions()
                             .max_w(rpx(FORM_CONTENT_MAX_W))
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(rpx(SPACE_2XL))
                             .child(secondary)
                             .child(primary),
                     ),

@@ -66,15 +66,21 @@ pub(super) fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
                 });
             }
             Node::Link(_) | Node::LinkReference(_) => {
+                style.color = Some(c::FG_DIM());
                 style.underline = Some(gpui::UnderlineStyle {
                     thickness: gpui::px(1.),
                     ..Default::default()
                 });
             }
-            Node::InlineCode(_) | Node::Code(_) => {
+            Node::InlineCode(_) => {
+                // Match TextView inline code: neutral backplate, medium weight, no outline.
+                style.background_color = Some(c::MENU_HOVER());
+                style.font_weight = Some(gpui::FontWeight::MEDIUM);
+            }
+            Node::Code(_) => {
                 style.background_color = Some(c::CODE_FILL());
                 style.color = Some(c::FG());
-                style.font_weight = Some(gpui::FontWeight::MEDIUM);
+                style.font_weight = Some(gpui::FontWeight::NORMAL);
             }
             _ => {}
         }
@@ -87,7 +93,7 @@ pub(super) fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
                 let range = position.start.offset..position.end.offset;
                 if !range.is_empty() {
                     let decoration = TextDecoration::new(range, style);
-                    out.push(if matches!(node, Node::InlineCode(_) | Node::Code(_)) {
+                    out.push(if matches!(node, Node::Code(_)) {
                         decoration.bordered(gpui::px(1.), c::BORDER_STRONG())
                     } else {
                         decoration
@@ -1117,6 +1123,7 @@ pub struct CodexView {
     file_suggestions: Vec<String>,
     picked_tokens: Vec<ComposerToken>,
     suggestion_index: usize,
+    suggestion_scroll: gpui::ScrollHandle,
     file_query: String,
     file_lookup: Option<String>,
     dismissed_suggestions: Option<String>,
@@ -1353,6 +1360,7 @@ impl CodexView {
                         }
                         this.dismissed_suggestions = None;
                         this.suggestion_index = 0;
+                        this.suggestion_scroll.scroll_to_item(0);
                         this.validate_picked_tokens(cx);
                         this.refresh_files(cx);
                         cx.notify();
@@ -1448,6 +1456,7 @@ impl CodexView {
             file_suggestions: Vec::new(),
             picked_tokens: Vec::new(),
             suggestion_index: 0,
+            suggestion_scroll: gpui::ScrollHandle::new(),
             file_query: String::new(),
             file_lookup: None,
             dismissed_suggestions: None,
@@ -2935,7 +2944,7 @@ impl CodexView {
                 form_action("codex-reconnect", "Reconnect", false, window, cx)
                     .icon(
                         gpui_component::Icon::default()
-                            .path("icons/restart.svg")
+                            .path("icons/refresh.svg")
                             .size(rpx(ICON_SM)),
                     )
                     .debug_selector(|| "codex-reconnect".into())
@@ -3859,7 +3868,7 @@ impl CodexView {
                                 )
                                 .icon(
                                     gpui_component::Icon::default()
-                                        .path("icons/restart.svg")
+                                        .path("icons/refresh.svg")
                                         .size(rpx(ICON_SM)),
                                 )
                                 .on_click(cx.listener(
@@ -5345,13 +5354,7 @@ impl Render for CodexView {
                                         .size(rpx(ICON_SM))
                                         .flex_shrink_0()
                                         .child(crate::icons::icon(
-                                            if failed {
-                                                "message-error"
-                                            } else if tool["type"] == "reasoning" {
-                                                "brain"
-                                            } else {
-                                                "terminal"
-                                            },
+                                            tool_activity_icon(tool),
                                             ICON_SM,
                                             if failed { c::FORM_ERROR() } else { c::FG_DIM() },
                                         )),
@@ -6370,7 +6373,7 @@ impl Render for CodexView {
                                     rail.child(div().flex().flex_col().gap(rpx(SPACE_SM))
                                         .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FORM_ERROR()).child(error.clone()))
                                         .child(header_control("dashboard-catalog-retry", "Retry provider options").track_focus(&self.dashboard_retry_focus).focus_visible(|s|s.bg(c::BG_HOVER())).w_auto().tab_index(0).gap(rpx(SPACE_SM))
-                                            .child(crate::icons::icon("restart",ICON_SM,c::FG_DIM())).child("Retry")
+                                            .child(crate::icons::icon("refresh",ICON_SM,c::FG_DIM())).child("Retry")
                                             .on_click(cx.listener(|this,_,_,cx|this.retry_dashboard_catalog(cx)))
                                             .on_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,_,cx|{if action_key(event){this.retry_dashboard_catalog(cx);cx.stop_propagation();}}))))
                                 } else {rail}
@@ -6771,7 +6774,7 @@ impl CodexView {
             .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(unavailable.unwrap_or_else(||
                 "Restoring files also removes later changes you made in these worktrees. Ignored files, commits, and staged changes stay as they are.".into()
             )))
-            .child(div().flex().flex_wrap().justify_end().gap(rpx(SPACE_LG))
+            .child(super::components::form_actions()
                 .child(form_action("codex-cancel-edit", "Cancel", false, window, cx)
                     .icon(gpui_component::Icon::default().path("icons/close.svg").size(rpx(ICON_SM)))
                     .with_focus_handle(self.edit_cancel_focus.clone())
@@ -7933,7 +7936,7 @@ impl CodexView {
         let access_value = state.access.as_deref().or(state.resolved_access.as_deref());
         let access_icon = match access_value {
             Some("full-access" | "bypassPermissions") => "lock-open",
-            Some("read-only" | "plan") => "search",
+            Some("read-only" | "plan") => "eye",
             Some("workspace-write" | "acceptEdits") => "edit",
             _ => "lock",
         };
@@ -8299,6 +8302,7 @@ impl CodexView {
         } else {
             (self.suggestion_index + 1) % choices.len()
         };
+        self.suggestion_scroll.scroll_to_item(self.suggestion_index);
         cx.notify();
         cx.stop_propagation();
         true
@@ -8423,9 +8427,12 @@ impl CodexView {
         let Some((choices, title)) = self.suggestion_choices(state, cx) else {
             return div().into_any_element();
         };
+        let stacked_rows = matches!(title, "Skills" | "Commands");
+        let file_rows = title == "Files and folders · relative to this worktree";
         let choice_count = choices.len();
         let mut rows = div()
             .id("codex-composer-option-rows")
+            .track_scroll(&self.suggestion_scroll)
             .max_h(rpx(QUEUED_PROMPTS_MAX_H))
             .overflow_y_scroll()
             .flex()
@@ -8440,7 +8447,7 @@ impl CodexView {
         }
         for (index, (value, label)) in choices.into_iter().enumerate() {
             let keyboard_value = value.clone();
-            let (name, description) = label.split_once(" · ").map_or_else(
+            let (name, description) = label.split_once(" · ").filter(|_| !file_rows).map_or_else(
                 || (label.clone(), None),
                 |(name, description)| (name.to_string(), Some(description.to_string())),
             );
@@ -8461,19 +8468,32 @@ impl CodexView {
                 .h_auto()
                 .min_h(rpx(CONTROL_H))
                 .justify_start()
-                .gap(rpx(SPACE_LG))
+                .gap(rpx(SPACE_SM))
+                .when(stacked_rows, |row| {
+                    row.flex_col().items_start().gap(rpx(SPACE_XS))
+                })
                 .px(rpx(SPACE_LG))
                 .py(rpx(SPACE_SM))
                 .tab_index(0)
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .when(file_rows, |row| {
+                    let (glyph, color) = super::file_browser::file_icon(
+                        std::path::Path::new(&label),
+                        label.ends_with('/'),
+                        false,
+                    );
+                    row.child(crate::icons::icon(glyph, ICON_SM, color))
+                })
                 .child(
                     div()
                         .min_w_0()
                         .max_w_full()
-                        .flex_shrink_0()
+                        .when(!file_rows, |name| name.flex_shrink_0())
                         .whitespace_normal()
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(if index == self.suggestion_index {
+                        .when(file_rows, |name| name.flex_1().truncate())
+                        .text_size(rpx(if stacked_rows { TEXT_BODY } else { TEXT_SMALL }))
+                        .when(stacked_rows, |name| name.w_full().truncate())
+                        .text_color(if stacked_rows || index == self.suggestion_index {
                             c::FG()
                         } else {
                             c::FG_DIM()
@@ -8484,16 +8504,21 @@ impl CodexView {
                 .when_some(description, |row, description| {
                     row.child(
                         div()
-                            .flex_1()
+                            .when(!stacked_rows, |description| description.flex_1())
+                            .when(stacked_rows, |description| description.w_full())
                             .min_w_0()
                             .truncate()
                             .text_size(rpx(TEXT_SMALL))
-                            .text_color(if index == self.suggestion_index {
+                            .text_color(if stacked_rows {
+                                c::FG_MUTE()
+                            } else if index == self.suggestion_index {
                                 c::FG()
                             } else {
                                 c::FG_DIM()
                             })
-                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
+                            .when(!stacked_rows, |text| {
+                                text.group_hover("neutral-control", |text| text.text_color(c::FG()))
+                            })
                             .child(description),
                     )
                 })
@@ -9024,7 +9049,8 @@ impl CodexView {
         if self.file_lookup.as_deref() == Some(query) {
             return;
         }
-        self.file_suggestions.clear();
+        // Keep the visible rows until the replacement search finishes. Clearing
+        // here collapses the tray to its empty state on every keystroke.
         self.file_lookup = Some(query.to_owned());
         query.clone_into(&mut self.file_query);
         let query = query.to_owned();
@@ -9036,7 +9062,7 @@ impl CodexView {
                 .spawn(async move { file_choices(&cwd, &lookup) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.file_query == query {
+                if this.file_lookup.as_deref() == Some(query.as_str()) {
                     this.file_suggestions = files;
                     cx.notify();
                 }
@@ -10011,6 +10037,69 @@ fn context_ring(fraction: f32, color: gpui::Hsla) -> impl IntoElement {
     )
     .size(rpx(ICON_MD))
     .flex_shrink_0()
+}
+
+/// Choose the operation identity independently of whether its output is expanded.
+fn tool_activity_icon(item: &serde_json::Value) -> &'static str {
+    if tool_failed(item) {
+        return "message-error";
+    }
+    match item["type"].as_str().unwrap_or_default() {
+        "reasoning" => "brain",
+        "commandExecution" => "terminal",
+        "fileChange" => "edit",
+        "webSearch" => "search",
+        "plan" => "list",
+        _ => {
+            let action = item["tool"]
+                .as_str()
+                .unwrap_or_default()
+                .rsplit("__")
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            match action.as_str() {
+                "bash" | "shell" | "exec_command" | "write_stdin" => "terminal",
+                "read" | "read_file" => "file",
+                "write" | "write_file" | "edit" | "multiedit" | "apply_patch" => "edit",
+                "search" | "grep" | "glob" | "websearch" => "search",
+                "fetch" | "webfetch" => "external-link",
+                "think" | "thought" | "thinking" => "brain",
+                "wait" | "wait_agent" | "sleep" => "status-limited",
+                _ => "tool",
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn tool_icons_distinguish_codex_and_claude_operations() {
+    use serde_json::json;
+    // Normalized Codex items and Claude tool names use the same renderer.
+    for (item, expected) in [
+        (json!({"type":"commandExecution"}), "terminal"),
+        (json!({"type":"fileChange"}), "edit"),
+        (json!({"type":"webSearch"}), "search"),
+        (json!({"type":"reasoning"}), "brain"),
+        (json!({"type":"mcpToolCall", "tool":"Bash"}), "terminal"),
+        (json!({"type":"mcpToolCall", "tool":"Read"}), "file"),
+        (json!({"type":"mcpToolCall", "tool":"Edit"}), "edit"),
+        (
+            json!({"type":"mcpToolCall", "tool":"mcp__docs__search"}),
+            "search",
+        ),
+        (
+            json!({"type":"mcpToolCall", "tool":"custom_integration"}),
+            "tool",
+        ),
+        (
+            json!({"type":"mcpToolCall", "tool":"Read", "is_error":true}),
+            "message-error",
+        ),
+    ] {
+        assert_eq!(tool_activity_icon(&item), expected, "{item}");
+    }
 }
 
 fn tool_failed(item: &serde_json::Value) -> bool {
@@ -12397,12 +12486,13 @@ mod tests {
     }
 
     #[test]
-    fn composer_code_has_visible_surface_and_outline() {
-        for source in [
-            "before `é🦀` after",
-            "```rust\nlet x = 1;\n```",
-            "```\nstill typing",
-        ] {
+    fn composer_code_matches_transcript_surfaces() {
+        let inline = super::composer_markdown_decorations("before `é🦀` after");
+        assert_eq!(inline.len(), 1);
+        assert_eq!(inline[0].style.background_color, Some(c::MENU_HOVER()));
+        assert_eq!(inline[0].style.font_weight, Some(gpui::FontWeight::MEDIUM));
+        assert_eq!(inline[0].border, None);
+        for source in ["```rust\nlet x = 1;\n```", "```\nstill typing"] {
             let decorations = super::composer_markdown_decorations(source);
             let code = decorations.iter().find(|d| d.border.is_some()).unwrap();
             assert_eq!(code.style.background_color, Some(c::CODE_FILL()));
@@ -16983,6 +17073,47 @@ mod tests {
             }
         });
     }
+    #[gpui::test]
+    fn completion_rows_remain_available_during_typing(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                    view.session.update(cx, |session, _| {
+                        session.state.saved.provider = provider;
+                        session.state.skills = vec![json!({"name":"review","enabled":true})];
+                    });
+                    view.file_suggestions = vec!["src/main.rs".into()];
+                    view.file_lookup = Some("s".into());
+                    view.file_query = "s".into();
+                    for text in ["@sr", "@src", "/", "/a", "/ac", "$", "$r", "$re"] {
+                        view.input.update(cx, |input, cx| {
+                            input.set_value(text, window, cx);
+                            input.set_selected_range(text.len()..text.len(), cx);
+                        });
+                        view.refresh_files(cx);
+                        let state = &view.session.read(cx).state;
+                        let (choices, _) = view
+                            .suggestion_choices(state, cx)
+                            .unwrap_or_else(|| panic!("missing tray for {provider:?}: {text}"));
+                        assert!(!choices.is_empty(), "{provider:?}: {text}");
+                        if text.starts_with('@') {
+                            assert_eq!(choices[0].0, "@src/main.rs");
+                        }
+                    }
+                    view.input
+                        .update(cx, |input, cx| input.set_value("plain", window, cx));
+                    view.refresh_files(cx);
+                    assert!(view.file_suggestions.is_empty());
+                    assert!(view.file_lookup.is_none());
+                    assert!(view
+                        .suggestion_choices(&view.session.read(cx).state, cx)
+                        .is_none());
+                }
+            });
+        });
+    }
+
     #[gpui::test]
     fn tab_accepts_file_at_caret_and_preserves_surrounding_text(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);

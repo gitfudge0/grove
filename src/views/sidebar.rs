@@ -4488,7 +4488,7 @@ impl Sidebar {
                 )
                 .w_auto()
                 .ml(rpx(SPACE_3XL))
-                .child(icon("reset", ICON_SM, c::FG_DIM()))
+                .child(icon("restart", ICON_SM, c::FG_DIM()))
                 .child("Retry"),
             );
         }
@@ -4541,7 +4541,7 @@ impl Sidebar {
         } else if readiness == Some(WorktreeReadiness::NeedsCommit) {
             actions.push((
                 "Check for first commit",
-                "restart",
+                "refresh",
                 Action::RefreshGit(path.clone()),
             ));
         }
@@ -5712,7 +5712,7 @@ impl Render for Sidebar {
                 ))
             })
             .when(self.diff_viewer.is_some(), |d| {
-                d.child(gpui::deferred(self.render_diff(cx)))
+                d.child(gpui::deferred(self.render_diff(window, cx)))
             })
     }
 }
@@ -9861,6 +9861,65 @@ for line in sys.stdin:
         cx.simulate_keystrokes("escape");
         draw(cx);
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.pending_worktree_removal.is_none()));
+    }
+
+    #[gpui::test]
+    fn activity_file_links_open_the_owning_codex_and_claude_transcript(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().to_str().unwrap();
+        let file = root.path().join("review.md");
+        std::fs::write(&file, "# Review").unwrap();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+            cx.set_global(crate::theme::ThemeState::new(
+                false,
+                "tokyonight".into(),
+                "tokyonight-day".into(),
+            ));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            for provider in [
+                grove_core::codex::Provider::Codex,
+                grove_core::codex::Provider::Claude,
+            ] {
+                attach_removal_layout_session(&mut sidebar, path, provider, window, cx);
+            }
+            sidebar
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let ids: Vec<_> = sidebar.runtime.read(cx).registry.read(cx).all()
+                    .iter().map(|meta| meta.id).collect();
+                for id in ids.iter().copied() {
+                    sidebar.selection = None;
+                    sidebar.codex_views.remove(&id);
+                    sidebar.open_activity_link(id, &format!("{}:1", file.display()), window, cx);
+                    assert_eq!(sidebar.selected_session(), Some(id));
+                    assert!(sidebar.files_active);
+                    assert!(matches!(sidebar.files_owner, Some(Selection::Session(owner)) if owner == id));
+                    let view = sidebar.codex_views[&id].read(cx);
+                    let browser = view.file_browser.read(cx);
+                    assert!(browser.visible);
+                    assert_eq!(browser.target.as_ref().unwrap().path, file);
+                    assert_eq!(browser.target.as_ref().unwrap().line, Some(1));
+
+                }
+                let selection = sidebar.selection.clone();
+                sidebar.open_activity_link(ids[0], "https://example.com/report", window, cx);
+                assert_eq!(sidebar.selection, selection);
+            });
+        });
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://example.com/report")
+        );
     }
 
     fn attach_removal_layout_session(

@@ -24,7 +24,7 @@ fn status_letter(status: &Status) -> &'static str {
 }
 
 impl Sidebar {
-    pub(super) fn render_diff(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_diff(&self, window: &gpui::Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(viewer) = &self.diff_viewer else {
             return div().into_any_element();
         };
@@ -189,39 +189,38 @@ impl Sidebar {
                 .flex()
                 .flex_col()
                 .child(
-                    div()
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(rpx(SPACE_LG))
+                    crate::views::components::content_header()
                         .p(rpx(SPACE_LG))
                         .border_b_1()
                         .border_color(c::BORDER())
-                        .child(div().flex_1().min_w_0().truncate().child(format!(
+                        .child(
+                            crate::views::components::back_action(
+                                "diff-close",
+                                "Back to checkout",
+                                window,
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| this.act(Action::CloseDiff, window, cx),
+                            )),
+                        )
+                        .child(crate::views::components::content_header_title(format!(
                             "{} · {}",
                             group.as_deref().unwrap_or("Changes"),
                             branch.as_deref().unwrap_or(&wt_path)
                         )))
                         .child(
-                            self.control(
+                            crate::views::components::transcript_action(
                                 "diff-refresh",
-                                "Refresh changes",
-                                Action::RefreshDiff,
+                                "Refresh",
+                                false,
+                                window,
                                 cx,
                             )
-                            .w_auto()
-                            .px(rpx(SPACE_LG))
-                            .text_size(rpx(TEXT_SMALL))
-                            .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
-                            .child("Refresh"),
-                        )
-                        .child(
-                            self.control("diff-close", "Close changes", Action::CloseDiff, cx)
-                                .w_auto()
-                                .px(rpx(SPACE_LG))
-                                .text_size(rpx(TEXT_SMALL))
-                                .child(crate::icons::icon("close", ICON_SM, c::FG_DIM()))
-                                .child("Close"),
+                            .icon(gpui_component::Icon::default().path("icons/refresh.svg"))
+                            .on_click(cx.listener(
+                                |this, _, window, cx| this.act(Action::RefreshDiff, window, cx),
+                            )),
                         ),
                 )
                 .child(

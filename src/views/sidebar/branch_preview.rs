@@ -224,7 +224,7 @@ impl Sidebar {
                 .child(self.history_action(
                     "branch-peek-retry",
                     "Retry",
-                    "reset",
+                    "refresh",
                     Action::RefreshBranchPreview,
                     window,
                     cx,

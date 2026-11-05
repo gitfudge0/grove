@@ -311,19 +311,9 @@ impl Sidebar {
             .flex_col();
         if selected_native.is_none() && selected_cli.is_none() {
             page = page.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_LG))
+                crate::views::components::content_header()
                     .p(rpx(SPACE_3XL))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(rpx(TEXT_DISPLAY)).child("History")),
-                    )
+                    .child(crate::views::components::content_header_title("History"))
                     .child(
                         self.control(
                             "refresh-session-history",
@@ -333,7 +323,7 @@ impl Sidebar {
                         )
                         .w_auto()
                         .px(rpx(SPACE_LG))
-                        .child(icon("reset", ICON_SM, c::FG_DIM()))
+                        .child(icon("refresh", ICON_SM, c::FG_DIM()))
                         .child("Refresh"),
                     ),
             );
@@ -604,7 +594,7 @@ impl Sidebar {
                 .flex_shrink_0()
                 .px(rpx(SPACE_LG))
                 .gap(rpx(SPACE_SM))
-                .child(icon("reset", ICON_SM, c::FG_DIM()))
+                .child(icon("restore", ICON_SM, c::FG_DIM()))
                 .child("Reopen session"),
             );
             detail = detail.child(history_header_container(header));

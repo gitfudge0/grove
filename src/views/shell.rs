@@ -466,7 +466,7 @@ impl Shell {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap(rpx(if compact { SPACE_SM } else { SPACE_LG }))
+            .gap(rpx(SPACE_LG))
             .pl(rpx(SPACE_LG))
             .pr(rpx(SPACE_20))
             .pt(rpx(APPBAR_TOP_INSET))

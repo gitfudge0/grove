@@ -1,8 +1,8 @@
 //! Session-owned, read-only checkout browsing. Disk work is bounded and never blocks paint.
 use super::{
     components::{
-        header_control, header_control_frame, header_control_with_label_tooltip,
-        project_field_well, transcript_action,
+        header_control_frame, header_control_with_label_tooltip, project_field_well,
+        transcript_action,
     },
     rpx,
     tokens::*,
@@ -109,7 +109,7 @@ fn checked_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct Entry {
     path: PathBuf,
     directory: bool,
@@ -280,7 +280,8 @@ pub(super) struct FileBrowser {
     focus: FocusHandle,
     back_focus: FocusHandle,
     source_focus: FocusHandle,
-    refresh_focus: FocusHandle,
+    refresh_task: Option<gpui::Task<()>>,
+    explorer_seen: std::time::Instant,
     return_focus: Option<FocusHandle>,
     row_focus: HashMap<PathBuf, FocusHandle>,
     scroll: ScrollHandle,
@@ -304,7 +305,8 @@ impl FileBrowser {
             focus: cx.focus_handle(),
             back_focus: cx.focus_handle(),
             source_focus: cx.focus_handle(),
-            refresh_focus: cx.focus_handle(),
+            refresh_task: None,
+            explorer_seen: std::time::Instant::now(),
             return_focus: None,
             row_focus: HashMap::new(),
             scroll: ScrollHandle::new(),
@@ -354,8 +356,10 @@ impl FileBrowser {
             let _ = this.update(cx, |this, cx| {
                 if this.root_generation == generation {
                     this.pending.remove(&requested);
-                    this.directories.insert(requested, result);
-                    cx.notify();
+                    if this.directories.get(&requested) != Some(&result) {
+                        this.directories.insert(requested, result);
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -404,9 +408,7 @@ impl FileBrowser {
     fn toggle_directory(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if !self.expanded.remove(&path) {
             self.expanded.insert(path.clone());
-            if !self.directories.contains_key(&path) {
-                self.load_directory(path, cx);
-            }
+            self.load_directory(path, cx);
         }
         cx.notify();
     }
@@ -539,6 +541,35 @@ impl FileBrowser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.explorer_seen = std::time::Instant::now();
+        if self.refresh_task.is_none() {
+            // Poll only expanded directories while the explorer is being displayed.
+            // Retaining the task cancels it with the browser; root generations reject stale reads.
+            self.refresh_task = Some(cx.spawn(async move |this, cx| loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let active = this
+                    .update(cx, |this, cx| {
+                        if this.explorer_seen.elapsed() > std::time::Duration::from_secs(2) {
+                            this.refresh_task = None;
+                            return false;
+                        }
+                        cx.notify();
+                        for path in this.expanded.clone() {
+                            this.load_directory(path, cx);
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !active {
+                    break;
+                }
+            }));
+            for path in self.expanded.clone() {
+                self.load_directory(path, cx);
+            }
+        }
         let root = self.root.clone();
         let rows = self.rows(&root, 0, window, cx);
         div()
@@ -548,31 +579,8 @@ impl FileBrowser {
             .flex()
             .flex_col()
             .bg(c::BG())
-            .child(
-                div()
-                    .h(rpx(APPBAR_H))
-                    .flex_shrink_0()
-                    .px(rpx(SPACE_2XL))
-                    .flex()
-                    .items_center()
-                    .child("Files")
-                    .child(div().flex_1())
-                    .child(
-                        header_control("files-refresh", "Refresh files")
-                            .track_focus(&self.refresh_focus)
-                            .tab_index(0)
-                            .focus_visible(|s| s.bg(c::BG_HOVER()))
-                            .child(icon("restart", ICON_MD, c::FG_DIM()))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.root_generation = this.root_generation.wrapping_add(1);
-                                this.pending.clear();
-                                this.directories.clear();
-                                this.expanded = HashSet::from([this.root.clone()]);
-                                this.load_directory(this.root.clone(), cx);
-                                cx.notify();
-                            })),
-                    ),
-            )
+            // Reserve the toolbar row; persistent side-container controls own its actions.
+            .child(div().h(rpx(APPBAR_H)).flex_shrink_0())
             .child(
                 div()
                     .flex_1()
@@ -625,7 +633,11 @@ impl FileBrowser {
             .into_any_element()
     }
 }
-fn file_icon(path: &Path, directory: bool, expanded: bool) -> (&'static str, gpui::Hsla) {
+pub(super) fn file_icon(
+    path: &Path,
+    directory: bool,
+    expanded: bool,
+) -> (&'static str, gpui::Hsla) {
     if directory {
         return (if expanded { "folder-open" } else { "folder" }, c::AMBER());
     }
@@ -796,15 +808,10 @@ impl Render for FileBrowser {
                 }
             }))
             .child(
-                div()
+                super::components::content_header()
                     .debug_selector(|| "file-viewer-header".into())
-                    .flex_shrink_0()
                     .px(rpx(SPACE_LG))
                     .py(rpx(SPACE_LG))
-                    .flex()
-                    .min_w_0()
-                    .items_center()
-                    .gap(rpx(SPACE_LG))
                     .child(
                         header_control_with_label_tooltip("file-back", "Back to conversation")
                             .debug_selector(|| "file-viewer-back".into())
@@ -876,6 +883,48 @@ impl Render for FileBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn explorer_automatically_refreshes_without_resetting_expansion(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let (browser, cx) =
+            cx.add_window_view(|window, cx| FileBrowser::new(root.path().to_owned(), window, cx));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            browser.update(cx, |browser, cx| {
+                browser.toggle_directory(nested.clone(), cx);
+                let _ = browser.explorer("Project".into(), "Checkout".into(), window, cx);
+            })
+        });
+        cx.run_until_parked();
+        let first = nested.join("created.rs");
+        let renamed = nested.join("renamed.rs");
+        for (before, after) in [
+            (None, Some(&first)),
+            (Some(&first), Some(&renamed)),
+            (Some(&renamed), None),
+        ] {
+            match (before, after) {
+                (None, Some(path)) => std::fs::write(path, "fn main() {}").unwrap(),
+                (Some(old), Some(new)) => std::fs::rename(old, new).unwrap(),
+                (Some(path), None) => std::fs::remove_file(path).unwrap(),
+                _ => unreachable!(),
+            }
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(1));
+            cx.run_until_parked();
+            browser.read_with(cx, |browser, _| {
+                assert!(browser.expanded.contains(&nested));
+                let entries = browser.directories.get(&nested).unwrap().as_ref().unwrap();
+                assert_eq!(
+                    entries.iter().map(|entry| &entry.path).collect::<Vec<_>>(),
+                    after.into_iter().collect::<Vec<_>>()
+                );
+            });
+        }
+    }
     #[gpui::test]
     fn narrow_file_header_keeps_back_path_and_source_inside_viewer(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);

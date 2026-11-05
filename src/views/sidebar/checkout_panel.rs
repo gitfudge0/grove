@@ -15,6 +15,7 @@ use std::path::Path;
 
 const CARD_WIDTH: f32 = 280.;
 pub(super) const WIDE_VIEWPORT: f32 = MODAL_W_XL + MODAL_W_SM;
+const CHECKOUT_SIDE_VIEWPORT: f32 = MODAL_W_XL;
 const NARROW_HEIGHT_FRACTION: f32 = 0.25;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const REMOTE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -1846,6 +1847,19 @@ impl Sidebar {
             .flex()
             .flex_col()
             .gap(rpx(SPACE_3XL));
+        let mut actions = crate::views::components::form_actions().child(
+            form_action("checkout-cancel-confirmation", "Cancel", false, window, cx)
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/close.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .with_focus_handle(self.cancel_focus.clone())
+                .disabled(busy)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.checkout_cancel_confirmation(window, cx);
+                })),
+        );
         if let Some(remote) = self.checkout_panel.publish.clone() {
             let branch = self
                 .checkout_panel
@@ -1863,32 +1877,32 @@ impl Sidebar {
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_DIM())
                         .child(path.clone()),
-                )
-                .child(
-                    form_action(
-                        "checkout-confirm-publish",
-                        "Publish branch",
-                        true,
-                        window,
-                        cx,
-                    )
-                    .icon(
-                        gpui_component::Icon::default()
-                            .path("icons/git-publish.svg")
-                            .size(rpx(ICON_SM)),
-                    )
-                    .with_focus_handle(self.confirm_focus.clone())
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.checkout_run(
-                            publish_path.clone(),
-                            GitAction::Publish {
-                                remote: remote.clone(),
-                            },
-                            cx,
-                        );
-                    })),
                 );
+            actions = actions.child(
+                form_action(
+                    "checkout-confirm-publish",
+                    "Publish branch",
+                    true,
+                    window,
+                    cx,
+                )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/git-publish.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .with_focus_handle(self.confirm_focus.clone())
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.checkout_run(
+                        publish_path.clone(),
+                        GitAction::Publish {
+                            remote: remote.clone(),
+                        },
+                        cx,
+                    );
+                })),
+            );
         }
         if let Some(pr) = self.checkout_panel.pr_merge.clone() {
             let merge_path = path.clone();
@@ -1896,15 +1910,31 @@ impl Sidebar {
                 .child(div().text_size(rpx(TEXT_DISPLAY)).child("Merge pull request?"))
                 .child(format!("Merge PR #{} with a merge commit: {}", pr.number, pr.title()))
                 .child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(pr.url.clone()))
-                .child("The exact PR head, checks, reviews and checkout will be revalidated. Repository protections apply.")
-                .child(form_action("checkout-confirm-merge", if busy { "Merge requested" } else { "Create merge commit" }, true, window, cx)
-                    .debug_selector(|| "checkout-confirm-merge".into())
-                    .icon(gpui_component::Icon::default().path("icons/check.svg").size(rpx(ICON_SM)))
-                    .with_focus_handle(self.confirm_focus.clone())
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.checkout_merge_pr(merge_path.clone(), pr.clone(), cx);
-                    })));
+                .child("The exact PR head, checks, reviews and checkout will be revalidated. Repository protections apply.");
+            actions = actions.child(
+                form_action(
+                    "checkout-confirm-merge",
+                    if busy {
+                        "Merge requested"
+                    } else {
+                        "Create merge commit"
+                    },
+                    true,
+                    window,
+                    cx,
+                )
+                .debug_selector(|| "checkout-confirm-merge".into())
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/check.svg")
+                        .size(rpx(ICON_SM)),
+                )
+                .with_focus_handle(self.confirm_focus.clone())
+                .disabled(busy)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.checkout_merge_pr(merge_path.clone(), pr.clone(), cx);
+                })),
+            );
         }
         if let Some(recovery) = self.checkout_panel.recovery.clone() {
             let (heading,description,action)=match &recovery {
@@ -1969,7 +1999,7 @@ impl Sidebar {
             if guarded {
                 form=form.child("Commit or discard edits and synchronize this checkout before integrating the remote branch.");
             }
-            form = form.child(
+            actions = actions.child(
                 form_action("checkout-confirm-recovery", action, true, window, cx)
                     .debug_selector(|| "checkout-confirm-recovery".into())
                     .icon(
@@ -1993,19 +2023,8 @@ impl Sidebar {
                     .child(message.clone()),
             );
         }
-        form = form.child(
-            form_action("checkout-cancel-confirmation", "Cancel", false, window, cx)
-                .icon(
-                    gpui_component::Icon::default()
-                        .path("icons/close.svg")
-                        .size(rpx(ICON_SM)),
-                )
-                .with_focus_handle(self.cancel_focus.clone())
-                .disabled(busy)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.checkout_cancel_confirmation(window, cx);
-                })),
-        );
+        form = form.child(actions);
+
         div()
             .id("checkout-confirmation")
             .debug_selector(|| "checkout-confirmation".into())
@@ -2201,15 +2220,7 @@ impl Sidebar {
             cx.notify();
             return;
         }
-        let narrow = Self::logical_window_width(window) < WIDE_VIEWPORT;
-        if self.checkout_panel.hidden || (narrow && !self.checkout_panel.expanded) {
-            self.checkout_panel.hidden = false;
-            if narrow {
-                self.checkout_panel.expanded = true;
-            }
-        } else {
-            self.checkout_panel.hidden = true;
-        }
+        self.checkout_panel.hidden = !self.checkout_panel.hidden;
         if self.checkout_panel.hidden {
             self.dismiss_agent_peek(window, cx);
             self.dismiss_plan_peek(window, cx);
@@ -2371,7 +2382,7 @@ impl Sidebar {
                     .top_0()
                     .right_0()
                     .h(rpx(APPBAR_H))
-                    .px(rpx(SPACE_3XL))
+                    .px(rpx(SPACE_20))
                     .flex()
                     .items_center()
                     .child(controls),
@@ -2495,7 +2506,11 @@ impl Sidebar {
                         started.elapsed() < Duration::from_millis(MOTION_BASE_MS)
                     })
             {
-                if Self::logical_window_width(window) >= WIDE_VIEWPORT {
+                if !self.is_zen()
+                    && ((self.checkout_panel.side_chat_owner.is_none()
+                        && Self::logical_window_width(window) >= CHECKOUT_SIDE_VIEWPORT)
+                        || Self::logical_window_width(window) >= WIDE_VIEWPORT)
+                {
                     let body = self.render_content_body(window, cx);
                     return self.wide_panel_layout(body, div().into_any_element(), window, cx);
                 }
@@ -2515,8 +2530,8 @@ impl Sidebar {
             self.checkout_panel.panel_motion = None;
             return self.render_content_body(window, cx);
         }
-        let wide = !self.is_zen() && Self::logical_window_width(window) >= WIDE_VIEWPORT;
-        self.checkout_panel.agents_visible = wide || self.checkout_panel.expanded;
+        let wide = !self.is_zen() && Self::logical_window_width(window) >= CHECKOUT_SIDE_VIEWPORT;
+        self.checkout_panel.agents_visible = !self.is_zen() || self.checkout_panel.expanded;
         let selected = selected_checkout(&targets, self.checkout_panel.chosen_root.as_deref());
         let mut card = project_field_well(false, false)
             .id("checkout-card")
@@ -3264,7 +3279,8 @@ impl Sidebar {
             .when(wide, |panel| panel.pt(rpx(APPBAR_TOTAL_H + SPACE_3XL)))
             .overflow_y_scroll()
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" && this.checkout_panel.expanded {
+                if event.keystroke.key == "escape" && this.is_zen() && this.checkout_panel.expanded
+                {
                     this.checkout_panel.expanded = false;
                     this.checkout_panel.trigger_focus["summary"].focus(window, cx);
                     cx.stop_propagation();
@@ -3281,6 +3297,8 @@ impl Sidebar {
                 .absolute()
                 .inset_0(),
             );
+        }
+        if self.is_zen() {
             panel = panel.child(
                 transcript_action(
                     "checkout-summary",
@@ -3306,7 +3324,7 @@ impl Sidebar {
                 })),
             );
         }
-        if wide || self.checkout_panel.expanded {
+        if !self.is_zen() || self.checkout_panel.expanded {
             panel = panel.child(card);
         } else {
             self.branch_entry = None;
@@ -5868,11 +5886,9 @@ mod tests {
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
             });
-            assert!(
-                !sidebar.read_with(cx, |sidebar, cx| sidebar.codex_views[&id]
-                    .read(cx)
-                    .agents_in_checkout)
-            );
+            assert!(sidebar.read_with(cx, |sidebar, cx| sidebar.codex_views[&id]
+                .read(cx)
+                .agents_in_checkout));
             cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
             cx.run_until_parked();
             cx.update(|window, cx| {
@@ -6111,6 +6127,10 @@ mod tests {
                 let _ = window.draw(cx);
             });
             let controls = cx.debug_bounds("side-container-controls").unwrap();
+            assert!(cx.debug_bounds("checkout-summary").is_none());
+            let panel = cx.debug_bounds("checkout-panel").unwrap();
+            assert_eq!(panel.top(), gpui::px(0.));
+            assert_eq!(panel.size.width, gpui::px(CARD_WIDTH));
             assert!(cx.debug_bounds("side-chat-toggle").is_some());
             let toggle = cx.debug_bounds("session-panel-toggle").unwrap();
             cx.simulate_click(toggle.center(), gpui::Modifiers::default());
@@ -6194,7 +6214,7 @@ mod tests {
         let toggle = cx.debug_bounds("files-toggle").unwrap();
         let checkout_toggle = cx.debug_bounds("session-panel-toggle").unwrap();
         assert!(checkout_toggle.right() < toggle.left());
-        assert!((panel.right() - toggle.right() - gpui::px(SPACE_3XL)).abs() <= gpui::px(1.));
+        assert!((panel.right() - toggle.right() - gpui::px(SPACE_20)).abs() <= gpui::px(1.));
         assert!(card.top() >= gpui::px(APPBAR_TOTAL_H + SPACE_3XL));
         let divider = cx.debug_bounds("checkout-divider").unwrap();
         assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
@@ -6480,13 +6500,7 @@ mod tests {
         let panel = cx.debug_bounds("checkout-panel").unwrap();
         assert_eq!(header.top(), gpui::px(0.));
         assert!(panel.top() >= header.bottom());
-        assert!(cx.debug_bounds("checkout-card").is_none());
-        let summary = cx.debug_bounds("checkout-summary").unwrap();
-        cx.simulate_click(summary.center(), gpui::Modifiers::default());
-        cx.run_until_parked();
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
+        assert!(cx.debug_bounds("checkout-summary").is_none());
         let narrow_card = cx.debug_bounds("checkout-card").unwrap();
         let narrow_pr = cx.debug_bounds("checkout-pr").unwrap();
         assert!(narrow_pr.left() >= narrow_card.left() && narrow_pr.right() <= narrow_card.right());
@@ -6496,7 +6510,7 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-        assert!(cx.debug_bounds("checkout-card").is_none());
+        assert!(cx.debug_bounds("checkout-card").is_some());
 
         for width in [1280., 500.] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));

@@ -125,6 +125,18 @@ fn wrap_svg(inner: &str) -> String {
 fn svg_for(name: &str) -> String {
     let inner = match name {
         "lightning" => r#"<path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"/>"#,
+        // Two opposing arrows distinguish refresh/retry from reset and restart.
+        "refresh" => {
+            r#"<path d="M13.5 5A5.5 5.5 0 0 0 4 3.5L2 5.5M2 2v3.5h3.5M2.5 11a5.5 5.5 0 0 0 9.5 1.5l2-2M14 14v-3.5h-3.5"/>"#
+        }
+        "eye" => {
+            r#"<path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8Z"/><circle cx="8" cy="8" r="2"/>"#
+        }
+        "diff" => r#"<path d="M3 1.5h7l3 3v10H3zM10 1.5v3h3M5 7h5M7.5 4.5v5M5 12h5"/>"#,
+        // Wrench: a neutral external tool identity, without implying a shell.
+        "tool" => {
+            r#"<path d="M9 2a4 4 0 0 0-4.2 5.2L1.8 10.2a2.1 2.1 0 0 0 3 3l3-3A4 4 0 0 0 13 6l-2.5 1-2-2z"/>"#
+        }
         "person" => r#"<circle cx="8" cy="5" r="2.5"/><path d="M3 14v-1.5a5 5 0 0 1 10 0V14"/>"#,
         "history" => r#"<path d="M2 7a6 6 0 1 1 1.2 4M2 2v5h5M8 4v4l2.5 1.5"/>"#,
         "reset" => r#"<path d="M2.5 6a5.5 5.5 0 1 1 .5 5M2.5 2.5V6H6"/>"#,
@@ -417,6 +429,10 @@ mod tests {
             "stop",
             "question",
             "restart",
+            "refresh",
+            "eye",
+            "diff",
+            "tool",
         ] {
             let svg = svg_for(name);
             assert!(svg.starts_with("<svg"), "{name} is not an svg");
@@ -536,5 +552,118 @@ mod tests {
     fn the_spinner_advances_every_three_ticks() {
         assert_eq!(spinner_frame(0), spinner_frame(2));
         assert_ne!(spinner_frame(2), spinner_frame(3));
+    }
+}
+
+/// Manual native catalog QA: actual Linux rendering without opening user sessions.
+#[cfg(all(test, target_os = "linux"))]
+mod native_qa {
+    use super::*;
+    use crate::views::tokens::{ICON_LG, ICON_SM, SPACE_3XL, SPACE_LG, SPACE_SM};
+    use gpui::{div, prelude::*, AppContext, IntoElement};
+
+    struct IconProbe;
+    impl gpui::Render for IconProbe {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            let mut column = div()
+                .flex()
+                .flex_col()
+                .p(rpx(SPACE_3XL))
+                .gap(rpx(SPACE_LG))
+                .size_full()
+                .bg(crate::theme::BG())
+                .text_color(crate::theme::FG())
+                .font_family(crate::fonts::UI_FAMILY);
+            for (glyph, label) in [
+                ("tool", "External tool"),
+                ("terminal", "Shell execution"),
+                ("search", "Search"),
+                ("file", "Read file"),
+                ("edit", "Edit / review response"),
+                ("check", "Approve & implement"),
+                ("arrow-left", "Back to plan"),
+                ("diff", "View diff"),
+                ("cog", "Default agent setting"),
+                ("lock", "Permissions"),
+                ("eye", "Read only / plan mode"),
+                ("refresh", "Refresh / retry"),
+                ("restart", "Restart process"),
+                ("restore", "Restore saved session"),
+                ("reset", "Reset values"),
+            ] {
+                column = column.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(SPACE_SM))
+                        .child(icon(glyph, ICON_SM, crate::theme::FG_DIM()))
+                        .child(icon(glyph, ICON_LG, crate::theme::FG_DIM()))
+                        .child(label),
+                );
+            }
+            column
+        }
+    }
+
+    #[test]
+    #[ignore = "opens an isolated native X11 icon catalog window"]
+    fn icon_catalog_linux_capture() {
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(|cx| {
+                gpui_component::init(cx);
+                crate::fonts::register(cx).unwrap();
+                let window = cx
+                    .open_window(
+                        gpui::WindowOptions {
+                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                                gpui::point(gpui::px(40.), gpui::px(40.)),
+                                gpui::size(gpui::px(540.), gpui::px(650.)),
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            window.set_window_title("Grove icon catalog QA");
+                            let probe = cx.new(|_| IconProbe);
+                            cx.new(|cx| gpui_component::Root::new(probe, window, cx))
+                        },
+                    )
+                    .unwrap();
+                cx.activate(true);
+                cx.spawn(async move |cx| {
+                    for (theme, rem) in [
+                        ("grove-dark", 16.),
+                        ("grove-light", 16.),
+                        ("grove-dark", 24.),
+                    ] {
+                        cx.update(|cx| {
+                            grove_core::theme::set_by_name(theme);
+                            crate::theme::sync_component_theme(cx);
+                            gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                        });
+                        cx.update_window(window.into(), |_, window, _| {
+                            window.set_rem_size(gpui::px(rem));
+                            window.refresh();
+                        })
+                        .unwrap();
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(600))
+                            .await;
+                        let output = format!("/tmp/grove-icon-catalog-{theme}-{rem}.png");
+                        assert!(std::process::Command::new("import")
+                            .args(["-window", "Grove icon catalog QA", &output])
+                            .status()
+                            .unwrap()
+                            .success());
+                        eprintln!("Native icon capture: {output}");
+                    }
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
     }
 }

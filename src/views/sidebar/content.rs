@@ -697,13 +697,13 @@ impl Sidebar {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .gap(rpx(SPACE_MD))
+            .gap(rpx(SPACE_LG))
             .when_some(side_chat_toggle, gpui::ParentElement::child)
             .when_some(panel_toggle, gpui::ParentElement::child)
             .child(self.files_control(cx))
     }
 
-    fn terminal_content(
+    pub(super) fn terminal_content(
         &mut self,
         id: crate::entities::session_registry::SessionId,
         home: bool,
@@ -1327,7 +1327,7 @@ impl Sidebar {
                         )
                         .w_auto()
                         .px(rpx(SPACE_LG))
-                        .child(icon("reset", ICON_SM, c::FG_DIM()))
+                        .child(icon("restart", ICON_SM, c::FG_DIM()))
                         .child("Retry"),
                     );
                 }
@@ -1818,7 +1818,7 @@ impl Sidebar {
                         .child(
                             form_action("check-first-commit", "Check again", false, window, cx)
                                 .debug_selector(|| "check-first-commit".into())
-                                .icon(gpui_component::Icon::default().path("icons/restart.svg"))
+                                .icon(gpui_component::Icon::default().path("icons/refresh.svg"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.act(Action::RefreshGit(project_path.clone()), window, cx);
                                 })),
@@ -1932,10 +1932,17 @@ impl Sidebar {
                             ))
                             .child(self.render_worktree_summary(cx))
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_wrap()
-                                    .gap(rpx(SPACE_SM))
+                                crate::views::components::form_actions()
+                                    .child(
+                                        form_action("cancel-worktree", "Cancel", false, window, cx)
+                                            .icon(
+                                                gpui_component::Icon::default()
+                                                    .path("icons/close.svg"),
+                                            )
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.act(super::Action::Cancel, window, cx);
+                                            })),
+                                    )
                                     .child(
                                         form_action(
                                             "create-worktree",
@@ -1951,16 +1958,6 @@ impl Sidebar {
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.submit_worktree(cx)),
                                         ),
-                                    )
-                                    .child(
-                                        form_action("cancel-worktree", "Cancel", false, window, cx)
-                                            .icon(
-                                                gpui_component::Icon::default()
-                                                    .path("icons/close.svg"),
-                                            )
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.act(super::Action::Cancel, window, cx);
-                                            })),
                                     ),
                             ),
                     ),
@@ -3259,16 +3256,14 @@ mod tests {
         cx.simulate_resize(gpui::size(gpui::px(320.), gpui::px(200.)));
         draw(cx);
         let header = cx.debug_bounds("terminal-header-1").unwrap();
-        let close = cx.debug_bounds("canvas-close-1").unwrap();
-        assert!(
-            close.left() >= header.left() && close.right() <= header.right(),
-            "{header:?} {close:?}"
-        );
+        // The non-grid header leaves session closing to the sidebar's Done
+        // action. Only grid tiles carry their own close control.
+        assert!(cx.debug_bounds("canvas-close-1").is_none());
         assert_eq!(f32::from(header.size.height), APPBAR_H);
         let worktree = cx.debug_bounds("session-header-worktree-1").unwrap();
         let title = cx.debug_bounds("session-header-title-1").unwrap();
         assert!(worktree.right() < title.left());
-        assert!(title.right() <= close.left());
+        assert!(title.right() <= header.right());
         for zone in ["terminal-header-left-1", "terminal-header-right-1"] {
             let bounds = cx.debug_bounds(zone).unwrap();
             assert!(f32::from(bounds.center().y - header.center().y).abs() < 1.);

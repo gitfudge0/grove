@@ -593,7 +593,7 @@ impl Sidebar {
                 self.history_action(
                     "history-retry",
                     "Retry",
-                    "reset",
+                    "refresh",
                     Action::RefreshHistory,
                     window,
                     cx,
@@ -815,18 +815,14 @@ impl Sidebar {
             .flex_col()
             .when(!expanded, |canvas| {
                 canvas.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .flex_shrink_0()
-                        .gap(rpx(SPACE_LG))
+                    crate::views::components::content_header()
                         .p(rpx(SPACE_2XL))
                         .border_b_1()
                         .border_color(c::BORDER())
                         .child(self.history_action(
                             "history-back",
-                            "Back",
-                            "chev-left",
+                            "Back to checkout",
+                            "arrow-left",
                             Action::CloseHistory,
                             window,
                             cx,
@@ -859,7 +855,7 @@ impl Sidebar {
                         .child(self.history_action(
                             "history-refresh",
                             "Refresh",
-                            "reset",
+                            "refresh",
                             Action::RefreshHistory,
                             window,
                             cx,
@@ -954,7 +950,7 @@ impl Sidebar {
             .child(self.history_action(
                 "history-return-graph",
                 "Back to history",
-                "chev-left",
+                "arrow-left",
                 Action::HistoryGraph,
                 window,
                 cx,

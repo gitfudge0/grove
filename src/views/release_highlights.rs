@@ -6,7 +6,6 @@ use gpui::{
     div, img, prelude::*, App, Context, EventEmitter, FocusHandle, FontWeight, MouseButton,
     StyledImage, Window,
 };
-use gpui_component::Sizable;
 use grove_core::release_highlights::{Manifest, MediaKind, ReleaseHighlights};
 
 pub fn manifest() -> Option<Manifest> {
@@ -260,7 +259,7 @@ impl Render for ReleaseCarousel {
                             let source = retry_source.clone(); let key_source = retry_source.clone(); let key_carousel = carousel.clone(); let carousel = carousel.clone();
                             div().size_full().flex().flex_col().gap(rpx(SPACE_LG)).items_center().justify_center().text_color(c::FG_DIM())
                                 .child("Preview could not be decoded. The highlight is still available below.")
-                                .child(super::components::settings_control("highlights-retry", "Retry media preview", false, true).child(crate::icons::icon("reset", ICON_SM, c::FG_DIM())).child("Retry")
+                                .child(super::components::settings_control("highlights-retry", "Retry media preview", false, true).child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM())).child("Retry")
                                     .on_click(move |_, _, cx| { source.remove_asset(cx); let _ = carousel.update(cx, |_, cx| cx.notify()); })
                                     .on_key_down(move |event, window, cx| { if matches!(event.keystroke.key.as_str(), "enter" | "space") { key_source.remove_asset(cx); let _ = key_carousel.update(cx, |_, cx| cx.notify()); window.prevent_default(); cx.stop_propagation(); } }))
                                 .into_any_element()
@@ -410,14 +409,9 @@ impl Render for ReleaseCarousel {
                                 "{} · {}",
                                 self.release.title, self.release.version
                             )))
-                            .child(
-                                button("highlights-close", "Close", window, cx)
-                                    .small()
-                                    .compact()
-                                    .on_click(
-                                        cx.listener(|this, _, window, cx| this.close(window, cx)),
-                                    ),
-                            ),
+                            .child(button("highlights-close", "Close", window, cx).on_click(
+                                cx.listener(|this, _, window, cx| this.close(window, cx)),
+                            )),
                     )
                     .when_some(media, gpui::ParentElement::child)
                     .child(

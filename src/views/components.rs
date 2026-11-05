@@ -3,6 +3,61 @@ use super::{motion, rpx, tokens::*};
 use crate::theme as c;
 use gpui::{div, prelude::*, AnimationExt as _, App, Div, MouseButton, Stateful};
 
+/// Header layout shared by pages, compact viewers and anchored previews.
+/// Owners retain their surface insets, source focus and action semantics.
+pub fn content_header() -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(rpx(SPACE_LG))
+}
+
+/// A title yields to fixed navigation and actions in the same header.
+pub fn content_header_title(title: impl Into<gpui::SharedString>) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .text_size(rpx(TEXT_TITLE))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(title.into())
+}
+
+/// Bottom form actions stay together and wrap at the content column inset.
+/// Add secondary actions first and the primary action last.
+pub fn form_actions() -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(rpx(SPACE_LG))
+}
+
+/// Labeled return navigation uses the same complete dense recipe everywhere.
+pub fn back_action(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> gpui_component::button::Button {
+    dense_action_with_colors(
+        id,
+        label,
+        gpui::transparent_black(),
+        c::FG_DIM(),
+        c::BG_HOVER(),
+        window,
+        cx,
+    )
+    .icon(gpui_component::Icon::default().path("icons/arrow-left.svg"))
+}
+
 /// Static shortcut/help text with catalog modifier glyphs. The complete original
 /// text remains the accessible name; input bindings and terminal text are untouched.
 pub fn shortcut_hint(label: impl Into<gpui::SharedString>) -> Stateful<Div> {
@@ -1172,6 +1227,96 @@ pub fn attached_validation(
 #[cfg(test)]
 mod action_recipe_tests {
     use super::*;
+    struct HeaderLayoutProbe;
+    impl gpui::Render for HeaderLayoutProbe {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            _: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    content_header()
+                        .debug_selector(|| "layout-header".into())
+                        .child(
+                            div()
+                                .w(rpx(CONTROL_H))
+                                .h(rpx(CONTROL_H))
+                                .flex_shrink_0()
+                                .debug_selector(|| "layout-back".into()),
+                        )
+                        .child(
+                            content_header_title(
+                                "A long document title that must yield to navigation and actions",
+                            )
+                            .debug_selector(|| "layout-title".into()),
+                        )
+                        .child(
+                            div()
+                                .w(rpx(CONTROL_H))
+                                .h(rpx(CONTROL_H))
+                                .flex_shrink_0()
+                                .debug_selector(|| "layout-close".into()),
+                        ),
+                )
+                .child(
+                    form_actions()
+                        .debug_selector(|| "layout-actions".into())
+                        .child(
+                            div()
+                                .w(rpx(TEXTAREA_H))
+                                .h(rpx(CONTROL_H))
+                                .flex_shrink_0()
+                                .debug_selector(|| "layout-secondary".into()),
+                        )
+                        .child(
+                            div()
+                                .w(rpx(TEXTAREA_H))
+                                .h(rpx(CONTROL_H))
+                                .flex_shrink_0()
+                                .debug_selector(|| "layout-primary".into()),
+                        ),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn header_slots_stay_visible_and_form_actions_wrap(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|_, _| HeaderLayoutProbe);
+        for (width, rem) in [(500., 16.), (250., 16.), (360., 24.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(400.)));
+            cx.update(|window, cx| {
+                window.set_rem_size(gpui::px(rem));
+                let _ = window.draw(cx);
+            });
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            let header = cx.debug_bounds("layout-header").unwrap();
+            let back = cx.debug_bounds("layout-back").unwrap();
+            let title = cx.debug_bounds("layout-title").unwrap();
+            let close = cx.debug_bounds("layout-close").unwrap();
+            assert!(back.left() >= header.left() && back.right() <= title.left());
+            assert!(title.right() <= close.left() && close.right() <= header.right());
+            let actions = cx.debug_bounds("layout-actions").unwrap();
+            let secondary = cx.debug_bounds("layout-secondary").unwrap();
+            let primary = cx.debug_bounds("layout-primary").unwrap();
+            assert_eq!(secondary.left(), actions.left());
+            if width < (TEXTAREA_H * 2. + SPACE_LG) * rem / crate::zoom::REM_BASE {
+                assert!(primary.top() >= secondary.bottom());
+                assert_eq!(primary.left(), actions.left());
+            } else {
+                assert_eq!(primary.top(), secondary.top());
+                assert!(primary.left() >= secondary.right());
+            }
+        }
+    }
+
     struct ActionProbe {
         rem: f32,
         disabled: bool,

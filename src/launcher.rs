@@ -200,9 +200,9 @@ impl SettingRow {
             SettingRow::AppSize => "grid",
             SettingRow::Telemetry | SettingRow::Chrome => "check",
             SettingRow::Backend => "term",
-            SettingRow::Permissions => "ring",
-            SettingRow::DefaultAgent => "claude",
-            SettingRow::CheckUpdates => "restart",
+            SettingRow::Permissions => "lock",
+            SettingRow::DefaultAgent => "cog",
+            SettingRow::CheckUpdates => "refresh",
         }
     }
 

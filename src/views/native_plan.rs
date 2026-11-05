@@ -1325,9 +1325,9 @@ impl Render for NativePlan {
                 .icon(
                     gpui_component::Icon::default()
                         .path(if self.review_open {
-                            "icons/unified.svg"
+                            "icons/arrow-left.svg"
                         } else {
-                            "icons/check.svg"
+                            "icons/edit.svg"
                         })
                         .size(rpx(ICON_SM)),
                 )
@@ -1378,7 +1378,7 @@ impl Render for NativePlan {
                 } else {
                     "Approve & implement"
                 },
-                true,
+                !self.review_open,
                 window,
                 cx,
             )

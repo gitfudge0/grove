@@ -1305,7 +1305,7 @@ impl Render for HtmlArtifact {
                 recovery_action(
                     "oversize-html-check-updates",
                     "Check for updates",
-                    "restart",
+                    "refresh",
                     window,
                     cx,
                 )
@@ -1355,11 +1355,20 @@ impl Render for HtmlArtifact {
             .and_then(|name| name.to_str())
             .unwrap_or("HTML document")
             .to_owned();
-        let mut header = div()
+        let mut header = super::components::content_header()
             .debug_selector(|| "html-document-toolbar".into())
-            .flex()
-            .items_center()
-            .gap(rpx(SPACE_SM))
+            .when(expanded, |header| {
+                header.child(
+                    super::components::back_action(
+                        "html-expand",
+                        "Back to conversation",
+                        window,
+                        cx,
+                    )
+                    .with_focus_handle(self.return_focus.clone())
+                    .on_click(cx.listener(Self::toggle_expand_click)),
+                )
+            })
             .when(!report || expanded, |header| {
                 header
                     .p(rpx(SPACE_LG))
@@ -1413,7 +1422,7 @@ impl Render for HtmlArtifact {
                 document_action(
                     "html-check-version",
                     "Check for updates",
-                    "restart",
+                    "refresh",
                     window,
                     cx,
                 )
@@ -1422,7 +1431,7 @@ impl Render for HtmlArtifact {
         }
         if report && self.path.is_none() {
             header = header.child(
-                document_action("html-reload", "Reload preview", "restart", window, cx).on_click(
+                document_action("html-reload", "Reload preview", "refresh", window, cx).on_click(
                     cx.listener(|this, _, _, cx| {
                         this.load(cx);
                         cx.notify();
@@ -1430,25 +1439,13 @@ impl Render for HtmlArtifact {
                 ),
             );
         }
-        header = header.child(
-            document_action(
-                "html-expand",
-                if expanded {
-                    "Return to conversation"
-                } else {
-                    "Expand"
-                },
-                if expanded { "arrow-left" } else { "zen" },
-                window,
-                cx,
-            )
-            .with_focus_handle(if expanded {
-                self.return_focus.clone()
-            } else {
-                self.expand_focus.clone()
-            })
-            .on_click(cx.listener(Self::toggle_expand_click)),
-        );
+        if !expanded {
+            header = header.child(
+                document_action("html-expand", "Expand", "zen", window, cx)
+                    .with_focus_handle(self.expand_focus.clone())
+                    .on_click(cx.listener(Self::toggle_expand_click)),
+            );
+        }
         let version_notice = self.version.pending.is_some().then(|| div().p(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("A new version is available. Load new version resets this document’s edits, tab and scroll."));
         let mut body = div()
             .id("html-document-body")
@@ -1483,7 +1480,7 @@ impl Render for HtmlArtifact {
                         transcript_action("html-retry", "Retry preview", false, window, cx)
                             .icon(
                                 gpui_component::Icon::default()
-                                    .path("icons/restart.svg")
+                                    .path("icons/refresh.svg")
                                     .size(rpx(ICON_SM)),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -2301,7 +2298,7 @@ mod tests {
                     recovery_action("qa-html-reveal", "Reveal file", "folder", window, cx)
                         .into_any_element();
                 let updates =
-                    recovery_action("qa-updates", "Check for updates", "restart", window, cx)
+                    recovery_action("qa-updates", "Check for updates", "refresh", window, cx)
                         .into_any_element();
                 let reveal_plan =
                     recovery_action("qa-plan-reveal", "Reveal file", "folder", window, cx)
