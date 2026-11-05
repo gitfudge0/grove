@@ -334,6 +334,8 @@ pub struct SavedSession {
     #[serde(default)]
     pub claude_resume: Option<ClaudeResume>,
     #[serde(default)]
+    pub fork_origin: Option<ForkOrigin>,
+    #[serde(default)]
     pub edit_checkpoints: Vec<EditCheckpoint>,
     #[serde(default)]
     pub pending_edit: Option<PendingEdit>,
@@ -395,6 +397,14 @@ pub struct ReviewCompletion {
     pub id: usize,
     pub period: usize,
 }
+/// Durable startup recipe and title hold for a duplicated conversation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ForkOrigin {
+    pub source_thread: Option<String>,
+    pub last_turn: Option<String>,
+    pub users: usize,
+}
+
 /// A Claude fork is not persisted by the CLI until its first prompt. Retain the
 /// exact launch recipe across that window so reconnect cannot lose prior context.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -438,6 +448,120 @@ pub struct SavedComposerDraft {
     pub reference: Option<ReferenceDraft>,
 }
 impl SavedSession {
+    /// Copy a completed prefix. A user boundary excludes that message and restores its input.
+    pub fn fork_at(&self, boundary: usize, restore_user: bool) -> Result<Self, String> {
+        if boundary > self.items.len() || self.pending_edit.is_some() {
+            return Err("This conversation boundary is unavailable.".into());
+        }
+        let user = self
+            .items
+            .get(boundary)
+            .filter(|item| restore_user && item["type"] == "userMessage");
+        let last_user = self
+            .items
+            .iter()
+            .take(boundary)
+            .rposition(|item| item["type"] == "userMessage");
+        let last_turn = last_user
+            .and_then(|index| {
+                self.edit_checkpoints.iter().find(|cp| {
+                    self.items
+                        .iter()
+                        .enumerate()
+                        .skip(cp.start_item)
+                        .find(|(_, item)| item["type"] == "userMessage")
+                        .is_some_and(|(at, _)| at == index)
+                })
+            })
+            .and_then(|cp| cp.turn_id.clone());
+        if self.provider == Provider::Codex && last_user.is_some() && last_turn.is_none() {
+            return Err("No provider turn boundary is available for this message.".into());
+        }
+        if last_user.is_some() && self.thread_id.is_none() {
+            return Err("The source provider conversation is unavailable.".into());
+        }
+        let mut fork = self.clone();
+        let hex = crate::identity::random_id()?;
+        let id = format!(
+            "{}-{}-4{}-8{}-{}",
+            &hex[..8],
+            &hex[8..12],
+            &hex[13..16],
+            &hex[17..20],
+            &hex[20..]
+        );
+        fork.key = format!("fork-{id}");
+        fork.title = Some(format!(
+            "Forked · {}",
+            self.title.as_deref().unwrap_or(&self.label)
+        ));
+        fork.title_generation = None;
+        fork.thread_id = None;
+        fork.claude_resume = None;
+        fork.items.truncate(boundary);
+        fork.draft = user.map_or_else(String::new, |item| item_text(item));
+        fork.draft_images = user
+            .and_then(|item| item["content"].as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|part| {
+                if part["type"] == "image" {
+                    part["url"].as_str().map(str::to_owned)
+                } else if part["type"] == "localImage" {
+                    part["path"].as_str().map(str::to_owned)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        fork.draft_reference = None;
+        fork.session_review = SessionReview::default();
+        fork.side_chats.clear();
+        fork.rewind_drafts.clear();
+        fork.context = None;
+        fork.rich_plans.retain_messages(&fork.items);
+        fork.edit_checkpoints.retain(|cp| cp.start_item < boundary);
+        fork.work_periods
+            .retain(|period| period.start_item < boundary);
+        for period in &mut fork.work_periods {
+            period.end_item = Some(period.end_item.unwrap_or(boundary).min(boundary));
+        }
+        fork.retain_claude_subagents();
+        if self.provider == Provider::Claude && last_user.is_some() {
+            let anchor = fork
+                .items
+                .iter()
+                .rev()
+                .find_map(|item| item["claudeAssistantUuid"].as_str())
+                .ok_or("No Claude assistant boundary is available for this response.")?;
+            fork.claude_resume = Some(ClaudeResume {
+                original_session: self
+                    .claude_resume
+                    .as_ref()
+                    .and_then(|resume| resume.original_session.clone())
+                    .or_else(|| self.thread_id.clone()),
+                assistant_uuid: Some(anchor.into()),
+                human_uuid: String::new(),
+                fork_id: id.clone(),
+            });
+            fork.thread_id = Some(id);
+        }
+        fork.fork_origin = Some(ForkOrigin {
+            source_thread: if self.provider == Provider::Codex && last_user.is_some() {
+                self.thread_id.clone()
+            } else {
+                None
+            },
+            last_turn,
+            users: fork
+                .items
+                .iter()
+                .filter(|item| item["type"] == "userMessage")
+                .count(),
+        });
+        Ok(fork)
+    }
+
     pub(crate) fn finish_rewind_draft(&mut self, text: String, images: Vec<String>) {
         if !self.draft.is_empty() || !self.draft_images.is_empty() || self.draft_reference.is_some()
         {
@@ -554,6 +678,7 @@ impl SavedSession {
         let mut saved = self.clone();
         saved.thread_id = None;
         saved.claude_resume = None;
+        saved.fork_origin = None;
         saved.edit_checkpoints.clear();
         saved.pending_edit = None;
         saved.title = None;
@@ -2924,6 +3049,9 @@ impl Snapshot {
         }
     }
     pub(crate) fn set_provider_title(&mut self, name: Option<&str>) {
+        if self.saved.fork_origin.is_some() {
+            return;
+        }
         if self
             .saved
             .title_generation
@@ -4256,7 +4384,18 @@ impl Actor {
             params["sandbox"] = json!("read-only");
             params["approvalPolicy"] = json!("never");
         }
-        let method = if let Some(thread) = &self.state.saved.thread_id {
+        let method = if let Some(origin) = self
+            .state
+            .saved
+            .fork_origin
+            .as_ref()
+            .filter(|origin| origin.source_thread.is_some())
+        {
+            params["threadId"] = json!(origin.source_thread);
+            params["lastTurnId"] = json!(origin.last_turn);
+            params["excludeTurns"] = json!(true);
+            "thread/fork"
+        } else if let Some(thread) = &self.state.saved.thread_id {
             params["threadId"] = json!(thread);
             "thread/resume"
         } else {
@@ -6447,6 +6586,10 @@ impl Actor {
                 if self.state.saved.thread_id.is_none() {
                     return Err("Codex returned no thread identity".into());
                 }
+                if let Some(origin) = self.state.saved.fork_origin.as_mut() {
+                    origin.source_thread = None;
+                    persist(&self.state.saved)?;
+                }
                 if self.state.saved.pending_edit.is_some() {
                     self.request("thread/turns/list", json!({"threadId":self.state.saved.thread_id,"itemsView":"notLoaded","limit":100,"sortDirection":"desc"}), Pending::RecoverEdit)?;
                     self.state.status = Status::Starting;
@@ -7224,6 +7367,7 @@ mod tests {
             claude_subagents: HashMap::default(),
             rich_plans: crate::rich_plan::PlanStore::default(),
             side_chats: Default::default(),
+            fork_origin: None,
             claude_resume: None,
             edit_checkpoints: Vec::new(),
             pending_edit: None,
@@ -7249,6 +7393,50 @@ mod tests {
             context: None,
         }
     }
+    #[test]
+    fn forks_preserve_destination_prefix_and_draft_for_both_providers() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut original = saved();
+            original.provider = provider;
+            original.items = vec![
+                json!({"id":"u1","type":"userMessage","content":[{"type":"text","text":"first"}]}),
+                json!({"id":"a1","type":"agentMessage","text":"answer", "claudeAssistantUuid":"assistant-1"}),
+                json!({"id":"u2","type":"userMessage","content":[{"type":"text","text":"second"},{"type":"image","url":"data:image/png;base64,abc"}]}),
+                json!({"id":"a2","type":"agentMessage","text":"later"})].into();
+            original.edit_checkpoints.push(EditCheckpoint {
+                start_item: 0,
+                turn_id: Some("turn-1".into()),
+                files: None,
+            });
+            let fork = original.fork_at(2, true).unwrap();
+            assert_eq!(fork.items.len(), 2);
+            assert_eq!(fork.draft, "second");
+            assert_eq!(fork.draft_images, vec!["data:image/png;base64,abc"]);
+            assert_eq!(fork.cwd, original.cwd);
+            assert_eq!(fork.project, original.project);
+            assert_ne!(fork.key, original.key);
+            assert!(fork.title.unwrap().contains("Forked"));
+            assert_eq!(original.items.len(), 4);
+            let first = original.fork_at(0, true).unwrap();
+            assert!(first.items.is_empty());
+            assert_eq!(first.draft, "first");
+            let response = original.fork_at(2, false).unwrap();
+            assert!(response.draft.is_empty());
+            assert!(response.draft_images.is_empty());
+            if provider == Provider::Codex {
+                assert_eq!(
+                    response.fork_origin.unwrap().last_turn.as_deref(),
+                    Some("turn-1")
+                );
+            } else {
+                assert_eq!(
+                    response.claude_resume.unwrap().assistant_uuid.as_deref(),
+                    Some("assistant-1")
+                );
+            }
+        }
+    }
+
     #[test]
     fn review_briefs_accumulate_until_review_and_survive_restore() {
         for provider in [Provider::Codex, Provider::Claude] {

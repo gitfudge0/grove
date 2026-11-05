@@ -703,6 +703,39 @@ impl Sidebar {
             .child(self.files_control(cx))
     }
 
+    /// Both a freshly constructed session view and a Home composer adopted as a
+    /// session must route the same events. Install once at either ownership handoff.
+    pub(super) fn observe_session_view_events(
+        &mut self,
+        id: crate::entities::session_registry::SessionId,
+        view: &gpui::Entity<super::super::codex_view::CodexView>,
+        cx: &mut Context<Self>,
+    ) {
+        use super::super::codex_view::CodexViewEvent;
+        self.observers.push(cx.subscribe(view, move |this, _, event, cx| {
+            match event {
+                CodexViewEvent::ForkRequested(boundary, restore_user) => {
+                    let result = this.runtime.update(cx, |runtime, cx| {
+                        runtime.fork_session(id, *boundary, *restore_user, cx)
+                    });
+                    match result {
+                        Ok(fork) => this.select(Selection::Session(fork), cx),
+                        Err(error) => this.runtime.read(cx).toast.clone().update(cx, |toast, cx| toast.set_error(error, cx)),
+                    }
+                }
+                CodexViewEvent::ScriptLaunched => this.snippet_launched(id, cx),
+                CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
+                    this.files_active = true;
+                    this.files_owner = this.selection.clone();
+                    this.checkout_panel.side_chat_owner = None;
+                    this.checkout_panel.hidden = false;
+                    cx.notify();
+                }
+                _ => {}
+            }
+        }));
+    }
+
     pub(super) fn terminal_content(
         &mut self,
         id: crate::entities::session_registry::SessionId,
@@ -726,25 +759,7 @@ impl Sidebar {
                 // The tools section precedes the canvas in render order. Publish the
                 // newly constructed plan entities on the next parent render.
                 cx.notify();
-                self.observers.push(cx.subscribe(
-                    &view,
-                    move |this, _, event: &super::super::codex_view::CodexViewEvent, cx| {
-                        if matches!(
-                            event,
-                            super::super::codex_view::CodexViewEvent::ScriptLaunched
-                        ) {
-                            this.snippet_launched(id, cx);
-                        }
-                        if matches!(event, super::super::codex_view::CodexViewEvent::FileOpened)
-                            && matches!(this.selection,Some(Selection::Session(selected)|Selection::Home(selected)) if selected==id) {
-                            this.files_active=true;
-                            this.files_owner=this.selection.clone();
-                            this.checkout_panel.side_chat_owner=None;
-                            this.checkout_panel.hidden=false;
-                            cx.notify();
-                        }
-                    },
-                ));
+                self.observe_session_view_events(id, &view, cx);
             }
             view.update(cx, |view, cx| {
                 view.set_script_runtime(self.runtime.clone(), cx);
@@ -2852,6 +2867,7 @@ mod tests {
                 session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
+                fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),
@@ -3074,6 +3090,7 @@ mod tests {
                 session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
+                fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),

@@ -441,6 +441,7 @@ impl Sidebar {
                 session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
+                fork_origin: None,
                 claude_resume: None,
                 claude_subagents: HashMap::default(),
                 edit_checkpoints: Vec::new(),
@@ -721,6 +722,7 @@ impl Sidebar {
             runtime.adopt_dashboard_session(session, cx)
         });
         view.update(cx, |view, cx| view.launch_dashboard(window, cx));
+        self.observe_session_view_events(id, &view, cx);
         self.codex_views.insert(id, view);
         self.dashboard = None;
         self.open_dashboard_with_defaults(Some(defaults), window, cx);
@@ -1285,6 +1287,76 @@ fn seed_activity_fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Exercise the view emitted event through Sidebar's real subscription and runtime.
+    // The invalid boundary deliberately stops before any provider process is launched.
+    fn adopted_session_routes_fork_event(
+        cx: &mut gpui::TestAppContext,
+        provider: grove_core::codex::Provider,
+    ) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        let view = cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.open_dashboard(window, cx);
+                let mut saved = sidebar
+                    .dashboard
+                    .as_ref()
+                    .unwrap()
+                    .session
+                    .read(cx)
+                    .state
+                    .saved
+                    .clone();
+                saved.provider = provider;
+                let (handle, _actions) = grove_core::codex::Handle::channel();
+                let (_updates, receive) = std::sync::mpsc::channel();
+                let mut state = grove_core::codex::Snapshot::new(saved);
+                state.status = grove_core::codex::Status::Idle;
+                let session = cx.new(|cx| {
+                    CodexSession::from_connection(
+                        state,
+                        grove_core::codex::Connection {
+                            handle,
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                let view = cx.new(|cx| CodexView::new(session.clone(), window, cx));
+                sidebar.adopt_dashboard_launch(NO_PROJECT, session, view.clone(), window, cx);
+                view
+            })
+        });
+        view.update(cx, |_, cx| {
+            cx.emit(CodexViewEvent::ForkRequested(usize::MAX, false))
+        });
+        cx.run_until_parked();
+        sidebar.read_with(cx, |sidebar, cx| {
+            let toast = sidebar.runtime.read(cx).toast.read(cx).current();
+            assert_eq!(
+                toast.map(|toast| toast.message.as_str()),
+                Some("This conversation boundary is unavailable."),
+                "the adopted view must route Fork to the runtime instead of silently dropping it"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn dashboard_adopted_codex_routes_fork_event(cx: &mut gpui::TestAppContext) {
+        adopted_session_routes_fork_event(cx, grove_core::codex::Provider::Codex);
+    }
+    #[gpui::test]
+    fn dashboard_adopted_claude_routes_fork_event(cx: &mut gpui::TestAppContext) {
+        adopted_session_routes_fork_event(cx, grove_core::codex::Provider::Claude);
+    }
 
     #[gpui::test]
     fn activity_includes_projectless_codex_and_claude_without_other_workspace_sessions(

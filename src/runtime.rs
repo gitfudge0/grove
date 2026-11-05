@@ -512,6 +512,29 @@ impl Runtime {
         spawn_error.is_none()
     }
 
+    pub(crate) fn fork_session(
+        &mut self,
+        source: SessionId,
+        boundary: usize,
+        restore_user: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<SessionId, String> {
+        let session = self
+            .registry
+            .read(cx)
+            .codex(source)
+            .ok_or("Session is no longer available.")?;
+        if session.read(cx).state.status.busy() {
+            return Err("Wait for the session to finish before forking.".into());
+        }
+        let saved = session
+            .read(cx)
+            .state
+            .saved
+            .fork_at(boundary, restore_user)?;
+        self.reopen_session_history(saved, cx)
+    }
+
     fn attach_native_codex(
         &mut self,
         saved: grove_core::codex::SavedSession,
@@ -717,6 +740,7 @@ impl Runtime {
             session_review: Default::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             side_chats: Default::default(),
+            fork_origin: None,
             claude_resume: None,
             claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),
@@ -2203,6 +2227,7 @@ mod tests {
                 session_review: Default::default(),
                 rich_plans: grove_core::rich_plan::PlanStore::default(),
                 side_chats: Default::default(),
+                fork_origin: None,
                 claude_resume: None,
                 claude_subagents: std::collections::HashMap::default(),
                 edit_checkpoints: Vec::new(),

@@ -15,6 +15,7 @@ fn draft(provider: Provider, cwd: &str) -> SavedSession {
         session_review: Default::default(),
         rich_plans: grove_core::rich_plan::PlanStore::default(),
         side_chats: Default::default(),
+        fork_origin: None,
         claude_resume: None,
         edit_checkpoints: Vec::new(),
         pending_edit: None,

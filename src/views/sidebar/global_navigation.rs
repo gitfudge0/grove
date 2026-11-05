@@ -588,6 +588,7 @@ mod tests {
                         session_review: Default::default(),
                         rich_plans: Default::default(),
                         side_chats: Default::default(),
+                        fork_origin: None,
                         claude_resume: None,
                         claude_subagents: Default::default(),
                         edit_checkpoints: Vec::new(),

@@ -1060,6 +1060,7 @@ fn snippet_shell_supported(language: &str) -> bool {
 
 pub(crate) enum CodexViewEvent {
     DashboardSubmit,
+    ForkRequested(usize, bool),
     ScriptLaunched,
     FileOpened,
 }
@@ -4058,6 +4059,7 @@ impl CodexView {
                         .child(relative_message_time(timestamp)),
                 );
             }
+            actions = actions.child(self.fork_control(index, true, window, cx));
             let unavailable = state.rewind_target(index).err();
             if !self.transcript_only() && approval.is_none() {
                 let edit_focus = self.ensure_control_focus(&format!("{key}:edit"), window, cx);
@@ -6862,6 +6864,53 @@ impl CodexView {
         focus
     }
 
+    fn fork_control(
+        &mut self,
+        boundary: usize,
+        restore_user: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let focus =
+            self.ensure_control_focus(&format!("fork:{boundary}:{restore_user}"), window, cx);
+        let enabled = !self.transcript_only() && !self.session.read(cx).state.status.busy();
+        let control = if enabled {
+            header_control_with_label_tooltip("fork-message", "Fork session from here")
+        } else {
+            super::components::header_control_with_hover_tooltip(
+                "fork-message",
+                "Fork unavailable while session is busy",
+                gpui::transparent_black(),
+            )
+        };
+        control
+            .id((
+                if restore_user {
+                    "fork-user-message"
+                } else {
+                    "fork-response"
+                },
+                boundary,
+            ))
+            .track_focus(&focus)
+            .tab_index(0)
+            .focus_visible(|style| style.bg(c::BG_HOVER()))
+            .child(crate::icons::icon("git-branch", ICON_MD, c::FG_DIM()))
+            .when(!enabled, |control| control.opacity(0.4))
+            .on_click(cx.listener(move |_, _, _, cx| {
+                if enabled {
+                    cx.emit(CodexViewEvent::ForkRequested(boundary, restore_user));
+                }
+            }))
+            .on_key_down(cx.listener(move |_, event: &gpui::KeyDownEvent, _, cx| {
+                if enabled && action_key(event) {
+                    cx.emit(CodexViewEvent::ForkRequested(boundary, restore_user));
+                    cx.stop_propagation();
+                }
+            }))
+            .into_any_element()
+    }
+
     fn response_footer(
         &mut self,
         group: &ResponseGroup,
@@ -6948,7 +6997,9 @@ impl CodexView {
                     .child(tooltip("Copied", window).build(window, cx)),
             );
         }
-        actions = actions.child(button);
+        actions = actions
+            .child(button)
+            .child(self.fork_control(group.end, false, window, cx));
         let hover_key = group.key.clone();
         div()
             .id(gpui::SharedString::from(group.key.clone()))
@@ -13801,6 +13852,7 @@ mod tests {
             session_review: Default::default(),
             rich_plans: grove_core::rich_plan::PlanStore::default(),
             side_chats: Default::default(),
+            fork_origin: None,
             claude_resume: None,
             claude_subagents: std::collections::HashMap::default(),
             edit_checkpoints: Vec::new(),

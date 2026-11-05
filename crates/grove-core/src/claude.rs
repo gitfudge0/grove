@@ -3983,6 +3983,51 @@ mod tests {
         )
     }
     #[test]
+    fn session_fork_recipe_survives_restart_and_nested_forks_until_input_acknowledgment() {
+        let mut original = actor().state.saved.clone();
+        original.thread_id = Some("original".into());
+        original.items = vec![
+            json!({"id":"human", "type":"userMessage", "content":[{"type":"text","text":"first"}]}),
+            json!({"id":"answer", "type":"agentMessage", "text":"answer", "claudeAssistantUuid":"assistant"}),
+            json!({"id":"later", "type":"userMessage", "content":[{"type":"text","text":"later"}]})].into();
+        let fork = original.fork_at(2, false).unwrap();
+        let restored: SavedSession =
+            serde_json::from_value(serde_json::to_value(&fork).unwrap()).unwrap();
+        let nested = restored.fork_at(2, false).unwrap();
+        for saved in [restored, nested] {
+            let command = launch_command(&[], &saved).unwrap();
+            let args = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(args.windows(2).any(|pair| pair == ["--resume", "original"]));
+            assert!(args
+                .windows(2)
+                .any(|pair| pair == ["--resume-session-at", "assistant"]));
+            assert!(args.windows(2).any(|pair| pair[0] == "--session-id"
+                && Some(pair[1].as_str()) == saved.thread_id.as_deref()));
+            assert!(args.iter().any(|arg| arg == "--fork-session"));
+            let mut actor = actor_with_saved(saved);
+            actor.input_uuid = Some("accepted".into());
+            actor.in_flight = Some(QueuedPrompt {
+                id: 1,
+                text: "new prompt".into(),
+                images: vec![],
+            });
+            actor.acknowledge_input(&json!("accepted"));
+            assert!(actor.state.saved.claude_resume.is_none());
+            let resumed = launch_command(&[], &actor.state.saved).unwrap();
+            let args = resumed
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(!args.iter().any(|arg| arg == "--fork-session"));
+            assert!(args.windows(2).any(|pair| pair[0] == "--resume"
+                && Some(pair[1].as_str()) == actor.state.saved.thread_id.as_deref()));
+        }
+    }
+
+    #[test]
     fn native_history_stop_reports_archive_failure_separately_from_process_completion() {
         let mut actor = actor();
         actor.state.saved.key = "invalid key".into();

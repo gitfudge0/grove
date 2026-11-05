@@ -296,6 +296,21 @@ impl Generator {
         status: Status,
         stopping: bool,
     ) -> bool {
+        let mut changed = false;
+        if let Some(origin) = &saved.fork_origin {
+            let users = saved
+                .items
+                .iter()
+                .filter(|item| item["type"] == "userMessage")
+                .count();
+            if users <= origin.users {
+                return false;
+            }
+            saved.fork_origin = None;
+            saved.title = None;
+            request_regeneration(saved);
+            changed = true;
+        }
         // Observe every tick, including cancellation and manual ownership. Loading
         // an already-completed session or an elapsed cooldown cannot trigger work.
         let previous_status = self.last_status.replace(status);
@@ -309,13 +324,12 @@ impl Generator {
                 .is_some_and(|state| state.manual)
         {
             self.cancel();
-            return false;
+            return changed;
         }
         let Some((source, _)) = context(saved, false) else {
             self.cancel();
-            return false;
+            return changed;
         };
-        let mut changed = false;
         if saved
             .title_generation
             .as_ref()
@@ -743,6 +757,31 @@ mod tests {
             assert_eq!(snapshot.saved.title.as_deref(), Some("QR sharing overhaul"));
         }
     }
+    #[test]
+    fn fork_title_waits_for_new_input_then_requests_regeneration_with_existing_history() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut saved = saved(provider);
+            saved.items.push(json!({"id":"old-second", "type":"userMessage", "content":[{"type":"text", "text":"Old follow-up"}]}));
+            saved.title = Some("Forked · Original topic".into());
+            saved.title_generation = None;
+            saved.fork_origin = Some(crate::codex::ForkOrigin {
+                source_thread: None,
+                last_turn: None,
+                users: 2,
+            });
+            let mut generator = Generator::default();
+            assert!(!generator.tick(&mut saved, Status::Idle, false));
+            assert_eq!(saved.title.as_deref(), Some("Forked · Original topic"));
+            assert!(generator.job.is_none());
+            saved.items.push(json!({"id":"new", "type":"userMessage", "content":[{"type":"text", "text":"Change the goal"}]}));
+            assert!(generator.tick(&mut saved, Status::Working, false));
+            assert!(saved.fork_origin.is_none());
+            assert!(saved.title.is_none());
+            assert!(saved.title_generation.as_ref().unwrap().force_refresh);
+            assert!(generator.job.is_none());
+        }
+    }
+
     #[test]
     fn stale_and_malformed_results_leave_fallback_untouched() {
         let mut saved = saved(Provider::Codex);
