@@ -389,11 +389,6 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         self.destination = super::global_navigation::Destination::Home;
-        // Home has no session header toggle; its selected checkout stays available.
-        if self.checkout_panel.hidden {
-            self.checkout_panel.hidden = false;
-            self.start_panel_motion(false, true, cx);
-        }
         self.dismiss_project_panel_for_navigation();
         if let Some(settings) = &self.settings_panel {
             settings.update(cx, |settings, cx| settings.close(window, cx));

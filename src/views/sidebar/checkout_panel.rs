@@ -2250,16 +2250,6 @@ impl Sidebar {
         }
     }
 
-    pub(super) fn panel_motion_exiting(&self, cx: &App) -> bool {
-        !cx.reduce_motion()
-            && self
-                .checkout_panel
-                .panel_motion
-                .is_some_and(|(started, _, to, _)| {
-                    to == 0. && started.elapsed() < Duration::from_millis(MOTION_BASE_MS)
-                })
-    }
-
     pub(super) fn narrow_panel_entrance<E: IntoElement + gpui::Styled + 'static>(
         &self,
         panel: E,
@@ -2282,22 +2272,6 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let side_chat_available = match self.selection {
-            Some(Selection::Session(id) | Selection::Home(id)) => self
-                .runtime
-                .read(cx)
-                .registry
-                .read(cx)
-                .codex(id)
-                .is_some_and(|session| !session.read(cx).is_deferred()),
-            _ => false,
-        };
-        let controls = (!self.dashboard_open
-            && matches!(
-                self.selection,
-                Some(Selection::Session(_) | Selection::Home(_))
-            ))
-        .then(|| self.session_panel_controls(side_chat_available, window, cx));
         let mut width = 1.;
         let mut revision = None;
         if !cx.reduce_motion() {
@@ -2350,10 +2324,42 @@ impl Sidebar {
                     .overflow_hidden()
                     .child(panel),
             )
+            .into_any_element()
+    }
+
+    pub(super) fn render_checkout_content(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let body = self.render_checkout_container_body(window, cx);
+        if !self.checkout_panel.toggle_available {
+            return body;
+        }
+        let side_chat_available = !self.dashboard_open
+            && match self.selection {
+                Some(Selection::Session(id) | Selection::Home(id)) => self
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .codex(id)
+                    .is_some_and(|session| !session.read(cx).is_deferred()),
+                _ => false,
+            };
+        let controls = self.side_container_controls(side_chat_available, window, cx);
+        // This container survives Home/session navigation and panel dismissal.
+        // Keep the toolbar outside the animated body so reopening stays reachable.
+        div()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .relative()
+            .child(body)
             .child(
                 div()
-                    .id("wide-session-panel-controls")
-                    .debug_selector(|| "wide-session-panel-controls".into())
+                    .id("side-container-controls")
+                    .debug_selector(|| "side-container-controls".into())
                     .absolute()
                     .top_0()
                     .right_0()
@@ -2361,12 +2367,12 @@ impl Sidebar {
                     .px(rpx(SPACE_3XL))
                     .flex()
                     .items_center()
-                    .when_some(controls, gpui::ParentElement::child),
+                    .child(controls),
             )
             .into_any_element()
     }
 
-    pub(super) fn render_checkout_content(
+    fn render_checkout_container_body(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -6023,6 +6029,98 @@ mod tests {
         let (main, previous) = checkout_agent_groups(&agents, &periods);
         assert_eq!(main.len(), 2);
         assert_eq!(previous.len(), 3);
+    }
+
+    #[gpui::test]
+    fn panel_controls_remain_reachable_on_home_and_when_hidden(cx: &mut gpui::TestAppContext) {
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(fixture.path())
+            .args(["init", "-b", "main"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        fs_err::write(fixture.path().join("main.rs"), "fn main() {}\n").unwrap();
+        fs_err::write(fixture.path().join("README.md"), "# Example\n").unwrap();
+        let fixture_path = fixture.path().to_string_lossy().into_owned();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store {
+                projects: vec![grove_core::storage::Project {
+                    name: "Checkout QA".into(),
+                    path: fixture_path.clone(),
+                    scripts: grove_core::storage::ProjectScripts::default(),
+                    archived: false,
+                    worktree_dir: None,
+                }],
+                ..Default::default()
+            }));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_global(crate::zoom::ZoomState::new(1.0));
+        });
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(crate::runtime::Runtime::new);
+            let path = fixture_path.clone();
+            let id = runtime.read(cx).registry.clone().update(cx, |registry, _| {
+                registry.insert_meta("Checkout QA".into(), path.clone(), Agent::Codex)
+            });
+            runtime.read(cx).tree.clone().update(cx, |tree, _| {
+                tree.set_active_worktrees(
+                    0,
+                    vec![grove_core::git::Worktree {
+                        path,
+                        branch: "main".into(),
+                        mtime: None,
+                        is_main: true,
+                    }],
+                );
+            });
+            let mut sidebar = Sidebar::new(runtime, window, cx);
+            sidebar.selection = Some(Selection::Session(id));
+            sidebar.initial_selection_pending = false;
+            sidebar
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.open_dashboard(window, cx));
+            let _ = window.draw(cx);
+        });
+        for width in [1280., 760.] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+            cx.update(|window, cx| {
+                sidebar.update(cx, |sidebar, cx| {
+                    cx.set_reduce_motion(true);
+                    sidebar.checkout_panel.expanded = true;
+                });
+                let _ = window.draw(cx);
+            });
+            let controls = cx.debug_bounds("side-container-controls").unwrap();
+            assert!(cx.debug_bounds("side-chat-toggle").is_some());
+            let toggle = cx.debug_bounds("session-panel-toggle").unwrap();
+            cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.hidden));
+            assert!(cx.debug_bounds("checkout-card").is_none());
+            assert_eq!(
+                cx.debug_bounds("side-container-controls").unwrap(),
+                controls
+            );
+            let toggle = cx.debug_bounds("session-panel-toggle").unwrap();
+            cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+            assert!(!sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.hidden));
+            assert!(cx.debug_bounds("checkout-card").is_some());
+        }
     }
 
     #[gpui::test]

@@ -581,14 +581,15 @@ impl Sidebar {
         self.project_panel = Some(panel);
         cx.notify();
     }
-    pub(super) fn session_panel_controls(
+    pub(super) fn side_container_controls(
         &mut self,
         side_chat_available: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let panel_toggle = if self.checkout_panel.toggle_available {
-            let hidden = self.checkout_panel.side_chat_owner == self.selection
+            let hidden = (self.checkout_panel.side_chat_owner.is_some()
+                && self.checkout_panel.side_chat_owner == self.selection)
                 || self.checkout_panel.hidden
                 || (Self::logical_window_width(window) < super::checkout_panel::WIDE_VIEWPORT
                     && !self.checkout_panel.expanded);
@@ -632,7 +633,8 @@ impl Sidebar {
             None
         };
         let side_chat_toggle = if self.checkout_panel.toggle_available && side_chat_available {
-            let active = self.checkout_panel.side_chat_owner == self.selection;
+            let active = self.checkout_panel.side_chat_owner.is_some()
+                && self.checkout_panel.side_chat_owner == self.selection;
             let focus = self
                 .checkout_panel
                 .side_chat_focus
@@ -670,6 +672,22 @@ impl Sidebar {
                         }
                     },
                 )),
+            )
+        } else if self.checkout_panel.toggle_available {
+            Some(
+                crate::views::components::disabled_header_control(
+                    "side-chat-toggle",
+                    "Side chat requires an open conversation",
+                )
+                .debug_selector(|| "side-chat-toggle".into())
+                .tooltip(|window, cx| {
+                    crate::views::components::tooltip(
+                        "Open a conversation to use side chat",
+                        window,
+                    )
+                    .build(window, cx)
+                })
+                .child(icon("message-circle", ICON_LG, c::FG_DIM())),
             )
         } else {
             None
@@ -894,21 +912,6 @@ impl Sidebar {
                     .focus(|button| button.opacity(1.0))
             },
         );
-        let wide_panel_visible = Self::logical_window_width(window)
-            >= super::checkout_panel::WIDE_VIEWPORT
-            && (self.checkout_panel.side_chat_owner == self.selection
-                && self.checkout_panel.side_chat_owner.is_some()
-                || !self.checkout_panel.hidden
-                || self.panel_motion_exiting(cx));
-        let panel_controls = (!grid && !wide_panel_visible).then(|| {
-            self.session_panel_controls(
-                native
-                    .as_ref()
-                    .is_some_and(|session| !session.read(cx).is_deferred()),
-                window,
-                cx,
-            )
-        });
         let breadcrumb_project = (!home)
             .then(|| {
                 self.snapshot
@@ -1126,8 +1129,15 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_MD))
-                    .when(grid, |actions| actions.child(close))
-                    .when_some(panel_controls, gpui::ParentElement::child),
+                    .when(
+                        !grid
+                            && self.checkout_panel.toggle_available
+                            && (self.checkout_panel.hidden
+                                || Self::logical_window_width(window)
+                                    < super::checkout_panel::WIDE_VIEWPORT),
+                        |actions| actions.w(rpx(CHROME_CONTROL_H * 2. + SPACE_MD + SPACE_3XL)),
+                    )
+                    .when(grid, |actions| actions.child(close)),
             );
         let header = if grid {
             let selected = matches!(
