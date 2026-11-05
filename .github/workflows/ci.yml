@@ -50,6 +50,8 @@ jobs:
         run: node scripts/test-ui-reference-verifier.mjs
       - name: Check build tooling
         run: |
+          python3 scripts/check-repository-artifacts.py
+          python3 scripts/test-repository-artifacts.py
           python3 scripts/test-install.py
           python3 scripts/test-ci-changes.py
 

@@ -29,7 +29,7 @@ session in its own PTY, and a second process injects activity with
 | `resize-storm` | 34×120 | yes | **alt-screen** resize regime: 24 PTY resizes alternating 24×70 / 34×120 every 400 ms while a 400-line loop streams | recorder on `tmux new-session -A -s capstorm` with `GROVE_CAPTURE_RESIZE` set to the alternating schedule; 25 s |
 | `resize-storm-primary` | 34×120 | no | **primary-screen** resize regime — evidence for the asserted reflow divergence (alacritty rewraps on resize, vt100 does not) | bare shell, no tmux: `bash <scratch>/primary_stream.sh` (500 × `echo` + `sleep 0.04`) with the same 24-step `GROVE_CAPTURE_RESIZE` schedule; 22 s |
 | `sgr-torture` | 24×80 | no | synthetic: all 16 ANSI named colors fg+bg (normal and bright), 256-color boundaries (0/7/8/15/16/231/232/255), truecolor `38;2;r;g;b`, bold on/off, INVERSE on/off and combined, three `\x07` bells, OSC 0/1/2 title sets, CJK + Nerd Font glyphs, `\x1b[?1049h`/`l` toggle | generated in code — `cargo test -p grove-terminal --test capture -- --ignored --nocapture generate_synthetic` |
-| `activity-snippets` | 24×80 | no | the per-agent screens `src/gui/activity.rs`'s classifier keys off (Claude spinner/idle box/permission prompts, Codex working/composer/approval, a bare shell prompt, test output), each prefixed with clear + cursor-home so it parses deterministically | generated in code, same command as above |
+| `activity-snippets` | 24×80 | no | the per-agent screens `crates/grove-core/src/activity.rs`'s classifier keys off (Claude spinner/idle box/permission prompts, Codex working/composer/approval, a bare shell prompt, test output), each prefixed with clear + cursor-home so it parses deterministically | generated in code, same command as above |
 
 ## Post-processing
 

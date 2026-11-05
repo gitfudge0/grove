@@ -805,7 +805,7 @@ pub fn TOOLTIP_SHADOW() -> Hsla {
     alpha(gpui::rgb(0).into(), 0.36)
 }
 
-/// Quiet source-attached confirmation veil (DESIGN.md overlay composition).
+/// Quiet source-attached confirmation veil (product/design.md overlay composition).
 pub fn QUIET_VEIL() -> Hsla {
     SCRIM().opacity(0.14)
 }

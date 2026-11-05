@@ -4,7 +4,7 @@ use gpui::{px, AssetSource as _, SharedString, TextRun};
 
 use crate::assets::Assets;
 
-/// Must stay aligned with the bundled JetBrains Mono font at 12.5pt or the cursor drifts across long rows (`src/gui/metrics.rs:24-32`).
+/// Must stay aligned with the bundled JetBrains Mono font at 12.5pt or the cursor drifts across long rows.
 pub const CELL_W: f32 = 7.5; // measured advance at FONT_SIZE; == FONT_SIZE * 0.6
 /// A GROVE constant, NOT a font metric — never use `window.line_height()` or `window.rem_size()` for the grid.
 pub const CELL_H: f32 = 17.0;
@@ -149,7 +149,7 @@ pub fn register(cx: &mut gpui::App) -> Result<(), MetricError> {
         .map_err(|e| MetricError::Registration(e.to_string()))
 }
 
-/// Mirrors the iced-side test at `src/gui/metrics.rs:388-392`, but at runtime since gpui's text system needs a live `App`.
+/// Checks the bundled font advance at runtime because GPUI shaping needs a live `App`.
 pub fn assert_cell_metrics(cx: &mut gpui::App) -> Result<f32, MetricError> {
     let available = cx.text_system().all_font_names();
     for family in [MONO_FAMILY, UI_FAMILY] {

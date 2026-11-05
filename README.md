@@ -71,3 +71,9 @@ The script installs `cargo-bundle` if needed and uses the `local` profile, which
 Build artifacts remain cached to speed up subsequent builds. To reclaim space explicitly, run `cargo clean --profile local` or `cargo clean --release`; `cargo clean` removes all artifacts for this checkout and makes the next build slower. Older installers may have left `target/aarch64-apple-darwin` or `target/x86_64-apple-darwin` artifacts; `cargo clean --target <triple> --release` removes that target's old release artifacts. The installer never clears caches automatically.
 
 To disable anonymous usage telemetry, turn off **Share anonymous usage data** in Settings or set `GROVE_TELEMETRY=off`.
+
+## Product and agent guidance
+
+Agents building or changing Grove should start with the
+[product guidance index](product/README.md). It routes to the design contract,
+feature behavior, development guidance and verification requirements.

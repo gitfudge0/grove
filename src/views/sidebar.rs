@@ -4653,9 +4653,6 @@ impl Sidebar {
             .child(motion::fast(panel, format!("project-menu-enter-{idx}"), cx))
             .into_any_element()
     }
-    fn tree_for_project(&self, idx: usize, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        self.project_tree(Some(idx), window, cx)
-    }
     fn project_tree(
         &self,
         project_filter: Option<usize>,

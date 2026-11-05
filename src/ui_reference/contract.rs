@@ -123,7 +123,10 @@ pub fn export(theme: &str) -> Result<Snapshot, String> {
         .collect();
     grove_core::theme::set_by_name(&previous);
     let owners = [
-        ("DESIGN.md", include_bytes!("../../DESIGN.md").as_slice()),
+        (
+            "product/design.md",
+            include_bytes!("../../product/design.md").as_slice(),
+        ),
         (
             "src/views/tokens.rs",
             include_bytes!("../views/tokens.rs").as_slice(),

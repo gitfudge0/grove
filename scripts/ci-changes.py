@@ -9,8 +9,7 @@ def needs_build(paths):
     # Unknown files, scripts, assets and workflow changes always run native jobs.
     # Deletions/renames are included by git diff (both sides of a rename).
     return not paths or any(
-        not (path in {'README.md', 'AGENTS.md', 'DESIGN.md', 'CONTRIBUTING.md'}
-             or path.startswith(('docs/', 'plans/')))
+        path not in {'README.md', 'AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md'}
         for path in paths
     )
 

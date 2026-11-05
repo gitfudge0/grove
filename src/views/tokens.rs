@@ -1,4 +1,4 @@
-//! The design system's numeric scales, in design pixels (feed them to [`crate::views::rpx`]). See DESIGN.md; every call site must use a token, never a bare literal.
+//! The design system's numeric scales, in design pixels (feed them to [`crate::views::rpx`]). See product/design.md; every call site must use a token, never a bare literal.
 
 #![allow(dead_code)]
 
@@ -139,16 +139,16 @@ pub const TEXT_BRAND: f32 = 15.0;
 pub const RADIUS_CHROME: f32 = 8.0;
 pub const OPACITY_DISABLED: f32 = 0.58;
 
-/// Short feedback and disclosure transitions, matching DESIGN.md Motion.
+/// Short feedback and disclosure transitions, matching product/design.md Motion.
 pub const MOTION_FAST_MS: u64 = 80;
-/// Default panel and selection transitions, matching DESIGN.md Motion.
+/// Default panel and selection transitions, matching product/design.md Motion.
 pub const MOTION_BASE_MS: u64 = 140;
-/// Larger view and modal entrances, matching DESIGN.md Motion.
+/// Larger view and modal entrances, matching product/design.md Motion.
 pub const MOTION_SLOW_MS: u64 = 220;
 /// The reveal begins near the endpoint so controls and content remain legible immediately.
 pub const MOTION_FADE_FROM: f32 = 0.72;
 
-/// Shared form and preference geometry from DESIGN.md.
+/// Shared form and preference geometry from product/design.md.
 pub const FIELD_H: f32 = 60.;
 pub const FIELD_INSET_X: f32 = 14.;
 pub const FORM_VALUE_SIZE: f32 = 16.;

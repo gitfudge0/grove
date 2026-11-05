@@ -1,4 +1,4 @@
-//! Executable DESIGN.md tripwires for the current native component architecture.
+//! Executable product/design.md tripwires for the current native component architecture.
 //! These source checks complement native interaction QA; they do not establish it.
 #![cfg(test)]
 use fs_err as fs;
@@ -42,7 +42,11 @@ fn reject(rule: &str, predicate: impl Fn(&str) -> bool) {
             }
         }
     }
-    assert!(hits.is_empty(), "{rule} (DESIGN.md):\n{}", hits.join("\n"));
+    assert!(
+        hits.is_empty(),
+        "{rule} (product/design.md):\n{}",
+        hits.join("\n")
+    );
 }
 fn source(path: &str) -> String {
     fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap()
@@ -149,7 +153,7 @@ fn r7_action_glyphs_come_from_catalog() {
     for (file, source) in sources() {
         assert!(
             !has_text_icon_child(&source),
-            "R7 action glyph (DESIGN.md): {file} must use catalog icons"
+            "R7 action glyph (product/design.md): {file} must use catalog icons"
         );
         for name in literal_icon_references(&source) {
             let path = if name.starts_with("icons/") {

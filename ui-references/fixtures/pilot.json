@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "design_system": "grove",
-  "contract_hash": "70f720b3bc42012a2d96a930cf4ec42aff5068f0cd7fdd90a10f5f0af5d4d0f4",
+  "contract_hash": "ba56a20e480dbc3d8f9d77c846ec58a644b1673c16211d9052bce4487a8f81eb",
   "owners": {
-    "DESIGN.md": "302543abfa143694df48dfe079bedee1e11ba0d0c8a450b91c5ffd51cd788c8c",
     "build.rs": "817461b07a7d2e32f2c18329cbbf2314cb70ca97ff7a44a7c7cafd9b00deca00",
-    "native-engine": "7ac8802fcee1339b49fe8b105d6a723c1f0c2df4b5b3e46079621d153de173e4",
+    "native-engine": "02fcc9ff063cd2323e9487345ef9e657b77085f6ef1e083bc47604fda84c3ece",
+    "product/design.md": "8636546aba280f5e9cc62defd47e870c21379f4b6c1c0bc6aee6fae0a1b6103f",
     "reference/compose": "04cd53d2ec55676cf3a356b4d353a6aa7cbd9bd4ba741b872098c6aff7bd07e6",
-    "reference/contract": "bc2deb4ea0c954e273194d038ace9f237a5a4b2da055a0e23dccb3aedfac786b",
+    "reference/contract": "be75d072404fec0184e3eecb813313a9059eb8b814a765e4ece33d0fe4286703",
     "reference/generate": "de581c807f193a786f63ad89dfc569b537791c8cbf7a8891bc2ac39869aba6fd",
     "reference/generated-recipe": "a6dac5a47404adc4533634807868380c39aab1ff1a30446406dd546286e37be3",
     "reference/html": "b09b5d1e4b81631cbc13b7e4040dffc084d48f84bd5a06f58146dba67fef10bf",
@@ -20,17 +20,17 @@
     "resolved/src/views/components.rs": "7e6f730ed177f509c885415b460dac9455a9da2dea112d0641b258a56787c03f",
     "resolved/src/views/tokens.rs": "26d9ffc0ad225335c8ca4a530017645733f5715a066974c074d31313b1684a12",
     "rust-toolchain": "819ed8387d66fc0d1c5a49a089ed161192ae699e99881b0675779e50d1f01c81",
-    "src/fonts.rs": "a8819c94a459afc59dc58cee36b3e565c7fdbb539c0935da4c9d4529d1f3be50",
-    "src/icons.rs": "c808d0a08e173586b5f12f98468c70718f617132ad61e4e23f3b9219d4690c30",
-    "src/theme.rs": "bf49d00a71df1e2d7786f7fc40876e36b82d2f94be675902e38013223324b61a",
-    "src/views/components.rs": "bdc7eabda0f8bdb7e5a4a9c26f87375c6bbfdbfade120b0f62bebd5e7bcccdb4",
-    "src/views/tokens.rs": "40200cf82c59209ab34c7b75d7e8a30900a299ca288bc6f9108f9342fed5e7ca",
-    "vendor/button": "71e6aa53db3770a517871bd50f37c2ad9bffa8c834732cde798832456b725fe7",
-    "vendor/button_icon": "93f9bcc9cbfed390fd6f69f554f48536d01faed143ab924594c2feaac7b8b5e8",
+    "src/fonts.rs": "99b2b6638e715a5c70eb9912cf98d6cfc3cb7f955c56de787008394ed9deab49",
+    "src/icons.rs": "3f501b8038dad8fbf472a13abdabbef2865b53ce7fa27908195c8aae6d8608a0",
+    "src/theme.rs": "125d011bcdca6cbd5915a898ff42879d1863a58d1f244dd5cfa8403742442773",
+    "src/views/components.rs": "176de9a04e5f7a5c9115b073d7e81060206bd80b960e43e51370c9547dba63c4",
+    "src/views/tokens.rs": "5df4a0612ab5cc8e2e0411d6ade4fce22ab9dceed9163165b9d454b857854792",
+    "vendor/button": "1d5c4d36bc2737e7a6e34f30e862fa57878ac3b2507465099d1a17aed2e78749",
+    "vendor/button_icon": "c06691783cc32da565c3caf88cd895840225e44b952403c16e92427509df3758",
     "vendor/icon": "5eff4a7bf6e088c290f796da09511943a172d26b9851924e331a0a7adf1a671a",
     "vendor/spinner": "2382b14913ad80f0493b03e92047b876fe80eabf2aa2182230eaa39273f0dfef",
     "vendor/styled": "7dc2d4bef4bdbf980f18d40f1a1c3149e391771da8e86ceda97d4b028fdfde60",
-    "workspace-manifest": "3951e53509d675ff0de353054dacfe449c38f4af5d78b698a2f2de5263a15cc9"
+    "workspace-manifest": "58a19e56d6c21f18e22fec9e60b6b16f9496177caccca3a5a65289910433d000"
   },
   "fixture": {
     "viewport": {

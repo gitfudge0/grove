@@ -6,3 +6,33 @@
 .fudge-ship/
 target/parity-shots/
 brag-output/
+
+# Scratch output and retired artifact locations (enforced by CI).
+/.grove-artifacts/
+/.playwright-cli/
+/.fudge/
+/docs/
+/mockups/
+/output/
+/plans/
+/.grove/mock/
+/.grove/mocks/
+/.grove/plan-samples/
+/.grove/plan-visual-sample.grove-plan.json
+/DESIGN.html
+/sidebar-variations.html
+/transcript-performance*.png
+/.grove/plans/
+/.grove/qa/oversized-live-path.json
+/assets/showcase/grove-launch.jpg
+/assets/showcase/grove-launch.mp4
+/todo.md
+/.grove/qa/oversized_artifact_smoke.rs
+
+# Retired document locations; maintained product guidance lives in product/.
+/DESIGN.md
+/PRODUCT.md
+/ui-references/README.md
+/.agents/skills/grove-ui/references/drift-audit-2026-10-22.md
+/.claude/skills/gpui-development/patterns.md
+/.grove/qa/oversized-live-method.md

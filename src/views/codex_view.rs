@@ -446,7 +446,7 @@ fn review_overview(response: &str) -> String {
 /// The task strip header uses the compact control height.
 const TASK_STRIP_HEAD_H: f32 = CONTROL_H;
 
-/// One task row in the expanded strip (DESIGN.md row-h).
+/// One task row in the expanded strip (product/design.md row-h).
 const TASK_ROW_H: f32 = CONTROL_H + SPACE_SM;
 /// Rows reserve the header disclosure column before their status mark.
 const TASK_MARK_INSET: f32 = ICON_MD + SPACE_SM;

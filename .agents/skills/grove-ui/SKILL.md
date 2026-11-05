@@ -5,7 +5,10 @@ description: Implement and review Grove native UI, including navigation, forms, 
 
 # Grove UI implementation
 
-Read [DESIGN.md](../../../DESIGN.md) before UI implementation or delegation. It owns approved hierarchy, semantics, interaction states, and exceptions; current tokens/theme/components own exact values. Historical `DESIGN.html` and archived migration tables are provenance, not implementation specifications. Explicit current user direction takes precedence; reconcile it with the contract rather than silently changing product direction.
+Use the [product guidance index](../../../product/README.md) to locate feature
+behavior, development guidance and known verification gaps for the affected area.
+
+Read [design contract](../../../product/design.md) before UI implementation or delegation. It owns approved hierarchy, semantics, interaction states, and exceptions; current tokens/theme/components own exact values. Explicit current user direction takes precedence; reconcile it with the contract rather than silently changing product direction.
 
 ## Establish the contract
 
@@ -17,7 +20,7 @@ Use DM Sans for application labels, forms, metadata, native diffs, and script ed
 
 ## Build from HTML references
 
-For an HTML reference that will become native Grove UI, follow the [reference workflow](../../../ui-references/README.md). Use its typed component document and native design-system export; do not infer dimensions, reconstruct controls from CSS or maintain a parallel palette. Ordinary exploratory HTML is not implementation-ready. Unsupported treatments require an extension in the existing native owner and its adapter/checks, rather than a local approximation.
+For an HTML reference that will become native Grove UI, follow the [reference workflow](../../../product/ui-reference.md). Use its typed component document and native design-system export; do not infer dimensions, reconstruct controls from CSS or maintain a parallel palette. Ordinary exploratory HTML is not implementation-ready. Unsupported treatments require an extension in the existing native owner and its adapter/checks, rather than a local approximation.
 
 1. Record the selected direction, fixture content and required states in task state. Validate the document against the current native contract; resolve unsupported properties and glyphs before generation.
 2. Generate and compile the actual Rust composition. Keep application data, actions, focus ownership and provider/session identity in typed native bindings; do not inject source code into the document or fork a recipe's internals.
@@ -31,7 +34,7 @@ The workflow's supported contexts and certification bounds are part of acceptanc
 
 Tooltips are opt-in, not a default control treatment. Add one only where it supplies needed context, identifies an otherwise ambiguous icon-only action, or exposes information that cannot be shown in place. Do not duplicate visible labels. Preserve accessible names independently, and use the shared tooltip surface when a tooltip is required. Check the owning view and explicit contract before retaining or adding one.
 
-Classify each affected target as an inline disclosure/link, bounded action, navigation or selectable option, popover anchor, field, or static metadata before styling it. Apply the interaction state table in DESIGN.md: expansion is not selection; inline disclosures stay transparent on hover and expansion, while keyboard focus remains independently visible. Keep a fill within the actual target and prevent nested actions from triggering unrelated highlights. Confirm disabled controls reject activation and active pointer feedback, and that release/cancel clears press feedback. Use shared semantic colors and recipes rather than local color or geometry forks.
+Classify each affected target as an inline disclosure/link, bounded action, navigation or selectable option, popover anchor, field, or static metadata before styling it. Apply the interaction state table in `product/design.md`: expansion is not selection; inline disclosures stay transparent on hover and expansion, while keyboard focus remains independently visible. Keep a fill within the actual target and prevent nested actions from triggering unrelated highlights. Confirm disabled controls reject activation and active pointer feedback, and that release/cancel clears press feedback. Use shared semantic colors and recipes rather than local color or geometry forks.
 
 Inspect rest, pointer hover, keyboard focus, expanded/open, selected, pressed/released, disabled/loading, and relevant combinations in the actual native view. Exercise normal and narrow widths, long labels, light and dark themes, and changed rem zoom as relevant. Check that focus remains visible and unobscured, distinguishable against adjacent colors in every affected theme and selected state, and that visual state is also conveyed semantically. Document measured contrast and real native evidence; source inspection and fixture assertions alone do not establish visual compliance. Report unobserved provider and platform paths explicitly.
 
@@ -59,4 +62,4 @@ For shared questions, approvals, tasks, subagents, or transcript behavior, name 
 
 Run relevant code checks and the conformance suite as required by [AGENTS.md](../../../AGENTS.md). A passing source check or worker claim cannot establish native UI correctness. Record the exact build/worktree observed, screenshot/interaction evidence, and passed, failed, or unobserved checks. Correct observed drift; if native inspection is blocked, state the blocker and unobserved checks without claiming verification. An isolated QA app may be used before the final installation; documentation/skill-only changes require neither build nor installation.
 
-Update DESIGN.md when an approved change adds or changes an invariant, and update this skill when its procedure or checks need to change. Restoring an already documented rule needs no redundant guidance edit. Keep rules semantic. The [October 20–22 drift audit](references/drift-audit-2026-10-22.md) is optional provenance for tracing a regression or reconciling older layouts, not another design authority.
+Update `product/design.md` when an approved change adds or changes an invariant, and update this skill when its procedure or checks need to change. Restoring an already documented rule needs no redundant guidance edit. Keep rules semantic.

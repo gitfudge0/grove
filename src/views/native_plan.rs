@@ -1744,7 +1744,7 @@ mod tests {
         store
             .import(
                 "example",
-                "docs/feat/native-plans/example.grove-plan.json",
+                "tests/fixtures/native-plans/example.grove-plan.json",
                 root.to_str().unwrap(),
                 std::slice::from_ref(&root),
             )

@@ -1818,7 +1818,7 @@ mod tests {
     fn recent_activity_groups_tools_under_short_provider_updates() {
         let mut items = vec![
             json!({"type":"agentMessage","text":"Inspecting hover styling. More detail is in the conversation."}),
-            json!({"type":"commandExecution","command":"cat DESIGN.md"}),
+            json!({"type":"commandExecution","command":"cat product/design.md"}),
             json!({"type":"reasoning","text":"private reasoning"}),
             json!({"type":"mcpToolCall","tool":"read_file"}),
             json!({"type":"agentMessage","text":"Removing the highlight\nMore detail"}),

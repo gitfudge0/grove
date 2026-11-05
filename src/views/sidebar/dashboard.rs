@@ -1246,7 +1246,7 @@ fn seed_activity_fixture(
         serde_json::json!({"type":"userMessage","text":"Implement dashboard navigation"}),
         serde_json::json!({"type":"plan","plan":[{"id":"task-1","step":"Trace session closing and implement dashboard navigation","status":"inProgress"},{"id":"task-2","step":"Verify the change and commit it","status":"pending"}]}),
         serde_json::json!({"type":"agentMessage","text":"Traced the session-close handler."}),
-        serde_json::json!({"type":"commandExecution","command":"cat DESIGN.md"}),
+        serde_json::json!({"type":"commandExecution","command":"cat product/design.md"}),
         serde_json::json!({"type":"agentMessage","text":"Added navigation back to the dashboard."}),
         serde_json::json!({"type":"plan","plan":[{"id":"task-1","step":"Trace session closing and implement dashboard navigation","status":"completed"},{"id":"task-2","step":"Verify the change and commit it","status":"inProgress"}]}),
         serde_json::json!({"type":"agentMessage","text":"Checked session-close navigation."}),
