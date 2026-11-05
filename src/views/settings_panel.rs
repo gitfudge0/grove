@@ -1023,7 +1023,7 @@ impl SettingsPanel {
     }
 
     fn setting_row(
-        label: &'static str,
+        label: impl IntoElement,
         detail: impl Into<gpui::SharedString>,
         control: impl IntoElement,
     ) -> gpui::Div {
@@ -1568,12 +1568,12 @@ impl SettingsPanel {
                             .font_family(crate::fonts::UI_FAMILY)
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
-                            .child(chord),
+                            .child(super::components::shortcut_hint(chord)),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .min_w_0()
+                            .min_w(rpx(FIELD_LABEL_COL_W))
                             .text_size(rpx(TEXT_BODY))
                             .text_color(c::FG())
                             .child(shortcut.description),
@@ -1594,7 +1594,7 @@ impl SettingsPanel {
                 div(),
             ))
             .child(Self::setting_row(
-                "Shift+Enter",
+                super::components::shortcut_hint("Shift+Enter"),
                 "Insert a new line.",
                 div(),
             ))
@@ -1603,7 +1603,10 @@ impl SettingsPanel {
                 "Codex and Claude Code, while an agent turn is running.",
                 div()
                     .text_size(rpx(TEXT_SMALL))
-                    .child(format!("{}+Enter", keymap::platform_mod_label())),
+                    .child(super::components::shortcut_hint(format!(
+                        "{}+Enter",
+                        keymap::platform_mod_label()
+                    ))),
             ))
     }
 

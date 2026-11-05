@@ -1288,17 +1288,17 @@ impl Render for WorktreeLauncher {
                                     cx,
                                 )
                             ))
-                            .when(!compact || self.error.is_none(), |footer| footer.child(match self.mode {
+                            .when(!compact || self.error.is_none(), |footer| footer.child(super::components::shortcut_hint(match self.mode {
                                 PaletteMode::Root if compact => "↑↓ · Tab tools · Enter · Esc",
                                 _ if self.loading_worktrees && compact => "Loading worktrees… · Esc back",
                                 _ if self.loading_worktrees => "Loading worktrees… · Search is ready · Esc back",
                                 PaletteMode::Single if project_step => "↑↓ projects · Enter choose · Esc back",
                                 PaletteMode::Single if compact => "↑↓ · Tab tools · Enter start · Esc",
-                                PaletteMode::Multi if compact => "⇧Space select · Tab tools · Enter · Esc",
+                                PaletteMode::Multi if compact => "Shift+Space select · Tab tools · Enter · Esc",
                                 PaletteMode::Root => "↑↓ rows · Tab tools · Enter activate · Esc close",
                                 PaletteMode::Single => "↑↓ worktrees · Tab tools · Enter start session · Esc back",
                                 PaletteMode::Multi => "↑↓ worktrees · Shift+Space select · Tab tools · ←→ change tool · Enter launch selected · Esc back",
-                            })),
+                            }))),
                     ),
             );
         self.presence.render(

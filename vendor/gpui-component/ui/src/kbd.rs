@@ -5,6 +5,10 @@ use gpui::{
 
 use crate::{ActiveTheme, StyledExt};
 
+/// Optional application-owned presentation; formatting and keybindings stay literal.
+struct ContentRenderer(fn(&Keystroke) -> gpui::AnyElement);
+impl gpui::Global for ContentRenderer {}
+
 #[derive(IntoElement, Clone, Debug)]
 pub struct Kbd {
     style: StyleRefinement,
@@ -25,6 +29,19 @@ impl From<Keystroke> for Kbd {
 }
 
 impl Kbd {
+    /// Use the application's icon family in menus and other component shortcuts.
+    pub fn set_content_renderer(renderer: fn(&Keystroke) -> gpui::AnyElement, cx: &mut gpui::App) {
+        cx.set_global(ContentRenderer(renderer));
+    }
+
+    fn content(&self, cx: &gpui::App) -> gpui::AnyElement {
+        if let Some(renderer) = cx.try_global::<ContentRenderer>() {
+            (renderer.0)(&self.stroke)
+        } else {
+            Self::format(&self.stroke).into_any_element()
+        }
+    }
+
     pub fn new(stroke: Keystroke) -> Self {
         Self {
             style: StyleRefinement::default(),
@@ -205,9 +222,10 @@ impl Styled for Kbd {
 impl RenderOnce for Kbd {
     fn render(self, _: &mut gpui::Window, cx: &mut gpui::App) -> impl gpui::IntoElement {
         if !self.appearance {
-            return Self::format(&self.stroke).into_any_element();
+            return self.content(cx);
         }
 
+        let content = self.content(cx);
         div()
             .text_color(cx.theme().muted_foreground)
             .bg(cx.theme().tokens.muted)
@@ -226,7 +244,7 @@ impl RenderOnce for Kbd {
             .whitespace_normal()
             .flex_shrink_0()
             .refine_style(&self.style)
-            .child(Self::format(&self.stroke))
+            .child(content)
             .into_any_element()
     }
 }

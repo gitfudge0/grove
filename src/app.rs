@@ -115,6 +115,14 @@ pub fn boot(cx: &mut gpui::App) {
     // The component Root supplies native text selection. Copy bindings are scoped
     // to TextView/Input so terminal Ctrl+C still reaches the PTY.
     gpui_component::init(cx);
+    gpui_component::kbd::Kbd::set_content_renderer(
+        |stroke| {
+            use gpui::IntoElement as _;
+            crate::views::components::shortcut_hint(gpui_component::kbd::Kbd::format(stroke))
+                .into_any_element()
+        },
+        cx,
+    );
     // Must follow init: it installs the global this overwrites.
     crate::theme::sync_component_theme(cx);
 

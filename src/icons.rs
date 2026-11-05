@@ -346,6 +346,7 @@ fn svg_for(name: &str) -> String {
         // ⌘ command / place-of-interest mark — macOS shortcut modifier.
         // Source: Bootstrap Icons (16×16 grid, fill-based like claude/codex).
         "enter" => r#"<path d="M13 3v5H3m4-4L3 8l4 4"/>"#,
+        "control" => r#"<path d="m3.5 10 4.5-4.5 4.5 4.5"/>"#,
         "shift" => r#"<path d="m3 7 5-5 5 5h-3v6H6V7z"/>"#,
         "command" => {
             r#"<path fill="currentColor" stroke="none" d="M3.5 2A1.5 1.5 0 0 1 5 3.5V5H3.5a1.5 1.5 0 1 1 0-3M6 5V3.5A2.5 2.5 0 1 0 3.5 6H5v4H3.5A2.5 2.5 0 1 0 6 12.5V11h4v1.5a2.5 2.5 0 1 0 2.5-2.5H11V6h1.5A2.5 2.5 0 1 0 10 3.5V5zm4 1v4H6V6zm1-1V3.5A1.5 1.5 0 1 1 12.5 5zm0 6h1.5a1.5 1.5 0 1 1-1.5 1.5zm-6 0v1.5A1.5 1.5 0 1 1 3.5 11zM5 5H3.5A1.5 1.5 0 0 1 5 3.5z"/>"#

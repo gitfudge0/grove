@@ -210,11 +210,13 @@ impl Sidebar {
                         .flex_shrink_0()
                         .text_size(rpx(TEXT_SMALL))
                         .text_color(c::FG_MUTE())
-                        .child(if cfg!(target_os = "macos") {
-                            format!("⌘{}", index + 1)
-                        } else {
-                            format!("Ctrl+Shift+{}", index + 1)
-                        }),
+                        .child(crate::views::components::shortcut_hint(
+                            if cfg!(target_os = "macos") {
+                                format!("⌘{}", index + 1)
+                            } else {
+                                format!("Ctrl+Shift+{}", index + 1)
+                            },
+                        )),
                 );
             nav = nav.child(row);
         }

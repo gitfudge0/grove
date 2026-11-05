@@ -212,3 +212,9 @@ Applied to `ui/src` (source, not manifests):
     column minimums. Its track scrolls horizontally when those minimums exceed
     the pane width, using the existing horizontal scroll mask so vertical wheel
     input still reaches the transcript. Narrow tables retain ordinary wrapping.
+
+18. **Use Grove's modifier icons in component shortcuts.**
+    `Kbd::set_content_renderer` lets the application render shortcut content in
+    its own icon family, including input context menus. Text formatting and
+    keybindings remain unchanged, and applications without the hook retain the
+    original renderer. Grove registers its shared shortcut hint at startup.

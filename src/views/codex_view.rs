@@ -6347,19 +6347,19 @@ impl Render for CodexView {
                                     .text_size(rpx(TEXT_MICRO))
                                     .line_height(gpui::phi())
                                     .text_color(c::FG_DIM())
-                                    .child(if stopping {
+                                    .child(super::components::shortcut_hint(if stopping {
                                         "Stopping…"
                                     } else if self.submitted.is_some() {
                                         "Sending…"
                                     } else if editing {
                                         "Enter to save"
                                     } else if busy && steer_available {
-                                        "Enter to queue · ⌘Enter to steer"
+                                        if cfg!(target_os = "macos") { "Enter to queue · Cmd+Enter to steer" } else { "Enter to queue · Ctrl+Shift+Enter to steer" }
                                     } else if busy {
                                         "Enter to queue"
                                     } else {
                                         "Enter to send"
-                                    })
+                                    }))
                             )
                             .when_some(notice_below, gpui::ParentElement::child)
                             .when(self.dashboard_tray.is_some(), |rail| {

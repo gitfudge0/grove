@@ -621,7 +621,7 @@ impl Sidebar {
                             .text_size(rpx(TEXT_MICRO))
                             .line_height(rpx(TEXT_MICRO + SPACE_SM))
                             .text_color(c::FG_DIM())
-                            .child(hints),
+                            .child(crate::views::components::shortcut_hint(hints)),
                     ),
             );
         let panel = panel.on_prepaint(move |bounds, _, cx| {

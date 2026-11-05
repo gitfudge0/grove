@@ -3,6 +3,86 @@ use super::{motion, rpx, tokens::*};
 use crate::theme as c;
 use gpui::{div, prelude::*, AnimationExt as _, App, Div, MouseButton, Stateful};
 
+/// Static shortcut/help text with catalog modifier glyphs. The complete original
+/// text remains the accessible name; input bindings and terminal text are untouched.
+pub fn shortcut_hint(label: impl Into<gpui::SharedString>) -> Stateful<Div> {
+    let label = label.into();
+    let mut row = div()
+        .id(format!("shortcut-hint-{label}"))
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(rpx(SPACE_SM))
+        .aria_label(
+            label
+                .replace('⌃', "Control+")
+                .replace('⇧', "Shift+")
+                .replace('⌘', "Command+"),
+        );
+    for part in shortcut_parts(&label) {
+        row = match part {
+            ShortcutPart::Text(text) => row.child(text),
+            ShortcutPart::Icon(name) => row.child(crate::icons::icon(name, ICON_SM, c::FG_DIM())),
+        };
+    }
+    row
+}
+
+#[derive(Debug, PartialEq)]
+enum ShortcutPart {
+    Text(String),
+    Icon(&'static str),
+}
+
+fn shortcut_parts(label: &str) -> Vec<ShortcutPart> {
+    let mut parts = Vec::new();
+    let mut text = String::new();
+    let mut chars = label.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let (word, glyph) = if ch.is_ascii_alphabetic() {
+            let mut word = String::from(ch);
+            while chars.peek().is_some_and(char::is_ascii_alphabetic) {
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+            }
+            let glyph = match word.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => Some("control"),
+                "shift" => Some("shift"),
+                "cmd" | "command" => Some("command"),
+                _ => None,
+            };
+            (word, glyph)
+        } else {
+            (
+                ch.to_string(),
+                match ch {
+                    '⌃' => Some("control"),
+                    '⇧' => Some("shift"),
+                    '⌘' => Some("command"),
+                    _ => None,
+                },
+            )
+        };
+        if let Some(glyph) = glyph {
+            if !text.is_empty() {
+                parts.push(ShortcutPart::Text(std::mem::take(&mut text)));
+            }
+            parts.push(ShortcutPart::Icon(glyph));
+            // Modifier adjacency and the shared gap replace the plus separator.
+            if chars.peek() == Some(&'+') {
+                chars.next();
+            }
+        } else {
+            text.push_str(&word);
+        }
+    }
+    if !text.is_empty() {
+        parts.push(ShortcutPart::Text(text));
+    }
+    parts
+}
+
 const FORM_FIELD_H: f32 = FIELD_H;
 pub(super) const FORM_FIELD_INSET: f32 = FIELD_INSET_X;
 const FORM_FIELD_VALUE: f32 = FORM_VALUE_SIZE;
@@ -1216,4 +1296,40 @@ pub fn dropdown_row(id: impl Into<gpui::ElementId>) -> Stateful<Div> {
         .items_center()
         .gap(rpx(SPACE_LG))
         .rounded(rpx(RADIUS_CHROME))
+}
+
+#[cfg(test)]
+mod shortcut_hint_tests {
+    use super::{
+        shortcut_parts,
+        ShortcutPart::{Icon, Text},
+    };
+
+    #[test]
+    fn modifiers_preserve_keys_prose_and_plus_keys() {
+        assert_eq!(
+            shortcut_parts("Ctrl+Shift++"),
+            vec![Icon("control"), Icon("shift"), Text("+".into())]
+        );
+        assert_eq!(
+            shortcut_parts("⌃⇧1"),
+            vec![Icon("control"), Icon("shift"), Text("1".into())]
+        );
+        assert_eq!(
+            shortcut_parts("Shift+Enter for a new line"),
+            vec![Icon("shift"), Text("Enter for a new line".into())]
+        );
+        assert_eq!(
+            shortcut_parts("shift fine · enter/esc done"),
+            vec![Icon("shift"), Text(" fine · enter/esc done".into())]
+        );
+        assert_eq!(
+            shortcut_parts("Shifted controls"),
+            vec![Text("Shifted controls".into())]
+        );
+        assert_eq!(
+            shortcut_parts("cmd+alt+1–9"),
+            vec![Icon("command"), Text("alt+1–9".into())]
+        );
+    }
 }
