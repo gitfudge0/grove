@@ -87,6 +87,26 @@ struct Root {
     git_dir: PathBuf,
 }
 
+// Optional send-time snapshots must not hold provider dispatch indefinitely.
+thread_local! {
+    static SEND_DEADLINE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+pub fn capture_for_send(paths: &[PathBuf]) -> Result<Checkpoint, String> {
+    struct Reset(Option<std::time::Instant>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            SEND_DEADLINE.with(|slot| slot.set(self.0));
+        }
+    }
+    let _reset = Reset(SEND_DEADLINE.with(|slot| {
+        slot.replace(Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(500),
+        ))
+    }));
+    repository_roots(paths).and_then(|roots| capture(&roots))
+}
+
 fn git(root: &Path, index: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut command = Command::new("git");
     command
@@ -100,7 +120,53 @@ fn git(root: &Path, index: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, Stri
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
-    let output = command.output().map_err(|e| e.to_string())?;
+    let deadline = SEND_DEADLINE.with(|slot| slot.get());
+    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        return Err("Send-time checkpoint exceeded its time budget".into());
+    }
+    let output = if let Some(deadline) = deadline {
+        // Files avoid pipe backpressure while polling and allow bounded cleanup.
+        let stdout = tempfile::tempfile().map_err(|e| e.to_string())?;
+        let stderr = tempfile::tempfile().map_err(|e| e.to_string())?;
+        command.stdout(stdout.try_clone().map_err(|e| e.to_string())?);
+        command.stderr(stderr.try_clone().map_err(|e| e.to_string())?);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command.spawn().map_err(|e| e.to_string())?;
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                break status;
+            }
+            if std::time::Instant::now() >= deadline {
+                #[cfg(unix)]
+                // Kill Git's filters too; none may keep modifying the private index.
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Send-time checkpoint exceeded its time budget".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        use std::io::{Read, Seek};
+        let read = |mut file: std::fs::File| -> Result<Vec<u8>, String> {
+            file.rewind().map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            Ok(bytes)
+        };
+        std::process::Output {
+            status,
+            stdout: read(stdout)?,
+            stderr: read(stderr)?,
+        }
+    } else {
+        command.output().map_err(|e| e.to_string())?
+    };
     if !output.status.success() {
         return Err(format!(
             "Git checkpoint in {} (git {}, {}): {}",
@@ -411,6 +477,47 @@ mod tests {
         .unwrap();
         dir
     }
+    #[test]
+    fn send_checkpoint_preserves_fast_worktrees() {
+        let directory = repo();
+        let checkpoint = capture_for_send(&[directory.path().to_path_buf()]).unwrap();
+        assert_eq!(checkpoint.roots.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn send_checkpoint_bounds_slow_git_filters_and_resets_budget() {
+        let directory = repo();
+        git(
+            directory.path(),
+            None,
+            &["config", "filter.slow.clean", "sleep 5; cat"],
+        )
+        .unwrap();
+        fs_err::write(
+            directory.path().join(".gitattributes"),
+            "tracked filter=slow\n",
+        )
+        .unwrap();
+        fs_err::write(directory.path().join("tracked"), "changed").unwrap();
+        let started = std::time::Instant::now();
+        assert!(capture_for_send(&[directory.path().to_path_buf()]).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert!(SEND_DEADLINE.with(|slot| slot.get()).is_none());
+        // No partial checkpoint escaped; a subsequent ordinary snapshot works.
+        git(
+            directory.path(),
+            None,
+            &["config", "filter.slow.clean", "cat"],
+        )
+        .unwrap();
+        assert!(capture(&[directory.path().to_path_buf()]).is_ok());
+        assert_eq!(
+            fs_err::read_to_string(directory.path().join("tracked")).unwrap(),
+            "changed"
+        );
+    }
+
     #[test]
     fn restore_reservation_blocks_overlaps_until_the_last_owner_releases() {
         let directory = tempfile::tempdir().unwrap();

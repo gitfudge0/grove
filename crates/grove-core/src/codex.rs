@@ -4504,9 +4504,7 @@ impl Actor {
         roots.sort();
         roots.dedup();
         // Conversation identity remains usable even when files cannot be captured.
-        let files = crate::checkpoint::repository_roots(&roots)
-            .and_then(|roots| crate::checkpoint::capture(&roots))
-            .ok();
+        let files = crate::checkpoint::capture_for_send(&roots).ok();
         self.state
             .saved
             .edit_checkpoints

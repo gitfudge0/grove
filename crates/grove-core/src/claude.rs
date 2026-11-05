@@ -1452,9 +1452,7 @@ impl Actor {
                 .iter()
                 .map(|root| std::path::PathBuf::from(&root.wt_path)),
         );
-        let files = crate::checkpoint::repository_roots(&roots)
-            .and_then(|roots| crate::checkpoint::capture(&roots))
-            .ok();
+        let files = crate::checkpoint::capture_for_send(&roots).ok();
         self.state
             .saved
             .edit_checkpoints
