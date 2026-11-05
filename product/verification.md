@@ -151,3 +151,7 @@ untested; Claude live is untested. Native visual inspection, real pointer and
 keyboard focus across moves, light/dark themes, narrow widths and zoom remain
 untested; macOS and Windows remain untested. No enabled native computer-use
 surface is available for those visual checks in this session.
+
+## Checkout push motion
+
+The option B rising-arrow push indicator has a Linux native capture fixture (`push_animation_linux_capture`). The initial X11 capture produced blank images, so native appearance, motion continuity, narrow layout, light/dark contrast and reduced-motion rendering remain unverified. Real remote push success/failure was not exercised. macOS and Windows remain untested.

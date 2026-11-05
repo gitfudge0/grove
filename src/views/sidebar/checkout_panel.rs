@@ -1,6 +1,7 @@
 //! Checkout actions live beside the selected canvas, outside its scroll region.
 use super::*;
 use crate::views::components::{form_action, project_field_well, transcript_action};
+use gpui::AnimationExt as _;
 use gpui_component::{
     menu::{PopupMenu, PopupMenuItem},
     Disableable,
@@ -1656,7 +1657,7 @@ impl Sidebar {
         self.checkout_panel.operation.network_action = Some(match action {
             GitAction::Publish { .. } => ("Publish requested", "git-publish"),
             GitAction::Pull => ("Pull requested", "chev-down"),
-            _ => ("Push requested", "git-push"),
+            _ => ("Pushing…", "git-push"),
         });
         self.checkout_panel.operation.message = None;
         cx.spawn(async move |this, cx| {
@@ -2756,7 +2757,7 @@ impl Sidebar {
                         .network_action
                         .filter(|_| busy && same_network)
                     {
-                        (label, glyph, false, false)
+                        (label, glyph, false, glyph == "git-push")
                     } else if initial_loading {
                         ("Git status not yet available", "git", false, false)
                     } else {
@@ -3751,6 +3752,40 @@ fn checkout_row(
     checkout_loading_row(id, label, glyph, false, window, cx)
 }
 
+/// A fixed upstream bar with a gently rising arrow; layout and label never move.
+fn checkout_push_mark(id: &'static str, cx: &App) -> AnyElement {
+    const PUSH_CYCLE: Duration = Duration::from_millis(1150);
+    const PUSH_TRAVEL: f32 = 1.0;
+    let arrow = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size(rpx(ICON_MD))
+        .child(icon("git-push-arrow", ICON_MD, c::STATUS_INFO()));
+    let arrow = if cx.reduce_motion() {
+        arrow.into_any_element()
+    } else {
+        arrow
+            .with_animation(
+                SharedString::from(format!("{id}-push-rise")),
+                gpui::Animation::new(PUSH_CYCLE).repeat(),
+                |el, progress| {
+                    let rise = (1. - (progress * std::f32::consts::TAU).cos()) * 0.5;
+                    el.top(rpx(PUSH_TRAVEL * (1. - 2. * rise)))
+                        .opacity(0.4 + 0.6 * rise)
+                },
+            )
+            .into_any_element()
+    };
+    div()
+        .debug_selector(|| "checkout-push-mark".into())
+        .relative()
+        .size(rpx(ICON_MD))
+        .child(icon("git-push-bar", ICON_MD, c::STATUS_INFO()))
+        .child(arrow)
+        .into_any_element()
+}
+
 fn checkout_loading_row(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -3779,7 +3814,9 @@ fn checkout_loading_row(
                         .debug_selector(move || format!("{id}-icon"))
                         .w(rpx(ICON_LG))
                         .flex_shrink_0()
-                        .child(if loading {
+                        .child(if loading && glyph == "git-push" {
+                            checkout_push_mark(id, cx)
+                        } else if loading {
                             super::super::status::mark(
                                 id,
                                 super::super::status::StatusKind::Working,
@@ -4388,7 +4425,7 @@ mod tests {
         let mut panel = CheckoutPanel::default();
         panel.select_path(Some("/one".into()));
         panel.operation.busy = true;
-        panel.operation.network_action = Some(("Push requested", "git-push"));
+        panel.operation.network_action = Some(("Pushing…", "git-push"));
         panel.select_path(Some("/two".into()));
         assert!(!panel.operation.busy);
         panel.operation.busy = true;
@@ -6563,5 +6600,113 @@ mod tests {
             assert!(cx.debug_bounds("checkout-card").is_some());
             assert!(cx.debug_bounds("checkout-terminal").is_some());
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod push_native_qa {
+    use super::*;
+    use gpui::AppContext as _;
+
+    struct PushProbe;
+    impl gpui::Render for PushProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .bg(c::BG())
+                .font_family(crate::fonts::UI_FAMILY)
+                .child(
+                    project_field_well(false, false)
+                        .w(rpx(CARD_WIDTH))
+                        .h_auto()
+                        .child(checkout_row(
+                            "push-qa-branch",
+                            "feat/new-sidebar-with-a-long-branch-name",
+                            "git-branch",
+                            window,
+                            cx,
+                        ))
+                        .child(
+                            checkout_loading_row(
+                                "push-qa-busy",
+                                "Pushing…",
+                                "git-push",
+                                true,
+                                window,
+                                cx,
+                            )
+                            .disabled(true),
+                        )
+                        .child(checkout_row(
+                            "push-qa-changes",
+                            "Changes",
+                            "unified",
+                            window,
+                            cx,
+                        )),
+                )
+        }
+    }
+
+    #[test]
+    #[ignore = "opens an isolated native X11 push-animation window"]
+    fn push_animation_linux_capture() {
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(|cx| {
+                gpui_component::init(cx);
+                crate::fonts::register(cx).unwrap();
+                let window = cx
+                    .open_window(
+                        gpui::WindowOptions {
+                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                                gpui::point(gpui::px(40.), gpui::px(40.)),
+                                gpui::size(gpui::px(300.), gpui::px(160.)),
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            window.set_window_title("Grove push animation QA");
+                            let probe = cx.new(|_| PushProbe);
+                            cx.new(|cx| gpui_component::Root::new(probe, window, cx))
+                        },
+                    )
+                    .unwrap();
+                cx.activate(true);
+                cx.spawn(async move |cx| {
+                    for (theme, rem, reduced) in [
+                        ("grove-dark", 16., false),
+                        ("grove-light", 16., false),
+                        ("grove-dark", 20., true),
+                    ] {
+                        cx.update(|cx| {
+                            grove_core::theme::set_by_name(theme);
+                            c::sync_component_theme(cx);
+                            cx.set_reduce_motion(reduced);
+                        });
+                        cx.update_window(window.into(), |_, window, _| {
+                            window.set_rem_size(gpui::px(rem));
+                            window.refresh();
+                        })
+                        .unwrap();
+                        cx.background_executor()
+                            .timer(Duration::from_millis(450))
+                            .await;
+                        let output = format!(
+                            "{}/.grove-artifacts/push-motion/native-{theme}-{rem}-{reduced}.png",
+                            env!("CARGO_MANIFEST_DIR")
+                        );
+                        std::fs::create_dir_all(std::path::Path::new(&output).parent().unwrap())
+                            .unwrap();
+                        assert!(std::process::Command::new("import")
+                            .args(["-window", "Grove push animation QA", &output])
+                            .status()
+                            .unwrap()
+                            .success());
+                    }
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
     }
 }

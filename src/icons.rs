@@ -348,6 +348,9 @@ fn svg_for(name: &str) -> String {
         "git" => r#"<circle cx="8" cy="8" r="2.5"/><path d="M1.5 8h4M10.5 8h4"/>"#,
         // Outgoing commits — upload to the upstream bar.
         "git-push" => r#"<path d="M8 13V5M4.5 8.5 8 5l3.5 3.5M3 2.5h10"/>"#,
+        // Separate layers retain the upstream bar while the busy arrow rises.
+        "git-push-bar" => r#"<path d="M3 2.5h10"/>"#,
+        "git-push-arrow" => r#"<path d="M8 13V5M4.5 8.5 8 5l3.5 3.5"/>"#,
         // Publish a new remote branch — cloud upload.
         "git-publish" => {
             r#"<path d="M4.5 11.5H4a2.5 2.5 0 0 1-.2-5A4.25 4.25 0 0 1 12 5.4a3 3 0 0 1 .5 6.1H12M8 14V8m-2.5 2.5L8 8l2.5 2.5"/>"#
