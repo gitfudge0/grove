@@ -47,6 +47,16 @@ impl Category {
         Self::About,
     ];
 
+    fn icon(self) -> &'static str {
+        match self {
+            Self::General => "cog",
+            Self::Agents => "brain",
+            Self::Terminal => "terminal",
+            Self::Privacy => "lock",
+            Self::About => "status-info",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::General => "General",
@@ -328,6 +338,15 @@ impl SettingsPanel {
                     self.theme_filter == kind,
                     true,
                 )
+                .child(crate::icons::icon(
+                    match kind {
+                        None => "contrast",
+                        Some(ThemeKind::Light) => "sun",
+                        Some(ThemeKind::Dark) => "moon",
+                    },
+                    ICON_SM,
+                    c::FG_DIM(),
+                ))
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.theme_filter = kind;
@@ -1094,9 +1113,9 @@ impl SettingsPanel {
                 false,
                 true,
             )
+            .child(crate::icons::icon("contrast", ICON_SM, c::FG_DIM()))
             .child(theme_swatches)
             .child(theme_label)
-            .child(crate::icons::icon("chev-right", ICON_MD, c::FG_DIM()))
             .on_click(
                 cx.listener(|this, _, window, cx| this.open_nested(Page::Themes, window, cx)),
             );
@@ -1115,6 +1134,7 @@ impl SettingsPanel {
             )
             .child(
                 self.choice("settings-zoom-reset", "Reset zoom", false, true)
+                    .child(crate::icons::icon("reset", ICON_SM, c::FG_DIM()))
                     .child(format!("{:.0}%", zoom * 100.0))
                     .on_click(cx.listener(|this, _, _, cx| this.set_zoom(0.0, cx))),
             )
@@ -1147,6 +1167,17 @@ impl SettingsPanel {
             landing_choices = landing_choices.child(
                 self.choice(id.clone(), label, landing_page == page, true)
                     .debug_selector(move || id.clone())
+                    .child(crate::icons::icon(
+                        match page {
+                            grove_core::storage::LandingPage::NewSession => "plus",
+                            grove_core::storage::LandingPage::Home => "home",
+                            grove_core::storage::LandingPage::Projects => "folder",
+                            grove_core::storage::LandingPage::Sessions => "list",
+                            grove_core::storage::LandingPage::History => "history",
+                        },
+                        ICON_SM,
+                        c::FG_DIM(),
+                    ))
                     .child(label)
                     .on_click(cx.listener(move |_, _, _, cx| {
                         SettingsState::update(cx, |store| {
@@ -1223,6 +1254,7 @@ impl SettingsPanel {
                     !tmux_on,
                     true,
                 )
+                .child(crate::icons::icon("terminal", ICON_SM, c::FG_DIM()))
                 .child("Built-in")
                 .on_click(cx.listener(|this, _, _, cx| this.set_backend(false, cx))),
             )
@@ -1233,6 +1265,7 @@ impl SettingsPanel {
                     tmux_on,
                     tmux_available,
                 )
+                .child(crate::icons::icon("terminal", ICON_SM, c::FG_DIM()))
                 .child("Tmux")
                 .when(tmux_available, |el| {
                     el.on_click(cx.listener(|this, _, _, cx| this.set_backend(true, cx)))
@@ -1256,6 +1289,11 @@ impl SettingsPanel {
                     chrome == enabled,
                     true,
                 )
+                .child(crate::icons::icon(
+                    if enabled { "toggle-on" } else { "toggle-off" },
+                    ICON_SM,
+                    c::FG_DIM(),
+                ))
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.set_chrome(enabled, cx))),
             );
@@ -1266,6 +1304,11 @@ impl SettingsPanel {
                     terminal_agents == enabled,
                     !cfg!(windows),
                 )
+                .child(crate::icons::icon(
+                    if enabled { "toggle-on" } else { "toggle-off" },
+                    ICON_SM,
+                    c::FG_DIM(),
+                ))
                 .child(label)
                 .when(!cfg!(windows), |el| {
                     el.on_click(
@@ -1345,6 +1388,7 @@ impl SettingsPanel {
                     selected,
                     available,
                 )
+                .child(crate::icons::icon(agent.icon_name(), ICON_SM, c::FG_DIM()))
                 .child(label)
                 .when(available, |el| {
                     el.on_click(
@@ -1832,6 +1876,14 @@ impl Render for SettingsPanel {
                                         .debug_selector(move || {
                                             format!("settings-category-{}", category.label())
                                         })
+                                        .flex()
+                                        .items_center()
+                                        .gap(rpx(SPACE_SM))
+                                        .child(crate::icons::icon(
+                                            category.icon(),
+                                            ICON_SM,
+                                            c::FG_DIM(),
+                                        ))
                                         .child(category.label())
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.select_category(category, cx);
@@ -2012,6 +2064,73 @@ mod tests {
                             .unwrap()
                             .success());
                         eprintln!("Native Settings header capture: {output}");
+                    }
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens an isolated native X11 Settings window"]
+    fn settings_button_icons_linux_capture() {
+        assert!(
+            std::env::var_os("GROVE_CONFIG_DIR").is_some(),
+            "use an isolated config directory"
+        );
+        gpui_platform::application()
+            .with_assets(crate::assets::Assets)
+            .run(|cx| {
+                setup(cx);
+                crate::fonts::register(cx).unwrap();
+                let window = cx
+                    .open_window(
+                        gpui::WindowOptions {
+                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                                gpui::point(gpui::px(40.), gpui::px(40.)),
+                                gpui::size(gpui::px(600.), gpui::px(650.)),
+                            ))),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            window.set_window_title("Grove button icons QA");
+                            let runtime = cx.new(Runtime::new);
+                            let panel = cx.new(|cx| SettingsPanel::new(runtime, cx));
+                            panel.update(cx, |panel, cx| {
+                                panel.open(window, cx);
+                            });
+                            cx.new(|cx| gpui_component::Root::new(panel, window, cx))
+                        },
+                    )
+                    .unwrap();
+                cx.activate(true);
+                cx.spawn(async move |cx| {
+                    for (theme, rem) in [
+                        ("grove-dark", 16.),
+                        ("grove-light", 16.),
+                        ("grove-dark", 24.),
+                    ] {
+                        cx.update(|cx| {
+                            grove_core::theme::set_by_name(theme);
+                            c::sync_component_theme(cx);
+                            gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                        });
+                        cx.update_window(window.into(), |_, window, _| {
+                            window.set_rem_size(gpui::px(rem));
+                            window.refresh();
+                        })
+                        .unwrap();
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(600))
+                            .await;
+                        let output = format!("/tmp/grove-settings-buttons-{theme}-{rem}.png");
+                        assert!(std::process::Command::new("import")
+                            .args(["-window", "Grove button icons QA", &output])
+                            .status()
+                            .unwrap()
+                            .success());
+                        eprintln!("Native Settings button capture: {output}");
                     }
                     cx.update(|cx| cx.quit());
                 })

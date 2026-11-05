@@ -1045,6 +1045,10 @@ impl Shell {
                             .font_weight(FontWeight::MEDIUM)
                             .text_size(rpx(TEXT_BODY))
                             .text_color(c::FG())
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(crate::icons::icon("terminal", ICON_SM, c::FG_DIM()))
                             .child(label),
                     )
                     .child(
@@ -1115,7 +1119,7 @@ impl Shell {
                                     .border_1()
                                     .border_color(if self.backend_choice_index == 2 { c::SEL_RING() } else { c::SURFACE_RAISED() })
                                     .child(
-                                        form_action("backend-choice-back", "Back", false, window, cx)
+                                        form_action("backend-choice-back", "Back", false, window, cx).icon(gpui_component::Icon::default().path("icons/arrow-left.svg").size(rpx(ICON_SM)))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.cancel_backend_choice(window, cx);
                                             })),
@@ -1129,7 +1133,7 @@ impl Shell {
                                     .border_1()
                                     .border_color(if self.backend_choice_index == 3 { c::SEL_RING() } else { c::SURFACE_RAISED() })
                                     .child(
-                                        form_action("backend-choice-start-action", "Start session", true, window, cx)
+                                        form_action("backend-choice-start-action", "Start session", true, window, cx).icon(gpui_component::Icon::default().path("icons/play.svg").size(rpx(ICON_SM)))
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.choose_backend(this.backend_selected_tmux, window, cx);
                                             })),

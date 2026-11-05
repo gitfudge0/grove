@@ -1133,6 +1133,15 @@ pub fn boolean_choices<T: 'static>(
             } else {
                 c::BG()
             })
+            .child(crate::icons::icon(
+                if selected_value {
+                    "toggle-on"
+                } else {
+                    "toggle-off"
+                },
+                ICON_SM,
+                c::FG_DIM(),
+            ))
             .child(text)
             .when(enabled, |control| {
                 control

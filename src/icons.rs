@@ -124,6 +124,16 @@ fn wrap_svg(inner: &str) -> String {
 
 fn svg_for(name: &str) -> String {
     let inner = match name {
+        "toggle-on" => {
+            r#"<rect x="1.5" y="4" width="13" height="8" rx="4"/><circle cx="10.5" cy="8" r="2" fill="currentColor" stroke="none"/>"#
+        }
+        "toggle-off" => {
+            r#"<rect x="1.5" y="4" width="13" height="8" rx="4"/><circle cx="5.5" cy="8" r="2"/>"#
+        }
+        "sun" => {
+            r#"<circle cx="8" cy="8" r="3"/><path d="M8 1v1M8 14v1M1 8h1M14 8h1M3 3l1 1M12 12l1 1M3 13l1-1M12 4l1-1"/>"#
+        }
+        "moon" => r#"<path d="M13.5 9.5A6 6 0 0 1 6.5 2a6 6 0 1 0 7 7.5Z"/>"#,
         "lightning" => r#"<path d="M9 1.5 3.5 9H8l-1 5.5L12.5 7H8z"/>"#,
         // Two opposing arrows distinguish refresh/retry from reset and restart.
         "refresh" => {

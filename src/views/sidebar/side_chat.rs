@@ -984,6 +984,11 @@ impl Sidebar {
                     let target = path.clone();
                     panel = panel.child(
                         transcript_action(("side-chat-recover", index), path, false, window, cx)
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/restore.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.checkout_panel.chosen_root = Some(target.clone());
                                 cx.notify();
@@ -1368,6 +1373,11 @@ impl Sidebar {
             if chat.retryable {
                 history = history.child(
                     transcript_action("side-chat-retry", "Retry", false, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/refresh.svg")
+                                .size(rpx(ICON_SM)),
+                        )
                         .disabled(!supported)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.retry_side_chat(retry_key.clone(), window, cx)
@@ -1403,6 +1413,11 @@ impl Sidebar {
                         false,
                         window,
                         cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/restore.svg")
+                            .size(rpx(ICON_SM)),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.checkout_panel.chosen_root = Some(target.clone());

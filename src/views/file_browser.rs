@@ -842,6 +842,15 @@ impl Render for FileBrowser {
                                 window,
                                 cx,
                             )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path(if self.source {
+                                        "icons/eye.svg"
+                                    } else {
+                                        "icons/file.svg"
+                                    })
+                                    .size(rpx(ICON_SM)),
+                            )
                             .debug_selector(|| "file-viewer-source".into())
                             .with_focus_handle(self.source_focus.clone())
                             .on_click(cx.listener(|this, _, _, cx| {

@@ -886,3 +886,34 @@ fn application_popup_menus_use_shared_dropdown_recipe() {
         );
     }
 }
+
+/// Guard bound dense actions across views, rather than a handpicked list of IDs.
+/// Unbound recipe constructors compose their icon at the owning call site.
+#[test]
+fn bound_dense_actions_have_a_leading_icon() {
+    let mut checked = 0;
+    for (file, text) in sources() {
+        for marker in [
+            "form_action(",
+            "transcript_action(",
+            "dense_action_with_colors(",
+        ] {
+            for (at, _) in text.match_indices(marker) {
+                let chain = constructor_chain(&text[at + marker.len() - 1..]);
+                let Some((visual, _)) = chain.split_once(".on_click(") else {
+                    continue;
+                };
+                checked += 1;
+                assert!(
+                    visual.contains(".icon(") || visual.contains(".icon_only()"),
+                    "{file}:{} bound action lacks its leading icon",
+                    text[..at].lines().count()
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 60,
+        "scan must cover the app's bound dense actions"
+    );
+}

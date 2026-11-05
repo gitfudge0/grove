@@ -450,7 +450,18 @@ impl gpui::Render for SummaryDisclosure {
         .min_w_0()
         .justify_start()
         .text_color(c::FG())
-        .child(body)
+        .items_start()
+        .gap(rpx(SPACE_SM))
+        .child(crate::icons::icon(
+            if self.expanded {
+                "chev-down"
+            } else {
+                "chev-right"
+            },
+            ICON_SM,
+            c::FG_DIM(),
+        ))
+        .child(div().flex_1().min_w_0().child(body))
         .on_click(cx.listener(|this, _, window, cx| {
             cx.stop_propagation();
             this.focus.focus(window, cx);

@@ -3315,6 +3315,11 @@ impl Sidebar {
                     window,
                     cx,
                 )
+                .icon(
+                    gpui_component::Icon::default()
+                        .path("icons/panel-right.svg")
+                        .size(rpx(ICON_SM)),
+                )
                 .debug_selector(|| "checkout-summary".into())
                 .with_focus_handle(self.checkout_panel.trigger_focus["summary"].clone())
                 .on_click(cx.listener(|this, _, window, cx| {

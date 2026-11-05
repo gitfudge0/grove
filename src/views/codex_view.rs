@@ -1648,21 +1648,24 @@ impl CodexView {
             .flex_wrap()
             .gap(rpx(SPACE_LG))
             .mt(rpx(SPACE_LG));
-        for (id, title, description, prompt) in [
+        for (id, glyph, title, description, prompt) in [
             (
                 "codex-starter-understand",
+                "search",
                 "Understand this project",
                 "Map the code and explain where to start",
                 "Explain the main modules in this project and where I should start.",
             ),
             (
                 "codex-starter-change",
+                "edit",
                 "Make a change",
                 "Describe what should work differently",
                 "Help me make a change in this project. Ask me what should work differently before editing.",
             ),
             (
                 "codex-starter-review",
+                "diff",
                 "Review my changes",
                 "Look for bugs in the current diff",
                 "Review my uncommitted changes for bugs and regressions.",
@@ -1693,6 +1696,8 @@ impl CodexView {
                         div()
                             .id(gpui::SharedString::from(format!("{id}-title")))
                             .debug_selector(move || format!("{id}-title"))
+                            .flex().items_center().gap(rpx(SPACE_SM))
+                            .child(crate::icons::icon(glyph, ICON_SM, c::FG_DIM()))
                             .text_color(c::FG_DIM())
                             .group_hover("neutral-control", |text| text.text_color(c::FG()))
                             .child(title),
@@ -2840,7 +2845,7 @@ impl CodexView {
                     .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
                     .child("Review the plan and send feedback. Implementation approval is a separate action."),
             ))
-            .child(form_action("session-plan-review", "Review response", false, window, cx)
+            .child(form_action("session-plan-review", "Review response", false, window, cx).icon(gpui_component::Icon::default().path("icons/edit.svg").size(rpx(ICON_SM)))
                 .on_click(move |_, window, cx| plan.update(cx, |plan, cx| plan.reveal(window, cx))))
             .into_any_element())
     }
@@ -4219,15 +4224,15 @@ impl CodexView {
             .py(rpx(SPACE_3XL));
         // Auto margins center short stacks and resolve to zero on overflow.
         // Override the shared header control's fixed height and flex basis so
-        // markers form compact rows, compressing only to their minimum hit area.
+        // message glyphs retain a readable slot while the rail scrolls on overflow.
         let marker_count = entries.len() as f32;
         let mut stack = div()
             .w_full()
             .flex()
             .flex_col()
             .my_auto()
-            .h(rpx(marker_count * SPACE_LG))
-            .min_h(rpx(marker_count * SPACE_SM))
+            .h(rpx(marker_count * ICON_SM))
+            .min_h(rpx(marker_count * ICON_SM))
             .flex_shrink_1();
         for entry in entries {
             let index = entry.item_index;
@@ -4264,12 +4269,12 @@ impl CodexView {
                 .cursor_pointer()
                 .debug_selector(move || format!("codex-minimap-message-{index}"))
                 .w_full()
-                .h(rpx(SPACE_LG))
+                .h(rpx(ICON_SM))
                 .flex_1()
-                .flex_basis(rpx(SPACE_LG))
+                .flex_basis(rpx(ICON_SM))
                 .flex_shrink_1()
-                .min_h(rpx(SPACE_SM))
-                .max_h(rpx(SPACE_LG))
+                .min_h(rpx(ICON_SM))
+                .max_h(rpx(ICON_SM))
                 .tab_index(0)
                 .aria_label(format!("Go to message: {}", entry.prompt))
                 .aria_description(format!("Response: {}", entry.response))
@@ -4277,13 +4282,11 @@ impl CodexView {
                     style.bg(c::BG_HOVER()).text_color(c::FG())
                 })
                 .focus_visible(|style| style.bg(c::BG_HOVER()))
-                .child(
-                    div()
-                        .w(rpx(if selected { SPACE_3XL } else { SPACE_LG }))
-                        .h(rpx(SPACE_XS))
-                        .bg(if selected { c::FG() } else { c::FG_DIM() })
-                        .group_hover("neutral-control", |style| style.bg(c::FG())),
-                )
+                .child(crate::icons::icon(
+                    "message-circle",
+                    ICON_SM,
+                    if selected { c::FG() } else { c::FG_DIM() },
+                ))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.jump_to_transcript_item(index, window, cx);
                 }))
@@ -7564,6 +7567,7 @@ impl CodexView {
                     } else {
                         c::BG()
                     })
+                    .child(crate::icons::icon("lightning", ICON_SM, c::FG_DIM()))
                     .child(speed.label())
                     .when(unavailable.is_none(), |control| {
                         control
@@ -8520,9 +8524,7 @@ impl CodexView {
                 .min_h(rpx(CONTROL_H))
                 .justify_start()
                 .gap(rpx(SPACE_SM))
-                .when(stacked_rows, |row| {
-                    row.flex_col().items_start().gap(rpx(SPACE_XS))
-                })
+                .when(stacked_rows, |row| row.items_start())
                 .px(rpx(SPACE_LG))
                 .py(rpx(SPACE_SM))
                 .tab_index(0)
@@ -8535,44 +8537,57 @@ impl CodexView {
                     );
                     row.child(crate::icons::icon(glyph, ICON_SM, color))
                 })
+                .when(!file_rows, |row| {
+                    row.child(crate::icons::icon("tool", ICON_SM, c::FG_DIM()))
+                })
                 .child(
                     div()
+                        .flex_1()
                         .min_w_0()
-                        .max_w_full()
-                        .when(!file_rows, |name| name.flex_shrink_0())
-                        .whitespace_normal()
-                        .when(file_rows, |name| name.flex_1().truncate())
-                        .text_size(rpx(if stacked_rows { TEXT_BODY } else { TEXT_SMALL }))
-                        .when(stacked_rows, |name| name.w_full().truncate())
-                        .text_color(if stacked_rows || index == self.suggestion_index {
-                            c::FG()
-                        } else {
-                            c::FG_DIM()
-                        })
-                        .group_hover("neutral-control", |text| text.text_color(c::FG()))
-                        .child(name),
+                        .flex()
+                        .gap(rpx(SPACE_SM))
+                        .when(stacked_rows, |text| text.flex_col().gap(rpx(SPACE_XS)))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .max_w_full()
+                                .when(!file_rows, |name| name.flex_shrink_0())
+                                .whitespace_normal()
+                                .when(file_rows, |name| name.flex_1().truncate())
+                                .text_size(rpx(if stacked_rows { TEXT_BODY } else { TEXT_SMALL }))
+                                .when(stacked_rows, |name| name.w_full().truncate())
+                                .text_color(if stacked_rows || index == self.suggestion_index {
+                                    c::FG()
+                                } else {
+                                    c::FG_DIM()
+                                })
+                                .group_hover("neutral-control", |text| text.text_color(c::FG()))
+                                .child(name),
+                        )
+                        .when_some(description, |row, description| {
+                            row.child(
+                                div()
+                                    .when(!stacked_rows, |description| description.flex_1())
+                                    .when(stacked_rows, |description| description.w_full())
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(if stacked_rows {
+                                        c::FG_MUTE()
+                                    } else if index == self.suggestion_index {
+                                        c::FG()
+                                    } else {
+                                        c::FG_DIM()
+                                    })
+                                    .when(!stacked_rows, |text| {
+                                        text.group_hover("neutral-control", |text| {
+                                            text.text_color(c::FG())
+                                        })
+                                    })
+                                    .child(description),
+                            )
+                        }),
                 )
-                .when_some(description, |row, description| {
-                    row.child(
-                        div()
-                            .when(!stacked_rows, |description| description.flex_1())
-                            .when(stacked_rows, |description| description.w_full())
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(if stacked_rows {
-                                c::FG_MUTE()
-                            } else if index == self.suggestion_index {
-                                c::FG()
-                            } else {
-                                c::FG_DIM()
-                            })
-                            .when(!stacked_rows, |text| {
-                                text.group_hover("neutral-control", |text| text.text_color(c::FG()))
-                            })
-                            .child(description),
-                    )
-                })
                 .on_key_down(
                     cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space")
@@ -12993,9 +13008,12 @@ mod tests {
         let first = cx.debug_bounds("codex-minimap-message-0").unwrap();
         let mark = cx.debug_bounds("codex-minimap-message-3").unwrap();
         let last = cx.debug_bounds("codex-minimap-message-5").unwrap();
-        let row_height = rpx(SPACE_LG).to_pixels(gpui::px(16.0));
+        let row_height = rpx(ICON_SM).to_pixels(gpui::px(16.0));
         assert!((mark.top() - first.bottom()).abs() < gpui::px(1.0));
-        assert!(mark.size.height <= row_height);
+        assert_eq!(
+            mark.size.height, row_height,
+            "reserve the full message icon slot"
+        );
         for bounds in [first, mark, last] {
             assert!((bounds.center().x - rail.center().x).abs() < gpui::px(1.0));
         }

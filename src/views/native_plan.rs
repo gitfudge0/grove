@@ -885,6 +885,11 @@ impl NativePlan {
                         window,
                         cx,
                     )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/external-link.svg")
+                            .size(rpx(ICON_SM)),
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.html.update(cx, |html, cx| {
                             html.open_snapshot(key.clone(), source.clone(), window, cx)

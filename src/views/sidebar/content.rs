@@ -1315,6 +1315,11 @@ impl Sidebar {
                             window,
                             cx,
                         )
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/terminal.svg")
+                                .size(rpx(ICON_SM)),
+                        )
                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
@@ -1463,6 +1468,14 @@ impl Sidebar {
                     }
                 }),
             )
+            .flex()
+            .items_center()
+            .gap(rpx(SPACE_SM))
+            .child(crate::icons::icon(
+                if worktree { "git-branch" } else { "folder" },
+                ICON_SM,
+                c::FG_DIM(),
+            ))
             .child(label)
             .into_any_element()
     }

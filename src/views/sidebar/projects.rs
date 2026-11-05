@@ -668,6 +668,15 @@ impl ProjectPanel {
                             *prompt == (action == "prompt"),
                             true,
                         )
+                        .child(crate::icons::icon(
+                            if action == "shell" {
+                                "terminal"
+                            } else {
+                                "reply"
+                            },
+                            ICON_SM,
+                            c::FG_DIM(),
+                        ))
                         .child(label)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.change_script(&id, action, window, cx);
