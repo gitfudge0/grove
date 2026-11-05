@@ -723,11 +723,16 @@ impl Sidebar {
                         Err(error) => this.runtime.read(cx).toast.clone().update(cx, |toast, cx| toast.set_error(error, cx)),
                     }
                 }
+                CodexViewEvent::AskChanges(invocation, source) if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
+                    this.invoke_ask_skill(invocation.clone(), source.clone(), cx);
+                }
                 CodexViewEvent::DescribeChanges(preference, source) if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     this.invoke_description_skill(*preference, source.clone(), cx);
                 }
                 CodexViewEvent::ScriptLaunched => this.snippet_launched(id, cx),
                 CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
+                    this.hide_questions();
+                    this.active_change_reader = None;
                     this.files_active = true;
                     this.files_owner = this.selection.clone();
                     this.checkout_panel.side_chat_owner = None;
@@ -1903,6 +1908,9 @@ impl Sidebar {
                 "project-panel-enter",
                 cx,
             );
+        }
+        if self.questions_is_open(cx) {
+            return self.render_questions(window, cx);
         }
         if self.description_is_open(cx) {
             return self.render_description(window, cx);

@@ -269,3 +269,44 @@ export-refresh test, which passed in isolation. These broader failures remain
 unresolved. Strict core/UI Clippy also reports existing diagnostics outside the
 new feature modules; the final reader and engine files have no reported lint
 diagnostics. Formatting, compilation, and repository-artifact checks passed.
+
+## Ask about changes
+
+The Ask engine reuses the Describe snapshot collector and private tool-disabled
+provider runner. Focused Linux core checks cover malformed structured answers,
+unknown/omitted/duplicate examined files, citations outside captured old/new hunk
+lines, deletion-side references, cross-hunk ranges, cancellation before provider
+launch, and empty questions. Snapshot/no-index-write guarantees retain the
+existing Describe regressions. Both-provider composer fixtures check native
+`/ask`/`$ask` routing, reserved completions, command draft preservation and
+attachment rejection without provider submission. These fixtures do not prove a
+live main-composer-to-provider end-to-end path.
+
+A live Codex Ask call on an isolated Git fixture produced a validated answer
+citing new lines 2–5 of the captured patch; Git status and the index were unchanged.
+The live Claude attempt failed; `claude auth status` reported `loggedIn: false`
+and `authMethod: none`. Claude live generation remains unverified pending sign-in.
+
+Native production-reader fixtures exercise captured-reference navigation,
+Escape/source focus, stale/error answer preservation, question-only opening,
+session/checkout/scope ownership and deferred-submit checkout isolation. Native
+captures use the production reader in an isolated Linux root, not the full Grove
+shell or a live provider session. macOS and Windows remain untested. Existing
+broader suite and strict Clippy failures recorded above are not claimed resolved.
+
+Final focused results: five Ask core tests, two skill-parser tests, nine Ask
+native/keyboard tests, one both-provider composer test and four inherited
+Describe reader regressions passed. The keyboard fixture caught the vendor
+Input consuming Control+Enter before raw key handlers; the reader now captures
+its native secondary-Enter action, preserving plain Enter as a newline.
+Formatting, compilation and repository-artifact checks passed. Strict core
+Clippy still reports 21 diagnostics outside Ask; strict UI-only Clippy reports
+103 outside the new Ask modules after correcting its new diagnostic.
+
+Linux native answer captures were inspected in Grove Dark at rem 16 and Grove
+Light at rem 20, plus a captured-diff view, provider-error state and a 340-logical-
+pixel constrained stale reader. An initial capture quit with an InputState leak;
+the harness now focuses its source and releases the reader before quitting.
+One-state-per-process captures avoid retained frames; the corrected narrow
+bootstrap capture shows the actual wrapped reader. These remain isolated native
+fixtures, not full-shell interaction, live provider UI, or participant testing.

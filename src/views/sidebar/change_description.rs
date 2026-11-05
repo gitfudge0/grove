@@ -107,7 +107,16 @@ fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
         .selectable(true)
 }
 impl Sidebar {
+    pub(super) fn dismiss_description(&mut self) {
+        self.descriptions.open = None;
+        if self.active_change_reader == Some("describe") {
+            self.active_change_reader = None;
+        }
+    }
     pub(super) fn description_is_open(&self, cx: &App) -> bool {
+        if self.active_change_reader != Some("describe") {
+            return false;
+        }
         let targets = self.checkout_targets(cx);
         let selected = super::checkout_panel::selected_checkout(
             &targets,
@@ -145,6 +154,9 @@ impl Sidebar {
             }
         }
         self.descriptions.open = None;
+        if self.active_change_reader == Some("describe") {
+            self.active_change_reader = None;
+        }
         if let Some(source) = self.descriptions.return_focus.take() {
             source.focus(window, cx);
         }
@@ -156,6 +168,7 @@ impl Sidebar {
         source: FocusHandle,
         cx: &mut Context<Self>,
     ) {
+        self.hide_questions();
         let targets = self.checkout_targets(cx);
         let Some((_, path)) = super::checkout_panel::selected_checkout(
             &targets,
@@ -196,6 +209,8 @@ impl Sidebar {
         entry.resolving = true;
         entry.error = None;
         self.descriptions.open = Some(resolving_key.clone());
+
+        self.active_change_reader = Some("describe");
         self.descriptions.return_focus = Some(source.clone());
         self.descriptions.focus_pending = true;
         cx.notify();
@@ -210,7 +225,7 @@ impl Sidebar {
                 Ok(pr)
             }).await;
             let _ = this.update(cx, |this, cx| {
-                let active = this.descriptions.open.as_ref() == Some(&resolving_key) && this.descriptions.entries.get(&resolving_key).is_some_and(|entry| entry.run == run && entry.resolving);
+                let active = this.active_change_reader == Some("describe") && this.descriptions.open.as_ref() == Some(&resolving_key) && this.descriptions.entries.get(&resolving_key).is_some_and(|entry| entry.run == run && entry.resolving);
                 if !active { return; }
                 let targets = this.checkout_targets(cx);
                 let still_selected = owner(&this.selection) == resolving_key.owner && super::checkout_panel::selected_checkout(&targets, this.checkout_panel.chosen_root.as_deref()).is_some_and(|(_, current)| current == path);
@@ -243,6 +258,7 @@ impl Sidebar {
         source: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
+        self.hide_questions();
         let provider = match self.checkout_commit_provider(cx) {
             Ok(p) => p,
             Err(error) => {
@@ -258,6 +274,8 @@ impl Sidebar {
             .is_some_and(|entry| entry.cancel.is_some() || entry.publishing)
         {
             self.descriptions.open = Some(key);
+
+            self.active_change_reader = Some("describe");
             self.descriptions.focus_pending = true;
             if let Some(source) = source {
                 self.descriptions.return_focus = Some(source);
@@ -279,6 +297,8 @@ impl Sidebar {
             self.descriptions.return_focus = Some(source);
         }
         self.descriptions.open = Some(key.clone());
+
+        self.active_change_reader = Some("describe");
         self.descriptions.focus_pending = true;
         self.descriptions
             .focus
@@ -547,6 +567,8 @@ impl Sidebar {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.descriptions.return_focus = Some(return_focus.clone());
                         this.descriptions.open = Some(target.clone());
+
+                        this.active_change_reader = Some("describe");
                         this.descriptions.focus_pending = true;
                         cx.notify();
                     })),
@@ -1095,7 +1117,10 @@ impl Sidebar {
                                             patch
                                                 .lines()
                                                 .map(|line| {
-                                                    line.chars().take_while(|c| *c == '`').count()
+                                                    line.trim_start()
+                                                        .chars()
+                                                        .take_while(|c| *c == '`')
+                                                        .count()
                                                 })
                                                 .max()
                                                 .unwrap_or(0)

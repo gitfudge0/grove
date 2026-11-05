@@ -418,3 +418,20 @@ separate editable reader state with an accessible field name, explicit Update an
 Cancel actions, unchanged PR title and preserved original context. Back/Escape
 return through diff/preview to the description, then restore the actual invoking
 control, including the Codex or Claude composer.
+
+## Change-question reader
+
+Ask about changes is a Checkout action and shared Codex/Claude composer command.
+It reuses the change-description reader's session/checkout/scope ownership,
+selectable native Markdown, captured-diff treatment and quiet status marks. Its
+accessible multiline question field uses the project field well, grows within
+the reader scroll, and retains its draft through failure/cancellation/navigation.
+Submit is an explicit icon-leading action; Control/Command+Enter also submits.
+Opening focuses the question; Escape returns through captured references before
+restoring the invoking control. Scope selection uses neutral selected controls.
+Busy controls reject duplicate submission, Cancel waits for process exit, and
+old answers retain their snapshot and coverage while a replacement is generated.
+Reading/input/source focus is immediate; reader replacement uses shared restrained
+motion with reduced-motion endpoints. Narrow layouts wrap header actions and keep
+the question field and answer inside the reader. No publishing or repair controls
+are offered by this read-only workflow.

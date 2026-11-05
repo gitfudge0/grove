@@ -154,6 +154,7 @@ fn create_sidebar(window: &mut Window, cx: &mut App) -> (Entity<Sidebar>, FocusH
             ..Default::default()
         });
         sidebar.descriptions.open = Some(key);
+        sidebar.active_change_reader = Some("describe");
         sidebar.descriptions.return_focus = Some(return_focus);
         sidebar.descriptions.focus_pending = true;
         sidebar

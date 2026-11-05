@@ -172,7 +172,7 @@ fn cancel(control: &CommitControl) -> Result<(), String> {
 pub fn prepare(path: &Path, scope: &Scope) -> Result<Snapshot, String> {
     prepare_with_control(path, scope, None)
 }
-fn prepare_with_control(
+pub fn prepare_with_control(
     path: &Path,
     scope: &Scope,
     control: Option<&CommitControl>,
@@ -313,11 +313,15 @@ fn validate(snapshot: Snapshot, value: serde_json::Value) -> Result<Description,
 
 /// Snapshot freshness is checked against complete content identities, not timestamps or counts.
 pub fn is_current(path: &Path, description: &Description) -> Result<bool, String> {
+    snapshot_is_current(path, &description.snapshot)
+}
+/// Check an immutable snapshot without requiring a generated description.
+pub fn snapshot_is_current(path: &Path, snapshot: &Snapshot) -> Result<bool, String> {
     let checkout = fs_err::canonicalize(path).map_err(|_| "Checkout is unavailable")?;
-    if checkout.to_string_lossy() != description.snapshot.checkout {
+    if checkout.to_string_lossy() != snapshot.checkout {
         return Ok(false);
     }
-    match &description.snapshot.scope {
+    match &snapshot.scope {
         Scope::Local => {
             let read = Capture {
                 path: &checkout,
@@ -325,7 +329,7 @@ pub fn is_current(path: &Path, description: &Description) -> Result<bool, String
             };
             let names = git_files(&read)?;
             let head = git(&checkout, &["rev-parse", "--verify", "HEAD"], 1024).unwrap_or_default();
-            Ok(local_identity(&read, &names, head.trim())? == description.snapshot.fingerprint)
+            Ok(local_identity(&read, &names, head.trim())? == snapshot.fingerprint)
         }
         Scope::PullRequest { url } => {
             pr_identity(url)?;
@@ -336,9 +340,9 @@ pub fn is_current(path: &Path, description: &Description) -> Result<bool, String
                 },
                 url,
             )?;
-            Ok(current.head_ref_oid == description.snapshot.head
-                && current.base_ref_oid == description.snapshot.base
-                && Some(current.body) == description.snapshot.original_body)
+            Ok(current.head_ref_oid == snapshot.head
+                && current.base_ref_oid == snapshot.base
+                && Some(current.body) == snapshot.original_body)
         }
     }
 }

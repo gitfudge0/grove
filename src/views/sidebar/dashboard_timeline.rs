@@ -438,6 +438,7 @@ impl Sidebar {
                 .update(cx, |browser, cx| {
                     browser.open(target, window, cx);
                 });
+            self.active_change_reader = None;
             self.files_active = true;
             self.files_owner = Some(Selection::Session(id));
             self.checkout_panel.side_chat_owner = None;
