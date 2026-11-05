@@ -162,6 +162,7 @@ impl Sidebar {
         id: SessionId,
         title: &str,
         editable: bool,
+        status: AnyElement,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -173,7 +174,14 @@ impl Sidebar {
             .text_color(c::FG())
             .child(self.session_title_label(id, title, "session-header-title-shimmer", cx));
         if !editable {
-            return label.into_any_element();
+            return div()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(rpx(SPACE_SM))
+                .child(label)
+                .child(status)
+                .into_any_element();
         }
         let focus = self
             .title_edit_focus
@@ -266,11 +274,13 @@ impl Sidebar {
                         cx,
                     ),
                 )
+                .child(status)
                 .into_any_element();
         }
         let title = title.to_owned();
         let keyboard_title = title.clone();
         row.child(label)
+            .child(status)
             .child(
                 header_control_with_label_tooltip("edit-session-title", "Edit session title")
                     .id(("edit-session-title", id.raw()))

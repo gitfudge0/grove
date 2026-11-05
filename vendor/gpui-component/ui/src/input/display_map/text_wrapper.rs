@@ -2,7 +2,7 @@ use gpui::Half;
 use std::ops::Range;
 
 use gpui::{
-    point, px, size, App, Font, LineFragment, Pixels, Point, ShapedLine, Size, TextAlign, Window,
+    App, Font, LineFragment, Pixels, Point, ShapedLine, Size, TextAlign, Window, point, px, size,
 };
 use ropey::Rope;
 use smallvec::SmallVec;
@@ -199,13 +199,13 @@ impl TextWrapper {
     pub(crate) fn buffer_line_to_first_wrap_row(&self, row: usize) -> usize {
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        cursor.start().1 .0
+        cursor.start().1.0
     }
 
     pub(crate) fn buffer_line_to_wrap_row_range(&self, row: usize) -> Range<usize> {
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        let start = cursor.start().1 .0;
+        let start = cursor.start().1.0;
         let len = cursor.item().map(|l| l.lines_len()).unwrap_or(0);
         start..start + len
     }
@@ -215,7 +215,7 @@ impl TextWrapper {
         let mut cursor = self.lines.cursor::<Dimensions<WrapRows, BufferRows>>(&());
         cursor.seek(&WrapRows(wrap_row), Bias::Right);
         match cursor.item() {
-            Some(_) => cursor.start().1 .0,
+            Some(_) => cursor.start().1.0,
             None => self.lines_count().saturating_sub(1),
         }
     }
@@ -435,7 +435,7 @@ impl TextWrapper {
 
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        let wrapped_row = cursor.start().1 .0;
+        let wrapped_row = cursor.start().1.0;
         let Some(line) = cursor.item() else {
             return WrapDisplayPoint::new(wrapped_row, 0, 0);
         };
@@ -463,8 +463,8 @@ impl TextWrapper {
         let Some(line) = cursor.item() else {
             return self.text.len();
         };
-        let wrapped_row = cursor.start().0 .0;
-        let row = cursor.start().1 .0;
+        let wrapped_row = cursor.start().0.0;
+        let row = cursor.start().1.0;
 
         let line_start = self.text.line_start_offset(row);
         let local_row = point.row.saturating_sub(wrapped_row);
@@ -752,7 +752,7 @@ mod tests {
     use super::*;
     use std::rc::Rc;
 
-    use gpui::{px, Boundary, FontFeatures, FontStyle, FontWeight};
+    use gpui::{Boundary, FontFeatures, FontStyle, FontWeight, px};
 
     #[test]
     fn test_update() {

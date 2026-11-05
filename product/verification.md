@@ -24,6 +24,19 @@ scope. Historical logs remain in `.grove/qa/`; the method and limits are recorde
 
 ## Outstanding verification follow-ups
 
+Session-header title/status spacing: Codex and Claude GPUI fixtures verified the
+4px title-to-status gap, status-before-edit ordering, and existing title-edit
+interactions on Linux. Live Codex and Claude provider boundaries are untested
+for this layout change. Native screenshot review at narrow widths, light/dark
+themes and changed zoom remains untested, as do macOS and Windows.
+
+Sidebar icon spacing: destination and workspace-selector gaps now use `SPACE_LG`.
+The 33 source conformance checks passed, but
+`single_sidebar_destinations_grouping_and_collapsed_geometry` failed its
+destination-right-edge assertion (152px versus 204px). Native visual inspection
+at normal/narrow widths, zoom, and light/dark themes remains unverified.
+
+
 The retired September sidebar restoration tracker recorded the following gaps.
 These are historical verification debt, not current behavior requirements or
 fresh pass/fail findings. Reconcile each with current code and `product/design.md` before
@@ -103,6 +116,16 @@ fragmented outlines around each source line. Native visual inspection at normal
 and narrow widths, light/dark themes and rem zoom remains outstanding on Linux,
 macOS and Windows. Codex and Claude share this composer path; fixture checks
 do not establish live provider delivery or native visual appearance.
+
+## Review summary chevron alignment (November 2026)
+
+The disclosure chevron now centers within the first body-text line box rather
+than the top of the multiline block. Focused review-summary tests passed,
+including expand/collapse and narrow-width/zoom fixture interactions. Codex and
+Claude completion selection and link parsing were verified with fixtures only;
+live provider paths remain untested. Native screenshot inspection of alignment
+in light/dark themes and at changed zoom remains untested on Linux, macOS and
+Windows.
 
 ## Activity category review settling
 

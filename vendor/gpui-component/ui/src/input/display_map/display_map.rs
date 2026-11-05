@@ -9,9 +9,9 @@ use super::folding::FoldRange;
 use super::text_wrapper::{LineItem, WrapDisplayPoint};
 use super::wrap_map::WrapMap;
 use super::{BufferPoint, DisplayPoint};
+use crate::input::Point as TreeSitterPoint;
 use crate::input::display_map::WrapPoint;
 use crate::input::rope_ext::RopeExt as _;
-use crate::input::Point as TreeSitterPoint;
 
 /// Two-layer projection: Buffer -> Wrap (soft-wrapping) -> Display (folding). Editor/Input only works with BufferPoint and DisplayPoint.
 pub struct DisplayMap {

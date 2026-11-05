@@ -12558,10 +12558,16 @@ mod tests {
         assert_eq!(inline[0].style.background_color, Some(c::MENU_HOVER()));
         assert_eq!(inline[0].style.font_weight, Some(gpui::FontWeight::MEDIUM));
         assert_eq!(inline[0].border, None);
-        assert_eq!(inline[0].font_family.as_deref(), Some(crate::fonts::MONO_FAMILY));
+        assert_eq!(
+            inline[0].font_family.as_deref(),
+            Some(crate::fonts::MONO_FAMILY)
+        );
         for source in ["```rust\nlet x = 1;\n```", "```\nstill typing"] {
             let decorations = super::composer_markdown_decorations(source);
-            let code = decorations.iter().find(|d| d.font_family.is_some()).unwrap();
+            let code = decorations
+                .iter()
+                .find(|d| d.font_family.is_some())
+                .unwrap();
             assert_eq!(code.style.background_color, Some(c::CODE_FILL()));
             assert_eq!(code.style.color, Some(c::FG()));
             assert_eq!(code.border, None);

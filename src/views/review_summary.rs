@@ -452,15 +452,22 @@ impl gpui::Render for SummaryDisclosure {
         .text_color(c::FG())
         .items_start()
         .gap(rpx(SPACE_SM))
-        .child(crate::icons::icon(
-            if self.expanded {
-                "chev-down"
-            } else {
-                "chev-right"
-            },
-            ICON_SM,
-            c::FG_DIM(),
-        ))
+        .child(
+            div()
+                .h(rpx(TEXT_BODY + SPACE_LG))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .child(crate::icons::icon(
+                    if self.expanded {
+                        "chev-down"
+                    } else {
+                        "chev-right"
+                    },
+                    ICON_SM,
+                    c::FG_DIM(),
+                )),
+        )
         .child(div().flex_1().min_w_0().child(body))
         .on_click(cx.listener(|this, _, window, cx| {
             cx.stop_propagation();

@@ -1022,6 +1022,7 @@ impl Sidebar {
         let status_kind = super::super::status::session_kind(status_label);
         let status = div()
             .id(("header-status", id.raw()))
+            .debug_selector(move || format!("session-header-status-{}", id.raw()))
             .role(gpui::Role::Status)
             .aria_label(status_label)
             .flex_shrink_0()
@@ -1137,10 +1138,10 @@ impl Sidebar {
                                 id,
                                 &task,
                                 native.is_some(),
+                                header_status,
                                 window,
                                 cx,
-                            ))
-                            .child(header_status),
+                            )),
                     ),
             )
             .child(
@@ -2937,6 +2938,9 @@ mod tests {
         let id = crate::entities::session_registry::SessionId::from_raw(1);
         let edit = cx.debug_bounds("edit-session-title-1").unwrap();
         let title_before = cx.debug_bounds("session-header-title-1").unwrap();
+        let status = cx.debug_bounds("session-header-status-1").unwrap();
+        assert!((f32::from(status.left() - title_before.right()) - SPACE_SM).abs() < 1.);
+        assert!(status.right() <= edit.left());
         cx.simulate_mouse_move(edit.center(), None, gpui::Modifiers::default());
         draw(cx);
         assert_eq!(
