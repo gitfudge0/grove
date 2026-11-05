@@ -1019,6 +1019,7 @@ impl Sidebar {
             self.header_task_progress(id, native.read(cx).state.status, window, cx)
         });
         let header_status = div()
+            .flex_shrink_0()
             .flex()
             .items_center()
             .gap(rpx(SPACE_MD))
@@ -1110,7 +1111,8 @@ impl Sidebar {
                                 native.is_some(),
                                 window,
                                 cx,
-                            )),
+                            ))
+                            .child(header_status),
                     ),
             )
             .child(
@@ -1124,7 +1126,6 @@ impl Sidebar {
                     .flex()
                     .items_center()
                     .gap(rpx(SPACE_MD))
-                    .child(header_status)
                     .when(grid, |actions| actions.child(close))
                     .when_some(panel_controls, gpui::ParentElement::child),
             );

@@ -167,7 +167,6 @@ impl Sidebar {
     ) -> AnyElement {
         let label = div()
             .debug_selector(move || format!("session-header-title-{}", id.raw()))
-            .flex_1()
             .min_w_0()
             .truncate()
             .font_weight(gpui::FontWeight::MEDIUM)
@@ -184,7 +183,6 @@ impl Sidebar {
         let row = div()
             .id(("session-title-row", id.raw()))
             .group("session-title")
-            .flex_1()
             .min_w_0()
             .flex()
             .items_center()
@@ -200,6 +198,7 @@ impl Sidebar {
                 .join(" ");
             let valid = !value.is_empty() && value.chars().count() <= 80;
             return row
+                .flex_1()
                 .on_key_down(
                     cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                         if event.keystroke.key == "escape" {
