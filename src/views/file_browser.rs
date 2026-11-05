@@ -9,13 +9,10 @@ use super::{
 };
 use crate::{icons::icon, theme as c};
 use gpui::{
-    div, prelude::*, AnyElement, App, Context, Entity, FocusHandle, Focusable, ScrollHandle,
-    SharedString, Window,
+    div, prelude::*, AnyElement, App, Context, FocusHandle, Focusable, ScrollHandle, SharedString,
+    Window,
 };
-use gpui_component::{
-    input::{Input, InputEvent, InputState},
-    text::TextView,
-};
+use gpui_component::text::TextView;
 use std::{
     collections::{HashMap, HashSet},
     io::Read,
@@ -23,7 +20,7 @@ use std::{
     sync::Arc,
 };
 
-pub(super) const EXPLORER_WIDTH: f32 = 240.;
+pub(super) const EXPLORER_WIDTH: f32 = 280.;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 2000;
@@ -270,11 +267,10 @@ pub(super) enum FileBrowserEvent {
     Closed,
 }
 pub(super) struct FileBrowser {
-    root: PathBuf,
+    pub(super) root: PathBuf,
     directories: HashMap<PathBuf, Result<Vec<Entry>, String>>,
     expanded: HashSet<PathBuf>,
     pending: HashSet<PathBuf>,
-    query: Entity<InputState>,
     pub target: Option<FileTarget>,
     content: Content,
     pub visible: bool,
@@ -290,23 +286,15 @@ pub(super) struct FileBrowser {
     scroll: ScrollHandle,
     explorer_scroll: ScrollHandle,
     pending_line: Option<usize>,
-    _subscriptions: Vec<gpui::Subscription>,
 }
 impl gpui::EventEmitter<FileBrowserEvent> for FileBrowser {}
 impl FileBrowser {
-    pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| InputState::new(window, cx).placeholder("Filter visible files…"));
-        let subscriptions = vec![cx.subscribe(&query, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })];
+    pub fn new(root: PathBuf, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             root: root.clone(),
             directories: HashMap::new(),
             expanded: HashSet::from([root.clone()]),
             pending: HashSet::new(),
-            query,
             target: None,
             content: Content::Loading,
             visible: false,
@@ -322,7 +310,6 @@ impl FileBrowser {
             scroll: ScrollHandle::new(),
             explorer_scroll: ScrollHandle::new(),
             pending_line: None,
-            _subscriptions: subscriptions,
         };
         this.load_directory(root, cx);
         this
@@ -427,7 +414,6 @@ impl FileBrowser {
         &mut self,
         path: &Path,
         depth: usize,
-        filter: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -457,9 +443,6 @@ impl FileBrowser {
                 .to_string_lossy()
                 .into_owned();
             let expanded = self.expanded.contains(&entry.path);
-            if !filter.is_empty() && !entry.directory && !name.to_lowercase().contains(filter) {
-                continue;
-            }
             let focus = self
                 .row_focus
                 .entry(entry.path.clone())
@@ -544,15 +527,20 @@ impl FileBrowser {
             ));
             rows.push(row.into_any_element());
             if directory && expanded {
-                rows.extend(self.rows(&entry.path, depth + 1, filter, window, cx));
+                rows.extend(self.rows(&entry.path, depth + 1, window, cx));
             }
         }
         rows
     }
-    pub fn explorer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub fn explorer(
+        &mut self,
+        project: String,
+        worktree: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let root = self.root.clone();
-        let filter = self.query.read(cx).value().to_lowercase();
-        let rows = self.rows(&root, 0, &filter, window, cx);
+        let rows = self.rows(&root, 0, window, cx);
         div()
             .debug_selector(|| "file-explorer".into())
             .size_full()
@@ -599,28 +587,30 @@ impl FileBrowser {
                             .flex_1()
                             .min_h_0()
                             .justify_start()
-                            .px_0()
-                            .py(rpx(SPACE_SM))
+                            .px(rpx(SPACE_LG))
+                            .py(rpx(SPACE_2XL))
                             .gap(rpx(SPACE_XS))
                             .overflow_hidden()
                             .child(
-                                div().p(rpx(SPACE_LG)).child(
-                                    Input::new(&self.query)
-                                        .appearance(false)
-                                        .bordered(false)
-                                        .focus_bordered(false)
-                                        .p_0()
-                                        .aria_label("Filter visible files"),
-                                ),
-                            )
-                            .child(
                                 div()
-                                    .px(rpx(SPACE_2XL))
-                                    .py(rpx(SPACE_LG))
+                                    .debug_selector(|| "file-explorer-checkout".into())
+                                    .px(rpx(SPACE_LG))
+                                    .pb(rpx(SPACE_LG))
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_SM))
                                     .text_size(rpx(TEXT_SMALL))
-                                    .text_color(c::FG_DIM())
-                                    .truncate()
-                                    .child(root.to_string_lossy().into_owned()),
+                                    .child(icon("git-branch", ICON_MD, c::FG_DIM()))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .truncate()
+                                            .text_color(c::FG_DIM())
+                                            .child(project),
+                                    )
+                                    .child(div().text_color(c::FG_DIM()).child("/"))
+                                    .child(div().min_w_0().flex_1().truncate().child(worktree)),
                             )
                             .child(
                                 div()

@@ -103,7 +103,59 @@ impl Sidebar {
             }
             browser
         };
-        let explorer = browser.update(cx, |browser, cx| browser.explorer(window, cx));
+        let root = browser.read(cx).root.clone();
+        let labels = self
+            .snapshot
+            .projects
+            .iter()
+            .find_map(|project| {
+                project
+                    .worktrees
+                    .iter()
+                    .find(|worktree| {
+                        crate::paths::normalize_wt_path(&worktree.path)
+                            == crate::paths::normalize_wt_path(&root.to_string_lossy())
+                    })
+                    .map(|worktree| {
+                        (
+                            project.name.clone(),
+                            sidebar_worktree_name(&worktree.name, worktree.is_main).to_owned(),
+                        )
+                    })
+            })
+            .or_else(|| {
+                cx.global::<SettingsState>()
+                    .store
+                    .projects
+                    .iter()
+                    .find(|project| {
+                        crate::paths::normalize_wt_path(&project.path)
+                            == crate::paths::normalize_wt_path(&root.to_string_lossy())
+                    })
+                    .map(|project| (project.name.clone(), "Main checkout".to_owned()))
+            })
+            .unwrap_or_else(|| {
+                let project =
+                    if let Some(Selection::Session(id) | Selection::Home(id)) = self.selection {
+                        self.runtime
+                            .read(cx)
+                            .registry
+                            .read(cx)
+                            .meta(id)
+                            .filter(|meta| !meta.project.is_empty())
+                            .map(|meta| meta.project.clone())
+                            .unwrap_or_else(|| "No project".into())
+                    } else {
+                        "No project".into()
+                    };
+                (
+                    project,
+                    crate::paths::path_basename(&root.to_string_lossy()),
+                )
+            });
+        let explorer = browser.update(cx, |browser, cx| {
+            browser.explorer(labels.0, labels.1, window, cx)
+        });
         div()
             .size_full()
             .min_h_0()
