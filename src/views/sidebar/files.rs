@@ -116,8 +116,6 @@ impl Sidebar {
                     .max_w(gpui::relative(0.4))
                     .h_full()
                     .flex_shrink_0()
-                    .border_l_1()
-                    .border_color(c::BORDER())
                     .child(explorer),
             )
             .into_any_element()

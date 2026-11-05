@@ -1,6 +1,8 @@
 //! Session-owned, read-only checkout browsing. Disk work is bounded and never blocks paint.
 use super::{
-    components::{header_control, header_control_frame, transcript_action},
+    components::{
+        header_control, header_control_frame, header_control_with_label_tooltip, transcript_action,
+    },
     rpx,
     tokens::*,
 };
@@ -564,8 +566,6 @@ impl FileBrowser {
                     .px(rpx(SPACE_2XL))
                     .flex()
                     .items_center()
-                    .border_b_1()
-                    .border_color(c::BORDER())
                     .child("Files")
                     .child(div().flex_1())
                     .child(
@@ -792,70 +792,47 @@ impl Render for FileBrowser {
                     .px(rpx(SPACE_LG))
                     .py(rpx(SPACE_LG))
                     .flex()
-                    .flex_col()
-                    .gap(rpx(SPACE_SM))
-                    .border_b_1()
-                    .border_color(c::BORDER())
+                    .min_w_0()
+                    .items_center()
+                    .gap(rpx(SPACE_LG))
                     .child(
-                        div().flex().items_center().child(
+                        header_control_with_label_tooltip("file-back", "Back to conversation")
+                            .debug_selector(|| "file-viewer-back".into())
+                            .track_focus(&self.back_focus)
+                            .tab_index(0)
+                            .focus_visible(|s| s.bg(c::BG_HOVER()))
+                            .child(icon("arrow-left", ICON_SM, c::FG_DIM()))
+                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+                    )
+                    .child(
+                        div()
+                            .id("file-viewer-path")
+                            .debug_selector(|| "file-viewer-path".into())
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(path.clone())
+                            .tooltip(move |window, cx| {
+                                super::components::tooltip(path.clone(), window).build(window, cx)
+                            }),
+                    )
+                    .when(markdown, |row| {
+                        row.child(
                             transcript_action(
-                                "file-back",
-                                "Back to conversation",
+                                "file-source",
+                                if self.source { "Preview" } else { "Source" },
                                 false,
                                 window,
                                 cx,
                             )
-                            .debug_selector(|| "file-viewer-back".into())
-                            .icon(
-                                gpui_component::Icon::default()
-                                    .path("icons/arrow-left.svg")
-                                    .size(rpx(ICON_SM)),
-                            )
-                            .with_focus_handle(self.back_focus.clone())
-                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .min_w_0()
-                            .min_h(rpx(CONTROL_H))
-                            .flex()
-                            .items_center()
-                            .gap(rpx(SPACE_LG))
-                            .child(
-                                div()
-                                    .id("file-viewer-path")
-                                    .debug_selector(|| "file-viewer-path".into())
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(path.clone())
-                                    .tooltip(move |window, cx| {
-                                        super::components::tooltip(path.clone(), window)
-                                            .build(window, cx)
-                                    }),
-                            )
-                            .when(markdown, |row| {
-                                row.child(
-                                    transcript_action(
-                                        "file-source",
-                                        if self.source { "Preview" } else { "Source" },
-                                        false,
-                                        window,
-                                        cx,
-                                    )
-                                    .debug_selector(|| "file-viewer-source".into())
-                                    .with_focus_handle(self.source_focus.clone())
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            this.source = !this.source;
-                                            cx.notify();
-                                        },
-                                    )),
-                                )
-                            }),
-                    ),
+                            .debug_selector(|| "file-viewer-source".into())
+                            .with_focus_handle(self.source_focus.clone())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.source = !this.source;
+                                cx.notify();
+                            })),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -872,8 +849,6 @@ impl Render for FileBrowser {
                 div()
                     .px(rpx(SPACE_2XL))
                     .py(rpx(SPACE_SM))
-                    .border_t_1()
-                    .border_color(c::BORDER())
                     .text_size(rpx(TEXT_MICRO))
                     .text_color(c::FG_DIM())
                     .child(format!(
@@ -925,7 +900,9 @@ mod tests {
                 assert!(bounds.left()>=viewer.left() && bounds.right()<=viewer.right(),"header control clipped at width={width} rem={rem}: {bounds:?} outside {viewer:?}");
             }
             assert!(path.size.width > gpui::px(0.));
-            assert!(source.top() >= back.bottom());
+            assert!((source.center().y - back.center().y).abs() <= gpui::px(0.5));
+            assert!((path.center().y - back.center().y).abs() <= gpui::px(0.5));
+            assert!(back.right() <= path.left());
             assert!(path.right() <= source.left());
         }
     }
