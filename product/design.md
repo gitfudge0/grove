@@ -375,7 +375,7 @@ Sessions launched with No project retain the same durable recovery, History brow
 
 Projectless sessions remain visible in sidebar Sessions across workspaces, including with no registered projects. Activity grouping uses their session status; worktree grouping places them under No project and their directory name, retaining full directory identity and normal session selection and keyboard order.
 
-The right-panel and Side chat controls belong to the persistent side container, outside the transcript header and animated panel body. They remain at the top right on Home, in sessions, and while the panel is hidden, at wide and narrow widths. The toolbar adds no horizontal or vertical border. Side chat remains session-owned; Home shows its unavailable control with an explanation instead of launching a provider without conversation context. Existing panel sizing, motion and session ownership remain intact.
+The right-panel and Side chat controls belong to the persistent side container, outside the transcript header and animated panel body. They remain at the top right on Home, in sessions, and while the panel is hidden, at wide and narrow widths. The toolbar sits close above the panel card with a compact gap, rather than at the top edge of the side container. It adds no horizontal or vertical border. Side chat remains session-owned; Home shows its unavailable control with an explanation instead of launching a provider without conversation context. Existing panel sizing, motion and session ownership remain intact.
 
 ## Checkout file explorer and viewer
 

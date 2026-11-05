@@ -24,6 +24,12 @@ scope. Historical logs remain in `.grove/qa/`; the method and limits are recorde
 
 ## Outstanding verification follow-ups
 
+Persistent right-panel toolbar spacing: the toolbar moved down by `SPACE_3XL`
+to sit closer above the card. Native visual checks at normal/narrow widths,
+light/dark themes and changed zoom remain untested; native computer-use is
+unavailable in this session. Codex and Claude live checks are untested for this
+provider-independent geometry change. macOS and Windows remain untested.
+
 Transcript minimap tick restoration: live Codex and Claude provider checks and
 native visual/interaction inspection are untested for this glyph-only rollback.
 The shared renderer restores the prior tick geometry; no installation was requested.

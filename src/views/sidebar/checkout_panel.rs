@@ -2641,7 +2641,7 @@ impl Sidebar {
                     .id("side-container-controls")
                     .debug_selector(|| "side-container-controls".into())
                     .absolute()
-                    .top_0()
+                    .top(rpx(SPACE_3XL))
                     .right_0()
                     .h(rpx(APPBAR_H))
                     .px(rpx(SPACE_20))
