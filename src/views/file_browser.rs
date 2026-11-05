@@ -604,13 +604,12 @@ impl FileBrowser {
                                     .child(
                                         div()
                                             .min_w_0()
-                                            .flex_1()
                                             .truncate()
                                             .text_color(c::FG_DIM())
                                             .child(project),
                                     )
                                     .child(div().text_color(c::FG_DIM()).child("/"))
-                                    .child(div().min_w_0().flex_1().truncate().child(worktree)),
+                                    .child(div().min_w_0().truncate().child(worktree)),
                             )
                             .child(
                                 div()
