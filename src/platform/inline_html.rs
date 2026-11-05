@@ -326,26 +326,31 @@ pub fn open_in_browser(url: String) -> impl std::future::Future<Output = Result<
     }
 }
 
+pub(crate) fn browser_supported_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "html" | "htm" | "pdf" | "svg" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif"
+            )
+        })
+}
+
 fn validate_browser_url(url: &str) -> Result<(), String> {
     let url = gpui::http_client::Url::parse(url)
-        .map_err(|_| "The browser target must be a local HTML file".to_owned())?;
+        .map_err(|_| "The browser target must be a local browser-supported file".to_owned())?;
     if url
         .host_str()
         .is_some_and(|host| !host.is_empty() && host != "localhost")
     {
-        return Err("The browser target must be a local HTML file".into());
+        return Err("The browser target must be a local browser-supported file".into());
     }
     let path = url
         .to_file_path()
-        .map_err(|()| "The browser target must be a local HTML file".to_owned())?;
-    if path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_none_or(|extension| {
-            !extension.eq_ignore_ascii_case("html") && !extension.eq_ignore_ascii_case("htm")
-        })
-    {
-        return Err("The browser target must be a local HTML file".into());
+        .map_err(|()| "The browser target must be a local browser-supported file".to_owned())?;
+    if !browser_supported_path(&path) {
+        return Err("The browser target must be a local browser-supported file".into());
     }
     Ok(())
 }
@@ -467,7 +472,7 @@ fn launch_linux_browser(url: &str) -> Result<(), String> {
 mod browser_tests {
     use super::validate_browser_url;
     #[test]
-    fn browser_action_accepts_only_local_html_files() {
+    fn browser_action_accepts_only_local_supported_files() {
         for target in [
             "https://example.com/a.html",
             "file://remote/a.html",
@@ -476,7 +481,7 @@ mod browser_tests {
         ] {
             assert!(validate_browser_url(target).is_err(), "{target}");
         }
-        for name in ["a.html", "a.HTM"] {
+        for name in ["a.html", "a.HTM", "a.pdf", "a.SVG", "a.png", "a.webp"] {
             let mut target =
                 gpui::http_client::Url::from_file_path(std::env::temp_dir().join(name)).unwrap();
             target.set_query(Some("theme=dark"));

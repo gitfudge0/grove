@@ -22,7 +22,44 @@ It never submits approval responses. This is a live provider operation, not an
 ordinary offline test; HTML rendering and native interactions are outside its
 scope. Historical logs remain in `.grove/qa/`; the method and limits are recorded below.
 
+## Provider contract and lifecycle verification
+
+The provider-neutral contract extraction preserves serialized state, legacy
+imports and recovery locations. Linux core verification passed 802 tests with
+9 ignored, excluding two environment tests that also failed on untouched
+`e0f999b`: `finder_path_resolves_standard_user_install_and_preserves_path_priority`
+and `gh_uses_recovered_gui_environment`. An initial full run also failed the
+activity listener shutdown-timing assertion; isolated baseline and the final run
+passed it. The original intermittent failure is not resolved by this work.
+
+New Claude regression fixtures failed before the fixes: pending tool rows were
+settled before authoritative idle, and `terminal_reason: api_error` could report
+Done with `is_error: false`. Fixtures now cover late failed tool output and
+terminal failure. Fixtures do not establish live SDK behavior.
+
+Codex live production-actor smoke on Linux verified command streaming, duplicate
+native-thread refusal, persisted resume with remembered context, interruption,
+and process/recovery cleanup. Claude live initialization and duplicate native-thread
+refusal succeeded, but its first model turn failed with expired OAuth that could
+not refresh; Claude command, resume and interrupt live checks remain untested.
+Cross-process OS lock refusal and reacquisition passed for both provider namespaces.
+The native steering eligibility fixture passed for both providers, and all 33
+source conformance checks passed. This is fixture/source coverage, not a
+native-widget-to-live-provider end-to-end check.
+
+Both live transports emitted metadata-only diagnostic files; records were checked
+for the exact fixed metadata keys, per-file size limit and Unix `0600` permissions.
+Actual provider payloads are intentionally absent. Native screenshot/interaction
+inspection is untested (native computer control is unavailable); macOS and
+Windows are untested. The shared steering eligibility expression is preserved.
+
 ## Outstanding verification follow-ups
+
+Skill and slash-command completion icons: the shared renderer omits the leading
+icon and slot for both lists. Native appearance, hover/focus and selection checks
+remain untested (native computer control is unavailable). Codex and Claude live
+completion checks are untested; this change was checked at source/build level.
+
 
 Persistent right-panel toolbar spacing: the toolbar moved down by `SPACE_3XL`
 to sit closer above the card. Native visual checks at normal/narrow widths,
@@ -173,3 +210,20 @@ Push completion confirmation: option C uses a 440 ms check draw followed by a th
 The side panel now shares rotating working marks and 440 ms drawn completion checks followed by a three-second hold. The lifecycle is owned by checkout/action identities and script run IDs; failures do not create completion receipts. New Git work supersedes previous Git receipts. Create PR is a browser-form handoff, unlike the current-chat prompt and CI queues. Script stopping requests termination and waits for observed PTY exit before its receipt/removal.
 
 Linux offline evidence: four shared receipt tests cover owner isolation, stale completion/expiry, reading deadlines and retained-row collapse. Thirteen terminal tests, including a real PTY stop/observed-exit check, 18 checkout tests, 10 local Git regressions, the script-cwd regression and all 33 source conformance checks passed. Native GPUI test fixtures cover fixed icon/label slots, narrow/default widths and inert completed controls. Codex and Claude are verified only through transport-channel fixtures for named prompt queueing/draft preservation and fresh resolution drafts; neither is a live provider-boundary check. Current Linux X11 captures of the shared native action rows were inspected in Grove Dark and Grove Light at rem 16 and in reduced-motion Grove Dark at rem 20. Early/later native frames show ring rotation and check-stroke reveal; reduced-motion frames are identical. The native fixture uses a long branch label, and GPUI layout/input fixtures cover 280/180 logical-pixel widths and disabled activation. Sampled working/success foreground-to-card contrast is dark working: 7.60:1; dark success: 9.92:1; light working: 6.16:1; light success: 6.14:1. Full end-to-end native flows for every action, live Codex and Claude CI/prompt handoffs, real GitHub PR operations, macOS and Windows remain untested. The requested delivery endpoint is commit only, with no installation.
+
+## Browser link restoration (Linux, commit-only)
+
+Browser-labeled local links again launch the default browser; the file viewer
+also provides a centered browser action for HTML, PDF, SVG and common raster
+images. Focused browser/file-viewer checks passed 14 tests, including native
+GPUI layout bounds at 240/500 logical pixels and rem 16/20. All 33 source
+conformance checks passed. Codex and Claude ordinary local-file viewer behavior
+passed through the shared GPUI transport fixture; live provider-boundary behavior
+is untested for both. Actual browser process launch, native screenshot/state QA,
+macOS and Windows remain untested. No installation was performed.
+
+The combined working tree's core run passed 801 tests with 9 ignored and failed
+three: `rejects_browser_duplicate_and_oversized_requests`,
+`finder_path_resolves_standard_user_install_and_preserves_path_priority`, and
+`gh_uses_recovered_gui_environment`. The latter two were already documented
+above; this run does not establish the cause of the activity test failure.

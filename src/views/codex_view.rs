@@ -8539,7 +8539,7 @@ impl CodexView {
                     );
                     row.child(crate::icons::icon(glyph, ICON_SM, color))
                 })
-                .when(!file_rows, |row| {
+                .when(!file_rows && !stacked_rows, |row| {
                     row.child(crate::icons::icon("tool", ICON_SM, c::FG_DIM()))
                 })
                 .child(
@@ -10287,13 +10287,7 @@ fn tool_summary(item: &serde_json::Value) -> String {
 }
 
 fn active_turn_redirect_available(state: &codex::Snapshot) -> bool {
-    matches!(
-        state.status,
-        codex::Status::Working | codex::Status::Waiting
-    ) && state.turn_id.is_some()
-        && !state.compacting
-        && state.saved.pending_edit.is_none()
-        && (state.saved.provider == codex::Provider::Codex || state.can_redirect)
+    state.can_redirect_active_turn()
 }
 
 const STEER_LABEL: &str = "Steer";
@@ -22420,7 +22414,7 @@ mod tests {
                     "<title>Launch</title>",
                 ),
                 (
-                    "Open in browser",
+                    "Launch preview",
                     "launch.html#L2".to_owned(),
                     2,
                     "<title>Launch</title>",

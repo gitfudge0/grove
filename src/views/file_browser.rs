@@ -280,6 +280,7 @@ pub(super) struct FileBrowser {
     focus: FocusHandle,
     back_focus: FocusHandle,
     source_focus: FocusHandle,
+    browser_focus: FocusHandle,
     refresh_task: Option<gpui::Task<()>>,
     explorer_seen: std::time::Instant,
     return_focus: Option<FocusHandle>,
@@ -305,6 +306,7 @@ impl FileBrowser {
             focus: cx.focus_handle(),
             back_focus: cx.focus_handle(),
             source_focus: cx.focus_handle(),
+            browser_focus: cx.focus_handle(),
             refresh_task: None,
             explorer_seen: std::time::Instant::now(),
             return_focus: None,
@@ -316,6 +318,22 @@ impl FileBrowser {
         this.load_directory(root, cx);
         this
     }
+    fn open_in_browser(&self, cx: &mut Context<Self>) {
+        let Some(target) = &self.target else {
+            return;
+        };
+        let Ok(url) = gpui::http_client::Url::from_file_path(&target.path) else {
+            return;
+        };
+        cx.spawn(async move |_, _| {
+            if let Err(error) = crate::platform::inline_html::open_in_browser(url.to_string()).await
+            {
+                eprintln!("Couldn’t open in browser: {error}");
+            }
+        })
+        .detach();
+    }
+
     #[cfg(test)]
     pub fn loaded_text(&self) -> Option<&str> {
         match &self.content {
@@ -784,6 +802,10 @@ impl Render for FileBrowser {
                         this.close(window, cx);
                         window.prevent_default();
                         cx.stop_propagation();
+                    } else if this.browser_focus.is_focused(window) {
+                        this.open_in_browser(cx);
+                        window.prevent_default();
+                        cx.stop_propagation();
                     } else if this.source_focus.is_focused(window) {
                         this.source = !this.source;
                         cx.notify();
@@ -800,6 +822,11 @@ impl Render for FileBrowser {
                     ) && !this.source_focus.is_focused(window)
                     {
                         this.source_focus.focus(window, cx)
+                    } else if this.target.as_ref().is_some_and(|t| {
+                        crate::platform::inline_html::browser_supported_path(&t.path)
+                    }) && !this.browser_focus.is_focused(window)
+                    {
+                        this.browser_focus.focus(window, cx)
                     } else {
                         this.back_focus.focus(window, cx)
                     }
@@ -832,6 +859,25 @@ impl Render for FileBrowser {
                             .tooltip(move |window, cx| {
                                 super::components::tooltip(path.clone(), window).build(window, cx)
                             }),
+                    )
+                    .when(
+                        self.target.as_ref().is_some_and(|target| {
+                            crate::platform::inline_html::browser_supported_path(&target.path)
+                        }),
+                        |row| {
+                            row.child(
+                                header_control_with_label_tooltip(
+                                    "file-browser-open",
+                                    "Open in browser",
+                                )
+                                .child(icon("external-link", ICON_SM, c::FG_DIM()))
+                                .debug_selector(|| "file-viewer-browser".into())
+                                .track_focus(&self.browser_focus)
+                                .tab_index(0)
+                                .focus_visible(|s| s.bg(c::BG_HOVER()))
+                                .on_click(cx.listener(|this, _, _, cx| this.open_in_browser(cx))),
+                            )
+                        },
                     )
                     .when(markdown, |row| {
                         row.child(
@@ -964,6 +1010,46 @@ mod tests {
             let back = cx.debug_bounds("file-viewer-back").unwrap();
             let path = cx.debug_bounds("file-viewer-path").unwrap();
             let source = cx.debug_bounds("file-viewer-source").unwrap();
+            for bounds in [back, path, source] {
+                assert!(bounds.left()>=viewer.left() && bounds.right()<=viewer.right(),"header control clipped at width={width} rem={rem}: {bounds:?} outside {viewer:?}");
+            }
+            assert!(path.size.width > gpui::px(0.));
+            assert!((source.center().y - back.center().y).abs() <= gpui::px(0.5));
+            assert!((path.center().y - back.center().y).abs() <= gpui::px(0.5));
+            assert!(back.right() <= path.left());
+            assert!(path.right() <= source.left());
+        }
+    }
+    #[gpui::test]
+    fn browser_icon_aligns_with_back_at_narrow_widths_and_zoom(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("long-file-name-for-narrow-review.html");
+        let (browser, cx) = cx.add_window_view(|window, cx| {
+            let mut browser = FileBrowser::new(root.path().to_owned(), window, cx);
+            browser.target = Some(FileTarget {
+                path,
+                line: None,
+                transcript_link: false,
+            });
+            browser.content = Content::Text {
+                text: "# Narrow header".into(),
+                language: "html",
+            };
+            browser.visible = true;
+            browser
+        });
+        for (width, rem) in [(240., 16.), (240., 20.), (500., 16.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(600.)));
+            cx.update(|window, cx| {
+                window.set_rem_size(gpui::px(rem));
+                browser.update(cx, |_, cx| cx.notify());
+                let _ = window.draw(cx);
+            });
+            let viewer = cx.debug_bounds("file-viewer").unwrap();
+            let back = cx.debug_bounds("file-viewer-back").unwrap();
+            let path = cx.debug_bounds("file-viewer-path").unwrap();
+            let source = cx.debug_bounds("file-viewer-browser").unwrap();
             for bounds in [back, path, source] {
                 assert!(bounds.left()>=viewer.left() && bounds.right()<=viewer.right(),"header control clipped at width={width} rem={rem}: {bounds:?} outside {viewer:?}");
             }

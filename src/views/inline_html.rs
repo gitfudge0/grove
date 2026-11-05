@@ -726,6 +726,8 @@ impl HtmlSession {
                 links
                     .update(cx, |session, cx| {
                         let file = super::file_browser::local_target(target, &session.cwd)?;
+                        let browser = browser_link_label(label)
+                            && crate::platform::inline_html::browser_supported_path(&file.path);
                         let owner = cx.entity().downgrade();
                         let keyboard = owner.clone();
                         let keyboard_file = file.clone();
@@ -748,21 +750,32 @@ impl HtmlSession {
                             .h_auto()
                             .p_0()
                             .text_color(c::BLUE())
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .when(browser, |link| {
+                                link.child(crate::icons::icon("external-link", ICON_SM, c::BLUE()))
+                            })
                             .child(label.to_owned())
                             .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                                 mouse_focus.focus(window, cx)
                             })
                             .on_click(move |_, _, cx| {
-                                let _ =
-                                    owner.update(cx, |_, cx| cx.emit(OpenLocalFile(file.clone())));
+                                let _ = owner.update(cx, |session, cx| {
+                                    session.activate_file_link(file.clone(), browser, cx)
+                                });
                                 cx.stop_propagation();
                             })
                             .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
                                 if matches!(event.keystroke.key.as_str(), "enter" | "space")
                                     && !event.is_held
                                 {
-                                    let _ = keyboard.update(cx, |_, cx| {
-                                        cx.emit(OpenLocalFile(keyboard_file.clone()))
+                                    let _ = keyboard.update(cx, |session, cx| {
+                                        session.activate_file_link(
+                                            keyboard_file.clone(),
+                                            browser,
+                                            cx,
+                                        )
                                     });
                                     window.prevent_default();
                                     cx.stop_propagation();
@@ -821,6 +834,28 @@ impl HtmlSession {
             });
         });
         cx.notify();
+    }
+
+    fn activate_file_link(
+        &mut self,
+        file: super::file_browser::FileTarget,
+        browser: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if browser {
+            if let Ok(url) = gpui::http_client::Url::from_file_path(&file.path) {
+                cx.spawn(async move |_, _| {
+                    if let Err(error) =
+                        crate::platform::inline_html::open_in_browser(url.to_string()).await
+                    {
+                        eprintln!("Couldn’t open in browser: {error}");
+                    }
+                })
+                .detach();
+            }
+        } else {
+            cx.emit(OpenLocalFile(file));
+        }
     }
 
     fn open_link(
@@ -885,7 +920,7 @@ impl HtmlSession {
 }
 
 fn browser_link_label(label: &str) -> bool {
-    label.trim().eq_ignore_ascii_case("Open in browser")
+    label.trim().to_ascii_lowercase().contains("in browser")
 }
 
 fn output_html_link(text: &str, cwd: &Path) -> Option<String> {
@@ -1677,6 +1712,13 @@ impl gpui::Element for NativeElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn browser_labels_include_descriptive_transcript_links() {
+        assert!(browser_link_label("Open the interactive mock in browser"));
+        assert!(browser_link_label("Open in browser"));
+        assert!(!browser_link_label("Preview mock"));
+    }
+
     #[test]
     fn integrated_reports_require_the_exact_marker() {
         assert!(!integrated_report("<html>ordinary document</html>"));
