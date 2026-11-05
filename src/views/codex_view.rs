@@ -93,8 +93,8 @@ pub(super) fn composer_markdown_decorations(text: &str) -> Vec<TextDecoration> {
                 let range = position.start.offset..position.end.offset;
                 if !range.is_empty() {
                     let decoration = TextDecoration::new(range, style);
-                    out.push(if matches!(node, Node::Code(_)) {
-                        decoration.bordered(gpui::px(1.), c::BORDER_STRONG())
+                    out.push(if matches!(node, Node::Code(_) | Node::InlineCode(_)) {
+                        decoration.font_family(crate::fonts::MONO_FAMILY)
                     } else {
                         decoration
                     });
@@ -12558,12 +12558,14 @@ mod tests {
         assert_eq!(inline[0].style.background_color, Some(c::MENU_HOVER()));
         assert_eq!(inline[0].style.font_weight, Some(gpui::FontWeight::MEDIUM));
         assert_eq!(inline[0].border, None);
+        assert_eq!(inline[0].font_family.as_deref(), Some(crate::fonts::MONO_FAMILY));
         for source in ["```rust\nlet x = 1;\n```", "```\nstill typing"] {
             let decorations = super::composer_markdown_decorations(source);
-            let code = decorations.iter().find(|d| d.border.is_some()).unwrap();
+            let code = decorations.iter().find(|d| d.font_family.is_some()).unwrap();
             assert_eq!(code.style.background_color, Some(c::CODE_FILL()));
             assert_eq!(code.style.color, Some(c::FG()));
-            assert_eq!(code.border, Some((gpui::px(1.), c::BORDER_STRONG())));
+            assert_eq!(code.border, None);
+            assert_eq!(code.font_family.as_deref(), Some(crate::fonts::MONO_FAMILY));
             assert!(source.get(code.range.clone()).is_some());
         }
         assert!(super::composer_markdown_decorations("ordinary text").is_empty());
@@ -12693,7 +12695,7 @@ mod tests {
     ) {
         use gpui::EntityInputHandler as _;
         let (view, cx, _, _) = fixture(cx);
-        let source = "## Heading 2\n- **é🦀** item\n1. Ordered";
+        let source = "## Heading 2\n- **é🦀** item with `code`\n1. Ordered\n\n```sh\nRAILS_ENV=production bin/rails runner 'puts 123'\n```\n\nAfter code";
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             cx.update(|window, cx| {
                 view.update(cx, |view, cx| {

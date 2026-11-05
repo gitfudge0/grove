@@ -9,9 +9,9 @@ use super::folding::FoldRange;
 use super::text_wrapper::{LineItem, WrapDisplayPoint};
 use super::wrap_map::WrapMap;
 use super::{BufferPoint, DisplayPoint};
-use crate::input::Point as TreeSitterPoint;
 use crate::input::display_map::WrapPoint;
 use crate::input::rope_ext::RopeExt as _;
+use crate::input::Point as TreeSitterPoint;
 
 /// Two-layer projection: Buffer -> Wrap (soft-wrapping) -> Display (folding). Editor/Input only works with BufferPoint and DisplayPoint.
 pub struct DisplayMap {
@@ -20,6 +20,11 @@ pub struct DisplayMap {
 }
 
 impl DisplayMap {
+    pub fn set_font_spans(&mut self, spans: Vec<crate::input::TextDecoration>, cx: &mut App) {
+        self.wrap_map.set_font_spans(spans, cx);
+        self.rebuild_fold_projection();
+    }
+
     pub fn set_text_replacements(
         &mut self,
         replacements: Vec<crate::input::TextReplacement>,

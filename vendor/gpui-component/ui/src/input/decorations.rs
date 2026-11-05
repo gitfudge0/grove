@@ -11,6 +11,8 @@ use super::{InputState, RopeExt as _};
 pub struct TextDecoration {
     pub range: Range<usize>,
     pub style: HighlightStyle,
+    /// Optional font family for source spans such as Markdown code.
+    pub font_family: Option<gpui::SharedString>,
     /// Optional outline around the shaped range; does not affect text metrics.
     pub border: Option<(Pixels, Hsla)>,
 }
@@ -20,8 +22,14 @@ impl TextDecoration {
         Self {
             range,
             style,
+            font_family: None,
             border: None,
         }
+    }
+
+    pub fn font_family(mut self, family: impl Into<gpui::SharedString>) -> Self {
+        self.font_family = Some(family.into());
+        self
     }
 
     pub fn bordered(mut self, width: Pixels, color: Hsla) -> Self {
@@ -206,6 +214,7 @@ fn normalize(text: &Rope, decorations: Vec<TextDecoration>) -> Vec<TextDecoratio
             (!range.is_empty()).then_some(TextDecoration {
                 range,
                 style: decoration.style,
+                font_family: decoration.font_family,
                 border: decoration.border,
             })
         })

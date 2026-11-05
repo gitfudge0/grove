@@ -16,6 +16,10 @@ pub struct WrapMap {
 }
 
 impl WrapMap {
+    pub fn set_font_spans(&mut self, spans: Vec<crate::input::TextDecoration>, cx: &mut App) {
+        self.wrapper.set_font_spans(spans, cx);
+    }
+
     pub fn set_text_replacements(
         &mut self,
         replacements: Vec<crate::input::TextReplacement>,

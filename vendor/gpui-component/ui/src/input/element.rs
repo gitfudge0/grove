@@ -1,27 +1,27 @@
 use gpui::Corners;
 use gpui::Half;
 use gpui::{
-    AnyElement, App, Bounds, Edges, Element, ElementId, ElementInputHandler, Entity,
-    GlobalElementId,
+    fill, point, px, relative, size, HighlightStyle, Hitbox, HitboxBehavior, Hsla,
+    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseMoveEvent, MouseUpEvent, Path,
+    Pixels, Point, Position, ShapedLine, SharedString, Size, Style, Styled as _, TextAlign,
+    TextRun, TextStyle, UnderlineStyle, Window,
 };
 use gpui::{
-    HighlightStyle, Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement, LayoutId,
-    MouseButton, MouseMoveEvent, MouseUpEvent, Path, Pixels, Point, Position, ShapedLine,
-    SharedString, Size, Style, Styled as _, TextAlign, TextRun, TextStyle, UnderlineStyle, Window,
-    fill, point, px, relative, size,
+    AnyElement, App, Bounds, Edges, Element, ElementId, ElementInputHandler, Entity,
+    GlobalElementId,
 };
 use ropey::Rope;
 use smallvec::SmallVec;
 use std::{ops::Range, rc::Rc};
 
 use crate::{
-    ActiveTheme as _, Colorize, IconName, Root, Selectable, Sizable as _,
     button::{Button, ButtonVariants as _},
-    input::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout},
+    input::{blink_cursor::CURSOR_WIDTH, display_map::LineLayout, RopeExt as _},
     scroll::Scrollbar,
+    ActiveTheme as _, Colorize, IconName, Root, Selectable, Sizable as _,
 };
 
-use super::{InputState, LastLayout, TextDecoration, WhitespaceIndicators, mode::InputMode};
+use super::{mode::InputMode, InputState, LastLayout, TextDecoration, WhitespaceIndicators};
 
 const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
@@ -1544,6 +1544,14 @@ impl Element for TextElement {
                     state.visible_text_replacements(state.focus_handle.is_focused(window));
                 state.display_map.set_text_replacements(replacements, cx);
             }
+            let font_spans = state
+                .decorations
+                .iter()
+                .flat_map(|items| items.iter())
+                .filter(|decoration| decoration.font_family.is_some())
+                .cloned()
+                .collect();
+            state.display_map.set_font_spans(font_spans, cx);
             state.display_map.set_font(font, text_size, cx);
             state.display_map.ensure_text_prepared(&state.text, cx);
         });
@@ -1682,6 +1690,13 @@ impl Element for TextElement {
 
             for (range, style) in &highlight_styles {
                 let mut run = text_style.clone().highlight(*style).to_run(range.len());
+                for decoration in state.decorations.iter().flat_map(|items| items.iter()) {
+                    if decoration.range.contains(&range.start) {
+                        if let Some(family) = &decoration.font_family {
+                            run.font.family = family.clone();
+                        }
+                    }
+                }
                 if disabled {
                     run.color = run.color.opacity(0.5);
                 }

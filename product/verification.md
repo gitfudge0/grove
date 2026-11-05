@@ -94,3 +94,12 @@ Codex and Claude boundaries were untested; macOS and Windows were untested.
 These summaries preserve useful limitations from retired scratch notes. Their
 screenshots and baseline logs are not current acceptance evidence. Run the
 relevant checks against the actual checkout before claiming any gap resolved.
+
+## Composer code font follow-up
+
+The composer code-font repair applies JetBrains Mono to inline and fenced code
+and measures wrapping with those font spans; code decorations no longer draw
+fragmented outlines around each source line. Native visual inspection at normal
+and narrow widths, light/dark themes and rem zoom remains outstanding on Linux,
+macOS and Windows. Codex and Claude share this composer path; fixture checks
+do not establish live provider delivery or native visual appearance.

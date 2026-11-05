@@ -2,7 +2,7 @@ use gpui::Half;
 use std::ops::Range;
 
 use gpui::{
-    App, Font, LineFragment, Pixels, Point, ShapedLine, Size, TextAlign, Window, point, px, size,
+    point, px, size, App, Font, LineFragment, Pixels, Point, ShapedLine, Size, TextAlign, Window,
 };
 use ropey::Rope;
 use smallvec::SmallVec;
@@ -116,6 +116,7 @@ pub(crate) struct TextWrapper {
     pub(crate) lines: SumTree<LineItem>,
 
     replacements: Vec<crate::input::TextReplacement>,
+    font_spans: Vec<crate::input::TextDecoration>,
     _initialized: bool,
 }
 
@@ -129,7 +130,19 @@ impl TextWrapper {
             wrap_width,
             lines: SumTree::new(&()),
             replacements: Vec::new(),
+            font_spans: Vec::new(),
             _initialized: false,
+        }
+    }
+
+    pub(crate) fn set_font_spans(
+        &mut self,
+        spans: Vec<crate::input::TextDecoration>,
+        cx: &mut App,
+    ) {
+        if self.font_spans != spans {
+            self.font_spans = spans;
+            self.update_all(&self.text.clone(), cx);
         }
     }
 
@@ -186,13 +199,13 @@ impl TextWrapper {
     pub(crate) fn buffer_line_to_first_wrap_row(&self, row: usize) -> usize {
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        cursor.start().1.0
+        cursor.start().1 .0
     }
 
     pub(crate) fn buffer_line_to_wrap_row_range(&self, row: usize) -> Range<usize> {
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        let start = cursor.start().1.0;
+        let start = cursor.start().1 .0;
         let len = cursor.item().map(|l| l.lines_len()).unwrap_or(0);
         start..start + len
     }
@@ -202,7 +215,7 @@ impl TextWrapper {
         let mut cursor = self.lines.cursor::<Dimensions<WrapRows, BufferRows>>(&());
         cursor.seek(&WrapRows(wrap_row), Bias::Right);
         match cursor.item() {
-            Some(_) => cursor.start().1.0,
+            Some(_) => cursor.start().1 .0,
             None => self.lines_count().saturating_sub(1),
         }
     }
@@ -245,14 +258,89 @@ impl TextWrapper {
         let mut line_wrapper = cx
             .text_system()
             .line_wrapper(self.font.clone(), self.font_size);
+        let spans = self.font_spans.clone();
+        let replacements = self.replacements.clone();
+        let font = self.font.clone();
+        let font_size = self.font_size;
+        let text_system = gpui::WindowTextSystem::new(cx.text_system().clone());
+        let mut base =
+            changed_text.line_start_offset(changed_text.offset_to_point(range.start).row);
         self._update(
             changed_text,
             range,
             new_text,
             &mut |line_str, wrap_width| {
-                line_wrapper
-                    .wrap_line(&[LineFragment::text(line_str)], wrap_width)
-                    .collect()
+                let source_line = changed_text
+                    .slice_line(changed_text.offset_to_point(base).row)
+                    .to_string();
+                let projection = crate::input::projection::TextProjection::new(
+                    &source_line,
+                    &replacements,
+                    base,
+                );
+                let mut boundaries = vec![0, line_str.len()];
+                for span in &spans {
+                    if span.range.start < base + source_line.len() && span.range.end > base {
+                        boundaries
+                            .push(projection.to_display(span.range.start.saturating_sub(base)));
+                        boundaries.push(
+                            projection
+                                .to_display(span.range.end.min(base + source_line.len()) - base),
+                        );
+                    }
+                }
+                boundaries.sort_unstable();
+                boundaries.dedup();
+                let runs: Vec<_> = boundaries
+                    .windows(2)
+                    .map(|pair| {
+                        let mut run_font = font.clone();
+                        let source_offset = base + projection.to_source(pair[0]);
+                        for span in &spans {
+                            if span.range.contains(&source_offset) {
+                                if let Some(family) = &span.font_family {
+                                    run_font.family = family.clone();
+                                }
+                            }
+                        }
+                        gpui::TextRun {
+                            len: pair[1] - pair[0],
+                            font: run_font,
+                            color: gpui::black(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }
+                    })
+                    .collect();
+                base += source_line.len() + 1;
+                if spans.is_empty() {
+                    return line_wrapper
+                        .wrap_line(&[LineFragment::text(line_str)], wrap_width)
+                        .collect();
+                }
+                let lines = text_system
+                    .shape_text(
+                        line_str.to_owned().into(),
+                        font_size,
+                        &runs,
+                        Some(wrap_width),
+                        None,
+                    )
+                    .expect("valid font span layout");
+                lines.first().map_or_else(Vec::new, |line| {
+                    line.wrap_boundaries
+                        .iter()
+                        .map(|boundary| {
+                            let glyph = &line.unwrapped_layout.runs[boundary.run_ix].glyphs
+                                [boundary.glyph_ix];
+                            gpui::Boundary {
+                                ix: glyph.index,
+                                next_indent: 0,
+                            }
+                        })
+                        .collect()
+                })
             },
         );
     }
@@ -347,7 +435,7 @@ impl TextWrapper {
 
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        let wrapped_row = cursor.start().1.0;
+        let wrapped_row = cursor.start().1 .0;
         let Some(line) = cursor.item() else {
             return WrapDisplayPoint::new(wrapped_row, 0, 0);
         };
@@ -375,8 +463,8 @@ impl TextWrapper {
         let Some(line) = cursor.item() else {
             return self.text.len();
         };
-        let wrapped_row = cursor.start().0.0;
-        let row = cursor.start().1.0;
+        let wrapped_row = cursor.start().0 .0;
+        let row = cursor.start().1 .0;
 
         let line_start = self.text.line_start_offset(row);
         let local_row = point.row.saturating_sub(wrapped_row);
@@ -664,7 +752,7 @@ mod tests {
     use super::*;
     use std::rc::Rc;
 
-    use gpui::{Boundary, FontFeatures, FontStyle, FontWeight, px};
+    use gpui::{px, Boundary, FontFeatures, FontStyle, FontWeight};
 
     #[test]
     fn test_update() {

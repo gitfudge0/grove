@@ -279,9 +279,11 @@ impl Element for InlineFlow {
         let layout_state = InlineFlowLayoutState::default();
         let layout_ref = layout_state.layout.clone();
 
+        // Deferred measurement runs outside the paragraph's inherited style scope.
+        // Keep shaping and wrapping in the same style used to paint the fragments.
+        let text_style = window.text_style();
         let layout_id = window.request_measured_layout(Default::default(), {
             move |known_dimensions, available_space, window, _cx| {
-                let text_style = window.text_style();
                 let wrap_width = if text_style.white_space == WhiteSpace::Normal {
                     known_dimensions.width.or(match available_space.width {
                         AvailableSpace::Definite(width) => Some(width),
@@ -472,8 +474,8 @@ fn layout_flow(
     wrap_width: Option<Pixels>,
     window: &mut Window,
 ) -> InlineFlowLayout {
-    let line_height = window.line_height();
     let rem_size = window.rem_size();
+    let line_height = text_style.line_height_in_pixels(rem_size);
     let total_len = items.iter().map(MeasureItem::len).sum::<usize>();
     if total_len == 0 {
         return InlineFlowLayout::default();
