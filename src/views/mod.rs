@@ -23,6 +23,7 @@ mod codex_view;
 #[cfg(test)]
 pub(crate) use codex_view::CodexView;
 pub mod components;
+mod file_browser;
 mod inline_html;
 mod mermaid;
 mod native_plan;

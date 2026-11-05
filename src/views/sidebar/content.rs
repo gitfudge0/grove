@@ -590,6 +590,7 @@ impl Sidebar {
         let panel_toggle = if self.checkout_panel.toggle_available {
             let hidden = (self.checkout_panel.side_chat_owner.is_some()
                 && self.checkout_panel.side_chat_owner == self.selection)
+                || (self.files_active && self.files_owner == self.selection)
                 || self.checkout_panel.hidden
                 || (Self::logical_window_width(window) < super::checkout_panel::WIDE_VIEWPORT
                     && !self.checkout_panel.expanded);
@@ -699,6 +700,7 @@ impl Sidebar {
             .gap(rpx(SPACE_MD))
             .when_some(side_chat_toggle, gpui::ParentElement::child)
             .when_some(panel_toggle, gpui::ParentElement::child)
+            .child(self.files_control(cx))
     }
 
     fn terminal_content(
@@ -732,6 +734,14 @@ impl Sidebar {
                             super::super::codex_view::CodexViewEvent::ScriptLaunched
                         ) {
                             this.snippet_launched(id, cx);
+                        }
+                        if matches!(event, super::super::codex_view::CodexViewEvent::FileOpened)
+                            && matches!(this.selection,Some(Selection::Session(selected)|Selection::Home(selected)) if selected==id) {
+                            this.files_active=true;
+                            this.files_owner=this.selection.clone();
+                            this.checkout_panel.side_chat_owner=None;
+                            this.checkout_panel.hidden=false;
+                            cx.notify();
                         }
                     },
                 ));
@@ -1135,7 +1145,7 @@ impl Sidebar {
                             && (self.checkout_panel.hidden
                                 || Self::logical_window_width(window)
                                     < super::checkout_panel::WIDE_VIEWPORT),
-                        |actions| actions.w(rpx(CHROME_CONTROL_H * 2. + SPACE_MD + SPACE_3XL)),
+                        |actions| actions.w(rpx(CHROME_CONTROL_H * 3. + SPACE_MD * 2. + SPACE_3XL)),
                     )
                     .when(grid, |actions| actions.child(close)),
             );

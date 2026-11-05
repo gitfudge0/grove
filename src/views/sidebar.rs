@@ -5,6 +5,7 @@ mod branch_history;
 mod branch_preview;
 mod checkout_panel;
 mod content;
+mod files;
 mod global_navigation;
 mod grid;
 mod multi_project;
@@ -389,6 +390,14 @@ pub struct Sidebar {
     worktree_source_generation: u64,
     worktree_source: String,
     checkout_panel: checkout_panel::CheckoutPanel,
+    files_active: bool,
+    files_owner: Option<Selection>,
+    files_toggle_focus: Option<FocusHandle>,
+    standalone_files: Option<(
+        Option<Selection>,
+        String,
+        Entity<super::file_browser::FileBrowser>,
+    )>,
     action_source_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     project_panel: Option<Entity<projects::ProjectPanel>>,
     project_setup: Option<Entity<project_setup::ProjectSetup>>,
@@ -638,6 +647,10 @@ impl Sidebar {
             worktree_source_generation: 0,
             worktree_source: String::new(),
             checkout_panel: checkout_panel::CheckoutPanel::default(),
+            files_active: false,
+            files_owner: None,
+            files_toggle_focus: None,
+            standalone_files: None,
             action_source_bounds: std::rc::Rc::default(),
             project_panel: None,
             project_setup: None,

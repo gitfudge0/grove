@@ -685,6 +685,7 @@ impl Sidebar {
         }
     }
     pub(super) fn toggle_side_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.files_active = false;
         let was_visible = !self.checkout_panel.hidden;
         if self.checkout_panel.side_chat_owner == self.selection {
             self.checkout_panel.side_chat_owner = None;

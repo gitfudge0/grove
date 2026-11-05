@@ -2187,6 +2187,13 @@ impl Sidebar {
 
     pub(super) fn toggle_session_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let was_visible = !self.checkout_panel.hidden;
+        if self.files_active && self.files_owner == self.selection {
+            self.files_active = false;
+            self.checkout_panel.hidden = false;
+            self.checkout_panel.expanded = true;
+            cx.notify();
+            return;
+        }
         if self.checkout_panel.side_chat_owner.take().is_some() {
             self.checkout_panel.hidden = false;
             self.checkout_panel.expanded = true;
@@ -2459,6 +2466,9 @@ impl Sidebar {
             return self.render_content_body(window, cx);
         }
         self.checkout_panel.toggle_available = !self.is_zen();
+        if self.files_active && self.files_owner == self.selection && !self.is_zen() {
+            return self.render_files_layout(window, cx);
+        }
         if !self.dashboard_open
             && self.checkout_panel.side_chat_owner.is_some()
             && self.checkout_panel.side_chat_owner == self.selection
@@ -6181,7 +6191,9 @@ mod tests {
         });
         let card = cx.debug_bounds("checkout-card").unwrap();
         let panel = cx.debug_bounds("checkout-panel").unwrap();
-        let toggle = cx.debug_bounds("session-panel-toggle").unwrap();
+        let toggle = cx.debug_bounds("files-toggle").unwrap();
+        let checkout_toggle = cx.debug_bounds("session-panel-toggle").unwrap();
+        assert!(checkout_toggle.right() < toggle.left());
         assert!((panel.right() - toggle.right() - gpui::px(SPACE_3XL)).abs() <= gpui::px(1.));
         assert!(card.top() >= gpui::px(APPBAR_TOTAL_H + SPACE_3XL));
         let divider = cx.debug_bounds("checkout-divider").unwrap();

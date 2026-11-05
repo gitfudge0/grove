@@ -334,6 +334,7 @@ fn svg_for(name: &str) -> String {
         "no-git" => {
             r#"<circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="3.5" r="1.5"/><path d="M11.5 5v1.5a3 3 0 0 1-3 3H4.5M4.5 5v6"/><path d="M2.5 13.5l11-11"/>"#
         }
+        "file" => r#"<path d="M4 1.5h5l3 3V14.5H4zM9 1.5v3h3"/>"#,
         // Simple folder outline.
         "folder" => {
             r#"<path d="M2 4.5a1 1 0 0 1 1-1h3l1.2 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/>"#

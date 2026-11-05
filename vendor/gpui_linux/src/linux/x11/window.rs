@@ -1593,21 +1593,9 @@ impl PlatformWindow for X11Window {
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
-        self.0
-            .state
-            .borrow()
-            .client
-            .0
-            .upgrade()
-            .map(|ref_cell| {
-                let state = ref_cell.borrow();
-                state
-                    .gpu_context
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|ctx| ctx.supports_dual_source_blending())
-            })
-            .unwrap_or_default()
+        // Painting may run inside a callback holding the X11 client borrow.
+        // The renderer already owns the immutable capability for this window.
+        self.0.state.borrow().renderer.supports_dual_source_blending()
     }
 
     fn minimize(&self) {

@@ -1055,6 +1055,7 @@ fn snippet_shell_supported(language: &str) -> bool {
 pub(crate) enum CodexViewEvent {
     DashboardSubmit,
     ScriptLaunched,
+    FileOpened,
 }
 impl gpui::EventEmitter<CodexViewEvent> for CodexView {}
 
@@ -1067,6 +1068,7 @@ pub struct CodexView {
     history_readonly: bool,
     session: Entity<CodexSession>,
     pub(super) html: Entity<super::inline_html::HtmlSession>,
+    pub(super) file_browser: Entity<super::file_browser::FileBrowser>,
     markdown_decorations: TextDecorationCollection,
     markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
@@ -1362,7 +1364,26 @@ impl CodexView {
         let scroll = gpui::ScrollHandle::new();
         let html_scroll = scroll.clone();
         let cwd = std::path::PathBuf::from(&session.read(cx).state.saved.cwd);
+        let file_browser =
+            cx.new(|cx| super::file_browser::FileBrowser::new(cwd.clone(), window, cx));
+        subscriptions.push(cx.observe(&file_browser, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.subscribe(&file_browser, |this, _, event, cx| {
+            if matches!(event, super::file_browser::FileBrowserEvent::Opened) {
+                this.close_menu(cx);
+                cx.emit(CodexViewEvent::FileOpened);
+            }
+            cx.notify();
+        }));
         let html = cx.new(|_| super::inline_html::HtmlSession::new(cwd, html_scroll));
+        subscriptions.push(cx.subscribe_in(
+            &html,
+            window,
+            |this, _, event: &super::inline_html::OpenLocalFile, window, cx| {
+                this.file_browser
+                    .update(cx, |browser, cx| browser.open(event.0.clone(), window, cx));
+                cx.notify();
+            },
+        ));
         subscriptions.push(cx.observe(&html, |this, _, cx| {
             this.smooth_follow = false;
             this.follow_after_submit = false;
@@ -1379,6 +1400,7 @@ impl CodexView {
             history_readonly,
             session,
             html,
+            file_browser,
             native_plans: HashMap::new(),
             markdown_decorations,
             markdown_source: None,
@@ -4546,26 +4568,6 @@ impl Render for CodexView {
             self.close_menu(cx);
         }
         self.sync_native_plans(cx);
-        // Each completed message points to its exact imported revision, even when
-        // a file path is later reused or a previous revision is linked again.
-        let native_links = state
-            .saved
-            .rich_plans
-            .references
-            .iter()
-            .filter_map(|reference| {
-                self.native_plans
-                    .get(&(reference.plan_id.clone(), reference.revision_id.clone()))
-                    .map(|view| {
-                        (
-                            (reference.message_id.clone(), reference.source.clone()),
-                            view.downgrade(),
-                        )
-                    })
-            })
-            .collect();
-        self.html
-            .update(cx, |html, _| html.bind_native_plans(native_links));
 
         if state.edited_messages != self.edited_messages {
             self.edited_messages = state.edited_messages;
@@ -4590,6 +4592,8 @@ impl Render for CodexView {
         // checkout_context contains chrome labels such as “Main checkout”, not
         // filesystem paths. Resolve document links against the saved worktree.
         let html_cwd = std::path::PathBuf::from(&state.saved.cwd);
+        self.file_browser
+            .update(cx, |browser, cx| browser.set_root(html_cwd.clone(), cx));
         let html_paused = self.menu.is_some()
             || self.popup.is_some()
             || !self.file_suggestions.is_empty()
@@ -6405,6 +6409,13 @@ impl Render for CodexView {
         }
         if self.edit_confirmation.is_some() {
             surface = surface.child(self.render_edit_confirmation(window, cx));
+        }
+        if self.file_browser.read(cx).visible {
+            return div()
+                .size_full()
+                .min_h_0()
+                .child(self.file_browser.clone())
+                .into_any_element();
         }
         surface.into_any_element()
     }
@@ -22047,13 +22058,78 @@ mod tests {
         )));
     }
     #[gpui::test]
+    fn codex_and_claude_file_links_preserve_drafts_and_return_to_transcript(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("main.rs");
+            std::fs::write(&path, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+            let (view, cx, actions, updates) = fixture(cx);
+            let mut response = snapshot();
+            response.saved.provider = provider;
+            response.saved.cwd = root.path().display().to_string();
+            response.saved.draft = "Keep this file-viewing draft".into();
+            response.saved.items.push(serde_json::json!({"type":"agentMessage","id":"file-answer","text":"[main.rs:2](main.rs:2)"}));
+            updates.send(response).unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            draw(cx);
+            // Test fixture snapshots update the session; a user's existing draft remains separately owned.
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("Keep this file-viewing draft", window, cx)
+                    })
+                })
+            });
+            draw(cx);
+            let link = cx
+                .debug_bounds("transcript-file-link")
+                .expect("local file link");
+            cx.simulate_click(link.center(), gpui::Modifiers::default());
+            cx.run_until_parked();
+            draw(cx);
+            assert!(cx.debug_bounds("file-viewer").is_some(), "{provider:?}");
+            assert!(
+                cx.debug_bounds("codex-composer").is_none(),
+                "hidden composer must not remain focusable"
+            );
+            view.read_with(cx, |view, cx| {
+                let browser = view.file_browser.read(cx);
+                assert!(browser.visible);
+                assert_eq!(browser.target.as_ref().unwrap().line, Some(2));
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    "Keep this file-viewing draft"
+                );
+            });
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(
+                cx.debug_bounds("file-viewer").is_none(),
+                "Back restores transcript"
+            );
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    view.input.read(cx).value().as_ref(),
+                    "Keep this file-viewing draft"
+                )
+            });
+            assert!(!actions.try_iter().any(|action| matches!(
+                action,
+                Action::Prompt(_) | Action::Submit { .. } | Action::PromptWithImages { .. }
+            )));
+            assert!(cx.opened_url().is_none());
+        }
+    }
+
+    #[gpui::test]
     fn native_markdown_links_open_artifacts_and_web_urls(cx: &mut gpui::TestAppContext) {
         let (_view, cx, _actions, updates) = fixture(cx);
         for (target, expected) in [
-            (
-                "/tmp/Option%20C/main.rs#L42",
-                "file:///tmp/Option%20C/main.rs#L42",
-            ),
             ("https://example.com/a?q=b#c", "https://example.com/a?q=b#c"),
             ("mailto:hello@example.com", "mailto:hello@example.com"),
         ] {
@@ -22102,80 +22178,90 @@ mod tests {
     }
 
     #[gpui::test]
-    fn explicit_browser_html_link_omits_inline_preview_action(cx: &mut gpui::TestAppContext) {
-        let (view, cx, _, updates) = fixture(cx);
-        let mut response = snapshot();
-        response.status = codex::Status::Done;
-        response.saved.items.push(serde_json::json!({
-            "type":"agentMessage", "id":"browser-document",
-            "text":"[Open in browser](large.html)"
-        }));
-        updates.send(response).unwrap();
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(40));
-        draw(cx);
-        assert!(cx.debug_bounds("html-browser-link-only").is_some());
-        assert!(cx.debug_bounds("html-preview-link").is_none());
-        assert!(cx.debug_bounds("html-artifact").is_none());
-        assert_eq!(
-            view.read_with(cx, |view, cx| view.html.read(cx).opened_count()),
-            0
-        );
-        assert!(cx.opened_url().is_none());
-    }
-
-    #[gpui::test]
-    fn native_html_link_click_reveals_preview_without_external_open(cx: &mut gpui::TestAppContext) {
-        let (view, cx, _, updates) = fixture(cx);
-        let checkout = tempfile::tempdir().unwrap();
-        let cwd = checkout.path().to_string_lossy().into_owned();
-        fs_err::write(
-            checkout.path().join("launch.html"),
-            "<!doctype html><html><body>Launch</body></html>",
-        )
-        .unwrap();
-        cx.update(|_, cx| {
-            view.update(cx, |view, cx| {
-                view.set_checkout_context("Main checkout".into(), "main".into(), cx);
-                view.session.update(cx, |session, cx| {
-                    session.state.saved.cwd.clone_from(&cwd);
-                    cx.notify();
+    fn codex_and_claude_all_local_file_types_open_viewer_including_external_outputs(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let checkout = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            std::fs::write(
+                checkout.path().join("launch.html"),
+                "<!doctype html>\n<title>Launch</title>\n",
+            )
+            .unwrap();
+            std::fs::write(
+                checkout.path().join("review.grove-plan.json"),
+                "{\n  \"schema_version\": 1\n}\n",
+            )
+            .unwrap();
+            let external = outside.path().join("output notes.md");
+            std::fs::write(
+                &external,
+                "# Outside output\n\nSelected explicitly from the transcript.\n",
+            )
+            .unwrap();
+            let (view, cx, _, updates) = fixture(cx);
+            for (label, target, line, expected_text) in [
+                (
+                    "Launch checklist",
+                    "launch.html:2".to_owned(),
+                    2,
+                    "<title>Launch</title>",
+                ),
+                (
+                    "Open in browser",
+                    "launch.html#L2".to_owned(),
+                    2,
+                    "<title>Launch</title>",
+                ),
+                (
+                    "Review plan",
+                    "review.grove-plan.json:2:3".to_owned(),
+                    2,
+                    "schema_version",
+                ),
+                (
+                    "Output notes",
+                    format!(
+                        "{}#L3",
+                        gpui::http_client::Url::from_file_path(&external).unwrap()
+                    ),
+                    3,
+                    "Selected explicitly",
+                ),
+            ] {
+                let mut response = snapshot();
+                response.saved.provider = provider;
+                response.saved.cwd = checkout.path().display().to_string();
+                response.saved.items.push(serde_json::json!({"type":"agentMessage","id":"file-output","text":format!("[{label}](<{target}>)")}));
+                updates.send(response).unwrap();
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(40));
+                draw(cx);
+                let link = cx
+                    .debug_bounds("transcript-file-link")
+                    .expect("all local file extensions use the viewer link");
+                cx.simulate_click(link.center(), gpui::Modifiers::default());
+                cx.run_until_parked();
+                draw(cx);
+                assert!(
+                    cx.debug_bounds("file-viewer").is_some(),
+                    "{provider:?}: {target}"
+                );
+                view.read_with(cx, |view, cx| {
+                    let browser = view.file_browser.read(cx);
+                    assert_eq!(browser.target.as_ref().unwrap().line, Some(line));
+                    assert!(browser.loaded_text().unwrap().contains(expected_text));
                 });
-            });
-        });
-        let mut response = snapshot();
-        response.saved.cwd = cwd;
-        response.saved.items.push(serde_json::json!({"type":"agentMessage", "id":"answer", "text":"[Launch checklist](launch.html)"}));
-        updates.send(response).unwrap();
-        cx.executor()
-            .advance_clock(std::time::Duration::from_millis(40));
-        draw(cx);
-        assert_eq!(
-            view.read_with(cx, |view, cx| view.html.read(cx).opened_count()),
-            0
-        );
-        assert!(
-            cx.debug_bounds("html-open-browser").is_some(),
-            "relative HTML links must render the independent browser control even with a display checkout label"
-        );
-        let body = cx.debug_bounds("codex-message-body-0").unwrap();
-        cx.simulate_click(
-            body.origin + gpui::point(gpui::px(8.), gpui::px(8.)),
-            gpui::Modifiers::default(),
-        );
-        draw(cx);
-        assert_eq!(
-            view.read_with(cx, |view, cx| view.html.read(cx).opened_count()),
-            1
-        );
-        assert!(
-            cx.debug_bounds("html-artifact").is_some(),
-            "HtmlSession notifications must redraw the parent transcript immediately"
-        );
-        assert!(
-            cx.opened_url().is_none(),
-            "primary activation must not send HTML to the platform opener"
-        );
+                assert!(
+                    cx.opened_url().is_none(),
+                    "file link must not open externally"
+                );
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                assert!(cx.debug_bounds("file-viewer").is_none());
+            }
+        }
     }
 
     #[gpui::test]
@@ -22208,7 +22294,7 @@ mod tests {
         cx.executor()
             .advance_clock(std::time::Duration::from_millis(40));
         draw(cx);
-        assert!(cx.debug_bounds("html-open-browser").is_some());
+        assert!(cx.debug_bounds("transcript-file-link").is_some());
         assert_eq!(
             view.read_with(cx, |view, cx| view.html.read(cx).opened_count()),
             1,

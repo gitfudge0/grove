@@ -12,7 +12,7 @@ use gpui::{
 };
 use gpui_component::{
     text::{markdown_ast, MarkdownExtensions, MarkdownNode, MarkdownParseContext, TextView},
-    Disableable, Selectable,
+    Selectable,
 };
 use std::{
     cell::Cell,
@@ -519,16 +519,18 @@ pub(super) fn render_expanded(_window: &mut Window, cx: &mut App) -> Option<AnyE
     )
 }
 
+pub(super) struct OpenLocalFile(pub super::file_browser::FileTarget);
+impl gpui::EventEmitter<OpenLocalFile> for HtmlSession {}
+
 pub(super) struct HtmlSession {
     artifacts: HashMap<String, Entity<HtmlArtifact>>,
-    native_plans: HashMap<(String, String), WeakEntity<super::native_plan::NativePlan>>,
     extensions: HashMap<String, MarkdownExtensions>,
+    file_focus: HashMap<(String, String), FocusHandle>,
     opened: HashMap<String, Vec<String>>,
     cwd: PathBuf,
     roots: Vec<PathBuf>,
     scroll: ScrollHandle,
     paused: Rc<Cell<bool>>,
-    browser_errors: HashMap<String, String>,
     auto: AutoOpen,
     identity: Option<(Option<String>, u64)>,
 }
@@ -589,14 +591,13 @@ impl HtmlSession {
     pub(super) fn new(cwd: PathBuf, scroll: ScrollHandle) -> Self {
         Self {
             artifacts: HashMap::new(),
-            native_plans: HashMap::new(),
             extensions: HashMap::new(),
+            file_focus: HashMap::new(),
             opened: HashMap::new(),
             cwd,
             roots: Vec::new(),
             scroll,
             paused: Rc::default(),
-            browser_errors: HashMap::new(),
             auto: AutoOpen::default(),
             identity: None,
         }
@@ -617,8 +618,8 @@ impl HtmlSession {
         {
             self.artifacts.clear();
             self.extensions.clear();
+            self.file_focus.clear();
             self.opened.clear();
-            self.browser_errors.clear();
             self.auto = AutoOpen::default();
             if cx
                 .try_global::<HtmlUi>()
@@ -670,13 +671,6 @@ impl HtmlSession {
             }
         }
     }
-    pub(super) fn bind_native_plans(
-        &mut self,
-        plans: HashMap<(String, String), WeakEntity<super::native_plan::NativePlan>>,
-    ) {
-        self.native_plans = plans;
-    }
-
     pub(super) fn extensions(
         &mut self,
         message: &str,
@@ -728,149 +722,62 @@ impl HtmlSession {
                     })
                     .unwrap_or_else(|_| source_view(&block.markdown, block.offset, window))
             })
-            .link_renderer(move |target, label, window, cx| {
+            .link_renderer(move |target, label, _window, cx| {
                 links
                     .update(cx, |session, cx| {
-                        if target.ends_with(".grove-plan.json") {
-                            let plan = session
-                                .native_plans
-                                .get(&(link_owner.clone(), target.to_owned()))
-                                .cloned();
-                            return Some(
-                                transcript_action(
-                                    SharedString::from(format!("native-link-{target}")),
-                                    label.to_owned(),
-                                    false,
-                                    window,
-                                    cx,
-                                )
-                                .icon(
-                                    gpui_component::Icon::default()
-                                        .path("icons/external-link.svg")
-                                        .size(rpx(ICON_SM)),
-                                )
-                                .disabled(plan.is_none())
-                                .on_click(move |_, window, cx| {
-                                    if let Some(plan) = &plan {
-                                        let _ = plan.update(cx, |plan, cx| plan.reveal(window, cx));
-                                    }
-                                    cx.stop_propagation();
-                                })
-                                .into_any_element(),
-                            );
-                        }
-                        local_html_path(target, &session.cwd)?;
-                        let open = cx.entity().downgrade();
-                        let message = link_owner.clone();
-                        let target = target.to_owned();
-                        let browser = local_html_url(&target, &session.cwd)?.to_string();
-                        let browser_session = cx.entity().downgrade();
-                        let browser_message = message.clone();
-                        if browser_link_label(label) {
-                            return Some(
-                                div()
-                                    .debug_selector(|| "html-browser-link-only".into())
-                                    .child(
-                                        transcript_action(
-                                            SharedString::from(format!(
-                                                "html-browser-{message}-{target}"
-                                            )),
-                                            label.to_owned(),
-                                            false,
-                                            window,
-                                            cx,
-                                        )
-                                        .icon(
-                                            gpui_component::Icon::default()
-                                                .path("icons/external-link.svg")
-                                                .size(rpx(ICON_SM)),
-                                        )
-                                        .on_click(
-                                            move |_, _, cx| {
-                                                cx.stop_propagation();
-                                                let _ =
-                                                    browser_session.update(cx, |session, cx| {
-                                                        session.open_browser(
-                                                            browser_message.clone(),
-                                                            browser.clone(),
-                                                            cx,
-                                                        );
-                                                    });
-                                            },
-                                        ),
-                                    )
-                                    .into_any_element(),
-                            );
-                        }
-                        let key = format!("html-link-{message}-{target}");
+                        let file = super::file_browser::local_target(target, &session.cwd)?;
+                        let owner = cx.entity().downgrade();
+                        let keyboard = owner.clone();
+                        let keyboard_file = file.clone();
+                        let focus = session
+                            .file_focus
+                            .entry((link_owner.clone(), target.to_owned()))
+                            .or_insert_with(|| cx.focus_handle())
+                            .clone();
+                        let mouse_focus = focus.clone();
                         Some(
-                            div()
-                                .id(SharedString::from(key.clone()))
-                                .debug_selector(|| "html-preview-link".into())
-                                .flex()
-                                .items_center()
-                                .gap(rpx(SPACE_XS))
-                                .child(
-                                    transcript_action(
-                                        SharedString::from(format!("{key}-preview")),
-                                        label.to_owned(),
-                                        false,
-                                        window,
-                                        cx,
-                                    )
-                                    .icon(
-                                        gpui_component::Icon::default()
-                                            .path("icons/zen.svg")
-                                            .size(rpx(ICON_SM)),
-                                    )
-                                    .on_click(
-                                        move |_, window, cx| {
-                                            cx.stop_propagation();
-                                            let _ = open.update(cx, |session, cx| {
-                                                session.open_link(&message, &target, window, cx);
-                                            });
-                                        },
-                                    ),
-                                )
-                                .child(
-                                    div().debug_selector(|| "html-open-browser".into()).child(
-                                        transcript_action(
-                                            SharedString::from(format!("{key}-browser")),
-                                            "Open in browser",
-                                            false,
-                                            window,
-                                            cx,
-                                        )
-                                        .icon_only()
-                                        .child(crate::icons::action_icon("external-link", ICON_MD))
-                                        .tooltip("Open in browser")
-                                        .on_click(
-                                            move |_, _, cx| {
-                                                cx.stop_propagation();
-                                                let _ =
-                                                    browser_session.update(cx, |session, cx| {
-                                                        session.open_browser(
-                                                            browser_message.clone(),
-                                                            browser.clone(),
-                                                            cx,
-                                                        );
-                                                    });
-                                            },
-                                        ),
-                                    ),
-                                )
-                                .into_any_element(),
+                            super::components::inline_disclosure(
+                                SharedString::from(format!("local-file-{target}")),
+                                label.to_owned(),
+                            )
+                            .debug_selector(|| "transcript-file-link".into())
+                            .track_focus(&focus)
+                            .tab_index(0)
+                            .focus_visible(|s| s.bg(c::BG_HOVER()))
+                            .w_auto()
+                            .h_auto()
+                            .p_0()
+                            .text_color(c::BLUE())
+                            .child(label.to_owned())
+                            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
+                                mouse_focus.focus(window, cx)
+                            })
+                            .on_click(move |_, _, cx| {
+                                let _ =
+                                    owner.update(cx, |_, cx| cx.emit(OpenLocalFile(file.clone())));
+                                cx.stop_propagation();
+                            })
+                            .on_key_down(move |event: &gpui::KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                    && !event.is_held
+                                {
+                                    let _ = keyboard.update(cx, |_, cx| {
+                                        cx.emit(OpenLocalFile(keyboard_file.clone()))
+                                    });
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                }
+                            })
+                            .into_any_element(),
                         )
                     })
                     .ok()
                     .flatten()
             })
             .link_renderer_filter(|target| {
-                // Remote HTTP links never become local HTML controls. Native
-                // plan links retain their existing suffix-based treatment.
-                target.ends_with(".grove-plan.json")
-                    || !(target.starts_with("http://") || target.starts_with("https://"))
+                !(target.starts_with("http://") || target.starts_with("https://"))
             });
+
         self.extensions
             .insert(message.to_owned(), extensions.clone());
         extensions
@@ -955,25 +862,10 @@ impl HtmlSession {
         }
         cx.notify();
     }
-    fn open_browser(&mut self, message: String, url: String, cx: &mut Context<Self>) {
-        self.browser_errors.remove(&message);
-        cx.spawn(async move |this, cx| {
-            let result = crate::platform::inline_html::open_in_browser(url).await;
-            if let Err(error) = result {
-                let _ = this.update(cx, |this, cx| {
-                    this.browser_errors
-                        .insert(message, format!("Couldn’t open in browser: {error}"));
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
-    }
     pub(super) fn has_linked(&self, message: &str) -> bool {
         self.opened
             .get(message)
             .is_some_and(|cards| !cards.is_empty())
-            || self.browser_errors.contains_key(message)
     }
 
     pub(super) fn linked(
@@ -982,29 +874,13 @@ impl HtmlSession {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
-        let mut cards: Vec<_> = self
-            .opened
+        self.opened
             .get(message)
             .into_iter()
             .flatten()
             .filter_map(|key| self.artifacts.get(key))
             .map(|artifact| inline_card(artifact.clone(), window, cx))
-            .collect();
-        if let Some(error) = self.browser_errors.get(message) {
-            cards.push(
-                div()
-                    .p(rpx(SPACE_LG))
-                    .child(status::label(
-                        "html-browser-error-status",
-                        StatusKind::Failed,
-                        error.clone(),
-                        ICON_SM,
-                        cx,
-                    ))
-                    .into_any_element(),
-            );
-        }
-        cards
+            .collect()
     }
 }
 
