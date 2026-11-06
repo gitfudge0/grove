@@ -1857,7 +1857,9 @@ impl Actor {
         }
         self.capture_edit_checkpoint();
         let mut content = user_content(&text, &images);
-        if !self.side_chat {
+        // Slash command arguments belong to Claude Code. Appending host instructions
+        // here changes their meaning (including the host-generated /compact).
+        if !self.side_chat && !text.trim_start().starts_with('/') {
             content.push(json!({"type":"text", "text":crate::review_brief::context(&self.state.saved.session_review)}));
         }
         let uuid = nonce();
@@ -6304,6 +6306,22 @@ mod tests {
         assert!(actor.state.queue_sending.is_empty());
     }
     #[test]
+    fn slash_commands_preserve_arguments_without_review_context() {
+        for command in ["/compact focus on tests", "/help", "/custom-skill argument"] {
+            let mut actor = actor();
+            let mut reader = transport(&mut actor);
+            actor.initialized = true;
+            actor.state.status = Status::Done;
+            actor.submit(41, command.into(), vec![]).unwrap();
+            let sent = read(&mut reader);
+            assert_eq!(
+                sent["message"]["content"],
+                json!([{"type":"text", "text":command}])
+            );
+        }
+    }
+
+    #[test]
     fn startup_queue_waits_for_handshake_and_sends_images_once_in_order() {
         let mut actor = actor();
         let mut reader = transport(&mut actor);
@@ -7244,7 +7262,10 @@ mod tests {
         actor.action(Action::Compact).unwrap();
         let sent = read(&mut reader);
         assert_eq!(sent["type"], "user");
-        assert_eq!(sent["message"]["content"][0]["text"], "/compact");
+        assert_eq!(
+            sent["message"]["content"],
+            json!([{"type":"text", "text":"/compact"}])
+        );
         let uuid = sent["uuid"].clone();
         assert_eq!(
             actor.action(Action::Compact).unwrap_err(),

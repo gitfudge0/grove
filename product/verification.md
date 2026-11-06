@@ -3,6 +3,16 @@
 Commands run from the repository root unless noted. Historical records below
 are context for investigation, never fresh test results or product requirements.
 
+## Claude slash-command payloads
+
+Claude submissions beginning with `/` preserve the command and its arguments
+without appended Grove review-summary context, including host `/compact`.
+Transport regression fixtures check the full outgoing payload; ordinary-message
+queue fixtures retain review context. Live Claude command recognition and native
+composer interaction remain untested for this fix. Codex transport is unchanged;
+its unit coverage does not establish live provider behavior. No platform-specific
+code changed; macOS and Windows execution remain untested.
+
 ## Description action hover
 
 Describe changes and View description use the shared checkout row padding and
