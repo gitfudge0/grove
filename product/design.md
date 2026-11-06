@@ -441,7 +441,7 @@ control, including the Codex or Claude composer.
 
 ## Built-in prompt settings
 
-Prompts is a Settings category with a compact two-column picker for the five
+Prompts is a Settings category with a compact two-column picker for the six
 built-in writing prompts and one full-width editor for the selected prompt.
 Each choice shows its default/customized/unsaved state; switching prompts or
 categories preserves independent drafts without saving them. The editor uses a
@@ -475,3 +475,29 @@ Summary and coverage remain visible independently of customized prose. Empty
 findings never use an approval or unqualified clean-state label. Out of date
 results remain copyable. Reader entrance/exit uses restrained shared motion;
 input focus and captured diff selection are immediate.
+## Change-question reader
+
+Ask about changes follows the current Describe source/action treatment: one
+compact source dropdown when two sources exist, static sole-source context, and
+an icon-leading **View answer** action in Changes once a saved answer is linked.
+Saved links remain usable after clean/detached sources. The retained conversation
+and native reader share identity; Conversation opens that same session. A readable
+header reserves the persistent side-toolbar controls' shared width/gaps when they
+overlay the canvas. Source labels yield before fixed actions.
+
+The accessible multiline question uses the project field well, grows inside the
+reader scroll, and retains its draft during errors, cancellation and navigation.
+Opening focuses the field; plain Enter remains multiline and the native secondary-
+Enter action submits. Only an explicit native question starts another canonical
+generation. Ordinary conversation follow-ups retain their own context. Old answers
+keep their captured source/question and coverage during replacements. Saving uses
+an honest status and disables Cancel; success means the canonical write completed.
+Questions/answers render selectable native Markdown with compact source context,
+transparent reading surfaces, and captured diff navigation. Escape returns through
+a captured reference to the answer, then to its conversation/source control.
+
+Picker/focus/input changes are immediate. Reader replacement uses the existing
+restrained motion and reduced-motion endpoints. Narrow layouts wrap content while
+reserving header actions. No publication or repair actions belong to this reader.
+Ask writing preferences use the existing Settings prompt picker/editor, with
+independent drafts and immutable schema/citation/coverage requirements beneath.

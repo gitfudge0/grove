@@ -5,6 +5,7 @@ mod agent_preview;
 mod branch_history;
 mod branch_preview;
 mod change_description;
+mod change_questions;
 mod change_review;
 mod checkout_panel;
 mod content;
@@ -390,6 +391,7 @@ pub struct Sidebar {
     checkout_panel: checkout_panel::CheckoutPanel,
     descriptions: change_description::Descriptions,
     reviews: change_review::Reviews,
+    questions: change_questions::Questions,
     files_active: bool,
     files_owner: Option<Selection>,
     files_toggle_focus: Option<FocusHandle>,
@@ -651,6 +653,7 @@ impl Sidebar {
             checkout_panel: checkout_panel::CheckoutPanel::default(),
             descriptions: change_description::Descriptions::default(),
             reviews: change_review::Reviews::default(),
+            questions: change_questions::Questions::default(),
             files_active: false,
             files_owner: None,
             files_toggle_focus: None,
@@ -5583,6 +5586,12 @@ impl Render for Sidebar {
                 }
                 if this.review_is_open(cx) && event.keystroke.key == "escape" {
                     this.close_review(window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
+                if this.questions_is_open(cx) && event.keystroke.key == "escape" {
+                    this.close_questions(window, cx);
                     window.prevent_default();
                     cx.stop_propagation();
                     return;
