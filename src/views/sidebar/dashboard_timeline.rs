@@ -438,10 +438,6 @@ impl Sidebar {
                 .update(cx, |browser, cx| {
                     browser.open(target, window, cx);
                 });
-            self.files_active = true;
-            self.files_owner = Some(Selection::Session(id));
-            self.checkout_panel.side_chat_owner = None;
-            self.checkout_panel.hidden = false;
             cx.notify();
         }
     }

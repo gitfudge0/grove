@@ -132,6 +132,8 @@ fn description_source_label(scope: &Scope) -> String {
 fn description_source_text(label: String) -> gpui::Div {
     div()
         .debug_selector(|| "describe-source-context".into())
+        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
+        .pr(rpx(SPACE_2XL))
         .text_size(rpx(TEXT_MICRO))
         .text_color(c::FG_DIM())
         .child(label)
@@ -443,10 +445,9 @@ impl Sidebar {
                 .flex()
                 .flex_col()
                 .gap(rpx(SPACE_SM))
-                .px(rpx(SPACE_2XL))
                 .py(rpx(SPACE_LG))
                 .child(
-                    action(
+                    super::checkout_panel::checkout_loading_row(
                         "describe-open",
                         if saved {
                             "View description"
@@ -454,10 +455,10 @@ impl Sidebar {
                             "Describe changes"
                         },
                         "diff",
+                        false,
                         window,
                         cx,
                     )
-                    .justify_start()
                     .with_focus_handle(source_focus)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.reload_description_result(&target, cx);
@@ -471,7 +472,7 @@ impl Sidebar {
                     column.child(description_source_text(source))
                 })
                 .when(busy || stale || unavailable, |column| {
-                    column.child(status::label(
+                    column.child(div().px(rpx(SPACE_2XL)).child(status::label(
                         "describe-panel-state",
                         if busy {
                             StatusKind::Working
@@ -487,7 +488,7 @@ impl Sidebar {
                         },
                         ICON_SM,
                         cx,
-                    ))
+                    )))
                 })
                 .into_any_element();
         }
@@ -528,7 +529,6 @@ impl Sidebar {
             .flex()
             .flex_col()
             .gap(rpx(SPACE_SM))
-            .px(rpx(SPACE_2XL))
             .py(rpx(SPACE_LG));
         // A sole source is context, not a choice. Only offer a picker when
         // local edits and the attached PR are both available.
@@ -550,6 +550,7 @@ impl Sidebar {
             let bounds = self.descriptions.scope_bounds.clone();
             column = column.child(
                 div()
+                    .mx(rpx(SPACE_2XL))
                     .on_prepaint(move |value, _, _| bounds.set(value))
                     .child(
                         action(
@@ -642,7 +643,6 @@ impl Sidebar {
                     window,
                     cx,
                 )
-                .px(rpx(SPACE_LG))
                 .with_focus_handle(focus)
                 .disabled(busy || (matches!(scope, Scope::Local) && !local_changes))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -664,30 +664,37 @@ impl Sidebar {
             let return_focus = open_focus.clone();
             let target = key.clone();
             column = column.child(
-                action("describe-open", "View description", "diff", window, cx)
-                    .justify_start()
-                    .with_focus_handle(open_focus)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.descriptions.return_focus = Some(return_focus.clone());
-                        this.descriptions.open = Some(target.clone());
-                        this.descriptions.focus_pending = true;
-                        cx.notify();
-                    })),
+                super::checkout_panel::checkout_loading_row(
+                    "describe-open",
+                    "View description",
+                    "diff",
+                    false,
+                    window,
+                    cx,
+                )
+                .with_focus_handle(open_focus)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.descriptions.return_focus = Some(return_focus.clone());
+                    this.descriptions.open = Some(target.clone());
+                    this.descriptions.focus_pending = true;
+                    cx.notify();
+                })),
             );
         }
         if exists && entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false)))) {
-            column = column.child(status::label(
+            column = column.child(div().px(rpx(SPACE_2XL)).child(status::label(
                 "describe-panel-state",
                 StatusKind::Warning,
                 "Out of date",
                 ICON_SM,
                 cx,
-            ));
+            )));
         }
         if busy {
             let target = key.clone();
             column = column.child(
                 action("describe-cancel", "Cancel generation", "close", window, cx)
+                    .mx(rpx(SPACE_2XL))
                     .disabled(entry.is_some_and(|e| e.publishing))
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.cancel_description(&target, cx)),
@@ -699,6 +706,8 @@ impl Sidebar {
                 div()
                     .text_size(rpx(TEXT_MICRO))
                     .text_color(c::FG_DIM())
+                    .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
+                    .pr(rpx(SPACE_2XL))
                     .child(if matches!(scope, Scope::Local) {
                         "Uncommitted changes, including new files."
                     } else {
@@ -1170,6 +1179,14 @@ impl Sidebar {
             }
             if let Some(text) = &entry.text {
                 body = body.child(text_view(text, window));
+            }
+            if !description.content.is_empty() {
+                body = body.child(
+                    TextView::markdown("description-custom-content", description.content.clone())
+                        .markdown_extensions(super::super::mermaid::extensions())
+                        .style(super::super::codex_view::markdown_style(window))
+                        .selectable(true),
+                );
             }
             body = body.child(
                 div()

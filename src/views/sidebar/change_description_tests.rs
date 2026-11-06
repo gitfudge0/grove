@@ -15,9 +15,15 @@ struct DescriptionReaderFixture {
     width: f32,
     height: f32,
     measured: std::rc::Rc<std::cell::Cell<gpui::Size<gpui::Pixels>>>,
+    drive_capture_frames: bool,
 }
 impl Render for DescriptionReaderFixture {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Capture windows have no pointer activity. Keep platform presentation
+        // advancing while a state change and Markdown layout settle.
+        if self.drive_capture_frames {
+            window.request_animation_frame();
+        }
         window.set_rem_size(gpui::px(self.rem));
         let reader = self.sidebar.update(cx, |sidebar, cx| {
             if sidebar
@@ -145,6 +151,7 @@ fn frozen_description() -> Description {
                 category: "Tests".into(),
             },
         ],
+        content: String::new(),
         diagram: None,
     }
 }
@@ -195,6 +202,7 @@ fn fixture(cx: &mut gpui::TestAppContext) -> (Entity<Sidebar>, &mut gpui::Visual
             width: 1100.,
             height: 1000.,
             measured: Default::default(),
+            drive_capture_frames: false,
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
     });
@@ -386,7 +394,7 @@ fn describe_changes_linux_native_capture() {
                     window.set_window_title("Grove Describe changes QA");
                     let (sidebar, source) = create_sidebar(window, cx);
                     sidebar_handle = Some(sidebar.clone());
-                    let fixture = cx.new(|_| DescriptionReaderFixture { sidebar, source, rem: 16., width: 1100., height: 800., measured: Default::default() });
+                    let fixture = cx.new(|_| DescriptionReaderFixture { sidebar, source, rem: 16., width: 1100., height: 800., measured: Default::default(), drive_capture_frames: true });
                     fixture_handle = Some(fixture.clone());
                     cx.new(|cx| gpui_component::Root::new(fixture, window, cx))
                 },
@@ -400,6 +408,8 @@ fn describe_changes_linux_native_capture() {
                     ("expanded-dark", "grove-dark", 16., 1100., "expanded"),
                     ("diff-dark", "grove-dark", 16., 1100., "diff"),
                     ("diagram-dark", "grove-dark", 16., 1100., "diagram"),
+                    ("custom-dark", "grove-dark", 16., 1100., "custom"),
+                    ("custom-light-narrow-zoom", "grove-light", 20., 500., "custom"),
                     ("preview-light-zoom", "grove-light", 20., 900., "preview"),
                     ("stale-narrow", "grove-dark", 16., 320., "stale"),
                     ("failure-dark", "grove-dark", 16., 1100., "error"),
@@ -421,6 +431,11 @@ fn describe_changes_linux_native_capture() {
                             entry.diff = None;
                             entry.error = None;
                             entry.diagram = None;
+                            if let Some(description) = &mut entry.result {
+                                Arc::make_mut(description).content = if state == "custom" {
+                                    "## Delivery behavior\n\n| Before | After |\n| --- | --- |\n| Duplicate order | Delivery claimed once |\n\n```rust\nclaim_delivery(delivery_id)?;\n```".into()
+                                } else { String::new() };
+                            }
                             entry.scroll.set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
                             if state == "diagram" { entry.diagram = Some(cx.new(|cx| TextViewState::markdown("```mermaid\nflowchart LR\n A[\"Delivery\"] --> B[\"Claim ID\"]\n B --> C[\"Create order\"]\n```", cx))); }
                             if state == "expanded" { entry.expanded.insert(FIXTURE_FILE.into()); }
@@ -435,6 +450,20 @@ fn describe_changes_linux_native_capture() {
                         fixture.update(cx, |_, cx| cx.notify());
                         window.refresh();
                     }).unwrap();
+                    // Wait for an observed rendered frame for this state, then
+                    // let subsequent frames present asynchronously parsed text.
+                    let painted = std::rc::Rc::new(std::cell::Cell::new(false));
+                    cx.update_window(window.into(), |_, window, _| {
+                        let painted = painted.clone();
+                        window.on_next_frame(move |window, _| {
+                            window.on_next_frame(move |_, _| painted.set(true));
+                        });
+                    }).unwrap();
+                    for _ in 0..100 {
+                        if painted.get() { break; }
+                        cx.background_executor().timer(Duration::from_millis(20)).await;
+                    }
+                    assert!(painted.get(), "Requested capture state did not render: {name}");
                     cx.background_executor().timer(Duration::from_millis(400)).await;
                     let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                         .join(".grove-artifacts/describe-changes-native")
@@ -450,6 +479,10 @@ fn describe_changes_linux_native_capture() {
                         .arg(output)
                         .status().unwrap().success());
                 }
+                cx.update_window(window.into(), |_, window, cx| {
+                    fixture.update(cx, |fixture, _| fixture.drive_capture_frames = false);
+                    window.remove_window();
+                }).unwrap();
                 cx.update(|cx| cx.quit());
             }).detach();
         });
@@ -536,6 +569,7 @@ fn linked_fixture(
             width: 1100.,
             height: 1000.,
             measured: Default::default(),
+            drive_capture_frames: false,
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
     });
@@ -814,6 +848,8 @@ struct DescriptionControlsFixture {
     sidebar: Entity<Sidebar>,
     local: bool,
     pr: bool,
+    bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    drive_frames: bool,
 }
 fn controls_pr() -> grove_core::checkout_pr::PullRequest {
     serde_json::from_value(serde_json::json!({
@@ -824,6 +860,18 @@ fn controls_pr() -> grove_core::checkout_pr::PullRequest {
 }
 impl Render for DescriptionControlsFixture {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.drive_frames {
+            window.request_animation_frame();
+        }
+        let bounds = self.bounds.clone();
+        let reference = super::super::checkout_panel::checkout_loading_row(
+            "description-hover-reference",
+            "Commit changes",
+            "git",
+            false,
+            window,
+            cx,
+        );
         let controls = self.sidebar.update(cx, |sidebar, cx| {
             sidebar.render_description_controls(
                 FIXTURE_PATH,
@@ -843,8 +891,10 @@ impl Render for DescriptionControlsFixture {
             .child(
                 div()
                     .w(rpx(FIXTURE_PANEL_WIDTH))
+                    .on_prepaint(move |rect, _, _| bounds.set(rect))
                     .rounded(rpx(RADIUS_PANEL))
                     .bg(c::FIELD_FILL())
+                    .child(reference)
                     .child(controls),
             )
     }
@@ -865,13 +915,28 @@ fn description_controls_only_offer_real_choices_and_keyboard_selection(
             sidebar: sidebar.clone(),
             local: true,
             pr: false,
+            bounds: Default::default(),
+            drive_frames: false,
         });
         handles = Some((sidebar, fixture.clone()));
         gpui_component::Root::new(fixture, window, cx).bordered(false)
     });
     let (sidebar, fixture) = handles.unwrap();
     draw(cx);
-    assert!(cx.debug_bounds("describe-changes").is_some());
+    let action = cx.debug_bounds("describe-changes").unwrap();
+    let controls = cx.debug_bounds("describe-controls").unwrap();
+    assert_eq!(
+        action.left(),
+        controls.left(),
+        "hover begins at the card edge"
+    );
+    assert_eq!(
+        action.right(),
+        controls.right(),
+        "hover fills the card width"
+    );
+    let glyph = cx.debug_bounds("describe-changes-icon").unwrap();
+    assert_eq!(glyph.left() - action.left(), gpui::px(SPACE_2XL));
     assert!(
         cx.debug_bounds("describe-source").is_none(),
         "one source must not masquerade as a choice"
@@ -1021,6 +1086,8 @@ fn describe_controls_linux_native_capture() {
                             sidebar: sidebar.clone(),
                             local: true,
                             pr: false,
+                            bounds: Default::default(),
+                            drive_frames: true,
                         });
                         handles = Some((sidebar, fixture.clone()));
                         cx.new(|cx| gpui_component::Root::new(fixture, window, cx).bordered(false))
@@ -1034,10 +1101,37 @@ fn describe_controls_linux_native_capture() {
                     .timer(Duration::from_millis(700))
                     .await;
                 for state in [
-                    "local", "both", "menu", "selected", "loading", "saved", "stale", "light",
+                    "local",
+                    "hover",
+                    "both",
+                    "menu",
+                    "selected",
+                    "loading",
+                    "saved",
+                    "stale",
+                    "light",
+                    "light-hover",
                     "zoom",
                 ] {
                     cx.update_window(window.into(), |_, window, cx| {
+                        if matches!(state, "hover" | "light-hover") {
+                            let bounds = fixture.read(cx).bounds.get();
+                            let position = gpui::point(
+                                bounds.left()
+                                    + rpx(SPACE_2XL + ICON_LG).to_pixels(window.rem_size()),
+                                bounds.top()
+                                    + rpx(ROW_H + SPACE_LG + ROW_H / 2.)
+                                        .to_pixels(window.rem_size()),
+                            );
+                            window.dispatch_event(
+                                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                                    position,
+                                    pressed_button: None,
+                                    modifiers: gpui::Modifiers::default(),
+                                }),
+                                cx,
+                            );
+                        }
                         if state == "both" {
                             fixture.update(cx, |fixture, cx| {
                                 fixture.pr = true;
@@ -1142,6 +1236,8 @@ fn describe_controls_linux_native_capture() {
                         .unwrap()
                         .success());
                 }
+                cx.update_window(window.into(), |_, window, _| window.remove_window())
+                    .unwrap();
                 cx.update(|cx| cx.quit());
             })
             .detach();

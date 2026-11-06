@@ -31,6 +31,7 @@ pub mod interaction;
 pub mod issues;
 pub mod latest;
 pub mod multi_root;
+pub mod prompts;
 pub mod provider;
 mod provider_diagnostics;
 mod provider_ownership;

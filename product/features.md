@@ -201,3 +201,25 @@ transports and selected model/preferences. The generation prompt instructs the
 provider to use only the captured diff, without tools or repository writes; this
 skill does not expand the session's permissions. Later conversation turns remain
 ordinary user-directed conversation.
+
+
+## Built-in prompts
+
+Settings → Prompts edits Commit message, PR creation, Describe changes, and Session
+title writing instructions for Codex and Claude. Overrides apply across projects
+to future generations. Save persists each prompt; Restore default removes its
+override. A compact picker opens one spacious editor at a time. Unsaved edits
+survive prompt switching and category navigation for the Settings panel lifetime.
+Empty or oversized instructions cannot be saved. Grove-managed workflow and output
+requirements are selectable read-only text behind a disclosure and are always
+composed with overrides, whether the disclosure is open or closed.
+They preserve captured-data boundaries, output validation and explicit publication.
+Create PR generates title and Markdown body from the published branch comparison,
+then opens the existing editable GitHub form; generation does not submit a PR.
+
+Describe changes accepts optional extended Markdown content for headings,
+paragraphs, lists, tables, blockquotes, code and file links, rendered by Grove's
+native Markdown components. The existing Mermaid field provides diagrams.
+Snapshot context, file walkthrough and honest coverage remain visible independently.
+Copy Markdown and PR update previews include extended content. Older saved results
+without extended content remain readable. Prompt changes never rewrite saved results.

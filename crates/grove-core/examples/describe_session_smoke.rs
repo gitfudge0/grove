@@ -2,6 +2,7 @@
 //! Run with an existing, empty temporary GROVE_CONFIG_DIR:
 //! cargo run -p grove-core --example describe_session_smoke -- codex|claude [PR-URL]
 //! GROVE_DESCRIPTION_SMOKE_MODEL optionally overrides only this fixture session.
+//! GROVE_DESCRIPTION_SMOKE_CUSTOM=1 verifies a persisted custom prompt and native Markdown content.
 use grove_core::{
     change_description::{self, Scope},
     change_description_store::{Source, Store},
@@ -149,6 +150,16 @@ fn main() -> Result<(), String> {
         _ => return Err("Usage: describe_session_smoke codex|claude [PR-URL]".into()),
     };
     let config = isolated_config()?;
+    let custom = std::env::var_os("GROVE_DESCRIPTION_SMOKE_CUSTOM").is_some();
+    const CUSTOM_HEADING: &str = "## Grove custom rendering smoke";
+    if custom {
+        let mut settings = grove_core::storage::Store::default();
+        settings.prompt_overrides.insert(
+            grove_core::prompts::PromptKind::DescribeChanges.key().into(),
+            format!("Describe the supplied changes. In the content field include the exact heading {CUSTOM_HEADING}, followed by a Markdown table with the exact header | Before | After | and one row explaining the behavior change. Keep the other required result fields accurate."),
+        );
+        grove_core::storage::save(&settings).map_err(|error| error.to_string())?;
+    }
     let fixture = tempfile::tempdir().map_err(|error| error.to_string())?;
     let path = fixture.path();
     git(path, &["init", "-b", "main"])?;
@@ -207,6 +218,15 @@ fn main() -> Result<(), String> {
     let shutdown = owned.stop();
     let description = generated?;
     shutdown?;
+    if custom
+        && (!description.content.contains(CUSTOM_HEADING)
+            || !description.content.contains("| Before | After |")
+            || !description.markdown().contains(CUSTOM_HEADING))
+    {
+        return Err(
+            "Custom prompt did not produce the requested Markdown heading and table".into(),
+        );
+    }
     let expected_path = store.result_path(&source)?;
     let saved_path = store.save_generation(&key, &description, &generation)?;
     let restarted = Store::new(store_root);
@@ -224,6 +244,9 @@ fn main() -> Result<(), String> {
         || git(path, &["ls-files", "--stage"])? != index
     {
         return Err("Normal description session changed the temporary repository".into());
+    }
+    if custom {
+        println!("PASS {provider:?}: persisted custom prompt produced the requested native Markdown heading and table");
     }
     println!(
         "PASS {provider:?}: normal conversation completed; {} files described; canonical result reloaded; pending capture cleared; snapshot current; HEAD, index and working state unchanged; owned session stopped",

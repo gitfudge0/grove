@@ -465,6 +465,9 @@ impl LandingPage {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Store {
+    /// User writing preferences; Grove workflow and output contracts remain built in.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub prompt_overrides: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub default_landing_page: LandingPage,
     #[serde(default)]

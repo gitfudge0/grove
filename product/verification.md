@@ -3,6 +3,38 @@
 Commands run from the repository root unless noted. Historical records below
 are context for investigation, never fresh test results or product requirements.
 
+## Description action hover
+
+Describe changes and View description use the shared checkout row padding and
+full-card-width hover target. A GPUI regression checks the action edges against
+its controls container and preserves the leading icon inset. Six description
+interaction tests and all 33 UI conformance checks passed. Linux native controls
+captures were inspected with a standard checkout row alongside the dark hovered
+generation action and the light hovered saved-description action. The capture
+fixture now drives frames and removes its window on exit; initial blank captures
+were not used as visual evidence. Codex and Claude are verified through the
+existing description interaction fixtures; live generation and macOS/Windows
+hover rendering remain untested.
+
+## Fixed Checkout group order
+
+The grouped Checkout uses directory tools, Changes, Git, Pull request, Scripts,
+then Session (Plan before Agents), omitting absent groups without urgency-based
+reordering. Offline GPUI coverage passed 18 checkout tests, six description
+interaction tests and two plan-preview tests; all 33 UI source conformance
+checks passed. Codex and Claude are each **verified through fixtures** for the
+changed layout and existing description/agent interactions, not live provider
+calls. The Linux native full-Sidebar capture also passed after correcting its
+frame scheduling and window teardown; light/clean and dark/working captures were
+inspected for stable group order and saved-description placement.
+
+Remaining gaps: the desktop window manager overrode requested narrow window
+sizes to 1424 × 1698 logical pixels. Narrow-width and changed-rem assertions are
+GPUI TestPlatform evidence, not verified narrow/zoom desktop captures. Live
+Codex and Claude calls, real PR writes, exhaustive combinations of the mock's
+states, and macOS/Windows rendering remain untested for this grouping change.
+The capture fixture starts no provider, shell script or GitHub mutation.
+
 ## Provider size-recovery smoke check
 
 The opt-in `grove-core` example exercises production plan import and retry through
@@ -326,3 +358,84 @@ GPUI regression exercises Codex and Claude session fixtures and the native
 browser-to-transcript event chain with the explorer hidden and shown. Live Codex
 and Claude provider-boundary checks, native pointer/keyboard and screenshot QA,
 and macOS/Windows checks remain untested for this change.
+
+## Built-in prompt customization and richer descriptions
+
+Settings → Prompts provides saved writing overrides for commit messages, PR text,
+Describe changes and session titles. Offline evidence includes prompt storage and
+fallback tests, legacy description loading, Markdown/export validation, repeated
+PR section replacement, the Settings save/restore/draft-preservation fixture, and
+all 33 UI conformance checks. The Settings fixture also checks a large rendered
+editor height. Linux native Settings captures were inspected in Grove Light and
+Grove Dark, including changed rem sizing. The desktop window manager overrides
+requested window sizes; these captures do not establish narrow-window behavior.
+
+Live Codex checks passed saved custom commit and PR structured writing, plus a
+normal retained Describe changes conversation requesting an exact heading and
+table. The description was validated, saved and reloaded with the captured source
+still current; fixture HEAD, index and working state remained unchanged. The
+structured-writing smoke does not commit or exercise the real GitHub compare/form
+handoff. Live session-title customization and real GitHub publication remain
+untested. Claude's normal-session check failed because its OAuth session expired
+and could not refresh; its isolated structured-writing check also failed. Live
+Claude customization is therefore unverified, despite shared offline coverage.
+
+The broad core run passed 842 tests, failed three and ignored nine. Sequential
+reruns still failed the executable-resolution and recovered-GitHub-environment
+fixtures because installed Codex/GitHub executables were selected instead of their
+fixture executables. The tmux startup-environment check passed in isolation. These
+failures were retained rather than changing unrelated executable discovery.
+macOS and Windows execution and exhaustive native hover/focus/error states remain
+untested. Long title instructions are transported on stdin to avoid oversized
+Windows command-line arguments; command-shaping tests do not establish Windows
+runtime behavior.
+
+The native description fixture passed after synchronizing captures with actual
+platform frames. Inspected custom dark/wide and light/500-pixel-reader/rem-20
+captures show the requested table and highlighted code, with file walkthrough
+and coverage retained. This establishes the constrained native reader fixture,
+not a full narrow desktop-window interaction. The title argument regression
+suite passed 18 tests (four live tests ignored); the final enlarged-editor test
+and conformance rerun also passed. The real PR comparison flow may safely refuse
+comparisons beyond GitHub's default 250-commit page; no real GitHub PR form or
+publication was exercised in this run.
+
+## Prompt Settings compact picker (2026-11-06)
+
+The selected variant A replaced the four-editor stack with a two-by-two picker,
+one full-width native editor, independent draft status, byte count and a collapsed
+read-only requirements disclosure. Save and Restore stay in the shared action
+row. The automatic-save notice is excluded from this explicit-save category.
+The existing generation, storage and provider contracts were not changed by this
+presentation pass.
+
+All 19 Settings tests and 33 UI conformance checks passed. GPUI input/layout
+fixtures exercised independent draft preservation across prompt/category switches,
+Space typing, Tab/Enter selection, a focused Space disclosure action, reduced-motion
+expanded/collapsed geometry, empty-save rejection, Save/Restore persistence, and
+480px layout at rem 16/24. These are synthetic input fixtures, not OS-level pointer
+or screen-reader testing. Native Linux X11 captures were inspected for Grove Dark
+and Light, default/unsaved state, the long session-title prompt, expanded contracts,
+and a constrained 480px content area at rem 16/24. The desktop window remained
+larger than the constrained content area. Eight final isolated capture invocations
+passed; an initial requirements launch stalled and passed on retry. Earlier
+cross-theme capture lag and input-handler teardown failures were resolved by
+capturing one state per app and flushing input ownership before shutdown.
+Evidence: `.grove-artifacts/prompt-settings-design-v1/` (Settings/conformance logs,
+`native-v6/900`, `native-v6/480`, and the requirements retry log). Supporting-text
+contrast from the native palette is 8.18:1 dark / 5.70:1 light; editor text is
+16.09:1 dark / 16.00:1 light. This does not establish full accessibility conformance.
+
+The exploratory HTML remains a layout direction, not a measured native reference:
+the reference author command reports native capture unsupported on Linux, and the
+current typed vocabulary does not cover this wrapping editable form. Certified
+reference parity, macOS/Windows runtime, OS-level hover/press/release inspection,
+and animated interruption/exit inspection remain untested. Codex and Claude live
+provider-boundary behavior was not re-run for this Settings-only presentation
+change; both remain untested in this pass, with prior generation evidence and
+Claude authentication limitations recorded above. Formatting, whitespace and
+repository artifact checks passed before installation.
+
+The final `./install.sh` completed successfully; the installed `~/.local/bin/grove`
+matched `target/local/grove` byte-for-byte. Delivery stayed on `feat/new-sidebar`
+without a commit, push, PR or release.

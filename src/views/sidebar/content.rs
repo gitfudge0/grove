@@ -728,10 +728,7 @@ impl Sidebar {
                 }
                 CodexViewEvent::ScriptLaunched => this.snippet_launched(id, cx),
                 CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
-                    this.files_active = true;
-                    this.files_owner = this.selection.clone();
-                    this.checkout_panel.side_chat_owner = None;
-                    this.checkout_panel.hidden = false;
+                    // Opening a viewer must preserve the user's panel choices.
                     cx.notify();
                 }
                 _ => {}

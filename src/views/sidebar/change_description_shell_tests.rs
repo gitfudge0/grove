@@ -7,10 +7,15 @@ const TITLE: &str = "Grove Describe changes full shell QA";
 
 struct NativeShell {
     sidebar: Entity<Sidebar>,
+    drive_frames: std::rc::Rc<std::cell::Cell<bool>>,
     measured: std::rc::Rc<std::cell::Cell<gpui::Size<gpui::Pixels>>>,
 }
 impl Render for NativeShell {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Drive presentation while capturing state changes without pointer input.
+        if self.drive_frames.get() {
+            window.request_animation_frame();
+        }
         let measured = self.measured.clone();
         div()
             .relative()
@@ -100,6 +105,8 @@ fn describe_changes_full_sidebar_linux_capture() {
         let mut sidebar_handle = None;
         let measured = std::rc::Rc::new(std::cell::Cell::new(gpui::size(gpui::px(0.), gpui::px(0.))));
         let measured_window = measured.clone();
+        let drive_frames = std::rc::Rc::new(std::cell::Cell::new(true));
+        let window_drive_frames = drive_frames.clone();
         let window = cx.open_window(gpui::WindowOptions {
             window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(gpui::point(gpui::px(40.), gpui::px(40.)), gpui::size(gpui::px(1280.), gpui::px(900.))))),
             ..Default::default()
@@ -142,7 +149,7 @@ fn describe_changes_full_sidebar_linux_capture() {
                 sidebar
             });
             sidebar_handle = Some((sidebar.clone(), session));
-            let shell = cx.new(|_| NativeShell { sidebar, measured: measured_window });
+            let shell = cx.new(|_| NativeShell { sidebar, drive_frames: window_drive_frames, measured: measured_window });
             cx.new(|cx| gpui_component::Root::new(shell, window, cx).bordered(false))
         }).unwrap();
         let (sidebar, session) = sidebar_handle.unwrap();
@@ -184,6 +191,55 @@ fn describe_changes_full_sidebar_linux_capture() {
                 }).unwrap();
                 assert!(std::process::Command::new("import").args(["-window", TITLE]).arg(output.join(format!("{name}.png"))).status().unwrap().success());
             }
+            // Capture the grouped production panel with frozen provider fixtures.
+            // No provider process, shell script or GitHub mutation is started.
+            std::fs::write(_keep_alive.0.path().join("main.rs"), "fn main() {}\n").unwrap();
+            let frozen_git = grove_core::checkout_git::inspect(_keep_alive.0.path()).unwrap();
+            let summary = grove_core::diff::summarize(&grove_core::diff::changed_files(&path));
+            for provider in [grove_core::codex::Provider::Codex, grove_core::codex::Provider::Claude] {
+                for (state, theme, width, rem) in [
+                    ("dirty", "grove-dark", 1280., 16.),
+                    ("clean", "grove-light", 1280., 16.),
+                    ("working", "grove-dark", 1280., 16.),
+                    ("narrow", "grove-light", 760., 20.),
+                ] {
+                    cx.update_window(window.into(), |_, window, cx| {
+                        grove_core::theme::set_by_name(theme);
+                        c::sync_component_theme(cx);
+                        window.resize(gpui::size(gpui::px(width), gpui::px(1100.)));
+                        window.set_rem_size(gpui::px(rem));
+                        cx.global_mut::<SettingsState>().store.projects[0].scripts.entries = vec![
+                            grove_core::storage::ProjectAction { id: "dev".into(), name: "Dev server".into(), kind: grove_core::storage::ProjectActionKind::Shell { command: "npm run dev".into() } },
+                            grove_core::storage::ProjectAction { id: "review".into(), name: "Review payment retry edge cases".into(), kind: grove_core::storage::ProjectActionKind::Prompt { template: "Review payment retry edge cases".into() } },
+                        ];
+                        session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            session.state.saved.work_periods = vec![grove_core::codex::WorkPeriod { start_item: 0, end_item: None, duration_ms: None, subagents: vec![grove_core::codex::Subagent { id: "group-qa".into(), name: "Review retry edge cases".into(), activity: "Inspecting payment handlers".into(), role: None, task: Some("Review idempotency".into()), status: if state == "working" { grove_core::codex::SubagentStatus::Working } else { grove_core::codex::SubagentStatus::Completed } }] }];
+                            cx.notify();
+                        });
+                        sidebar.update(cx, |sidebar, cx| {
+                            sidebar.descriptions.open = None;
+                            sidebar.configure_checkout_group_capture(&path, &frozen_git, &summary, state);
+                            cx.notify();
+                        });
+                        window.refresh();
+                    }).unwrap();
+                    cx.update(|cx| cx.refresh_windows());
+                    cx.background_executor().timer(Duration::from_millis(500)).await;
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.set_rem_size(gpui::px(rem));
+                        window.refresh();
+                        let sidebar = sidebar.read(cx);
+                        let mut metadata = std::fs::OpenOptions::new().create(true).append(true).open(output.join("group-measurements.txt")).unwrap();
+                        writeln!(metadata, "{} {state}: viewport {:?}, rem {:?}, theme {}; fixture {}", provider.label(), window.viewport_size(), window.rem_size(), grove_core::theme::current().name, sidebar.checkout_group_capture_state()).unwrap();
+                    }).unwrap();
+                    cx.background_executor().timer(Duration::from_millis(500)).await;
+                    assert!(std::process::Command::new("import").args(["-window", TITLE]).arg(output.join(format!("groups-{}-{state}.png", provider.label().to_lowercase()))).status().unwrap().success());
+                }
+            }
+            drive_frames.set(false);
+            cx.background_executor().timer(Duration::from_millis(100)).await;
+            cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
             cx.update(|cx| cx.quit());
         }).detach();
     });

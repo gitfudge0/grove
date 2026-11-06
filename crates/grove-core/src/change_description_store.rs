@@ -514,6 +514,7 @@ mod tests {
                 summary: vec!["Only create orders for new delivery IDs.".into()],
                 category: "Behavior".into(),
             }],
+            content: String::new(),
             diagram: None,
         }
     }
