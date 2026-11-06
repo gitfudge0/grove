@@ -53,3 +53,20 @@ resume/context retention, and interruption. Enable the diagnostics variable with
 a separate disposable capture directory to check actual metadata emission.
 Fixtures and unit tests do not establish live provider behavior; record Codex and
 Claude results separately, including platform and unavailable checks.
+
+## MCP connection failures
+
+MCP server health is separate from conversation health. In main conversations,
+Codex startup-status notifications and Claude's initialization inventory/status
+queries produce literal transcript warnings naming the unavailable server,
+including the provider-reported error and CLI authentication/reconnect guidance.
+Healthy tools and the model turn remain usable. Repeated unchanged failures are
+suppressed within a connection; recovery permits a later failure to be reported.
+Grove does not retry or change external MCP credentials automatically.
+
+Claude health queries run after initialization, at most once every five seconds.
+Unsupported or unanswered queries disable polling for that connection without
+failing or blocking the conversation. Configuration and message editing do not
+wait for these optional requests. Configurations, headers, and credentials are
+not copied from status inventories into notices. Codex CLIs without startup-status
+notifications do not provide this warning coverage.

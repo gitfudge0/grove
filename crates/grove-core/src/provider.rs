@@ -1162,6 +1162,7 @@ pub struct Snapshot {
     pub error: Option<String>,
     pub notice: Option<SessionNotice>,
     rate_limit_reset: Option<i64>,
+    pub(crate) mcp_statuses: HashMap<String, (String, String, bool)>,
     pub sandbox: Option<Value>,
     pub approval_policy: Option<Value>,
     /// Modes advertised by the installed Claude CLI, not assumed SDK capabilities.
@@ -1532,6 +1533,43 @@ impl Snapshot {
             return;
         }
         self.saved.items.push(json!({"id":format!("provider-notice-{}", self.saved.items.len()), "type":"providerNotice", "title":title, "text":text, "severity":"warning"}));
+    }
+
+    /// MCP health is independent of the model turn. Keep diagnostics in the
+    /// existing literal transcript notice, never in the fatal session error.
+    pub(crate) fn mcp_server_status(
+        &mut self,
+        name: &str,
+        status: &str,
+        error: Option<&str>,
+        needs_auth: bool,
+    ) {
+        let detail = error.unwrap_or_default();
+        let current = (status.to_owned(), detail.to_owned(), needs_auth);
+        if self.mcp_statuses.get(name) == Some(&current) {
+            return;
+        }
+        self.mcp_statuses.insert(name.to_owned(), current);
+        if !matches!(status, "failed" | "needs-auth") {
+            return;
+        }
+        let cli = match self.saved.provider {
+            Provider::Codex => "Codex",
+            Provider::Claude => "Claude Code",
+        };
+        let action = if needs_auth || status == "needs-auth" {
+            format!("Authenticate this MCP server with the {cli} CLI, then reconnect this conversation.")
+        } else {
+            format!(
+                "Check this server with the {cli} CLI, then reconnect this conversation to retry."
+            )
+        };
+        let text = if detail.is_empty() {
+            action
+        } else {
+            format!("{detail}\n\n{action}")
+        };
+        self.provider_warning(&format!("MCP server {name} is unavailable"), &text);
     }
 
     pub(crate) fn retire_interaction(&mut self, id: &Value) {
@@ -1972,6 +2010,7 @@ impl Snapshot {
             error: None,
             notice: None,
             rate_limit_reset: None,
+            mcp_statuses: HashMap::new(),
             sandbox: None,
             approval_policy: None,
             permission_modes: Vec::new(),
@@ -2636,6 +2675,24 @@ impl Snapshot {
     }
     pub fn apply(&mut self, message: &Value) -> bool {
         let p = &message["params"];
+        if message["method"] == "mcpServer/startupStatus/updated" {
+            if p["threadId"]
+                .as_str()
+                .is_some_and(|id| Some(id) != self.saved.thread_id.as_deref())
+            {
+                return false;
+            }
+            if let (Some(name), Some(status)) = (p["name"].as_str(), p["status"].as_str()) {
+                self.mcp_server_status(
+                    name,
+                    status,
+                    p["error"].as_str(),
+                    p["failureReason"] == "reauthenticationRequired",
+                );
+                return true;
+            }
+            return false;
+        }
         if let Some(period) = p["threadId"]
             .as_str()
             .and_then(|id| self.subagent_period(id))

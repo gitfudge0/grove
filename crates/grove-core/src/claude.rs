@@ -933,6 +933,8 @@ struct Actor {
     initialized: bool,
     started: Instant,
     first_output: bool,
+    mcp_polled_at: Option<Instant>,
+    mcp_status_supported: bool,
     reconfigure: bool,
     reset_configuration: bool,
     configuring: bool,
@@ -1032,6 +1034,8 @@ impl Actor {
             initialized: false,
             started: Instant::now(),
             first_output: false,
+            mcp_polled_at: None,
+            mcp_status_supported: true,
             reconfigure: false,
             reset_configuration: false,
             configuring: false,
@@ -1129,6 +1133,7 @@ impl Actor {
             // The UI consumes complete state, so intermediate protocol deltas
             // need not each clone the accumulated conversation. A bounded batch
             // also lets actions and publication run during continuous output.
+            self.poll_mcp_status();
             if self.receive_batch() {
                 self.publish();
             }
@@ -1237,6 +1242,53 @@ impl Actor {
             received = true;
         }
         received
+    }
+    fn poll_mcp_status(&mut self) {
+        if self.side_chat
+            || !self.initialized
+            || self.process.is_none()
+            || !self.mcp_status_supported
+        {
+            return;
+        }
+        if self.pending.values().any(|kind| kind == "mcp_status") {
+            // Optional health discovery must never hold editing/configuration
+            // hostage on an older CLI that does not answer the request.
+            if self
+                .mcp_polled_at
+                .is_some_and(|at| at.elapsed() >= Duration::from_secs(15))
+            {
+                self.pending.retain(|_, kind| kind != "mcp_status");
+                self.mcp_status_supported = false;
+            }
+            return;
+        }
+        if self.configuring
+            || !self.pending.is_empty()
+            || self
+                .mcp_polled_at
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(5))
+        {
+            return;
+        }
+        self.mcp_polled_at = Some(Instant::now());
+        if self.control(json!({"subtype":"mcp_status"})).is_err() {
+            self.pending.retain(|_, kind| kind != "mcp_status");
+            self.mcp_status_supported = false;
+        }
+    }
+    fn observe_mcp_servers(&mut self, servers: &Value) {
+        for server in servers.as_array().into_iter().flatten() {
+            if let (Some(name), Some(status)) = (server["name"].as_str(), server["status"].as_str())
+            {
+                self.state.mcp_server_status(
+                    name,
+                    status,
+                    server["error"].as_str(),
+                    status == "needs-auth",
+                );
+            }
+        }
     }
     fn publish(&self) {
         if let Some(process) = &self.process {
@@ -1404,6 +1456,9 @@ impl Actor {
         self.compact_pending = false;
         self.state.compacting = false;
         self.initialized = false;
+        self.mcp_polled_at = None;
+        self.mcp_status_supported = true;
+        self.state.mcp_statuses.clear();
         self.reconfigure = false;
         self.reset_configuration = false;
         self.configuring = false;
@@ -1556,7 +1611,7 @@ impl Actor {
             }
         }
         if self.process.is_none()
-            || !self.pending.is_empty()
+            || self.pending.values().any(|kind| kind != "mcp_status")
             || self.in_flight.is_some()
             || !self.initialized
             || (self.tracks_session_state && !self.session_idle)
@@ -3044,6 +3099,14 @@ impl Actor {
                 if pending.is_none() {
                     return Ok(());
                 }
+                if pending.as_deref() == Some("mcp_status") {
+                    if response["subtype"] == "success" {
+                        self.observe_mcp_servers(&response["response"]["mcpServers"]);
+                    } else {
+                        self.mcp_status_supported = false;
+                    }
+                    return Ok(());
+                }
                 if pending.as_deref() == Some("get_context_usage") {
                     // Optional measurement: an error never fails the session.
                     if response["subtype"] == "success" {
@@ -3100,7 +3163,7 @@ impl Actor {
                         }
                     }
                 }
-                if self.configuring && self.pending.is_empty() {
+                if self.configuring && !self.pending.values().any(|kind| kind != "mcp_status") {
                     self.configuring = false;
                     self.state.status = Status::Idle;
                     if self.state.model.is_some() {
@@ -3232,6 +3295,7 @@ impl Actor {
                 self.state.set_provider_title(value["title"].as_str());
             }
             "system" if value["subtype"] == "init" => {
+                self.observe_mcp_servers(&value["mcp_servers"]);
                 self.state.resolved_model = value["model"].as_str().map(str::to_owned);
                 if let Some(mode) = value["permissionMode"].as_str() {
                     self.effective_permission_mode(mode);
@@ -7421,5 +7485,84 @@ mod tests {
             .prepare_approval("plan", "r1")
             .unwrap()
             .is_none());
+    }
+    #[test]
+    fn mcp_status_failure_is_optional_and_visible_without_failing_the_conversation() {
+        let mut actor = actor();
+        actor.state.status = Status::Idle;
+        actor.pending.insert("mcp".into(), "mcp_status".into());
+        let event = json!({"type":"control_response","response":{"request_id":"mcp","subtype":"success","response":{"mcpServers":[{"name":"jira","status":"needs-auth","error":"OAuth expired","config":{"headers":{"Authorization":"secret"}}}]}}});
+        actor.message(event.clone()).unwrap();
+        assert_eq!(actor.state.status, Status::Idle);
+        assert!(actor.state.error.is_none());
+        assert_eq!(
+            actor.state.saved.items.last().unwrap()["type"],
+            "providerNotice"
+        );
+        assert!(!serde_json::to_string(&actor.state.saved.items)
+            .unwrap()
+            .contains("secret"));
+        let count = actor.state.saved.items.len();
+        actor.pending.insert("mcp".into(), "mcp_status".into());
+        actor.message(event).unwrap();
+        assert_eq!(actor.state.saved.items.len(), count);
+        actor.pending.insert("old-cli".into(), "mcp_status".into());
+        actor.message(json!({"type":"control_response","response":{"request_id":"old-cli","subtype":"error","error":"Unsupported request"}})).unwrap();
+        assert_eq!(actor.state.status, Status::Idle);
+    }
+
+    #[test]
+    fn mcp_health_poll_runs_after_initialization_and_bounds_unanswered_requests() {
+        use std::io::BufRead as _;
+        let mut actor = actor();
+        let mut wire = transport(&mut actor);
+        actor.poll_mcp_status();
+        assert!(actor.pending.is_empty());
+        actor.initialized = true;
+        actor.poll_mcp_status();
+        let mut line = String::new();
+        wire.read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["request"]["subtype"], "mcp_status");
+        let count = actor.control_id;
+        actor.poll_mcp_status();
+        assert_eq!(actor.control_id, count);
+        actor.mcp_polled_at = Some(Instant::now() - Duration::from_secs(16));
+        actor.poll_mcp_status();
+        assert!(actor.pending.is_empty());
+        assert!(!actor.mcp_status_supported);
+        assert!(actor.state.error.is_none());
+    }
+
+    #[test]
+    fn mcp_init_inventory_and_recovery_do_not_repeat_old_failures() {
+        let mut actor = actor();
+        actor.message(json!({"type":"system","subtype":"init","mcp_servers":[{"name":"jira","status":"failed"}]})).unwrap();
+        assert_eq!(actor.state.saved.items.len(), 1);
+        actor.observe_mcp_servers(&json!([{"name":"jira","status":"failed"}]));
+        assert_eq!(actor.state.saved.items.len(), 1);
+        actor.observe_mcp_servers(&json!([{"name":"jira","status":"connected"}]));
+        actor
+            .observe_mcp_servers(&json!([{"name":"jira","status":"failed","error":"new failure"}]));
+        assert_eq!(actor.state.saved.items.len(), 2);
+        assert!(actor.state.saved.items.last().unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .contains("new failure"));
+    }
+    #[test]
+    fn mcp_health_request_does_not_delay_configuration_acknowledgment() {
+        let mut actor = actor();
+        actor.initialized = true;
+        actor.configuring = true;
+        actor.state.status = Status::Starting;
+        actor.pending.insert("health".into(), "mcp_status".into());
+        actor
+            .pending
+            .insert("setting".into(), "apply_flag_settings".into());
+        actor.message(json!({"type":"control_response","response":{"request_id":"setting","subtype":"success","response":{}}})).unwrap();
+        assert!(!actor.configuring);
+        assert_eq!(actor.state.status, Status::Idle);
+        assert_eq!(actor.pending.len(), 1);
     }
 }

@@ -533,3 +533,32 @@ independent visual evidence for Review. The inspected shared menu capture shows
 both Describe and Review entries, while Review reader/session behavior is covered
 by fixtures. Final `./install.sh` succeeded on Linux using the local profile;
 `~/.local/bin/grove` matched `target/local/grove` by SHA-256 after installation.
+
+## Main-conversation MCP connection warnings
+
+Codex and Claude are **verified live on Linux** with the production Rust
+transports and installed Codex 0.167.0 / Claude Code 2.1.220 CLIs. The
+`mcp_connections_smoke` example configures a deliberately failing stdio server:
+both transports emitted a visible transcript warning naming the server with its
+connection error while retaining Idle conversation state and no fatal error.
+The smoke makes no model requests and uses no Jira credentials. Build with
+`cargo build -p grove-core --example mcp_connections_smoke`, then run each provider
+with a separate disposable `GROVE_CONFIG_DIR` and cwd.
+
+Regression fixtures cover Codex thread isolation, duplicate suppression and
+reauthentication guidance; Claude initialization inventory, health polling,
+unsupported/unanswered queries, recovery and configuration acknowledgment while a
+health request is pending. Both primary regressions failed before implementation.
+The core suite passed 878 tests with 9 ignored, excluding two environment lookup
+tests that also failed on unchanged `353397b`. Strict Clippy emitted the same 31
+diagnostics on that baseline and this change. All 33 UI source conformance checks,
+formatting and the artifact policy check passed. The existing GPUI provider-warning
+layout fixture passed at normal/narrow widths for both Codex and Claude; this is
+fixture evidence, not desktop visual inspection.
+
+Remaining gaps: authenticated Jira on the user's other machine, model-turn Claude
+verification (local provider OAuth is expired), macOS/Windows runtime behavior,
+older CLI versions, and desktop visual inspection are untested. The fix exposes
+provider-reported failures; it does not establish or repair the remote Jira
+failure's underlying authentication/network cause. The default local installation
+completed successfully after the final code changes.
