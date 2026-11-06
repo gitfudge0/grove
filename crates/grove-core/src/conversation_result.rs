@@ -108,17 +108,17 @@ pub fn json_payload(text: &str, fence: &str) -> Result<serde_json::Value, String
             }
         } else if other {
             if m == "```" {
-                other = false
+                other = false;
             }
         } else if m == marker {
             if result.is_some() {
                 return Err("Analysis response contains duplicate result blocks".into());
             }
-            current = Some(String::new())
+            current = Some(String::new());
         } else if m.starts_with(&marker) {
             return Err("Analysis result marker is invalid".into());
         } else if m.starts_with("```") {
-            other = true
+            other = true;
         }
     }
     if current.is_some() {
@@ -162,14 +162,14 @@ pub fn display_text(name: &str, fence: &str, kind: &str, text: &str) -> String {
         let m = line.trim();
         if hiding {
             if m == "```" {
-                hiding = false
+                hiding = false;
             }
             continue;
         }
         if other {
             out.push(line);
             if m == "```" {
-                other = false
+                other = false;
             }
             continue;
         }
@@ -178,7 +178,7 @@ pub fn display_text(name: &str, fence: &str, kind: &str, text: &str) -> String {
             continue;
         }
         if m.starts_with("```") {
-            other = true
+            other = true;
         }
         out.push(line);
     }
