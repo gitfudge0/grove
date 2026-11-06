@@ -1081,6 +1081,7 @@ pub struct CodexView {
     markdown_decorations: TextDecorationCollection,
     markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
+    pub(crate) description_scope: Option<grove_core::change_description::Scope>,
     input: Entity<InputState>,
     reference: Option<codex::ReferenceDraft>,
     submitted_reference: Option<String>,
@@ -1413,6 +1414,7 @@ impl CodexView {
             html,
             file_browser,
             native_plans: HashMap::new(),
+            description_scope: None,
             markdown_decorations,
             markdown_source: None,
             input,
@@ -3404,7 +3406,11 @@ impl CodexView {
         let plan_details = kind == "plan"
             && state.saved.provider == codex::Provider::Claude
             && item["tool"].is_string();
-        let text = codex::item_text(item);
+        let text = description_conversation_text(
+            self.description_scope.as_ref(),
+            kind,
+            &codex::item_text(item),
+        );
         let approval = (kind == "userMessage")
             .then(|| state.saved.rich_plans.approval_for_payload(&text))
             .flatten();
@@ -4372,6 +4378,13 @@ impl CodexView {
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dashboard_tray.is_some() {
+            // Native commands neither need metadata discovery nor activate a conversation.
+            if (grove_core::describe_skill::is_invocation(self.input.read(cx).value().as_ref())
+                || grove_core::review_skill::is_invocation(self.input.read(cx).value().as_ref()))
+                && self.run_command(window, cx)
+            {
+                return;
+            }
             let session = self.session.read(cx);
             if session.catalog_loading || session.catalog_error.is_some() {
                 return;
@@ -6969,7 +6982,11 @@ impl CodexView {
         }
         let copy_focus = self.ensure_control_focus(&format!("{key}:copy"), window, cx);
         let keyboard_key = key.clone();
-        let text = group.copy_text.clone();
+        let text = description_conversation_text(
+            self.description_scope.as_ref(),
+            "agentMessage",
+            &group.copy_text,
+        );
         let keyboard_text = text.clone();
         let mut button = if copied {
             header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
@@ -10585,6 +10602,65 @@ fn reference_prompt_copy(text: &str) -> String {
         "Referenced selection · {roles}\n{}\n\n{}",
         reference.text, reply
     )
+}
+
+// Snapshot/schema transport is retained for recovery and model context, while
+// the conversation presents its user-facing command and completion prose.
+fn description_conversation_text(
+    scope: Option<&grove_core::change_description::Scope>,
+    kind: &str,
+    text: &str,
+) -> String {
+    let Some(scope) = scope else {
+        return text.into();
+    };
+    if kind == "userMessage"
+        && text.starts_with("Describe ONLY the supplied immutable change snapshot.")
+        && text.contains("\n\nGrove request identity: ")
+    {
+        return match scope {
+            grove_core::change_description::Scope::Local => "/describe-changes local".into(),
+            grove_core::change_description::Scope::PullRequest { url } => {
+                format!("/describe-changes {url}")
+            }
+        };
+    }
+    if kind != "agentMessage" {
+        return text.into();
+    }
+    let mut result = Vec::new();
+    let mut hidden = false;
+    let mut other_fence = false;
+    for line in text.lines() {
+        let marker = line.trim();
+        if hidden {
+            if marker == "```" {
+                hidden = false;
+            }
+            continue;
+        }
+        if other_fence {
+            result.push(line);
+            if marker == "```" {
+                other_fence = false;
+            }
+            continue;
+        }
+        if marker == "```grove-description" {
+            hidden = true;
+            continue;
+        }
+        if marker.starts_with("```") {
+            other_fence = true;
+        }
+        result.push(line);
+    }
+    let result = result.join("\n").trim().to_owned();
+    if result.is_empty() && text.contains("```grove-description") {
+        "Change description data".into()
+    } else {
+        result
+    }
 }
 
 fn reference_prompt_markdown(text: &str) -> String {
@@ -14225,6 +14301,130 @@ mod tests {
         }
     }
 
+    #[test]
+    fn description_conversations_present_commands_and_prose_without_transport_payloads() {
+        use grove_core::change_description::Scope;
+        let scope = Scope::PullRequest {
+            url: "https://github.com/gitfudge0/grove/pull/17".into(),
+        };
+        let prompt="Describe ONLY the supplied immutable change snapshot. schema and captured diff\n\nGrove request identity: unique-attempt";
+        assert_eq!(
+            description_conversation_text(Some(&scope), "userMessage", prompt),
+            "/describe-changes https://github.com/gitfudge0/grove/pull/17"
+        );
+        assert_eq!(
+            description_conversation_text(None, "userMessage", prompt),
+            prompt
+        );
+        let answer="Prepared the change summary.\n```grove-description\n{\"private-payload\":true}\n```\nMore explanation.";
+        assert_eq!(
+            description_conversation_text(Some(&scope), "agentMessage", answer),
+            "Prepared the change summary.\nMore explanation."
+        );
+        assert_eq!(
+            description_conversation_text(None, "agentMessage", answer),
+            answer
+        );
+        assert_eq!(
+            description_conversation_text(
+                Some(&scope),
+                "agentMessage",
+                "Prepared.\n```grove-description\npartial"
+            ),
+            "Prepared."
+        );
+        let quoted = "```markdown\n```grove-description\nquoted source\n```";
+        assert_eq!(
+            description_conversation_text(Some(&scope), "agentMessage", quoted),
+            quoted
+        );
+    }
+
+    #[gpui::test]
+    fn describe_command_submit_intercepts_dashboard_before_catalog_or_provider_startup(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                observed.borrow_mut().push(match event {
+                    CodexViewEvent::DescribeChanges(..) => "description",
+                    CodexViewEvent::DashboardSubmit => "provider startup",
+                    _ => "other",
+                });
+            })
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for dashboard in [false, true] {
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, _| {
+                            session.state.saved.provider = provider;
+                            session.catalog_loading = true;
+                        });
+                        view.dashboard_tray = dashboard.then(|| {
+                            cx.new(|_| {
+                                super::super::sidebar::dashboard::DestinationTray::picker_test_tray(
+                                    "/missing-native-command-fixture".into(),
+                                )
+                            })
+                        });
+                    });
+                });
+                for command in [
+                    "/describe-changes local",
+                    "$describe-changes pr",
+                    "/describe-changes https://github.com/gitfudge0/grove/pull/17",
+                ] {
+                    events.borrow_mut().clear();
+                    cx.update(|window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.input
+                                .update(cx, |input, cx| input.set_value(command, window, cx));
+                            view.submit(window, cx);
+                            assert_eq!(view.input.read(cx).value().as_ref(), command);
+                            assert!(view.submitted.is_none());
+                            assert!(view.session.read(cx).state.error.is_none());
+                        })
+                    });
+                    assert_eq!(
+                        *events.borrow(),
+                        ["description"],
+                        "{provider:?}, Dashboard={dashboard}, {command}"
+                    );
+                }
+                for command in [
+                    "/describe-changes local changes",
+                    "/describe-changes https://example.com/pull/17",
+                ] {
+                    events.borrow_mut().clear();
+                    cx.update(|window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.input
+                                .update(cx, |input, cx| input.set_value(command, window, cx));
+                            view.submit(window, cx);
+                            assert_eq!(
+                                view.session.read(cx).state.error.as_deref(),
+                                Some(grove_core::describe_skill::USAGE)
+                            );
+                            assert_eq!(view.input.read(cx).value().as_ref(), command);
+                        })
+                    });
+                    assert!(events.borrow().is_empty());
+                }
+            }
+        }
+        assert!(!actions.try_iter().any(|action| matches!(
+            action,
+            Action::Submit { .. }
+                | Action::SubmitWithMode { .. }
+                | Action::Prompt(_)
+                | Action::PromptWithImages { .. }
+        )));
+    }
+
     #[gpui::test]
     fn describe_skill_routes_both_providers_without_submitting_or_losing_drafts(
         cx: &mut gpui::TestAppContext,
@@ -14235,7 +14435,7 @@ mod tests {
         let _subscription = cx.update(|_, cx| {
             cx.subscribe(&view, move |_, event, _| {
                 if let CodexViewEvent::DescribeChanges(scope, _) = event {
-                    observed.borrow_mut().push(*scope);
+                    observed.borrow_mut().push(scope.clone());
                 }
             })
         });

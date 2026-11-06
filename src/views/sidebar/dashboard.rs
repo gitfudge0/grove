@@ -503,13 +503,23 @@ impl Sidebar {
             view.update(cx, |view, cx| view.attach_dashboard_tray(tray.clone(), cx));
             let events = vec![
                 cx.subscribe_in(&view, window, |this, source, event, window, cx| {
-                    if matches!(event, CodexViewEvent::DashboardSubmit)
-                        && this
+                    if !this.dashboard_open
+                        || !this
                             .dashboard
                             .as_ref()
                             .is_some_and(|draft| &draft.view == source)
                     {
-                        this.launch_dashboard(window, cx);
+                        return;
+                    }
+                    match event {
+                        CodexViewEvent::DashboardSubmit => this.launch_dashboard(window, cx),
+                        CodexViewEvent::ReviewChanges(preference, focus) => {
+                            this.invoke_review_skill(preference.clone(), focus.clone(), cx);
+                        }
+                        CodexViewEvent::DescribeChanges(preference, focus) => {
+                            this.invoke_description_skill(preference.clone(), focus.clone(), cx);
+                        }
+                        _ => {}
                     }
                 }),
                 cx.subscribe_in(&tray, window, |this, _, event, window, cx| {

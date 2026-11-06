@@ -134,11 +134,32 @@ WebKitGTK and WebView2 harnesses.
 ## Describe changes
 
 Checkout offers **Describe changes** when the selected checkout has local changes
-or an attached GitHub PR. Choose **Local changes** (staged, unstaged and nonignored
-untracked files against HEAD) or the attached **PR** (GitHub's base-to-head diff).
-The scopes are never combined. Descriptions are cached for the owning session,
-checkout and scope during the app lifetime; they do not alter the conversation,
-composer draft, index or working files.
+or an attached GitHub PR. When both sources are available, a compact dropdown
+chooses **Local changes** (staged, unstaged and nonignored untracked files against
+HEAD) or the attached **PR** (GitHub's base-to-head diff). A sole source requires no
+selector. The scopes are never combined. A command or Checkout action creates a dedicated,
+retained conversation with the selected provider and checkout, preserving the
+originating composer draft. A repeated invocation while that source is generating
+opens the active session. The immutable diff is captured and saved before the
+session's normal provider turn receives it. The validated final result opens in
+the native reader; its Conversation action returns to the same retained conversation.
+
+Grove keeps one canonical private JSON result per PR identity or local checkout
+under its configuration directory's `change-descriptions/sources/`. Stable hashed
+paths are independent of session, model and snapshot revision. Session links and
+captured jobs are separate recovery metadata. Regeneration atomically replaces the
+same result, with a locked source claim and unique request identity preventing an
+older generation from overwriting a newer one, even after restart. Acknowledged
+cancellation/failure retires only its own request and preserves the previous result.
+
+A linked session with a saved result always exposes **View description** in the
+right-side Checkout panel, including after local edits disappear or a PR is detached. It reopens the
+saved page with source context and an **Out of date** status when stale; it does
+not run generation. Regeneration is available inside the reader. Both links and
+results survive restart.
+Reopening reads the canonical result, and freshness checks show stale or unavailable
+source state. Interrupted jobs may import their exact completed conversation result;
+Grove never resubmits an uncertain request automatically.
 
 The native reader shows a behavior-focused summary, file walkthrough grouped by
 purpose, optional Mermaid flow and explicit coverage. File expansion exposes its
@@ -146,7 +167,9 @@ summary and the captured read-only patch, not a subsequently changed live file.
 Binary, oversized, missing and model-omitted patches remain visible as coverage
 limits. No test execution is implied. Background freshness checks mark changed or
 unverifiable snapshots; stale results remain readable/copyable but cannot publish.
-Cancellation stops the generation process and preserves the previous description.
+Cancellation interrupts the owning provider turn and preserves the previous
+saved description. Saving a completed result is a short finalization phase with
+Cancel disabled.
 
 **Copy Markdown** copies the generated result. **Update PR description** opens an
 editable native preview, preserves existing human context and the PR title, and
@@ -160,10 +183,16 @@ supported; enterprise hosts report an unsupported URL rather than guessing.
 
 Grove bundles `describe-changes/SKILL.md`. In either provider's Grove composer,
 `/describe-changes` or `$describe-changes` opens the same native workflow. Optional
-`local` or `pr` arguments select a scope; otherwise use Checkout's visible choice, defaulting to local changes before
-a scope has been selected.
+`local`, `pr`, or a GitHub.com pull request URL selects a scope. Explicit URLs
+describe that PR without switching or attaching the checkout. Dashboard commands
+are intercepted before catalog discovery or activation of the originating draft;
+the new session uses the Dashboard composer's selected provider and checkout. Without an argument, use
+Checkout's visible choice, defaulting to local changes before a scope has been
+selected.
 Completions reserve this name, and Grove intercepts the whole command before
-provider submission. The command draft stays intact; attachments and quoted
+submitting it to the originating provider. The new session receives a captured-diff
+generation prompt with a unique durable request identity. The command draft stays
+intact; attachments and quoted
 references are rejected with an explanation and preserved. Invalid arguments show
 usage. This is a user-invoked Grove skill, not an autonomous model tool; provider
 global skill directories remain unchanged, and read-only side conversations do
@@ -197,3 +226,30 @@ neither merge approval nor a guarantee of correctness. No tests are executed.
 retry and stale/unverifiable states retain the previous result; Escape returns
 from a captured diff to the review, then restores the invoking control's focus.
 This version does not post GitHub reviews, apply suggestions, or run fixes.
+not receive it. Codex and Claude use their normal authenticated conversation
+transports and selected model/preferences. The generation prompt instructs the
+provider to use only the captured diff, without tools or repository writes; this
+skill does not expand the session's permissions. Later conversation turns remain
+ordinary user-directed conversation.
+
+
+## Built-in prompts
+
+Settings → Prompts edits Commit message, PR creation, Describe changes, and Session
+title writing instructions for Codex and Claude. Overrides apply across projects
+to future generations. Save persists each prompt; Restore default removes its
+override. A compact picker opens one spacious editor at a time. Unsaved edits
+survive prompt switching and category navigation for the Settings panel lifetime.
+Empty or oversized instructions cannot be saved. Grove-managed workflow and output
+requirements are selectable read-only text behind a disclosure and are always
+composed with overrides, whether the disclosure is open or closed.
+They preserve captured-data boundaries, output validation and explicit publication.
+Create PR generates title and Markdown body from the published branch comparison,
+then opens the existing editable GitHub form; generation does not submit a PR.
+
+Describe changes accepts optional extended Markdown content for headings,
+paragraphs, lists, tables, blockquotes, code and file links, rendered by Grove's
+native Markdown components. The existing Mermaid field provides diagrams.
+Snapshot context, file walkthrough and honest coverage remain visible independently.
+Copy Markdown and PR update previews include extended content. Older saved results
+without extended content remain readable. Prompt changes never rewrite saved results.

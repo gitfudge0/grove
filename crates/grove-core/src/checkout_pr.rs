@@ -700,11 +700,127 @@ pub fn compose_url(path: &Path, expected: &CheckoutGitState) -> Result<String, S
     Ok(url.into())
 }
 
+/// Generate an editable PR form from GitHub's immutable published branch comparison.
+/// No push or publication is performed. The caller opens the resulting URL.
+pub fn compose_url_with_provider(
+    path: &Path,
+    expected: &CheckoutGitState,
+    provider: crate::codex::Provider,
+) -> Result<String, String> {
+    let original = compose_url(path, expected)?;
+    let mut url = url::Url::parse(&original).map_err(|_| "Invalid PR form URL")?;
+    let parts: Vec<_> = url
+        .path_segments()
+        .ok_or("Invalid repository URL")?
+        .collect();
+    let owner = *parts.first().ok_or("Repository owner unavailable")?;
+    let repo = *parts.get(1).ok_or("Repository name unavailable")?;
+    let comparison = *parts.get(3).ok_or("Branch comparison unavailable")?;
+    // The compare path already percent-encodes branch names as one URL segment.
+    let comparison_endpoint = format!("repos/{owner}/{repo}/compare/{comparison}");
+    let comparison: serde_json::Value =
+        serde_json::from_str(&gh(path, &["api", &comparison_endpoint])?)
+            .map_err(|_| "Could not read published branch changes")?;
+    let captured_head = comparison["commits"]
+        .as_array()
+        .and_then(|commits| commits.last())
+        .and_then(|commit| commit["sha"].as_str())
+        .ok_or("Published branch has no changes")?;
+    if Some(captured_head) != expected.head.as_deref() {
+        return Err("Published branch changed. Refresh before creating a pull request".into());
+    }
+    let files = comparison["files"]
+        .as_array()
+        .ok_or("Comparison files unavailable")?;
+    let mut remaining = 200_000usize;
+    let available: Vec<_> = files.iter().map(|file| {
+        let patch = file["patch"].as_str().unwrap_or_default();
+        let mut bytes = patch.len().min(remaining);
+        while !patch.is_char_boundary(bytes) { bytes -= 1; }
+        remaining -= bytes;
+        serde_json::json!({
+            "path":file["filename"], "status":file["status"], "patch":&patch[..bytes],
+            "coverage":if bytes == 0 { "No text patch supplied" } else if bytes < patch.len() { "Patch truncated by Grove" } else { "Supplied patch may be truncated by GitHub" }
+        })
+    }).collect();
+    let context = serde_json::json!({"head":captured_head,"base":comparison["base_commit"]["sha"],
+        "files":available,"coverage":"GitHub comparison includes at most 300 files; missing patches are not analyzed. No test execution evidence is supplied."});
+    let result = crate::prompts::generate_snapshot_text(
+        crate::prompts::PromptKind::PullRequest,
+        provider,
+        &format!("<change-data>\n{context}\n</change-data>"),
+    )
+    .map_err(|error| format!("Could not generate PR text: {error}"))?;
+    let (title, body) = validate_pr_text(&result)?;
+    // Recheck local identity and the published head after the isolated generation.
+    let current = crate::checkout_git::inspect(path)?;
+    if current.target_identity() != expected.target_identity() {
+        return Err("Checkout changed while preparing the pull request. Review it again".into());
+    }
+    let latest: serde_json::Value =
+        serde_json::from_str(&gh(path, &["api", &comparison_endpoint])?)
+            .map_err(|_| "Could not recheck published branch changes")?;
+    if latest["commits"]
+        .as_array()
+        .and_then(|commits| commits.last())
+        .and_then(|commit| commit["sha"].as_str())
+        != Some(captured_head)
+        || latest["base_commit"]["sha"] != comparison["base_commit"]["sha"]
+    {
+        return Err(
+            "Published comparison changed while generating PR text. Refresh and retry".into(),
+        );
+    }
+    url.set_query(None);
+    url.query_pairs_mut()
+        .append_pair("expand", "1")
+        .append_pair("title", title)
+        .append_pair("body", body);
+    let url: String = url.into();
+    if url.len() > 8_000 {
+        return Err(
+            "Generated PR text is too large for the browser form. Shorten the PR prompt and retry"
+                .into(),
+        );
+    }
+    Ok(url)
+}
+
+fn validate_pr_text(result: &serde_json::Value) -> Result<(&str, &str), String> {
+    let title = result["title"]
+        .as_str()
+        .ok_or("PR assistant returned no title")?;
+    let body = result["body"]
+        .as_str()
+        .ok_or("PR assistant returned no body")?;
+    if title.trim().is_empty()
+        || title.contains(['\n', '\r'])
+        || title.len() > 256
+        || body.len() > 6_000
+    {
+        return Err("PR assistant returned invalid or oversized text. Retry generation".into());
+    }
+    Ok((title, body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn pr(number: u64, state: &str, head: &str) -> PullRequest {
         serde_json::from_value(serde_json::json!({"number":number,"url":"https://github.com/o/r/pull/1","state":state,"headRefOid":head,"isDraft":false})).unwrap()
+    }
+    #[test]
+    fn generated_pr_text_rejects_invalid_form_fields() {
+        for value in [
+            serde_json::json!({"title":"", "body":"text"}),
+            serde_json::json!({"title":"two\nlines", "body":"text"}),
+            serde_json::json!({"title":"Title", "body":"x".repeat(6001)}),
+            serde_json::json!({"title":"Title"}),
+        ] {
+            assert!(validate_pr_text(&value).is_err());
+        }
+        let value = serde_json::json!({"title":"Avoid duplicate orders", "body":"## Changes\nDeduplicate deliveries."});
+        assert!(validate_pr_text(&value).is_ok());
     }
     #[test]
     fn ci_log_excerpt_discloses_unicode_omissions_and_source() {

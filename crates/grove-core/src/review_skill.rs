@@ -7,15 +7,16 @@
 pub const NAME: &str = "review";
 pub const COMMAND: &str = "/review";
 pub const DESCRIPTION: &str = "Review local changes or the attached PR in Grove";
-pub const USAGE: &str = "Use /review [local|pr] or $review [local|pr].";
+pub const USAGE: &str = "Use /review [local|pr|PR-URL] or $review [local|pr|PR-URL].";
 pub const SKILL: &str = include_str!("../../../product/skills/review/SKILL.md");
-pub const GUIDANCE: &str = "Grove includes a built-in review skill for Codex and Claude. The user can invoke /review or $review, optionally followed by local or pr, in Grove's composer, or choose Review changes in Checkout. Grove handles this native command before provider submission, generates snapshot-bound actionable findings and coverage, and opens its native reader. It does not change the main conversation or automatically publish a PR review. Mentioning the command in an assistant response does not invoke it; do not claim generation or publishing without an observed Grove outcome. This skill adds no agent tool or permissions.";
+pub const GUIDANCE: &str = "Grove includes a built-in review skill for Codex and Claude. The user can invoke /review or $review, optionally followed by local or pr, in Grove's composer, or choose Review changes in Checkout. Grove handles this native command before provider submission, creates a dedicated retained conversation and saves snapshot-bound actionable findings and coverage, and opens its native reader. The originating conversation and draft stay intact. View review reopens the saved result after restart; Conversation opens the same dedicated provider session. Initial generation requests read-only behavior but uses the session permissions. No review is automatically published. Mentioning the command in an assistant response does not invoke it; do not claim generation or publishing without an observed Grove outcome. This skill adds no agent tool or permissions.";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScopePreference {
     Current,
     Local,
     PullRequest,
+    PullRequestUrl(String),
 }
 
 /// Recognize only a complete user command, not embedded prose or selections.
@@ -28,6 +29,7 @@ pub fn invocation(text: &str) -> Option<ScopePreference> {
         None => ScopePreference::Current,
         Some("local") => ScopePreference::Local,
         Some("pr") => ScopePreference::PullRequest,
+        Some(url) if crate::change_description::pr_identity(url).is_ok() => ScopePreference::PullRequestUrl(url.into()),
         _ => return None,
     };
     words.next().is_none().then_some(scope)

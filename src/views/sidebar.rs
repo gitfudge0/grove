@@ -9939,27 +9939,69 @@ for line in sys.stdin:
         });
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
-                let ids: Vec<_> = sidebar.runtime.read(cx).registry.read(cx).all()
-                    .iter().map(|meta| meta.id).collect();
+                let ids: Vec<_> = sidebar
+                    .runtime
+                    .read(cx)
+                    .registry
+                    .read(cx)
+                    .all()
+                    .iter()
+                    .map(|meta| meta.id)
+                    .collect();
                 for id in ids.iter().copied() {
                     sidebar.selection = None;
                     sidebar.codex_views.remove(&id);
                     sidebar.open_activity_link(id, &format!("{}:1", file.display()), window, cx);
                     assert_eq!(sidebar.selected_session(), Some(id));
-                    assert!(sidebar.files_active);
-                    assert!(matches!(sidebar.files_owner, Some(Selection::Session(owner)) if owner == id));
+                    assert!(!sidebar.files_active);
+                    assert!(sidebar.files_owner.is_none());
                     let view = sidebar.codex_views[&id].read(cx);
                     let browser = view.file_browser.read(cx);
                     assert!(browser.visible);
                     assert_eq!(browser.target.as_ref().unwrap().path, file);
                     assert_eq!(browser.target.as_ref().unwrap().line, Some(1));
-
                 }
                 let selection = sidebar.selection.clone();
                 sidebar.open_activity_link(ids[0], "https://example.com/report", window, cx);
                 assert_eq!(sidebar.selection, selection);
             });
         });
+        cx.run_until_parked();
+        // Exercise the actual browser -> transcript -> sidebar event chain for
+        // both providers, with the explorer initially hidden and visible.
+        for active in [false, true] {
+            let ids = sidebar.read_with(cx, |sidebar, _| {
+                sidebar.codex_views.keys().copied().collect::<Vec<_>>()
+            });
+            for id in ids {
+                cx.update(|window, cx| {
+                    sidebar.update(cx, |sidebar, cx| {
+                        sidebar.selection = Some(Selection::Session(id));
+                        sidebar.files_active = active;
+                        sidebar.files_owner = sidebar.selection.clone();
+                        sidebar.checkout_panel.hidden = true;
+                        let browser = sidebar.codex_views[&id].read(cx).file_browser.clone();
+                        browser.update(cx, |browser, cx| {
+                            browser.open(
+                                super::super::file_browser::local_target(
+                                    &format!("{}:1", file.display()),
+                                    root.path(),
+                                )
+                                .unwrap(),
+                                window,
+                                cx,
+                            );
+                        });
+                    });
+                });
+                cx.run_until_parked();
+                sidebar.read_with(cx, |sidebar, _| {
+                    assert_eq!(sidebar.files_active, active);
+                    assert!(sidebar.checkout_panel.hidden);
+                    assert_eq!(sidebar.files_owner, Some(Selection::Session(id)));
+                });
+            }
+        }
         assert_eq!(
             cx.opened_url().as_deref(),
             Some("https://example.com/report")
