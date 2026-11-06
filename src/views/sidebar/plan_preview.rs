@@ -592,9 +592,7 @@ mod tests {
     /// Provider fixtures exercise native ownership, geometry and explicit actions;
     /// these are not authenticated provider-boundary tests.
     #[gpui::test]
-    fn codex_and_claude_plan_peek_decisions_footer_approval_and_focus(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn codex_and_claude_plan_peek_readonly_expansion_and_focus(cx: &mut gpui::TestAppContext) {
         cx.update(init);
         // The fake text backend has pathological intrinsic sizing for the full
         // nested document. Real native snapshots below cover that selected tree;
@@ -752,90 +750,86 @@ mod tests {
                 header.bottom() <= body.top(),
                 "scroll body starts below fixed title"
             );
-            if decisions {
-                let footer = cx.debug_bounds("native-plan-footer").unwrap();
-                assert!(
-                    body.bottom() <= footer.top(),
-                    "actions stay outside body scrolling"
-                );
-                assert!(footer.bottom() <= peek.bottom());
-                let progress = cx.debug_bounds("native-plan-progress").unwrap();
-                let line_height =
-                    cx.update(|window, _| rpx(CONTROL_H).to_pixels(window.rem_size()));
-                assert!(
-                    progress.size.height <= line_height,
-                    "progress must remain a readable line"
-                );
-            } else {
-                assert!(
-                    cx.debug_bounds("native-plan-reference").is_some(),
-                    "Markdown hover uses a separate read-only reference"
-                );
-                assert!(body.size.height > gpui::px(0.));
-            }
-            if decisions {
-                let approve = cx.debug_bounds("native-plan-approve").unwrap();
-                cx.simulate_click(approve.center(), gpui::Modifiers::default());
-                assert!(
-                    !actions
-                        .try_iter()
-                        .any(|a| matches!(a, Action::ApprovePlan { .. })),
-                    "recommendation alone cannot approve"
-                );
-                let first = cx.debug_bounds("native-plan-option-alpha").unwrap();
-                cx.simulate_click(first.center(), gpui::Modifiers::default());
-                cx.run_until_parked();
-                cx.update(|window, cx| {
-                    let _ = window.draw(cx);
-                });
-                let next = cx.debug_bounds("native-plan-next-decision").unwrap();
-                cx.simulate_click(next.center(), gpui::Modifiers::default());
-                cx.run_until_parked();
-                cx.update(|window, cx| {
-                    let _ = window.draw(cx);
-                });
-                assert!(
-                    cx.debug_bounds("native-plan-decision-checks").is_some(),
-                    "nested next decision resolves in the peek"
-                );
-                assert!(cx.debug_bounds("native-plan-expanded").is_none());
-                let second = cx.debug_bounds("native-plan-option-beta").unwrap();
-                cx.simulate_click(second.center(), gpui::Modifiers::default());
-                cx.run_until_parked();
-                cx.update(|window, cx| {
-                    let _ = window.draw(cx);
-                });
-            } else {
-                let expand = cx.debug_bounds("native-plan-expand").unwrap();
-                cx.simulate_click(expand.center(), gpui::Modifiers::default());
-                cx.run_until_parked();
-                cx.update(|window, cx| {
-                    let _ = window.draw(cx);
-                });
-                assert!(cx.debug_bounds("native-plan-expanded").is_some());
-                assert!(cx.debug_bounds("plan-peek").is_none());
-                for width in [760., 1280.] {
-                    cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
-                    cx.run_until_parked();
-                    cx.update(|window, cx| {
-                        let _ = window.draw(cx);
-                    });
-                    let body = cx.debug_bounds("native-plan-body").unwrap();
-                    let footer = cx.debug_bounds("native-plan-footer").unwrap();
-                    let approve = cx.debug_bounds("native-plan-approve").unwrap();
-                    assert!(body.bottom() <= footer.top());
-                    assert!(approve.bottom() <= footer.bottom());
-                    assert!(approve.right() <= footer.right());
+            assert!(
+                cx.debug_bounds("native-plan-reference").is_some(),
+                "every plan uses a separate read-only sidebar reference"
+            );
+            assert!(body.size.height > gpui::px(0.));
+            for selector in [
+                "native-plan-approve",
+                "native-plan-update",
+                "native-plan-custom-location",
+                "native-plan-option-alpha",
+                "native-plan-input-well-own_answers:location",
+            ] {
+                if let Some(control) = cx.debug_bounds(selector) {
+                    assert!(
+                        !peek.contains(&control.center()),
+                        "{selector} must not provide a second response surface inside the peek"
+                    );
                 }
             }
-            let approve = cx.debug_bounds("native-plan-approve").unwrap();
-            cx.simulate_click(approve.center(), gpui::Modifiers::default());
+            assert!(
+                !actions.try_iter().any(|a| matches!(
+                    a,
+                    Action::ApprovePlan { .. } | Action::SendPlanResponse { .. }
+                )),
+                "reading and pinning a plan never sends or approves it"
+            );
+            let expand = cx.debug_bounds("native-plan-expand").unwrap();
+            cx.simulate_click(expand.center(), gpui::Modifiers::default());
             cx.run_until_parked();
             cx.update(|window, cx| {
                 let _ = window.draw(cx);
             });
-            cx.simulate_click(approve.center(), gpui::Modifiers::default());
-            assert_eq!(actions.try_iter().filter(|a| matches!(a, Action::ApprovePlan { plan_id, revision_id } if plan_id == "plan" && revision_id == "r1")).count(), 1);
+            assert!(cx.debug_bounds("native-plan-expanded").is_some());
+            assert!(cx.debug_bounds("plan-peek").is_none());
+            for width in [760., 1280.] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(900.)));
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                let body = cx.debug_bounds("native-plan-body").unwrap();
+                let footer = cx.debug_bounds("native-plan-footer").unwrap();
+                let action = cx
+                    .debug_bounds(if decisions {
+                        "native-plan-update"
+                    } else {
+                        "native-plan-approve"
+                    })
+                    .unwrap();
+                assert!(body.bottom() <= footer.top());
+                assert!(action.bottom() <= footer.bottom());
+                assert!(action.right() <= footer.right());
+                assert!(cx
+                    .debug_bounds("native-plan-input-well-own_answers:location")
+                    .is_none());
+            }
+            if decisions {
+                assert!(
+                    cx.debug_bounds("native-plan-approve").is_none(),
+                    "a decision draft cannot authorize implementation"
+                );
+                let update = cx.debug_bounds("native-plan-update").unwrap();
+                cx.simulate_click(update.center(), gpui::Modifiers::default());
+                assert!(
+                    !actions.try_iter().any(|a| matches!(
+                        a,
+                        Action::SendPlanResponse { .. } | Action::ApprovePlan { .. }
+                    )),
+                    "unanswered decisions cannot update or approve the plan"
+                );
+            } else {
+                let approve = cx.debug_bounds("native-plan-approve").unwrap();
+                cx.simulate_click(approve.center(), gpui::Modifiers::default());
+                cx.run_until_parked();
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+                cx.simulate_click(approve.center(), gpui::Modifiers::default());
+                assert_eq!(actions.try_iter().filter(|a| matches!(a, Action::ApprovePlan { plan_id, revision_id } if plan_id == "plan" && revision_id == "r1")).count(), 1);
+            }
             cx.update(|_, cx| {
                 sidebar.update(cx, |sidebar, cx| {
                     let (id, _) = sidebar.selected_native_plans(cx).pop().unwrap();

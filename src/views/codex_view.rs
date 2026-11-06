@@ -1005,6 +1005,20 @@ struct BubbleEntrance {
     optimistic: Option<serde_json::Value>,
 }
 
+struct PlanAnswerComposer {
+    plan_id: String,
+    revision_id: String,
+    decision_id: String,
+    prompt: String,
+    thread_id: Option<String>,
+    draft: String,
+    images: Vec<String>,
+    tokens: Vec<ComposerToken>,
+    reference: Option<codex::ReferenceDraft>,
+    saving: Option<String>,
+    error_before_save: Option<String>,
+}
+
 struct QueueEditor {
     id: u64,
     draft: String,
@@ -1080,6 +1094,7 @@ pub struct CodexView {
     pub(super) file_browser: Entity<super::file_browser::FileBrowser>,
     markdown_decorations: TextDecorationCollection,
     markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
+    plan_answer: Option<PlanAnswerComposer>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     pub(crate) description_scope: Option<grove_core::change_description::Scope>,
     pub(crate) review_scope: Option<grove_core::change_description::Scope>,
@@ -1192,7 +1207,7 @@ pub struct CodexView {
     subscriptions: Vec<Subscription>,
 }
 impl CodexView {
-    fn sync_native_plans(&mut self, cx: &mut Context<Self>) {
+    fn sync_native_plans(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.history_readonly {
             self.native_plans.clear();
             return;
@@ -1216,13 +1231,259 @@ impl CodexView {
                 let view = cx.new(|cx| {
                     super::native_plan::NativePlan::new(session, html, plan_id, revision_id, cx)
                 });
+                view.update(cx, |plan, _| {
+                    plan.set_transcript_scroll(self.scroll.clone())
+                });
                 self.subscriptions.push(cx.observe(&view, |this, _, cx| {
                     this.smooth_follow = false;
                     cx.notify();
                 }));
+                self.subscriptions.push(cx.subscribe_in(
+                    &view,
+                    window,
+                    |this, _, event: &super::native_plan::NativePlanEvent, window, cx| {
+                        this.begin_plan_composer(event.clone(), window, cx);
+                    },
+                ));
                 self.native_plans.insert(key, view);
             }
         }
+    }
+
+    fn begin_plan_composer(
+        &mut self,
+        event: super::native_plan::NativePlanEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use super::native_plan::{NativePlanEvent, PlanComposerTarget};
+        if self.transcript_only()
+            || self.submitted.is_some()
+            || self.queue_editor.is_some()
+            || self.pending_image_pastes > 0
+            || self.pending_attachment_picker
+            || self.edit_request_pending
+            || self.session.read(cx).state.saved.pending_edit.is_some()
+        {
+            return;
+        }
+        if self
+            .plan_answer
+            .as_ref()
+            .is_some_and(|answer| answer.saving.is_some())
+        {
+            return;
+        }
+        self.cancel_plan_answer(window, cx);
+        let NativePlanEvent::Compose {
+            plan_id,
+            revision_id,
+            target,
+        } = event;
+        let Some(plan) = self
+            .native_plans
+            .get(&(plan_id.clone(), revision_id.clone()))
+            .cloned()
+        else {
+            return;
+        };
+        match target {
+            PlanComposerTarget::CustomAnswer {
+                decision_id,
+                prompt,
+            } => {
+                let value = plan.read(cx).custom_answer_draft(&decision_id, cx);
+                self.plan_answer = Some(PlanAnswerComposer {
+                    plan_id,
+                    revision_id,
+                    decision_id,
+                    prompt,
+                    thread_id: self.session.read(cx).state.saved.thread_id.clone(),
+                    draft: self.input.read(cx).value().to_string(),
+                    images: std::mem::take(&mut self.images),
+                    tokens: std::mem::take(&mut self.picked_tokens),
+                    reference: self.reference.take(),
+                    saving: None,
+                    error_before_save: None,
+                });
+                self.input
+                    .update(cx, |input, cx| input.set_value(value, window, cx));
+            }
+            PlanComposerTarget::Discuss { section } => {
+                let state = &self.session.read(cx).state;
+                let Some(revision) = state.saved.rich_plans.revision(&plan_id, &revision_id) else {
+                    return;
+                };
+                let reference = codex::ReferenceDraft {
+                    id: format!("plan:{}", serde_json::json!([plan_id, revision_id])),
+                    thread_id: state.saved.thread_id.clone(),
+                    sources: vec![codex::ReferenceSource {
+                        message_id: revision.message_id.clone(),
+                        role: "Assistant".into(),
+                    }],
+                    text: format!(
+                        "Plan: {} · Revision: {}\nSection: {}\n\n{}",
+                        revision.document.title,
+                        revision_id,
+                        section,
+                        revision.document.markdown_body()
+                    ),
+                };
+                self.set_reference(Some(reference), cx);
+            }
+        }
+        self.close_menu(cx);
+        self.set_composer_collapsed(false, cx);
+        self.input.focus_handle(cx).focus(window, cx);
+        self.sync_plan_composer_pending(cx);
+        cx.notify();
+    }
+
+    fn persist_plan_answer_draft(&mut self, cx: &mut Context<Self>) {
+        let Some(answer) = self.plan_answer.as_ref() else {
+            return;
+        };
+        if answer.saving.is_some() {
+            return;
+        }
+        let key = (answer.plan_id.clone(), answer.revision_id.clone());
+        let decision = answer.decision_id.clone();
+        let value = self.input.read(cx).value().to_string();
+        if let Some(plan) = self.native_plans.get(&key).cloned() {
+            plan.update(cx, |plan, cx| {
+                let _ = plan.save_custom_draft(&decision, value, cx);
+            });
+        }
+    }
+
+    fn cancel_plan_answer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.persist_plan_answer_draft(cx);
+        let Some(answer) = self.plan_answer.take() else {
+            return;
+        };
+        self.images = answer.images;
+        self.picked_tokens = answer.tokens;
+        self.reference = answer.reference;
+        self.input
+            .update(cx, |input, cx| input.set_value(answer.draft, window, cx));
+        self.input.focus_handle(cx).focus(window, cx);
+        self.sync_plan_composer_pending(cx);
+        cx.notify();
+    }
+
+    fn save_plan_answer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(answer) = &self.plan_answer else {
+            return;
+        };
+        let value = self.input.read(cx).value().to_string();
+        if value.trim().is_empty() || answer.saving.is_some() {
+            return;
+        }
+        let key = (answer.plan_id.clone(), answer.revision_id.clone());
+        let decision = answer.decision_id.clone();
+        let Some(plan) = self.native_plans.get(&key).cloned() else {
+            return;
+        };
+        match plan.update(cx, |plan, cx| {
+            plan.save_custom_answer(&decision, value.clone(), cx)
+        }) {
+            Ok(()) => {
+                if let Some(answer) = &mut self.plan_answer {
+                    answer.saving = Some(value);
+                    answer.error_before_save = self.session.read(cx).state.error.clone();
+                }
+                self.sync_plan_answer(window, cx);
+            }
+            Err(error) => self.session.update(cx, |session, cx| {
+                session.state.error = Some(error);
+                cx.notify();
+            }),
+        }
+        cx.notify();
+    }
+
+    fn sync_plan_answer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(answer) = &self.plan_answer else {
+            return;
+        };
+        let state = &self.session.read(cx).state;
+        let invalidated = answer.thread_id != state.saved.thread_id
+            || state
+                .saved
+                .rich_plans
+                .revision(&answer.plan_id, &answer.revision_id)
+                .is_none();
+        let acknowledged = answer.saving.as_ref().is_some_and(|value| {
+            state
+                .saved
+                .rich_plans
+                .revision(&answer.plan_id, &answer.revision_id)
+                .is_some_and(|r| r.review.own_answers.get(&answer.decision_id) == Some(value))
+        });
+        if invalidated || acknowledged {
+            self.cancel_plan_answer(window, cx);
+        } else if state.error.is_some() && state.error != answer.error_before_save {
+            if let Some(answer) = &mut self.plan_answer {
+                answer.saving = None;
+            }
+        }
+    }
+
+    fn sync_plan_composer_pending(&mut self, cx: &mut Context<Self>) {
+        let referenced: Option<Vec<String>> = self
+            .reference
+            .as_ref()
+            .and_then(|r| r.id.strip_prefix("plan:"))
+            .and_then(|id| serde_json::from_str(id).ok());
+        let has_text = !self.input.read(cx).value().trim().is_empty();
+        for ((id, _), plan) in &self.native_plans {
+            let pending = self.plan_answer.as_ref().is_some_and(|a| &a.plan_id == id)
+                || (has_text && referenced.as_ref().is_some_and(|r| r.first() == Some(id)));
+            plan.update(cx, |plan, cx| plan.set_composer_pending(pending, cx));
+        }
+    }
+
+    fn render_plan_answer_context(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let answer = self.plan_answer.as_ref()?;
+        let saving = answer.saving.is_some();
+        Some(
+            div()
+                .id("plan-answer-context")
+                .debug_selector(|| "plan-answer-context".into())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .items_start()
+                .gap(rpx(SPACE_LG))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(format!(
+                            "Your answer · {} · {}",
+                            answer.revision_id, answer.prompt
+                        )),
+                )
+                .child(
+                    transcript_action("cancel-plan-answer", "Cancel answer", false, window, cx)
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/close.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .disabled(saving)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.cancel_plan_answer(window, cx)),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Latest immutable revision of each plan, in conversation order.
@@ -1311,7 +1572,8 @@ impl CodexView {
         let mut subscriptions = vec![
             cx.observe_in(&session, window, |this, _, window, cx| {
                 this.flush_dashboard_submission(window, cx);
-                this.sync_native_plans(cx);
+                this.sync_native_plans(window, cx);
+                this.sync_plan_answer(window, cx);
                 if this.menu.is_some() && !this.composer_menu_valid(cx) {
                     this.close_menu(cx);
                 }
@@ -1352,6 +1614,12 @@ impl CodexView {
                         this.set_composer_collapsed(false, cx);
                     }
                     InputEvent::Change => {
+                        if this.plan_answer.is_some() {
+                            this.persist_plan_answer_draft(cx);
+                            this.sync_plan_composer_pending(cx);
+                            cx.notify();
+                            return;
+                        }
                         this.set_composer_collapsed(false, cx);
                         let text = this.input.read(cx).value().to_string();
                         if !this.transcript_only()
@@ -1414,6 +1682,7 @@ impl CodexView {
             session,
             html,
             file_browser,
+            plan_answer: None,
             native_plans: HashMap::new(),
             description_scope: None,
             review_scope: None,
@@ -1531,7 +1800,7 @@ impl CodexView {
             checkout_context: None,
             subscriptions,
         };
-        view.sync_native_plans(cx);
+        view.sync_native_plans(window, cx);
         view
     }
     pub(crate) fn set_script_runtime(
@@ -1904,7 +2173,8 @@ impl CodexView {
         }
     }
     fn begin_queue_edit(&mut self, id: u64, cx: &mut Context<Self>) {
-        if self.queue_editor.is_some()
+        if self.plan_answer.is_some()
+            || self.queue_editor.is_some()
             || self.submitted.is_some()
             || self.pending_image_pastes > 0
             || self.pending_attachment_picker
@@ -2800,60 +3070,6 @@ impl CodexView {
                 })
                 .into_any_element(),
         )
-    }
-
-    fn session_plan_ready(
-        &self,
-        attached_above: bool,
-        state: &codex::Snapshot,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Option<gpui::AnyElement> {
-        if self.transcript_only() || !state.plan_ready() {
-            return None;
-        }
-        let receipt = state.saved.session_review.pending.as_ref()?;
-        let period = state.saved.work_periods.get(receipt.period)?;
-        let mut seen = HashSet::new();
-        let revision = state.saved.rich_plans.revisions.iter().rev().find(|plan| {
-            seen.insert(plan.document.plan_id.clone())
-                && matches!(
-                    plan.review.delivery,
-                    grove_core::rich_plan::ResponseDelivery::Draft
-                        | grove_core::rich_plan::ResponseDelivery::Failed { .. }
-                )
-                && matches!(
-                    plan.review.approval,
-                    grove_core::rich_plan::ResponseDelivery::Draft
-                        | grove_core::rich_plan::ResponseDelivery::Failed { .. }
-                )
-                && state.saved.items.iter().enumerate().any(|(index, item)| {
-                    index >= period.start_item
-                        && index < period.end_item.unwrap_or(0)
-                        && item["id"].as_str() == Some(plan.message_id.as_str())
-                })
-        })?;
-        let plan = self
-            .native_plans
-            .get(&(
-                revision.document.plan_id.clone(),
-                revision.document.revision_id.clone(),
-            ))?
-            .clone();
-        Some(composer_tray(window).when(attached_above, |tray| tray.rounded_none())
-            .mb_0().pb(rpx(SPACE_LG)).rounded(rpx(RADIUS_PANEL))
-            .id("session-plan-ready")
-            .debug_selector(|| "session-plan-ready".into())
-            .role(gpui::Role::Group).aria_label("Plan ready")
-            .child(self.status_card_header("session-plan-disclosure", "Plan ready", StatusKind::NeedsInput, cx))
-            .when(!self.expanded.contains("session-plan-disclosure"), |panel| panel.child(
-                div().pl(rpx(TASK_LABEL_INSET)).pb(rpx(SPACE_LG))
-                    .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                    .child("Review the plan and send feedback. Implementation approval is a separate action."),
-            ))
-            .child(form_action("session-plan-review", "Review response", false, window, cx).icon(gpui_component::Icon::default().path("icons/edit.svg").size(rpx(ICON_SM)))
-                .on_click(move |_, window, cx| plan.update(cx, |plan, cx| plan.reveal(window, cx))))
-            .into_any_element())
     }
 
     fn session_notice(
@@ -4516,6 +4732,10 @@ impl CodexView {
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plan_answer.is_some() {
+            self.save_plan_answer(window, cx);
+            return;
+        }
         if self.dashboard_tray.is_some() {
             // Native commands neither need metadata discovery nor activate a conversation.
             if (grove_core::describe_skill::is_invocation(self.input.read(cx).value().as_ref())
@@ -4585,6 +4805,10 @@ impl CodexView {
         cx.notify();
     }
     fn submit_mode(&mut self, mode: SubmissionMode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.plan_answer.is_some() {
+            self.save_plan_answer(window, cx);
+            return;
+        }
         if self.transcript_only() {
             return;
         }
@@ -4737,7 +4961,8 @@ impl Render for CodexView {
         {
             self.close_menu(cx);
         }
-        self.sync_native_plans(cx);
+        self.sync_native_plans(window, cx);
+        self.sync_plan_composer_pending(cx);
 
         if state.edited_messages != self.edited_messages {
             self.edited_messages = state.edited_messages;
@@ -5826,6 +6051,17 @@ impl Render for CodexView {
                     cx.stop_propagation();
                     return;
                 }
+                if event.keystroke.key == "escape" && this.plan_answer.is_some() {
+                    if this
+                        .plan_answer
+                        .as_ref()
+                        .is_some_and(|a| a.saving.is_none())
+                    {
+                        this.cancel_plan_answer(window, cx);
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" && this.queue_editor.is_some() {
                     this.cancel_queue_edit(window, cx);
                     cx.stop_propagation();
@@ -5903,14 +6139,13 @@ impl Render for CodexView {
         let controls_attached = notice_above.is_some();
         let status_attached =
             controls_attached || !state.approvals.is_empty() || !state.elicitations.is_empty();
-        let session_plan = self.session_plan_ready(status_attached, &state, window, cx);
         let session_review = if state.plan_ready() {
             None
         } else {
             self.session_review(status_attached, &state, window, cx)
         };
         let has_review = session_review.is_some();
-        let tasks_attached = status_attached || session_plan.is_some() || has_review;
+        let tasks_attached = status_attached || has_review;
         let lower_attached = tasks_attached || task_cache.list.is_some();
         let agent_controls = if !state.approvals.is_empty() || !state.elicitations.is_empty() {
             Some(
@@ -6080,7 +6315,9 @@ impl Render for CodexView {
             .queue_editor
             .as_ref()
             .is_some_and(|editor| editor.loaded);
-        let primary_disabled = if editing {
+        let primary_disabled = if let Some(answer) = &self.plan_answer {
+            answer.saving.is_some() || self.input.read(cx).value().trim().is_empty()
+        } else if editing {
             self.queue_editor
                 .as_ref()
                 .is_some_and(|editor| editor.saving)
@@ -6093,7 +6330,9 @@ impl Render for CodexView {
         } else {
             draft_disabled
         };
-        let primary_label = if editing {
+        let primary_label = if self.plan_answer.is_some() {
+            "Save answer · Enter · Does not start implementation"
+        } else if editing {
             "Save queued message · Enter · Shift+Enter for a new line"
         } else if busy {
             "Queue · Enter · Send after the current turn finishes · Shift+Enter for a new line"
@@ -6307,6 +6546,10 @@ impl Render for CodexView {
                                     })
                                     .disabled(
                                         self.submitted.is_some()
+                                            || self
+                                                .plan_answer
+                                                .as_ref()
+                                                .is_some_and(|answer| answer.saving.is_some())
                                             || self.edit_request_pending
                                             || self.edit_confirmation.is_some()
                                             || state.saved.pending_edit.is_some()
@@ -6314,7 +6557,10 @@ impl Render for CodexView {
                                                 !editor.loaded || editor.saving
                                             }),
                                     )
-                                    .aria_label(format!("Message {provider}"))
+                                    .aria_label(self.plan_answer.as_ref().map_or_else(
+                                        || format!("Message {provider}"),
+                                        |answer| format!("Your answer: {}", answer.prompt),
+                                    ))
                                     .appearance(false)
                                     .bordered(false)
                                     .focus_bordered(false)
@@ -6415,7 +6661,6 @@ impl Render for CodexView {
                             .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_intro(&state)))
                             .when_some(notice_above, gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
-                            .when_some(session_plan, gpui::ParentElement::child)
                             .when_some(session_review, gpui::ParentElement::child)
                             .when_some(task_strip, gpui::ParentElement::child)
                             .when_some(rewind_drafts, gpui::ParentElement::child)
@@ -6428,6 +6673,7 @@ impl Render for CodexView {
                             .id("codex-composer")
                             .debug_selector(|| "codex-composer".into())
                             .max_w(rpx(CHAT_MAX_W))
+                            .children(self.render_plan_answer_context(window, cx))
                             .child(body)
                             .child(
                                 div()
@@ -6444,20 +6690,27 @@ impl Render for CodexView {
                                     .child(
                                         div().flex().items_center().gap(rpx(SPACE_LG)).flex_shrink_0().ml_auto()
                                             .child(
-                                                composer_icon("codex-attach", "Attach files or images", "paperclip", self.submitted.is_some() || self.edit_request_pending || state.saved.pending_edit.is_some(), false)
+                                                composer_icon("codex-attach", "Attach files or images", "paperclip", self.plan_answer.is_some() || self.submitted.is_some() || self.edit_request_pending || state.saved.pending_edit.is_some(), false)
                                                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                                                         if action_key(event) { this.attach_files(window, cx); cx.stop_propagation(); }
                                                     }))
                                                     .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx)))
                                             )
-                                            .when(busy, |row| row.child(
+                                            .when(self.plan_answer.is_some(), |row| row.child(
+                                                transcript_action("save-plan-answer", "Save answer", true, window, cx)
+                                                    .debug_selector(|| "save-plan-answer".into())
+                                                    .icon(gpui_component::Icon::default().path("icons/check.svg").size(rpx(ICON_SM)))
+                                                    .disabled(primary_disabled)
+                                                    .on_click(cx.listener(|this, _, window, cx| this.save_plan_answer(window, cx)))
+                                            ))
+                                            .when(busy && self.plan_answer.is_none(), |row| row.child(
                                                 composer_icon("codex-stop", if stopping { "Stopping the current turn" } else { "Stop · Interrupt the current turn" }, "stop", stopping || state.turn_id.is_none(), true)
                                                     .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                                                         if action_key(event) { this.interrupt(cx); cx.stop_propagation(); }
                                                     }))
                                                     .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
                                             ))
-                                            .when(!busy, |row| row.child(
+                                            .when(!busy && self.plan_answer.is_none(), |row| row.child(
                                                 composer_icon("codex-send", primary_label, "arrow-up", primary_disabled, true)
                                                     .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
                                                         if action_key(event) {
@@ -6489,7 +6742,11 @@ impl Render for CodexView {
                                     .text_size(rpx(TEXT_MICRO))
                                     .line_height(gpui::phi())
                                     .text_color(c::FG_DIM())
-                                    .child(super::components::shortcut_hint(if stopping {
+                                    .child(super::components::shortcut_hint(if self.plan_answer.as_ref().is_some_and(|answer| answer.saving.is_some()) {
+                                        "Saving answer…"
+                                    } else if self.plan_answer.is_some() {
+                                        "Enter to save answer"
+                                    } else if stopping {
                                         "Stopping…"
                                     } else if self.submitted.is_some() {
                                         "Sending…"
@@ -8854,6 +9111,7 @@ impl CodexView {
             || snapshot.text.trim().is_empty()
             || snapshot.spans.is_empty()
             || self.queue_editor.is_some()
+            || self.plan_answer.is_some()
             || self.edit_confirmation.is_some()
             || self.menu.is_some()
             || self.popup.is_some()
@@ -9335,7 +9593,8 @@ impl CodexView {
         .detach();
     }
     fn attach_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.submitted.is_some()
+        if self.plan_answer.is_some()
+            || self.submitted.is_some()
             || self.pending_attachment_picker
             || self.edit_request_pending
             || self.session.read(cx).state.saved.pending_edit.is_some()
@@ -9373,7 +9632,8 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if paths.is_empty()
+        if self.plan_answer.is_some()
+            || paths.is_empty()
             || self.submitted.is_some()
             || self.pending_attachment_picker
             || self.edit_request_pending
@@ -9555,7 +9815,7 @@ impl CodexView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.submitted.is_some() {
+        if self.plan_answer.is_some() || self.submitted.is_some() {
             return;
         }
         let editor = self.queue_editor.as_ref().map(|editor| editor.id);
@@ -14812,6 +15072,246 @@ mod tests {
             .try_iter()
             .any(|action| matches!(action, Action::Submit { .. })));
     }
+    fn decision_plan_snapshot(provider: codex::Provider) -> Snapshot {
+        let mut state = snapshot();
+        state.saved.provider = provider;
+        state.saved.draft = "Keep my conversation draft".into();
+        state.saved.rich_plans = serde_json::from_value(json!({"revisions":[{
+            "message_id":"plan-message", "source":"plan.grove-plan.json", "assets":[],
+            "document":{"schema_version":1,"plan_id":"invites","revision_id":"r1","title":"Invite teammates",
+                "markdown":"# Invite teammates\n\nAdd workspace invitations with explicit access rules.\n\n## Access\nChoose the policy before implementation.\n\n## Verification\nCheck creation, acceptance and revocation.",
+                "decisions":[{"id":"access","section":"Access","prompt":"Who can invite?","options":[{"id":"admins","label":"Admins only","description":"Restrict membership changes"}]}]}
+        }]})).unwrap();
+        state.saved.items = vec![json!({"id":"plan-message","type":"agentMessage","status":"completed","text":"Here is the plan."})].into();
+        state
+    }
+
+    #[gpui::test]
+    fn plan_answer_uses_one_composer_and_preserves_drafts_for_codex_and_claude(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::super::native_plan::{NativePlanEvent, PlanComposerTarget};
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, actions, _) = fixture(cx);
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state = decision_plan_snapshot(provider).into();
+                        cx.notify();
+                    });
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("Keep my conversation draft", window, cx)
+                    });
+                    view.images = vec!["retained-image".into()];
+                    view.sync_native_plans(window, cx);
+                    view.begin_plan_composer(
+                        NativePlanEvent::Compose {
+                            plan_id: "invites".into(),
+                            revision_id: "r1".into(),
+                            target: PlanComposerTarget::CustomAnswer {
+                                decision_id: "access".into(),
+                                prompt: "Who can invite?".into(),
+                            },
+                        },
+                        window,
+                        cx,
+                    );
+                    assert_eq!(view.input.read(cx).value().as_ref(), "");
+                    assert!(view.images.is_empty());
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("Workspace owners and team leads", window, cx)
+                    });
+                    view.persist_plan_answer_draft(cx);
+                    view.cancel_plan_answer(window, cx);
+                    assert_eq!(
+                        view.input.read(cx).value().as_ref(),
+                        "Keep my conversation draft"
+                    );
+                    assert_eq!(view.images, vec!["retained-image"]);
+                    view.begin_plan_composer(
+                        NativePlanEvent::Compose {
+                            plan_id: "invites".into(),
+                            revision_id: "r1".into(),
+                            target: PlanComposerTarget::CustomAnswer {
+                                decision_id: "access".into(),
+                                prompt: "Who can invite?".into(),
+                            },
+                        },
+                        window,
+                        cx,
+                    );
+                    assert_eq!(
+                        view.input.read(cx).value().as_ref(),
+                        "Workspace owners and team leads"
+                    );
+                    view.session.update(cx, |session, _| {
+                        session.state.error = Some("An earlier unrelated request failed".into());
+                    });
+                    view.submit(window, cx);
+                    assert!(view.plan_answer.as_ref().unwrap().saving.is_some());
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("x");
+            assert_eq!(
+                view.read_with(cx, |view, cx| view.input.read(cx).value().to_string()),
+                "Workspace owners and team leads",
+                "a pending save must reject edits until acknowledged"
+            );
+            let pending: Vec<_> = actions.try_iter().collect();
+            assert!(!pending.iter().any(|action| matches!(
+                action,
+                Action::Submit { .. } | Action::Prompt(_) | Action::ApprovePlan { .. }
+            )));
+            assert!(!pending.iter().any(|action| matches!(action,Action::Draft(text) if text=="Workspace owners and team leads")));
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        for action in pending {
+                            if let Action::UpdatePlanReview {
+                                plan_id,
+                                revision_id,
+                                review,
+                            } = action
+                            {
+                                session
+                                    .state
+                                    .saved
+                                    .rich_plans
+                                    .update_review(&plan_id, &revision_id, review)
+                                    .unwrap();
+                            }
+                        }
+                        cx.notify();
+                    });
+                    view.sync_plan_answer(window, cx);
+                    assert!(view.plan_answer.is_none());
+                    assert_eq!(
+                        view.input.read(cx).value().as_ref(),
+                        "Keep my conversation draft"
+                    );
+                    assert_eq!(view.images, vec!["retained-image"]);
+                    assert_eq!(
+                        view.session.read(cx).state.saved.rich_plans.revisions[0]
+                            .review
+                            .own_answers["access"],
+                        "Workspace owners and team leads"
+                    );
+                })
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("plan-answer-context").is_none());
+            assert!(cx.debug_bounds("session-plan-ready").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn plan_discussion_references_exact_revision_without_overwriting_composer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::super::native_plan::{NativePlanEvent, PlanComposerTarget};
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, _, _) = fixture(cx);
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state = decision_plan_snapshot(provider).into();
+                        cx.notify();
+                    });
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("What about contractors?", window, cx)
+                    });
+                    view.sync_native_plans(window, cx);
+                    view.begin_plan_composer(
+                        NativePlanEvent::Compose {
+                            plan_id: "invites".into(),
+                            revision_id: "r1".into(),
+                            target: PlanComposerTarget::Discuss {
+                                section: "Access".into(),
+                            },
+                        },
+                        window,
+                        cx,
+                    );
+                    assert_eq!(
+                        view.input.read(cx).value().as_ref(),
+                        "What about contractors?"
+                    );
+                    let quote = view.reference.as_ref().unwrap();
+                    assert_eq!(quote.sources[0].message_id, "plan-message");
+                    assert!(quote.text.contains("Revision: r1"));
+                    assert!(quote.text.contains("Section: Access"));
+                    assert!(view.plan_answer.is_none());
+                })
+            });
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens an isolated native X11 conversation window"]
+    fn plan_composer_linux_capture() {
+        assert!(
+            std::env::var_os("GROVE_CONFIG_DIR").is_some(),
+            "use isolated configuration"
+        );
+        let output = std::env::var("GROVE_PLAN_CAPTURE_DIR").expect("capture directory");
+        std::fs::create_dir_all(&output).unwrap();
+        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            cx.set_global(crate::settings::SettingsState::new(grove_core::storage::Store::default()));
+            cx.set_global(crate::zoom::CurrentPtyDims::default());
+            cx.set_reduce_motion(true);
+            grove_core::theme::set_by_name("grove-dark");
+            c::sync_component_theme(cx);
+            let (handle,actions)=Handle::channel();
+            let (updates,receive)=mpsc::channel();
+            let connection=Connection{handle,updates:receive.into()};
+            let mut chat=None;
+            let window=cx.open_window(gpui::WindowOptions {
+                window_bounds:Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(gpui::point(gpui::px(40.),gpui::px(40.)),gpui::size(gpui::px(1000.),gpui::px(900.))))),
+                ..Default::default()
+            }, |window,cx| {
+                window.set_window_title("Grove plans QA");
+                let session=cx.new(|cx|CodexSession::from_connection(decision_plan_snapshot(codex::Provider::Codex),connection,cx));
+                let view=cx.new(|cx|CodexView::new(session,window,cx));
+                chat=Some(view.clone());
+                cx.new(|cx|gpui_component::Root::new(view,window,cx))
+            }).unwrap();
+            let chat=chat.unwrap();
+            cx.activate(true);
+            cx.spawn(async move |cx| {
+                let _keep_transport=(actions,updates);
+                for (name,custom,theme,width,rem) in [("ready",false,"grove-dark",1000.,16.),("custom",true,"grove-light",1000.,16.),("custom-narrow",true,"grove-dark",640.,16.),("custom-zoom",true,"grove-light",1000.,20.)] {
+                    cx.update(|cx| {grove_core::theme::set_by_name(theme);c::sync_component_theme(cx);});
+                    cx.update_window(window.into(),|_,window,cx| {
+                        window.resize(gpui::size(gpui::px(width),gpui::px(900.)));
+                        window.set_rem_size(gpui::px(rem));
+                        if custom {chat.update(cx,|view,cx| {
+                            view.begin_plan_composer(super::super::native_plan::NativePlanEvent::Compose {
+                                plan_id:"invites".into(),revision_id:"r1".into(),target:super::super::native_plan::PlanComposerTarget::CustomAnswer{decision_id:"access".into(),prompt:"Who can invite?".into()}
+                            },window,cx);
+                            view.input.update(cx,|input,cx|input.set_value("Workspace owners and team leads can invite.",window,cx));
+                        });}
+                        window.refresh();
+                    }).unwrap();
+                    cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
+                    let path=format!("{output}/{name}.png");
+                    assert!(std::process::Command::new("import").args(["-window","Grove plans QA",&path]).status().unwrap().success());
+                    eprintln!("Native plan capture: {path}");
+                }
+                // Render an unfocused frame so the platform releases its text-input handler.
+                cx.update_window(window.into(), |_, window, _| { window.blur(); window.refresh(); }).unwrap();
+                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                drop(chat);
+                cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+                cx.update(|cx|cx.quit());
+            }).detach();
+        });
+    }
+
     fn fixture(
         cx: &mut gpui::TestAppContext,
     ) -> (

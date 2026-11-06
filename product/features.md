@@ -31,27 +31,107 @@ Files are limited to 64 KiB and 256 rules. A missing mapping uses built-ins. An 
 
 ## Native plans
 
-Plans render inline as Markdown. Author a `.grove-plan.json` envelope and link its absolute path in a completed assistant message:
+Plans are readable, immutable Markdown documents in the conversation. Author a
+`.grove-plan.json` envelope and link its absolute path in a completed assistant
+message. Keep one stable plan ID and use a new revision ID whenever its contents
+change:
 
 ```json
 {
   "schema_version": 1,
   "plan_id": "search-performance",
   "revision_id": "r1",
-  "title": "Make search responsive",
-  "markdown": "# Make search responsive\n\nMove indexing off the input thread.\n\n## Approach\n1. Measure the current path.\n2. Move indexing into a worker.\n3. Ignore stale results.\n\n## Verification\nCompare matching and ranking; measure input-to-paint latency."
+  "title": "Make workspace search responsive",
+  "markdown": "# Make workspace search responsive\n\nShow useful results promptly.\n\n## Approach\nCompare direct scans with a background index.\n\n## Verification\nMeasure query latency and compare result accuracy.",
+  "decisions": [
+    {
+      "id": "approach",
+      "section": "Approach",
+      "prompt": "Which approach should the prototype test?",
+      "options": [
+        {"id": "scan", "label": "Direct scan", "description": "No persistent index; repeated query work"},
+        {"id": "index", "label": "Background index", "description": "Fast repeated queries; freshness must be visible"}
+      ]
+    }
+  ]
 }
 ```
 
-The Markdown field contains the complete readable plan. Use headings, lists, tables, fenced code and file links; scale detail to the task. Ask consequential questions in the document and collect answers through plan feedback. Do not author HTML or claim/exhibit trees for new plans. The envelope retains immutable identity and native review/approval controls. Change the revision ID when content changes. Limits remain 1 MiB per document and 64 KiB per text field.
+Lead with the outcome and scope, make decisions and risks visible, and state
+concrete success criteria. Choose representations that suit the question:
+before/after tables for behavior changes, a concise flow for sequencing, and
+comparison tables for tradeoffs. Supporting technical detail can follow those
+essentials. Do not author a separate HTML plan or claim/exhibit tree. Limits
+remain 1 MiB per document and 64 KiB per text field.
 
-The conversation renders the complete Markdown. The right-panel **Plan** section lists the latest revision of each plan, including approved plans, as references for current work. Hover opens the same document in an anchored peek; crossing into it preserves the peek, click pins it, and Escape restores source focus. The inline document remains readable while its peek is open.
+Top-level `decisions` are optional. A decision's optional `section` names the
+Markdown heading beside which it belongs. Recommendations are not selected
+answers. Every decision supports **Write my own answer** through the existing
+conversation composer; there is no separate plan input. **Discuss** also uses
+that composer with the plan revision and section as context. Entering answer mode
+preserves the ordinary composer draft; saving or canceling restores it. Saving a
+custom answer records literal user text and never sends implementation approval.
 
-**Review response** previews exact canonical feedback. Explicit **Send response** sends it to the owning session; feedback never authorizes implementation. **Approve & implement** is a separate explicit action bound to the current immutable revision. Queues, delivery journals, duplicate protection and composer draft preservation remain unchanged.
+Resolve every decision, then choose **Update plan with decisions**. This delivers
+an update request to the owning session and snapshots the exact option labels or
+custom answers. The agent must incorporate those answers into the actual
+Markdown approach, scope and success criteria, then publish a new revision with
+no unresolved decisions and explicit provenance:
 
-Existing structured plans remain importable and convert to Markdown for reading. Legacy decisions retain native answer controls and explicit-answer approval gates. Their original stored documents are never rewritten.
+```json
+{
+  "schema_version": 1,
+  "plan_id": "search-performance",
+  "revision_id": "r2",
+  "title": "Make workspace search responsive",
+  "markdown": "# Make workspace search responsive\n\n## Approach\nPrototype a background index with visible freshness.\n\n## Verification\nCompare accuracy with the existing scan and measure warm-query latency and indexing cost.",
+  "finalized_from": {
+    "revision_id": "r1",
+    "answers": {"approach": "Background index"}
+  }
+}
+```
 
-Verification must name both **Codex and Claude**. Core tests establish import, persistence, revision and delivery contracts; native fixtures establish only the exercised UI behavior. Neither establishes live provider-boundary behavior. Inspect inline Markdown, latest-revision hover/pinning, source focus, narrow widths and zoom with real native rendering; report unavailable platforms and live checks explicitly.
+Only a current finalized revision can **Approve & implement**. Selecting all
+answers is not enough: a decision-bearing draft must first be incorporated into a
+new revision. Import and approval validate provenance against the actor-owned
+submitted-answer snapshot; omitting decision fields cannot bypass this boundary.
+A plan with no decisions can be approved directly unless it still owes
+finalization of a preceding decision revision. If a question or its options change
+meaningfully, its answer must be given again; unchanged decisions may retain
+valid answers. Earlier revisions remain immutable references.
+
+**Change decisions** revokes the current finalized revision's eligibility for
+implementation and requests a new decision draft from the owning agent. The
+previously finalized choices remain context; explicit answers are preserved only
+when the new question and options are semantically unchanged. Changed questions
+require fresh answers. Even if every preserved answer remains valid, the new
+decision draft must be submitted and incorporated into another finalized revision
+before implementation can be approved. Failed or uncertain delivery of the
+change request never restores the old revision's approval eligibility.
+
+The separate **Review response** screen and redundant **Plan ready** response
+card are removed. The right-panel **Plan** section lists the latest revision of
+each plan, including approved plans, as reading references. The conversation is
+the response surface; the peek does not introduce another answer form. Existing
+queueing, duplicate protection, uncertain-delivery recovery, composer draft
+preservation and exact-revision approval remain enforced. Approval stays in the
+owning session and never changes sandbox or tool permissions.
+
+Legacy structured plans remain importable and readable. Their decisions follow
+the same explicit-answer and new-revision finalization rules; their stored
+documents are never rewritten.
+
+Verification must name both **Codex and Claude**. Core tests establish import,
+persistence, revision and delivery contracts; native fixtures establish only the
+exercised UI behavior. Neither establishes live provider-boundary behavior. The
+opt-in `plan_finalization_smoke` example exercises live provider generation,
+mixed selected/custom decision delivery, finalized import, duplicate suppression,
+draft preservation and persisted reload in a disposable cwd/config. It checks
+approval readiness on cloned stores and never sends implementation approval.
+Inspect actual native rendering and interactions separately, including narrow
+widths, zoom, focus, draft restoration and read-only plan references; report
+unavailable platforms and live checks explicitly.
 
 
 ## Integrated HTML reports

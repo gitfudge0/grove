@@ -606,3 +606,43 @@ unverified. Native narrow-window, hover/focus contrast, screen-reader interactio
 macOS and Windows remain untested. Artifacts and logs are under
 `.grove-artifacts/error-disclosure/`. Expand/collapse is immediate input feedback,
 matching existing transcript work/tool disclosures.
+
+## Contextual plan decisions and finalization (2026-11-06)
+
+The plan reader now places decisions beside Markdown sections, routes custom
+answers and discussion through the existing composer, and removes the duplicate
+plan-ready/review form. Exact submitted answers must be incorporated into a new
+immutable finalized revision before approval. Changing finalized decisions
+revokes readiness and requests a new decision draft. Unsaved custom answers and
+the ordinary text/image/reference draft are retained independently.
+
+Linux verification: 37 core plan tests passed. Native GPUI fixtures exercised
+Codex and Claude custom-answer events, save/cancel and delayed acknowledgment,
+stale unrelated errors, draft restoration, exact-revision discussion, read-only
+peek, keyboard/source focus, narrow/wide footer geometry and approval gating.
+All 33 UI conformance checks and repository artifact policy passed.
+
+Live **Codex** production transport generated a two-decision plan, accepted mixed
+selected/custom answers through one update despite duplicate submission, imported
+a finalized revision and restored readiness after persisted-session reload.
+Approval readiness was checked on a clone; no live implementation approval was
+sent. Live **Claude** was attempted but blocked before generation by expired
+OAuth; its provider boundary remains unverified. Native fixtures do not establish
+live widget-to-provider end-to-end behavior for either provider.
+
+Isolated Linux native captures and logs are under
+`.grove-artifacts/plan-implementation/`. macOS/Windows, screen-reader behavior,
+measured focus contrast, and cognitive-load benefits remain unverified. No
+reference-parity certificate is claimed for the exploratory mock.
+
+The ignored Linux capture fixture passed after releasing the focused platform
+input handler before window shutdown; earlier runs captured the UI but failed
+cleanup. Dark/light plan and custom-answer screenshots were inspected. Requested
+narrow/rem-20 captures retained the compositor's original geometry, so native
+narrow/zoom visual coverage remains unverified despite fixture geometry checks.
+The final focused application run passed 8 tests (2 desktop capture tests ignored);
+the dedicated Linux capture passed separately. Five native-plan unit/fixture
+checks also passed. Immediate answer/focus/disabled transitions retain existing
+input-feedback behavior; earlier revision disclosure is immediate.
+The final `./install.sh` local-profile build and bundle succeeded, installing the
+Linux executable and desktop launcher under the user's local application paths.
