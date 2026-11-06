@@ -578,3 +578,21 @@ behavior was untested; this removal changes only Settings UI, and no live
 generation was exercised.
 
 Checkout menu alignment follow-up (2026-11-06): the Linux GPUI Checkout layout fixture passed, including equal trailing bounds for Local changes, Git and Scripts overflow controls, and absence of the duplicate Add script row. The script register/editor interaction fixture and all 33 source conformance checks passed; repository artifact policy passed. The layout fixture's stale expectation for a standalone Describe changes row was updated to the existing section-menu behavior. Actual native screenshot/hover/focus inspection, light/dark and zoom appearance, and macOS/Windows rendering remain untested because native computer control is unavailable. Codex and Claude were exercised only as session fixtures within the layout test; live provider behavior is untested for both and no provider transport behavior changed.
+
+## Grouped transcript provider failures
+
+Adjacent provider diagnostics now share a collapsed disclosure, with literal
+saved notices preserved. Linux GPUI fixtures verified Codex and Claude grouping,
+separation at intervening messages, click/Space/Enter expansion and shared text
+coalescing; existing rail checks passed at 1000/560 widths for both providers.
+The focused provider suite passed 23 tests and all 33 UI conformance checks passed.
+Live production-transport MCP startup failure probes passed for **Codex** and
+**Claude**, each retaining an Idle conversation with a provider notice; these
+probes do not exercise native UI input or authentication recovery.
+An isolated Linux X11 fixture was inspected collapsed/expanded in Grove Dark and
+expanded in Grove Light. The capture requested rem 20 for the light frame but
+rendered geometry stayed unchanged, so changed-zoom native appearance remains
+unverified. Native narrow-window, hover/focus contrast, screen-reader interaction,
+macOS and Windows remain untested. Artifacts and logs are under
+`.grove-artifacts/error-disclosure/`. Expand/collapse is immediate input feedback,
+matching existing transcript work/tool disclosures.

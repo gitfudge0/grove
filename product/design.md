@@ -461,3 +461,5 @@ results remain copyable. Reader entrance/exit uses restrained shared motion;
 input focus and captured diff selection are immediate.
 
 Checkout overflow controls omit hover tooltips while preserving accessible names. Local changes, Git and Scripts reserve matching fixed trailing control bounds and insets. Checkout action rows share leading icon slots and the small icon-to-label gap. The Scripts empty message aligns with its heading; the heading plus control is the sole add action in that section. These static geometry and copy changes need no motion.
+
+Adjacent transcript provider warnings collapse into one transparent, keyboard-accessible disclosure by default. Its summary identifies the warning count, or unavailable MCP server count with authentication status when applicable. Expanding preserves every diagnostic title and literal detail; identical recovery text appears once. Grouping never crosses another message or a question anchor. Expansion preferences belong to the session and remain stable as more notices arrive. Disclosure activation updates immediately, matching transcript work/tool input feedback.

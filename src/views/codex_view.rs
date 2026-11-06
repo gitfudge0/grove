@@ -3323,6 +3323,134 @@ impl CodexView {
             .into_any_element()
     }
 
+    fn render_provider_notices(
+        &mut self,
+        index: usize,
+        end: usize,
+        state: &codex::Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let notices = &state.saved.items[index..end];
+        let key = format!(
+            "provider-notices:{}:{}",
+            state.saved.thread_id.as_deref().unwrap_or_default(),
+            notices[0]["id"]
+                .as_str()
+                .map_or_else(|| index.to_string(), str::to_owned)
+        );
+        let expanded = self.expanded.contains(&key);
+        let mcp = notices.iter().all(|notice| {
+            notice["title"].as_str().is_some_and(|title| {
+                title.starts_with("MCP server ") && title.ends_with(" is unavailable")
+            })
+        });
+        let mut label = if mcp {
+            format!(
+                "{} MCP server{} unavailable",
+                notices.len(),
+                if notices.len() == 1 { "" } else { "s" }
+            )
+        } else if notices.len() == 1 {
+            notices[0]["title"]
+                .as_str()
+                .unwrap_or("Provider warning")
+                .to_owned()
+        } else {
+            format!("{} provider warnings", notices.len())
+        };
+        if mcp
+            && notices.iter().all(|notice| {
+                notice["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("Authenticate this MCP server"))
+            })
+        {
+            label.push_str(" · Authentication required");
+        }
+        let focus = self
+            .ensure_message_focus(&key, window, cx)
+            .tab_stop(true)
+            .tab_index(0);
+        let keyboard_key = key.clone();
+        let mut group = div()
+            .id(("provider-notice", index))
+            .debug_selector(move || format!("provider-notice-{index}"))
+            .w_full()
+            .max_w(rpx(CHAT_MAX_W))
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_SM))
+            .child(
+                super::components::inline_disclosure("provider-notice-toggle", label.clone())
+                    .id(("provider-notice-toggle", index))
+                    .debug_selector(move || format!("provider-notice-toggle-{index}"))
+                    .track_focus(&focus)
+                    .tab_index(0)
+                    .aria_expanded(expanded)
+                    .w_full()
+                    .h_auto()
+                    .min_h(rpx(CHROME_CONTROL_H))
+                    .justify_start()
+                    .gap(rpx(SPACE_SM))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .focus_visible(|style| style.bg(c::BG_HOVER()))
+                    .child(crate::icons::icon(
+                        if expanded { "chev-down" } else { "chev-right" },
+                        ICON_SM,
+                        c::FG_DIM(),
+                    ))
+                    .child(crate::icons::icon("message-warning", ICON_MD, c::AMBER()))
+                    .child(div().flex_1().min_w_0().child(label))
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        if action_key(event) {
+                            this.toggle_expansion(&keyboard_key, cx);
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        focus.focus(window, cx);
+                        this.toggle_expansion(&key, cx);
+                    })),
+            );
+        // Expansion is immediate input feedback, matching the transcript tool disclosures.
+        // Keep literal details intact and show identical recovery text once per group.
+        if expanded {
+            let mut details = div()
+                .w_full()
+                .min_w_0()
+                .pl(rpx(ICON_MD + SPACE_LG))
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_LG));
+            let shared_text = notices
+                .iter()
+                .all(|notice| notice["text"] == notices[0]["text"]);
+            for (offset, notice) in notices.iter().enumerate() {
+                let item_index = index + offset;
+                details = details.child(
+                    div().w_full().min_w_0().text_size(rpx(TEXT_SMALL)).child(
+                        notice["title"]
+                            .as_str()
+                            .unwrap_or("Provider warning")
+                            .to_owned(),
+                    ),
+                );
+                if !shared_text || offset + 1 == notices.len() {
+                    details = details.child(literal_notice_text(
+                        gpui::SharedString::from(format!("provider-notice-text-{item_index}")),
+                        notice["text"].as_str().unwrap_or_default(),
+                    ));
+                }
+            }
+            group = group.child(details);
+        }
+        group.into_any_element()
+    }
+
     fn render_work_header(
         &mut self,
         index: usize,
@@ -5042,6 +5170,16 @@ impl Render for CodexView {
                 message_child += blocks.len();
                 messages = messages.children(blocks);
             }
+            // Group only adjacent notices; never cross a question or another message.
+            // Skip before work headers so grouped diagnostics do not leave empty work rows.
+            if index > history_start
+                && index < state.saved.items.len()
+                && item["type"] == "providerNotice"
+                && state.saved.items[index - 1]["type"] == "providerNotice"
+                && !self.has_question_anchor(index)
+            {
+                continue;
+            }
             if let Some((key, label, active)) = work_header_at(&state, index) {
                 message_child += 1;
                 let expanded = self.expanded.contains(&key);
@@ -5131,47 +5269,15 @@ impl Render for CodexView {
                 continue;
             }
             if kind == "providerNotice" {
+                let end = (index + 1..state.saved.items.len())
+                    .find(|next| {
+                        state.saved.items[*next]["type"] != "providerNotice"
+                            || self.has_question_anchor(*next)
+                    })
+                    .unwrap_or(state.saved.items.len());
                 message_child += 1;
-                messages = messages.child(
-                    div()
-                        .id(("provider-notice", index))
-                        .debug_selector(move || format!("provider-notice-{index}"))
-                        .role(gpui::Role::Status)
-                        .w_full()
-                        .max_w(rpx(CHAT_MAX_W))
-                        .min_w_0()
-                        .flex_shrink_0()
-                        .flex()
-                        .flex_col()
-                        .gap(rpx(SPACE_SM))
-                        .py(rpx(SPACE_LG))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(rpx(SPACE_LG))
-                                .child(crate::icons::icon("message-warning", ICON_MD, c::AMBER()))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .child(
-                                            item["title"]
-                                                .as_str()
-                                                .unwrap_or("Provider warning")
-                                                .to_owned(),
-                                        ),
-                                ),
-                        )
-                        .child(div().w_full().min_w_0().pl(rpx(ICON_MD + SPACE_LG)).child(
-                            literal_notice_text(
-                                gpui::SharedString::from(format!("provider-notice-text-{index}")),
-                                item["text"].as_str().unwrap_or_default(),
-                            ),
-                        )),
-                );
+                messages =
+                    messages.child(self.render_provider_notices(index, end, &state, window, cx));
                 continue;
             }
             if tasks::is_checklist(item) || grove_core::activity::is_internal(item) {
@@ -19499,6 +19605,10 @@ mod tests {
                 draw(cx);
                 let response = cx.debug_bounds("codex-message-anchor-0").unwrap();
                 let warning = cx.debug_bounds("provider-notice-1").unwrap();
+                assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_none());
+                let toggle = cx.debug_bounds("provider-notice-toggle-1").unwrap();
+                cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+                draw(cx);
                 let body = cx.debug_bounds("provider-notice-text-1-line-0").unwrap();
                 assert_eq!(
                     warning.left(),
@@ -19521,7 +19631,115 @@ mod tests {
                     "{provider:?} width {width}: body={body:?} next={next:?}"
                 );
                 assert!(cx.debug_bounds("codex-error").is_none());
+                cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+                draw(cx);
             }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "opens isolated native X11 transcript fixture"]
+    fn provider_failures_native_capture() {
+        use gpui::AppContext as _;
+        let output = std::path::PathBuf::from(std::env::var("GROVE_FAILURE_CAPTURE_DIR").unwrap());
+        assert!(output.is_absolute());
+        std::fs::create_dir_all(&output).unwrap();
+        gpui_platform::application().with_assets(crate::assets::Assets).run(move |cx| {
+            gpui_component::init(cx);
+            crate::fonts::register(cx).unwrap();
+            c::sync_component_theme(cx);
+            cx.set_reduce_motion(true);
+            let mut retained = None;
+            let window = cx.open_window(gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                    gpui::point(gpui::px(20.), gpui::px(20.)),
+                    gpui::size(gpui::px(900.), gpui::px(750.))))),
+                ..Default::default()
+            }, |window, cx| {
+                window.set_window_title("Grove transcript failure QA");
+                let mut state = snapshot();
+                state.status = Status::Done;
+                state.saved.items = ["Context7", "Google Docs", "Google Sheets", "Atlassian Rovo", "Sentry", "Google Calendar", "Google Drive"].iter().enumerate().map(|(i, name)| json!({
+                    "id":format!("failure-{i}"), "type":"providerNotice", "severity":"warning",
+                    "title":format!("MCP server {name} is unavailable"),
+                    "text":"Authenticate this MCP server with the Claude Code CLI, then reconnect this conversation."
+                })).collect::<Vec<_>>().into();
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = mpsc::channel();
+                let session = cx.new(|cx| CodexSession::from_connection(state, Connection { handle, updates:receive.into() }, cx));
+                let chat = cx.new(|cx| CodexView::new(session, window, cx));
+                retained = Some(chat.clone());
+                cx.new(|cx| gpui_component::Root::new(chat, window, cx).bordered(false))
+            }).unwrap();
+            let view = retained.unwrap();
+            cx.activate(true);
+            cx.spawn(async move |cx| {
+                for (name, expanded, light, rem) in [("collapsed-dark", false, false, 16.), ("expanded-dark", true, false, 16.), ("expanded-light-zoom", true, true, 20.)] {
+                    cx.update_window(window.into(), |_, window, cx| {
+                        grove_core::theme::set_by_name(if light { "grove-light" } else { "grove-dark" });
+                        c::sync_component_theme(cx);
+                        window.set_rem_size(gpui::px(rem));
+                        view.update(cx, |view, cx| {
+                            let state = &view.session.read(cx).state;
+                            let key = format!("provider-notices:{}:failure-0", state.saved.thread_id.as_deref().unwrap_or_default());
+                            if expanded { view.expanded.insert(key); } else { view.expanded.remove(&key); }
+                            cx.notify();
+                        });
+                        window.refresh();
+                    }).unwrap();
+                    cx.background_executor().timer(std::time::Duration::from_millis(800)).await;
+                    cx.update_window(window.into(), |_, window, _| window.refresh()).unwrap();
+                    cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+                    assert!(std::process::Command::new("import")
+                        .args(["-window", "Grove transcript failure QA"])
+                        .arg(output.join(format!("{name}.png")))
+                        .status().unwrap().success());
+                }
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
+    }
+
+    #[gpui::test]
+    fn provider_failures_group_and_expand_for_both_providers(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| view.update(cx, |view, cx| {
+                view.expanded.clear();
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = provider;
+                    session.state.status = Status::Done;
+                    session.state.saved.items = vec![
+                        json!({"id":"a","type":"providerNotice","title":"MCP server Docs is unavailable","text":"Authenticate this MCP server","severity":"warning"}),
+                        json!({"id":"b","type":"providerNotice","title":"MCP server Sheets is unavailable","text":"Authenticate this MCP server","severity":"warning"}),
+                        json!({"id":"answer","type":"agentMessage","text":"Continue working"}),
+                        json!({"id":"c","type":"providerNotice","title":"Separate warning","text":"Distinct diagnostic","severity":"warning"}),
+                    ].into();
+                    cx.notify();
+                });
+            }));
+            draw(cx);
+            assert!(cx.debug_bounds("provider-notice-0").is_some());
+            assert!(cx.debug_bounds("provider-notice-1").is_none());
+            assert!(cx.debug_bounds("provider-notice-3").is_some());
+            assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_none());
+            let toggle = cx.debug_bounds("provider-notice-toggle-0").unwrap();
+            cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+            draw(cx);
+            // Shared recovery guidance appears once; source diagnostics stay intact.
+            assert!(cx.debug_bounds("provider-notice-text-0-line-0").is_none());
+            assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_some());
+            cx.simulate_keystrokes("space");
+            draw(cx);
+            assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_none());
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(cx.debug_bounds("provider-notice-text-1-line-0").is_some());
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.session.read(cx).state.saved.items.len(), 4)
+            });
         }
     }
 
