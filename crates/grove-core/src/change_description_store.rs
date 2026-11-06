@@ -39,7 +39,7 @@ impl Source {
         };
         Ok(Self { checkout, scope })
     }
-    fn identity(&self) -> Result<String> {
+    pub(crate) fn identity(&self) -> Result<String> {
         let source = self.normalized()?;
         Ok(match source.scope {
             Scope::Local => format!("local\0{}", source.checkout),
@@ -174,7 +174,7 @@ impl Store {
             .join("claims")
             .join(format!("{}.json", hash(&source.identity()?))))
     }
-    fn with_source_lock<T>(
+    pub(crate) fn with_source_lock<T>(
         &self,
         source: &Source,
         action: impl FnOnce() -> Result<T>,
@@ -414,7 +414,7 @@ fn hash(text: &str) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
-fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<Option<T>> {
+pub(crate) fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<Option<T>> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -444,7 +444,7 @@ fn read<T: DeserializeOwned>(path: &Path, limit: u64) -> Result<Option<T>> {
         .map(Some)
         .map_err(|error| format!("Saved description is invalid; its file was preserved: {error}"))
 }
-fn write(path: &Path, value: &impl Serialize, limit: u64) -> Result<()> {
+pub(crate) fn write(path: &Path, value: &impl Serialize, limit: u64) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| format!("Could not encode saved description: {error}"))?;
     if bytes.len() as u64 > limit {

@@ -432,7 +432,7 @@ pub(crate) fn validate(
 pub fn is_current(path: &Path, description: &Description) -> Result<bool, String> {
     snapshot_is_current(path, &description.snapshot)
 }
-/// Check freshness of a captured change snapshot.
+/// Check captured freshness without requiring a generated description.
 pub fn snapshot_is_current(path: &Path, snapshot: &Snapshot) -> Result<bool, String> {
     let checkout = fs_err::canonicalize(path).map_err(|_| "Checkout is unavailable")?;
     match &snapshot.scope {
