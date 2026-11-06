@@ -116,6 +116,10 @@ mod tests {
         assert!(completion('/', "not-a-skill").is_none());
         assert!(completion('@', "review").is_none());
         assert!(SKILL.contains("name: review"));
-        assert!(SKILL.contains("Read-only side conversations do not receive"));
+        assert!(SKILL
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("Read-only side conversations do not receive"));
     }
 }

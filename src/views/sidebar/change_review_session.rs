@@ -24,7 +24,7 @@ fn retained_review_session(
         },
         |seed| seed.independent_conversation(key.clone()),
     );
-    saved.cwd = source.checkout.clone();
+    saved.cwd.clone_from(&source.checkout);
     saved.project = project;
     saved.roots.clear();
     let title = match &source.scope {
@@ -146,6 +146,8 @@ impl Sidebar {
             }
         };
         if let Some((id, target)) = self.reviews.entries.iter().find_map(|(key, entry)| {
+            let id = entry.session?;
+            self.review_session(id, cx)?;
             let controller = entry.controller.as_ref()?;
             if !controller.read(cx).phase.busy() {
                 return None;
@@ -163,7 +165,7 @@ impl Sidebar {
                 }
                 _ => false,
             };
-            same.then_some((entry.session?, key.clone()))
+            same.then_some((id, key.clone()))
         }) {
             self.open_review_session(id, target, cx);
             return;
@@ -217,7 +219,7 @@ impl Sidebar {
         self.open_review_session(id, target, cx);
         if let Some(controller) = controller {
             controller.update(cx, |c, cx| {
-                c.start(source.checkout, source.scope, String::new(), cx)
+                c.start(source.checkout, source.scope, String::new(), cx);
             });
         }
     }
@@ -238,7 +240,7 @@ impl Sidebar {
         entry.freshness = None;
         entry.receipt = None;
         controller.update(cx, |c, cx| {
-            c.start(target.path.clone(), scope, String::new(), cx)
+            c.start(target.path.clone(), scope, String::new(), cx);
         });
     }
     pub(in crate::views::sidebar) fn restore_session_review(&mut self, cx: &mut Context<Self>) {
@@ -255,6 +257,12 @@ impl Sidebar {
         if !self.reviews.hydrated.insert((id, session_key.clone())) {
             return;
         }
+        if let Some(previous) = self.reviews.linked.remove(&id) {
+            if self.reviews.open.as_ref() == Some(&previous) {
+                self.reviews.open = None;
+            }
+            self.reviews.sessions.remove(&id);
+        }
         let store = self.review_store();
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -267,6 +275,12 @@ impl Sidebar {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(Some((store, source, session_key))) => {
+                        if this
+                            .review_session(id, cx)
+                            .is_none_or(|session| session.read(cx).state.saved.key != session_key)
+                        {
+                            return;
+                        }
                         let target = key(
                             &Some(Selection::Session(id)),
                             &source.checkout,
@@ -278,7 +292,7 @@ impl Sidebar {
                         if let Some(controller) =
                             this.review_controller(id, target, store, session_key, cx)
                         {
-                            controller.update(cx, |c, cx| c.hydrate(cx));
+                            controller.update(cx, ChangeSession::hydrate);
                         }
                     }
                     Ok(None) => {}
@@ -296,7 +310,7 @@ impl Sidebar {
             .get(target)
             .and_then(|e| e.controller.clone())
         {
-            controller.update(cx, |c, cx| c.reload(cx));
+            controller.update(cx, ChangeSession::reload);
         }
     }
     pub(in crate::views::sidebar) fn linked_review_key(&self) -> Option<Key> {

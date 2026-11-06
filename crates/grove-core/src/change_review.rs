@@ -186,7 +186,7 @@ impl crate::change_result_store::StoredResult for Review {
     fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
-    fn input(&self) -> &str {
+    fn input(&self) -> &'static str {
         ""
     }
     fn validate(&self) -> Result<(), String> {

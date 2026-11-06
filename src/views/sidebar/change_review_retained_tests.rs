@@ -8,6 +8,7 @@ use serde_json::json;
 struct RetainedFixture {
     sidebar: Entity<Sidebar>,
     path: String,
+    _observer: gpui::Subscription,
 }
 impl Render for RetainedFixture {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -16,7 +17,11 @@ impl Render for RetainedFixture {
             for entry in s.reviews.entries.values_mut() {
                 entry.checking = true;
             }
-            s.render_review_controls(&self.path, false, None, window, cx)
+            if s.reviews.open.is_some() {
+                s.render_review(window, cx)
+            } else {
+                s.render_review_controls(&self.path, false, None, window, cx)
+            }
         })
     }
 }
@@ -104,9 +109,13 @@ fn retained_review_restores_canonical_result_and_permanent_view_for_both_provide
                 s
             });
             sidebar_handle = Some(sidebar.clone());
-            let fixture = cx.new(|_| RetainedFixture {
-                sidebar,
-                path: source.checkout.clone(),
+            let fixture = cx.new(|cx| {
+                let observer = cx.observe(&sidebar, |_, _, cx| cx.notify());
+                RetainedFixture {
+                    sidebar,
+                    path: source.checkout.clone(),
+                    _observer: observer,
+                }
             });
             gpui_component::Root::new(fixture, window, cx).bordered(false)
         });
@@ -160,7 +169,60 @@ fn retained_review_restores_canonical_result_and_permanent_view_for_both_provide
                 .all(|actions| actions.try_iter().next().is_none()),
             "hydration/View/Conversation must not submit provider prompts"
         );
-        assert_eq!(store.load(&source).unwrap(), Some(review));
+        assert_eq!(store.load(&source).unwrap(), Some(review.clone()));
+        fs_err::remove_file(store.result_path(&source).unwrap()).unwrap();
+        cx.update(|_, cx| {
+            sidebar.update(cx, |s, cx| {
+                let target = s.linked_review_key().unwrap();
+                let entry = s.reviews.entries.get_mut(&target).unwrap();
+                entry.result = None;
+                entry.text = None;
+                // Recreate the controller as after restart; an in-memory old result
+                // is intentionally retained by reload when its disk file vanishes.
+                let controller = s
+                    .review_controller(id, target.clone(), store.clone(), saved.key.clone(), cx)
+                    .unwrap();
+                controller.update(cx, |c, cx| c.hydrate(cx));
+                s.reviews.open = Some(target);
+                cx.notify();
+            })
+        });
+        let mut settled = false;
+        for _ in 0..150 {
+            cx.run_until_parked();
+            settled = sidebar.read_with(cx, |s, cx| {
+                let target = s.linked_review_key().unwrap();
+                let entry = &s.reviews.entries[&target];
+                entry
+                    .controller
+                    .as_ref()
+                    .is_some_and(|c| !c.read(cx).phase.busy())
+                    && entry.cancel.is_none()
+                    && entry.result.is_none()
+            });
+            if settled {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            settled,
+            "fresh controller must finish missing-result hydration before checking UI"
+        );
+        cx.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        assert!(
+            cx.debug_bounds("review-empty-generate").is_some(),
+            "a saved source link with no completed result must offer explicit generation"
+        );
+        assert!(
+            action_receivers
+                .iter()
+                .all(|actions| actions.try_iter().next().is_none()),
+            "missing result recovery must not resubmit automatically"
+        );
     }
 }
 
