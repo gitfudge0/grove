@@ -8,7 +8,6 @@ impl Sidebar {
         self.files_active = !active;
         self.files_owner = self.selection.clone();
         if self.files_active {
-            self.active_change_reader = None;
             self.checkout_panel.side_chat_owner = None;
             self.checkout_panel.hidden = false;
             self.dismiss_agent_peek(window, cx);

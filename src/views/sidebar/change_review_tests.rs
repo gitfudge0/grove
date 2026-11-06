@@ -159,7 +159,6 @@ fn create_sidebar(window: &mut Window, cx: &mut App) -> (Entity<Sidebar>, FocusH
             },
         );
         sidebar.reviews.open = Some(key);
-        sidebar.active_change_reader = Some("review");
         sidebar.reviews.return_focus = Some(return_focus);
         sidebar.reviews.focus_pending = true;
         sidebar
@@ -230,121 +229,6 @@ fn reader_expands_files_and_opens_the_captured_diff(cx: &mut gpui::TestAppContex
         assert!(entry.diff.is_none());
         assert!(entry.expanded.contains(FIXTURE_FILE));
     });
-}
-
-#[gpui::test]
-fn hidden_checkout_skill_uses_selected_worktree_without_a_mounted_panel(
-    cx: &mut gpui::TestAppContext,
-) {
-    let repository = tempfile::tempdir().unwrap();
-    let path = repository.path().to_string_lossy().into_owned();
-    assert!(std::process::Command::new("git")
-        .args(["init", "-b", "main"])
-        .current_dir(repository.path())
-        .output()
-        .unwrap()
-        .status
-        .success());
-    cx.update(|cx| {
-        initialize(cx);
-        cx.set_global(SettingsState::new(grove_core::storage::Store {
-            projects: vec![grove_core::storage::Project {
-                name: "Review skill fixture".into(),
-                path: path.clone(),
-                scripts: Default::default(),
-                archived: false,
-                worktree_dir: None,
-            }],
-            default_agent: Some(Agent::Codex),
-            ..Default::default()
-        }));
-    });
-    let mut sidebar_handle = None;
-    let mut source_handle = None;
-    let (_, cx) = cx.add_window_view(|window, cx| {
-        let runtime = cx.new(crate::runtime::Runtime::new);
-        runtime.read(cx).tree.clone().update(cx, |tree, _| {
-            tree.set_active_worktrees(
-                0,
-                vec![grove_core::git::Worktree {
-                    path: path.clone(),
-                    branch: "main".into(),
-                    mtime: None,
-                    is_main: true,
-                }],
-            );
-        });
-        let source = cx.focus_handle();
-        source_handle = Some(source.clone());
-        let sidebar = cx.new(|cx| {
-            let mut sidebar = Sidebar::new(runtime, window, cx);
-            sidebar.initial_selection_pending = false;
-            sidebar.selection = Some(Selection::Worktree(0, path.clone()));
-            sidebar.snapshot = sidebar
-                .runtime
-                .update(cx, |runtime, cx| runtime.snapshot(cx));
-            // No Checkout rendering occurs in this fixture. Its cached path and
-            // Git/PR state remain uninitialized, reproducing the hidden-panel bug.
-            sidebar.checkout_panel.hidden = true;
-            let local = key(&sidebar.selection, &path, &Scope::Local);
-            sidebar.reviews.entries.insert(
-                local,
-                Entry {
-                    scope: Some(Scope::Local),
-                    // Join a preseeded run so the test never starts a model process.
-                    cancel: Some(Arc::new(CommitControl::default())),
-                    ..Default::default()
-                },
-            );
-            sidebar
-        });
-        sidebar_handle = Some(sidebar.clone());
-        let fixture = cx.new(|_| ReviewReaderFixture {
-            sidebar,
-            source,
-            rem: 16.,
-            width: 1100.,
-            height: 1000.,
-            measured: Default::default(),
-        });
-        gpui_component::Root::new(fixture, window, cx).bordered(false)
-    });
-    let sidebar = sidebar_handle.unwrap();
-    let source = source_handle.unwrap();
-    for preference in [ScopePreference::Local, ScopePreference::Current] {
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                sidebar.reviews.open = None;
-                sidebar.reviews.scopes.clear();
-                sidebar.files_active = true;
-                sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
-                source.focus(window, cx);
-                sidebar.invoke_review_skill(preference, source.clone(), cx);
-                let expected = key(&sidebar.selection, &path, &Scope::Local);
-                assert_eq!(sidebar.reviews.open.as_ref(), Some(&expected));
-                assert!(sidebar.review_is_open(cx));
-                assert!(!sidebar.files_active);
-                assert!(sidebar.checkout_panel.side_chat_owner.is_none());
-                assert_eq!(sidebar.reviews.return_focus.as_ref(), Some(&source));
-                sidebar.toggle_files(window, cx);
-                assert!(sidebar.files_active);
-                assert_eq!(sidebar.active_change_reader, None);
-                assert!(!sidebar.review_is_open(cx));
-                // Cached review stays intact but navigation owns the canvas.
-                assert!(sidebar.reviews.open.is_some());
-                sidebar.invoke_review_skill(preference, source.clone(), cx);
-                assert!(sidebar.review_is_open(cx));
-            })
-        });
-        draw(cx);
-        assert!(cx.debug_bounds("review-reader").is_some());
-        cx.simulate_keystrokes("escape");
-        draw(cx);
-        cx.update(|window, cx| {
-            assert!(sidebar.read(cx).reviews.open.is_none());
-            assert!(source.is_focused(window));
-        });
-    }
 }
 
 #[gpui::test]

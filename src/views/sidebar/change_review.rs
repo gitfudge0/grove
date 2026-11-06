@@ -5,6 +5,7 @@ use crate::views::{
     status::{self, StatusKind},
 };
 use gpui_component::{
+    menu::{PopupMenu, PopupMenuItem},
     text::{TextView, TextViewState},
     Disableable, Selectable,
 };
@@ -16,13 +17,17 @@ use grove_core::{
 };
 use std::sync::Arc;
 
+#[path = "change_review_session.rs"]
+mod session;
+
+const READER_TOOLBAR_INSET: f32 = CHROME_CONTROL_H * 3. + SPACE_LG * 2. + SPACE_20 * 2.;
 const REVIEW_WIDTH: f32 = 700.;
 const FRESHNESS_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Key {
+pub(super) struct Key {
     owner: String,
-    path: String,
+    pub(super) path: String,
     scope: String,
 }
 #[derive(Default)]
@@ -36,10 +41,24 @@ pub(super) struct Reviews {
     return_focus: Option<FocusHandle>,
     open_source: Option<FocusHandle>,
     focus_pending: bool,
+    scope_focus: Option<FocusHandle>,
+    scope_menu: Option<Entity<PopupMenu>>,
+    scope_subscription: Option<gpui::Subscription>,
+    scope_menu_owner: Option<(String, String)>,
+    scope_position: gpui::Point<gpui::Pixels>,
+    scope_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    sessions: HashMap<SessionId, gpui::Subscription>,
+    hydrated: HashSet<(SessionId, String)>,
+    linked: HashMap<SessionId, Key>,
+    #[cfg(test)]
+    store_root: Option<std::path::PathBuf>,
 }
 #[derive(Default)]
 struct Entry {
     scope: Option<Scope>,
+    session: Option<SessionId>,
+    controller: Option<Entity<crate::views::change_session::ChangeSession<Review>>>,
+    saving: bool,
     result: Option<Arc<Review>>,
     run: u64,
     cancel: Option<Arc<CommitControl>>,
@@ -57,15 +76,7 @@ struct Entry {
     scroll: ScrollHandle,
     diff_scroll: ScrollHandle,
 }
-impl Drop for Reviews {
-    fn drop(&mut self) {
-        for entry in self.entries.values() {
-            if let Some(cancel) = &entry.cancel {
-                cancel.cancel();
-            }
-        }
-    }
-}
+
 fn owner(selection: &Option<Selection>) -> String {
     format!("{selection:?}")
 }
@@ -96,6 +107,24 @@ fn action(
                 .size(rpx(ICON_SM)),
         )
 }
+fn review_source_label(scope: &Scope) -> String {
+    match scope {
+        Scope::Local => "Local changes".into(),
+        Scope::PullRequest { url } => format!(
+            "PR #{}",
+            url.trim_end_matches('/').rsplit('/').next().unwrap_or("")
+        ),
+    }
+}
+fn review_source_text(label: String) -> gpui::Div {
+    div()
+        .debug_selector(|| "review-source-context".into())
+        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
+        .pr(rpx(SPACE_2XL))
+        .text_size(rpx(TEXT_MICRO))
+        .text_color(c::FG_DIM())
+        .child(label)
+}
 fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
     TextView::new(view)
         .markdown_extensions(super::super::mermaid::extensions())
@@ -103,22 +132,17 @@ fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
         .selectable(true)
 }
 impl Sidebar {
-    pub(super) fn dismiss_review(&mut self) {
-        self.reviews.open = None;
-        if self.active_change_reader == Some("review") {
-            self.active_change_reader = None;
-        }
-    }
     pub(super) fn review_is_open(&self, cx: &App) -> bool {
-        if self.active_change_reader != Some("review") {
-            return false;
-        }
         let targets = self.checkout_targets(cx);
         let selected = super::checkout_panel::selected_checkout(
             &targets,
             self.checkout_panel.chosen_root.as_deref(),
         );
         self.reviews.open.as_ref().is_some_and(|key| {
+            if key.owner == owner(&self.selection) && self.linked_review_key().as_ref() == Some(key)
+            {
+                return true;
+            }
             key.owner == owner(&self.selection)
                 && selected.as_ref().is_some_and(|(_, path)| path == &key.path)
         })
@@ -139,11 +163,15 @@ impl Sidebar {
             }
         }
         self.reviews.open = None;
-        if self.active_change_reader == Some("review") {
-            self.active_change_reader = None;
-        }
         if let Some(source) = self.reviews.return_focus.take() {
             source.focus(window, cx);
+        } else if let Some(Selection::Session(id)) = self.selection {
+            if let Some(view) = self.codex_views.get(&id) {
+                view.focus_handle(cx).focus(window, cx);
+            } else {
+                self.focus.focus(window, cx);
+                self.pending_canvas_focus = Some(id);
+            }
         }
         cx.notify();
     }
@@ -162,7 +190,6 @@ impl Sidebar {
             return;
         };
         // Native skill invocation replaces Files/Side chat without changing their drafts or requiring an already mounted Checkout card.
-        self.dismiss_description();
         self.files_active = false;
         self.checkout_panel.side_chat_owner = None;
         let selected_scope = self
@@ -170,6 +197,15 @@ impl Sidebar {
             .scopes
             .get(&(owner(&self.selection), path.clone()))
             .cloned();
+        if let ScopePreference::PullRequestUrl(url) = &preference {
+            self.start_review_conversation(
+                path,
+                Scope::PullRequest { url: url.clone() },
+                Some(source),
+                cx,
+            );
+            return;
+        }
         if preference == ScopePreference::Local
             || (preference == ScopePreference::Current
                 && !matches!(selected_scope, Some(Scope::PullRequest { .. })))
@@ -194,8 +230,6 @@ impl Sidebar {
         entry.resolving = true;
         entry.error = None;
         self.reviews.open = Some(resolving_key.clone());
-
-        self.active_change_reader = Some("review");
         self.reviews.return_focus = Some(source.clone());
         self.reviews.focus_pending = true;
         cx.notify();
@@ -210,7 +244,7 @@ impl Sidebar {
                 Ok(pr)
             }).await;
             let _ = this.update(cx, |this, cx| {
-                let active = this.active_change_reader == Some("review") && this.reviews.open.as_ref() == Some(&resolving_key) && this.reviews.entries.get(&resolving_key).is_some_and(|entry| entry.run == run && entry.resolving);
+                let active = this.reviews.open.as_ref() == Some(&resolving_key) && this.reviews.entries.get(&resolving_key).is_some_and(|entry| entry.run == run && entry.resolving);
                 if !active { return; }
                 let targets = this.checkout_targets(cx);
                 let still_selected = owner(&this.selection) == resolving_key.owner && super::checkout_panel::selected_checkout(&targets, this.checkout_panel.chosen_root.as_deref()).is_some_and(|(_, current)| current == path);
@@ -243,108 +277,29 @@ impl Sidebar {
         source: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
-        let provider = match self.checkout_commit_provider(cx) {
-            Ok(p) => p,
-            Err(error) => {
-                self.review_error(error, cx);
+        if let Some(target) = self.linked_review_key() {
+            if target.path == path
+                && self
+                    .reviews
+                    .entries
+                    .get(&target)
+                    .and_then(|e| e.scope.as_ref())
+                    == Some(&scope)
+            {
+                self.run_review(&target, cx);
                 return;
             }
-        };
-        self.dismiss_description();
-        let key = key(&self.selection, &path, &scope);
-        if self
-            .reviews
-            .entries
-            .get(&key)
-            .is_some_and(|entry| entry.cancel.is_some())
-        {
-            self.reviews.open = Some(key);
-
-            self.active_change_reader = Some("review");
-            self.reviews.focus_pending = true;
-            if let Some(source) = source {
-                self.reviews.return_focus = Some(source);
-            }
-            cx.notify();
-            return;
         }
-        self.reviews.revision = self.reviews.revision.wrapping_add(1);
-        let run = self.reviews.revision;
-        let cancel = Arc::new(CommitControl::default());
-        let entry = self.reviews.entries.entry(key.clone()).or_default();
-        entry.scope = Some(scope.clone());
-        entry.cancel = Some(cancel.clone());
-        entry.run = run;
-        // A callback from the previous run can no longer clear its in-flight flag.
-        entry.checking = false;
-        entry.checked_at = None;
-        entry.freshness = None;
-        entry.error = None;
-        entry.receipt = None;
-        if let Some(source) = source {
-            self.reviews.return_focus = Some(source);
-        }
-        self.reviews.open = Some(key.clone());
-
-        self.active_change_reader = Some("review");
-        self.reviews.focus_pending = true;
-        self.reviews.focus.get_or_insert_with(|| cx.focus_handle());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    domain::generate(
-                        std::path::Path::new(&path),
-                        &scope,
-                        provider,
-                        &cancel,
-                        |_| {},
-                    )
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                let Some(entry) = this.reviews.entries.get_mut(&key).filter(|e| e.run == run)
-                else {
-                    return;
-                };
-                entry.cancel = None;
-                match result {
-                    Ok(review) => {
-                        let summary = review.summary_markdown();
-                        entry.text = Some(cx.new(|cx| TextViewState::markdown(&summary, cx)));
-                        entry.file_text.clear();
-                        for file in &review.files {
-                            let source =
-                                format!("**{}**\n\n{}", file.title, file.summary.join("\n\n"));
-                            entry.file_text.insert(
-                                file.path.clone(),
-                                cx.new(|cx| TextViewState::markdown(&source, cx)),
-                            );
-                        }
-                        entry.result = Some(Arc::new(review));
-                        entry.freshness = None;
-                        entry.checked_at = None;
-                        entry.checking = false;
-                        entry.expanded.clear();
-                        entry.scroll = ScrollHandle::default();
-                        entry.diff = None;
-                        entry.receipt = Some("Review ready".into());
-                    }
-                    Err(error) => entry.error = Some(error),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        self.start_review_conversation(path, scope, source, cx);
     }
     fn cancel_review(&mut self, key: &Key, cx: &mut Context<Self>) {
-        if let Some(entry) = self.reviews.entries.get_mut(key) {
-            if let Some(cancel) = &entry.cancel {
-                cancel.cancel();
+        if let Some(entry) = self.reviews.entries.get(key) {
+            if !entry.saving {
+                if let Some(controller) = entry.controller.clone() {
+                    controller.update(cx, |c, cx| c.cancel(cx));
+                }
             }
-            // Do not report cancellation until the child process has acknowledged exit.
         }
-        cx.notify();
     }
     fn check_review(&mut self, key: &Key, cx: &mut Context<Self>) {
         let Some(entry) = self.reviews.entries.get_mut(key) else {
@@ -399,6 +354,88 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.restore_session_review(cx);
+        let menu_owner = (owner(&self.selection), path.to_owned());
+        if self.reviews.scope_menu.is_some()
+            && (self.reviews.scope_menu_owner.as_ref() != Some(&menu_owner)
+                || !local_changes
+                || pr.is_none()
+                || self.linked_review_key().is_some())
+        {
+            self.reviews.scope_menu = None;
+            self.reviews.scope_subscription = None;
+            self.reviews.scope_menu_owner = None;
+        }
+        if let Some(target) = self.linked_review_key() {
+            self.check_review(&target, cx);
+            let entry = self.reviews.entries.get(&target);
+            let busy = entry.is_some_and(|e| e.cancel.is_some());
+            let stale = entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false))));
+            let unavailable =
+                entry.is_some_and(|e| matches!(e.freshness, Some(Err(_))) || e.error.is_some());
+            let saved = entry.is_some_and(|e| e.result.is_some());
+            let source = entry
+                .and_then(|e| e.scope.as_ref())
+                .map(review_source_label);
+            let source_focus = self
+                .reviews
+                .open_source
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
+            let return_focus = source_focus.clone();
+            return div()
+                .id("review-controls")
+                .debug_selector(|| "review-controls".into())
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .py(rpx(SPACE_LG))
+                .child(
+                    super::checkout_panel::checkout_loading_row(
+                        "review-open",
+                        if saved {
+                            "View review"
+                        } else {
+                            "Review changes"
+                        },
+                        "diff",
+                        false,
+                        window,
+                        cx,
+                    )
+                    .with_focus_handle(source_focus)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.reload_review_result(&target, cx);
+                        this.reviews.return_focus = Some(return_focus.clone());
+                        this.reviews.open = Some(target.clone());
+                        this.reviews.focus_pending = true;
+                        cx.notify();
+                    })),
+                )
+                .when_some(source, |column, source| {
+                    column.child(review_source_text(source))
+                })
+                .when(busy || stale || unavailable, |column| {
+                    column.child(div().px(rpx(SPACE_2XL)).child(status::label(
+                        "review-panel-state",
+                        if busy {
+                            StatusKind::Working
+                        } else {
+                            StatusKind::Warning
+                        },
+                        if busy {
+                            "Generating…"
+                        } else if stale {
+                            "Out of date"
+                        } else {
+                            "Needs attention"
+                        },
+                        ICON_SM,
+                        cx,
+                    )))
+                })
+                .into_any_element();
+        }
         if !local_changes && pr.is_none() {
             return div().into_any_element();
         }
@@ -414,6 +451,9 @@ impl Sidebar {
             })
             .clone();
         let scope = match (&scope, &pr) {
+            (_, Some(pr)) if !local_changes => Scope::PullRequest {
+                url: pr.url.clone(),
+            },
             (Scope::PullRequest { .. }, Some(pr)) => Scope::PullRequest {
                 url: pr.url.clone(),
             },
@@ -423,7 +463,7 @@ impl Sidebar {
         self.reviews.scopes.insert(owner_key.clone(), scope.clone());
         let key = key(&self.selection, path, &scope);
         let entry = self.reviews.entries.get(&key);
-        let busy = entry.is_some_and(|e| e.cancel.is_some());
+        let busy = entry.is_some_and(|e| e.cancel.is_some() || e.saving);
         let exists = entry.is_some_and(|e| e.result.is_some());
         let mut column = div()
             .id("review-controls")
@@ -431,49 +471,97 @@ impl Sidebar {
             .flex()
             .flex_col()
             .gap(rpx(SPACE_SM))
-            .px(rpx(SPACE_2XL))
             .py(rpx(SPACE_LG));
-        column = column.child(
-            div()
-                .text_size(rpx(TEXT_SMALL))
-                .text_color(c::FG_DIM())
-                .child("Review"),
-        );
-        let mut choices = div().flex().flex_wrap().gap(rpx(SPACE_SM));
-        for (label, candidate, enabled, glyph) in [
-            (
-                "Local changes".to_string(),
-                Scope::Local,
-                local_changes,
-                "diff",
-            ),
-            (
-                pr.as_ref()
-                    .map_or("Attached PR".into(), |p| format!("PR #{}", p.number)),
-                pr.as_ref()
-                    .map_or(Scope::Local, |p| Scope::PullRequest { url: p.url.clone() }),
-                pr.is_some(),
-                "git-pull-request",
-            ),
-        ] {
-            if !enabled {
-                continue;
-            }
-            let selected = candidate == scope;
+        // A sole source is context, not a choice. Only offer a picker when
+        // local edits and the attached PR are both available.
+        if let Some(pr) = pr.as_ref().filter(|_| local_changes) {
+            let selected = scope.clone();
             let target = owner_key.clone();
-            choices = choices.child(
-                action(format!("review-scope-{glyph}"), label, glyph, window, cx)
-                    .selected(selected)
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.reviews
-                            .scopes
-                            .insert(target.clone(), candidate.clone());
-                        cx.notify();
-                    })),
+            let pr_scope = Scope::PullRequest {
+                url: pr.url.clone(),
+            };
+            let focus = self
+                .reviews
+                .scope_focus
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
+            let keyboard_target = target.clone();
+            let keyboard_selected = selected.clone();
+            let keyboard_pr = pr_scope.clone();
+            let keyboard_focus = focus.clone();
+            let bounds = self.reviews.scope_bounds.clone();
+            column = column.child(
+                div()
+                    .mx(rpx(SPACE_2XL))
+                    .on_prepaint(move |value, _, _| bounds.set(value))
+                    .child(
+                        action(
+                            "review-source",
+                            review_source_label(&scope),
+                            "chev-down",
+                            window,
+                            cx,
+                        )
+                        .justify_start()
+                        .with_focus_handle(focus)
+                        .selected(
+                            self.reviews.scope_menu.is_some()
+                                && self.reviews.scope_menu_owner.as_ref() == Some(&owner_key),
+                        )
+                        .disabled(busy)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                let position = this.reviews.scope_bounds.get().bottom_left();
+                                this.open_review_sources(
+                                    target.clone(),
+                                    selected.clone(),
+                                    pr_scope.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
+                    )
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if !busy
+                                && keyboard_focus.is_focused(window)
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            {
+                                let position = this.reviews.scope_bounds.get().bottom_left();
+                                this.open_review_sources(
+                                    keyboard_target.clone(),
+                                    keyboard_selected.clone(),
+                                    keyboard_pr.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                );
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        },
+                    )),
             );
+            if self.reviews.scope_menu_owner.as_ref() == Some(&owner_key) && !busy {
+                if let Some(menu) = self.reviews.scope_menu.clone() {
+                    column = column.child(gpui::deferred(
+                        gpui::anchored()
+                            .position_mode(gpui::AnchoredPositionMode::Window)
+                            .position(self.reviews.scope_position)
+                            .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
+                            .child(menu),
+                    ));
+                }
+            } else {
+                self.reviews.scope_menu = None;
+                self.reviews.scope_subscription = None;
+                self.reviews.scope_menu_owner = None;
+            }
+        } else if exists || matches!(scope, Scope::PullRequest { .. }) {
+            column = column.child(review_source_text(review_source_label(&scope)));
         }
-        column = column.child(choices);
         let focus = self
             .reviews
             .source
@@ -481,33 +569,37 @@ impl Sidebar {
             .clone();
         let target = path.to_owned();
         let chosen = scope.clone();
-        column = column.child(
-            super::checkout_panel::checkout_loading_row(
-                "review",
-                if busy {
-                    "Reviewing changes…"
-                } else if exists {
-                    "Regenerate review"
-                } else {
-                    "Review changes"
-                },
-                "diff",
-                busy,
-                window,
-                cx,
-            )
-            .px(rpx(SPACE_LG))
-            .with_focus_handle(focus)
-            .disabled(busy || (matches!(scope, Scope::Local) && !local_changes))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.begin_review(
-                    target.clone(),
-                    chosen.clone(),
-                    this.reviews.source.clone(),
+        if !exists {
+            column = column.child(
+                super::checkout_panel::checkout_loading_row(
+                    "review-changes",
+                    if entry.is_some_and(|e| e.saving) {
+                        "Updating review…"
+                    } else if busy {
+                        "Describing changes…"
+                    } else {
+                        match &scope {
+                            Scope::Local => "Review local changes",
+                            Scope::PullRequest { .. } => "Review pull request",
+                        }
+                    },
+                    "diff",
+                    busy,
+                    window,
                     cx,
-                );
-            })),
-        );
+                )
+                .with_focus_handle(focus)
+                .disabled(busy || (matches!(scope, Scope::Local) && !local_changes))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.begin_review(
+                        target.clone(),
+                        chosen.clone(),
+                        this.reviews.source.clone(),
+                        cx,
+                    );
+                })),
+            );
+        }
         if exists {
             let open_focus = self
                 .reviews
@@ -517,22 +609,38 @@ impl Sidebar {
             let return_focus = open_focus.clone();
             let target = key.clone();
             column = column.child(
-                action("review-open", "Open review", "eye", window, cx)
-                    .with_focus_handle(open_focus)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.reviews.return_focus = Some(return_focus.clone());
-                        this.reviews.open = Some(target.clone());
-
-                        this.active_change_reader = Some("review");
-                        this.reviews.focus_pending = true;
-                        cx.notify();
-                    })),
+                super::checkout_panel::checkout_loading_row(
+                    "review-open",
+                    "View review",
+                    "diff",
+                    false,
+                    window,
+                    cx,
+                )
+                .with_focus_handle(open_focus)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.reviews.return_focus = Some(return_focus.clone());
+                    this.reviews.open = Some(target.clone());
+                    this.reviews.focus_pending = true;
+                    cx.notify();
+                })),
             );
+        }
+        if exists && entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false)))) {
+            column = column.child(div().px(rpx(SPACE_2XL)).child(status::label(
+                "review-panel-state",
+                StatusKind::Warning,
+                "Out of date",
+                ICON_SM,
+                cx,
+            )));
         }
         if busy {
             let target = key.clone();
             column = column.child(
                 action("review-cancel", "Cancel generation", "close", window, cx)
+                    .mx(rpx(SPACE_2XL))
+                    .disabled(entry.is_some_and(|e| e.saving))
                     .on_click(cx.listener(move |this, _, _, cx| this.cancel_review(&target, cx))),
             );
         }
@@ -541,13 +649,73 @@ impl Sidebar {
                 div()
                     .text_size(rpx(TEXT_MICRO))
                     .text_color(c::FG_DIM())
+                    .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
+                    .pr(rpx(SPACE_2XL))
                     .child(if matches!(scope, Scope::Local) {
-                        "Staged + unstaged + untracked · compared with HEAD"
+                        "Uncommitted changes, including new files."
                     } else {
-                        "Attached PR · compared with its base"
+                        "Pull request changes compared with its base."
                     }),
             )
             .into_any_element()
+    }
+    fn open_review_sources(
+        &mut self,
+        target: (String, String),
+        selected: Scope,
+        pr_scope: Scope,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let source = target.clone();
+        let Some(focus) = self.reviews.scope_focus.clone() else {
+            return;
+        };
+        let menu = PopupMenu::build(window, cx, move |menu, window, _| {
+            let mut menu =
+                crate::views::components::dropdown_menu(menu, window).action_context(focus);
+            for candidate in [Scope::Local, pr_scope.clone()] {
+                let owner = owner.clone();
+                let target = target.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(review_source_label(&candidate))
+                        .icon(gpui_component::Icon::default().path(match candidate {
+                            Scope::Local => "icons/diff.svg",
+                            Scope::PullRequest { .. } => "icons/git-pull-request.svg",
+                        }))
+                        .checked(candidate == selected)
+                        .on_click(move |_, _, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                this.reviews
+                                    .scopes
+                                    .insert(target.clone(), candidate.clone());
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+            menu
+        });
+        self.reviews.scope_subscription = Some(cx.subscribe_in(
+            &menu,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| {
+                this.reviews.scope_menu = None;
+                this.reviews.scope_subscription = None;
+                this.reviews.scope_menu_owner = None;
+                if let Some(focus) = &this.reviews.scope_focus {
+                    focus.focus(window, cx);
+                }
+                cx.notify();
+            },
+        ));
+        self.reviews.scope_menu_owner = Some(source);
+        self.reviews.scope_position = position;
+        menu.focus_handle(cx).focus(window, cx);
+        self.reviews.scope_menu = Some(menu);
+        cx.notify();
     }
     pub(super) fn render_review(
         &mut self,
@@ -587,7 +755,14 @@ impl Sidebar {
             .items_center()
             .gap(rpx(SPACE_LG))
             .min_h(rpx(APPBAR_TOTAL_H))
-            .px(rpx(SPACE_3XL));
+            .px(rpx(SPACE_3XL))
+            .when(
+                self.checkout_panel.toggle_available
+                    && (self.checkout_panel.hidden
+                        || Self::logical_window_width(window)
+                            < super::checkout_panel::CHECKOUT_SIDE_VIEWPORT),
+                |header| header.pr(rpx(READER_TOOLBAR_INSET)),
+            );
         header = header.child(
             action(
                 "review-back",
@@ -636,13 +811,18 @@ impl Sidebar {
             body = body.child(status::label(
                 "review-generating",
                 StatusKind::Working,
-                "Reading the diff and reviewing changes…",
+                if entry.saving {
+                    "Saving review…"
+                } else {
+                    "Reading the diff and reviewing changes…"
+                },
                 ICON_SM,
                 cx,
             ));
             let target = key.clone();
             body = body.child(
                 action("review-cancel", "Cancel generation", "close", window, cx)
+                    .disabled(entry.saving)
                     .on_click(cx.listener(move |this, _, _, cx| this.cancel_review(&target, cx))),
             );
         }
@@ -717,7 +897,7 @@ impl Sidebar {
                     body = body.child(status::label(
                         "review-stale",
                         StatusKind::Warning,
-                        "Changes updated since this review. Regenerate to review the latest snapshot.",
+                        "Out of date. Regenerate to review the latest snapshot.",
                         ICON_SM,
                         cx,
                     ));

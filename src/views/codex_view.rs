@@ -1082,6 +1082,7 @@ pub struct CodexView {
     markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     pub(crate) description_scope: Option<grove_core::change_description::Scope>,
+    pub(crate) review_scope: Option<grove_core::change_description::Scope>,
     input: Entity<InputState>,
     reference: Option<codex::ReferenceDraft>,
     submitted_reference: Option<String>,
@@ -1415,6 +1416,7 @@ impl CodexView {
             file_browser,
             native_plans: HashMap::new(),
             description_scope: None,
+            review_scope: None,
             markdown_decorations,
             markdown_source: None,
             input,
@@ -3406,11 +3408,20 @@ impl CodexView {
         let plan_details = kind == "plan"
             && state.saved.provider == codex::Provider::Claude
             && item["tool"].is_string();
-        let text = description_conversation_text(
-            self.description_scope.as_ref(),
-            kind,
-            &codex::item_text(item),
-        );
+        let text = if self.review_scope.is_some() {
+            grove_core::conversation_result::display_text(
+                "review",
+                "grove-review",
+                kind,
+                &codex::item_text(item),
+            )
+        } else {
+            description_conversation_text(
+                self.description_scope.as_ref(),
+                kind,
+                &codex::item_text(item),
+            )
+        };
         let approval = (kind == "userMessage")
             .then(|| state.saved.rich_plans.approval_for_payload(&text))
             .flatten();
@@ -6982,11 +6993,20 @@ impl CodexView {
         }
         let copy_focus = self.ensure_control_focus(&format!("{key}:copy"), window, cx);
         let keyboard_key = key.clone();
-        let text = description_conversation_text(
-            self.description_scope.as_ref(),
-            "agentMessage",
-            &group.copy_text,
-        );
+        let text = if self.review_scope.is_some() {
+            grove_core::conversation_result::display_text(
+                "review",
+                "grove-review",
+                "agentMessage",
+                &group.copy_text,
+            )
+        } else {
+            description_conversation_text(
+                self.description_scope.as_ref(),
+                "agentMessage",
+                &group.copy_text,
+            )
+        };
         let keyboard_text = text.clone();
         let mut button = if copied {
             header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
@@ -14527,7 +14547,7 @@ mod tests {
         let _subscription = cx.update(|_, cx| {
             cx.subscribe(&view, move |_, event, _| {
                 if let CodexViewEvent::ReviewChanges(scope, _) = event {
-                    observed.borrow_mut().push(*scope);
+                    observed.borrow_mut().push(scope.clone());
                 }
             })
         });

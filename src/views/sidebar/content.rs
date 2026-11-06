@@ -765,7 +765,12 @@ impl Sidebar {
                 self.observe_session_view_events(id, &view, cx);
             }
             let description_scope = self.description_scope_for_session(id);
+            let review_scope = self.review_scope_for_session(id);
             view.update(cx, |view, cx| {
+                if view.review_scope != review_scope {
+                    view.review_scope = review_scope;
+                    cx.notify();
+                }
                 if view.description_scope != description_scope {
                     view.description_scope = description_scope;
                     cx.notify();
@@ -1910,7 +1915,9 @@ impl Sidebar {
             );
         }
         self.restore_session_review(cx);
-        if self.review_is_open(cx) { return self.render_review(window, cx); }
+        if self.review_is_open(cx) {
+            return self.render_review(window, cx);
+        }
         self.restore_session_description(cx);
         if self.description_is_open(cx) {
             return self.render_description(window, cx);

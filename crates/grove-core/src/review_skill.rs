@@ -29,7 +29,9 @@ pub fn invocation(text: &str) -> Option<ScopePreference> {
         None => ScopePreference::Current,
         Some("local") => ScopePreference::Local,
         Some("pr") => ScopePreference::PullRequest,
-        Some(url) if crate::change_description::pr_identity(url).is_ok() => ScopePreference::PullRequestUrl(url.into()),
+        Some(url) if crate::change_description::pr_identity(url).is_ok() => {
+            ScopePreference::PullRequestUrl(url.into())
+        }
         _ => return None,
     };
     words.next().is_none().then_some(scope)
@@ -70,11 +72,21 @@ mod tests {
     }
 
     #[test]
+    fn explicit_pr_url_is_validated_without_losing_its_source() {
+        assert_eq!(
+            invocation("/review https://github.com/Org/Repo/pull/142"),
+            Some(ScopePreference::PullRequestUrl(
+                "https://github.com/Org/Repo/pull/142".into()
+            ))
+        );
+        assert!(invocation("/review https://evil.test/Org/Repo/pull/142").is_none());
+    }
+    #[test]
     fn unknown_arguments_are_recognized_but_not_executed() {
         for text in [
             "/review --publish",
             "$review local pr",
-            "/review https://github.com/org/repo/pull/142",
+            "/review https://github.com/org/repo/issues/142",
         ] {
             assert!(is_invocation(text));
             assert_eq!(invocation(text), None);

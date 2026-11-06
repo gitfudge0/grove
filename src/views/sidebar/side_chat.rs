@@ -695,7 +695,6 @@ impl Sidebar {
             self.dismiss_agent_peek(window, cx);
             self.dismiss_plan_peek(window, cx);
             self.dismiss_script_peek(window, cx);
-            self.active_change_reader = None;
             self.checkout_panel.side_chat_owner = self.selection.clone();
             self.checkout_panel.hidden = false;
             self.checkout_panel.expanded = true;
