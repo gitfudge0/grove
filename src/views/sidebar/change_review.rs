@@ -574,9 +574,9 @@ impl Sidebar {
                 super::checkout_panel::checkout_loading_row(
                     "review-changes",
                     if entry.is_some_and(|e| e.saving) {
-                        "Updating review…"
+                        "Saving review…"
                     } else if busy {
-                        "Describing changes…"
+                        "Reviewing changes…"
                     } else {
                         match &scope {
                             Scope::Local => "Review local changes",
@@ -1065,7 +1065,7 @@ impl Sidebar {
                     }
                 }
             }
-            body = body.child(div().mt(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(format!("{} of {} files reviewed · {omitted} files omitted or partial. Based on the diff; tests were not executed by this review.", review.files.len(), review.snapshot.files.len())));
+            body = body.child(div().mt(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child(format!("{} of {} files reviewed · {omitted} files omitted or partial. Based on the diff; test results were not verified by this review.", review.files.len(), review.snapshot.files.len())));
             for omitted_file in review.snapshot.files.iter().filter(|file| {
                 !review
                     .files
@@ -1160,3 +1160,7 @@ impl Sidebar {
 #[cfg(test)]
 #[path = "change_review_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "change_review_controls_tests.rs"]
+mod controls_tests;

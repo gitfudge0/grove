@@ -34,14 +34,14 @@ fn isolated_config() -> Result<PathBuf, String> {
     if !path.is_absolute() || !path.is_dir() {
         return Err("GROVE_CONFIG_DIR must be an existing absolute temporary directory".into());
     }
-    if std::fs::read_dir(&path)
+    if fs_err::read_dir(&path)
         .map_err(|error| error.to_string())?
         .next()
         .is_some()
     {
         return Err("Refusing to use nonempty Grove configuration for a live smoke".into());
     }
-    std::fs::canonicalize(path).map_err(|error| error.to_string())
+    fs_err::canonicalize(path).map_err(|error| error.to_string())
 }
 
 struct OwnedSession(Option<Handle>);
@@ -168,14 +168,14 @@ fn main() -> Result<(), String> {
     git(path, &["init", "-b", "main"])?;
     git(path, &["config", "user.name", "Grove Session Smoke"])?;
     git(path, &["config", "user.email", "grove-smoke@example.test"])?;
-    std::fs::write(
+    fs_err::write(
         path.join("auth.ts"),
         "export function canDeleteAccount(role: string) { return role === \"admin\"; }\n",
     )
     .map_err(|error| error.to_string())?;
     git(path, &["add", "."])?;
     git(path, &["commit", "-m", "Fixture"])?;
-    std::fs::write(
+    fs_err::write(
         path.join("auth.ts"),
         "export function canDeleteAccount(role: string) { return true; }\n",
     )

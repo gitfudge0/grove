@@ -163,3 +163,43 @@ fn retained_review_restores_canonical_result_and_permanent_view_for_both_provide
         assert_eq!(store.load(&source).unwrap(), Some(review));
     }
 }
+
+#[test]
+fn independent_review_factory_keeps_selected_model_and_source_draft() {
+    for provider in [Provider::Codex, Provider::Claude] {
+        let mut original = SavedSession::empty(
+            "source-session".into(),
+            provider,
+            "Project".into(),
+            "/source".into(),
+        );
+        original.composer.model = Some("selected-model".into());
+        original.composer.effort = Some("high".into());
+        original.draft = "/review local".into();
+        original.draft_images = vec!["/source-image.png".into()];
+        original.thread_id = Some("source-thread".into());
+        let before = serde_json::to_value(&original).unwrap();
+        let source = Source {
+            checkout: "/captured-checkout".into(),
+            scope: Scope::PullRequest {
+                url: "https://github.com/example/repo/pull/42".into(),
+            },
+        };
+        let session = retained_review_session(
+            Some(original.clone()),
+            "review-session".into(),
+            provider,
+            &source,
+            "Captured project".into(),
+        );
+        assert_eq!(session.provider, provider);
+        assert_eq!(session.composer.model, original.composer.model);
+        assert_eq!(session.composer.effort, original.composer.effort);
+        assert_eq!(session.cwd, source.checkout);
+        assert!(session.thread_id.is_none());
+        assert!(session.items.is_empty());
+        assert!(session.draft.is_empty());
+        assert!(session.draft_images.is_empty());
+        assert_eq!(serde_json::to_value(&original).unwrap(), before);
+    }
+}

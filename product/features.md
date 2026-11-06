@@ -196,36 +196,6 @@ intact; attachments and quoted
 references are rejected with an explanation and preserved. Invalid arguments show
 usage. This is a user-invoked Grove skill, not an autonomous model tool; provider
 global skill directories remain unchanged, and read-only side conversations do
-not receive it. Codex and Claude generation uses their existing authenticated CLIs
-with tools, integrations and startup hooks disabled in a private temporary cwd.
-
-## Review changes
-
-Checkout's **Review changes**, `/review [local|pr]`, and `$review [local|pr]`
-open the same native read-only review for Codex and Claude. Local scope captures
-staged, unstaged and nonignored untracked edits against HEAD; PR scope captures
-the attached GitHub PR against its base. The scopes never combine. Command drafts,
-images and quoted references remain intact; attachments/references are rejected
-with an explanation rather than sent to a provider. Invoking with Checkout hidden
-uses the selected checkout, not a cached panel identity.
-
-Reviews belong to their session, checkout and scope for the app lifetime.
-Generation runs through the existing isolated, tool-disabled authenticated CLI
-boundary and never changes the main conversation, working files, index or PR.
-The model is asked to identify introduced, actionable defects with a concrete
-trigger and consequence, rather than style preferences or speculative issues.
-Each finding has a P0–P3 priority, rationale, next step and captured old/new-side
-line range. Paths must be supplied complete patches; validated line ranges must
-overlap changed lines in the captured hunk. File disclosures group findings by
-priority and open the captured read-only diff, not a later live file.
-
-Coverage explicitly lists omitted, partial and model-unreviewed files. An empty
-finding list means no findings were identified in the reviewed patches; it is
-neither merge approval nor a guarantee of correctness. No tests are executed.
-**Copy Markdown** includes findings and coverage. Regeneration, cancellation,
-retry and stale/unverifiable states retain the previous result; Escape returns
-from a captured diff to the review, then restores the invoking control's focus.
-This version does not post GitHub reviews, apply suggestions, or run fixes.
 not receive it. Codex and Claude use their normal authenticated conversation
 transports and selected model/preferences. The generation prompt instructs the
 provider to use only the captured diff, without tools or repository writes; this
@@ -235,7 +205,7 @@ ordinary user-directed conversation.
 
 ## Built-in prompts
 
-Settings → Prompts edits Commit message, PR creation, Describe changes, and Session
+Settings → Prompts edits Commit message, PR creation, Describe changes, Review changes, and Session
 title writing instructions for Codex and Claude. Overrides apply across projects
 to future generations. Save persists each prompt; Restore default removes its
 override. A compact picker opens one spacious editor at a time. Unsaved edits
@@ -253,3 +223,44 @@ native Markdown components. The existing Mermaid field provides diagrams.
 Snapshot context, file walkthrough and honest coverage remain visible independently.
 Copy Markdown and PR update previews include extended content. Older saved results
 without extended content remain readable. Prompt changes never rewrite saved results.
+
+
+## Review changes
+
+Checkout's source-specific Review action, `/review [local|pr|PR-URL]` and
+`$review [local|pr|PR-URL]` work from Dashboard and either Codex or Claude composer
+before catalog discovery or source draft activation. Local scope captures staged,
+unstaged and nonignored untracked changes against HEAD. PR scope captures the
+attached or explicitly supplied GitHub PR against its base. These scopes never
+combine. Invalid arguments and attached images/references are rejected with the
+source draft preserved.
+
+Each request creates a dedicated retained conversation using the selected
+provider, model and normal session preferences, or reopens its already-active
+request for the same source. The originating conversation is never submitted.
+Grove captures a bounded immutable diff before the initial provider turn. The
+initial prompt asks for read-only analysis without tools, tests, publication or
+repository writes; this is an instruction within an ordinary session, not a
+separate tool-disabled sandbox or expanded permission grant. Later conversation
+turns are ordinary user-directed turns.
+
+The reader presents introduced, actionable P0–P3 findings with concrete triggers,
+consequences, rationale, next steps and exact captured old/new-side line ranges.
+Paths and ranges must match complete supplied patches and overlap changed lines.
+Coverage names omitted, partial and model-unreviewed files. No findings means no
+issues were identified in the reviewed patches, not merge approval or a guarantee
+of correctness. Captured diff navigation and Copy Markdown retain their snapshot.
+Custom Review writing instructions in Settings → Prompts can change the prose;
+Grove-owned schema, evidence and coverage validation remain mandatory.
+
+One private atomic canonical result per source replaces its predecessor only
+after validation. A permanent **View review** action remains in Changes beside
+the diff for the retained session, even if local changes or the attached PR no
+longer exist. Links and results survive restart. Conversation opens the same
+retained session; only captured request transport and reserved `grove-review`
+blocks are hidden from the visible transcript, remaining in model/recovery data.
+Ordinary later answers are never imported as a new original review. Stale results
+show **Out of date** and remain readable. Regeneration preserves the previous
+result on failure/cancellation; Saving review rejects cancellation until its
+atomic save finishes. Review does not automatically publish GitHub comments or
+apply fixes.

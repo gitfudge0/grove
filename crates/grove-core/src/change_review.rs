@@ -24,16 +24,34 @@ pub struct Finding {
     pub line_end: u32,
     pub suggestion: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Review {
     pub snapshot: Snapshot,
     pub summary: String,
     pub reviewed_files: Vec<String>,
     pub findings: Vec<Finding>,
-    /// Native file disclosures derived from validated findings, never model-supplied paths.
+    /// Presentation is rebuilt from validated authoritative fields on every load.
+    #[serde(skip_serializing)]
     pub files: Vec<FileDescription>,
 }
+impl<'de> Deserialize<'de> for Review {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SavedReview {
+            snapshot: Snapshot,
+            summary: String,
+            reviewed_files: Vec<String>,
+            findings: Vec<Finding>,
+            // Pre-release caches were derived UI text. Never render or trust them.
+            #[serde(default, rename = "files")]
+            _legacy_files: Option<serde::de::IgnoredAny>,
+        }
+        let saved = SavedReview::deserialize(deserializer)?;
+        validate(saved.snapshot,serde_json::json!({"summary":saved.summary,"reviewed_files":saved.reviewed_files,"findings":saved.findings})).map_err(serde::de::Error::custom)
+    }
+}
+
 impl Finding {
     pub fn markdown(&self) -> String {
         format!(
@@ -66,7 +84,7 @@ impl Review {
         for finding in &self.findings {
             let _ = write!(text, "\n\n{}", finding.markdown());
         }
-        let _ = write!(text, "\n\n### Coverage\n\n{} of {} files reviewed. Based on captured patches only; tests were not executed.\n", self.reviewed_files.len(), self.snapshot.files.len());
+        let _ = write!(text, "\n\n### Coverage\n\n{} of {} files reviewed. Based on captured patches only; test results were not verified.\n", self.reviewed_files.len(), self.snapshot.files.len());
         for file in &self.snapshot.files {
             if !self.reviewed_files.contains(&file.path) {
                 let _ = writeln!(
@@ -330,7 +348,7 @@ fn validate(snapshot: Snapshot, value: serde_json::Value) -> Result<Review, Stri
     });
     let files=p.reviewed_files.iter().map(|path| {
         let found:Vec<_>=p.findings.iter().filter(|f|f.path==*path).collect();
-        FileDescription {path:path.clone(), title:if found.is_empty(){"No findings in this captured patch".into()}else{format!("{} finding(s) in this captured patch",found.len())}, summary:if found.is_empty(){vec!["No actionable defects identified in the supplied patch. Tests were not executed; code outside the patch was not inspected.".into()]}else{found.iter().map(|f|f.markdown()).collect()},category:if found.is_empty(){"Reviewed without findings".into()}else{format!("P{} findings",found[0].priority)}}
+        FileDescription {path:path.clone(), title:if found.is_empty(){"No findings in this captured patch".into()}else{format!("{} finding(s) in this captured patch",found.len())}, summary:if found.is_empty(){vec!["No actionable defects identified in the supplied patch. No test results were verified; code outside the patch was not inspected.".into()]}else{found.iter().map(|f|f.markdown()).collect()},category:if found.is_empty(){"Reviewed without findings".into()}else{format!("P{} findings",found[0].priority)}}
     }).collect();
     Ok(Review {
         snapshot,
@@ -468,7 +486,7 @@ mod tests {
         assert!(StoredResult::validate(&review).is_err());
     }
     #[test]
-    fn review_storage_is_canonical_durable_and_refuses_corrupt_derived_data() {
+    fn review_storage_rebuilds_legacy_derived_data_without_trusting_or_rewriting_it() {
         use crate::change_result_store::{PendingRequest, Source, Store};
         let directory = tempfile::tempdir().unwrap();
         let store = Store::<Review>::new(directory.path().into());
@@ -500,10 +518,14 @@ mod tests {
             .is_none());
         let mut record: serde_json::Value =
             serde_json::from_slice(&fs_err::read(&path).unwrap()).unwrap();
-        record["result"]["files"][0]["path"] = serde_json::json!("invented.rs");
+        assert!(
+            record["result"].get("files").is_none(),
+            "derived presentation must not be persisted"
+        );
+        record["result"]["files"] = serde_json::json!([{"path":"invented.rs","title":"Legacy cache","summary":["Untrusted derived prose"],"category":"Other"}]);
         fs_err::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
         let bytes = fs_err::read(&path).unwrap();
-        assert!(reopened.load(&source).is_err());
+        assert_eq!(reopened.load(&source).unwrap(), Some(review));
         assert_eq!(fs_err::read(&path).unwrap(), bytes);
     }
 }

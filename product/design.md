@@ -438,22 +438,10 @@ Cancel actions, unchanged PR title and preserved original context. Back/Escape
 return through diff/preview to the description, then restore the actual invoking
 control, including the Codex or Claude composer.
 
-## Change-review reader
-
-Review changes uses the change-description reader's placement and shared native
-controls. Scope, source focus, in-flight generation and results remain owned by
-session, checkout and scope. Priority groups are plain supporting labels; finding
-severity also appears as text. File disclosures stay transparent, with fixed
-trailing change counts. Expanded findings show exact captured line references,
-rationale and next step before their captured diff action. Summary and coverage
-remain readable without expanding every file. Empty findings never use a merge
-approval or unqualified clean-state label. Stale results remain copyable and
-clearly identify their snapshot. Opening/closing uses restrained shared reader
-motion; focus, file disclosure and read-only diff selection are immediate.
 
 ## Built-in prompt settings
 
-Prompts is a Settings category with a compact two-by-two picker for the four
+Prompts is a Settings category with a compact two-column picker for the five
 built-in writing prompts and one full-width editor for the selected prompt.
 Each choice shows its default/customized/unsaved state; switching prompts or
 categories preserves independent drafts without saving them. The editor uses a
@@ -467,3 +455,23 @@ content and using immediate endpoints with Reduce motion. Prompt selection and
 focus changes remain immediate, matching existing Settings category behavior.
 Extended change-description content uses native selectable Markdown above the file
 walkthrough; snapshot context and coverage remain independent of authored content.
+
+
+## Change-review reader
+
+Review uses the change-description reader's placement, compact source dropdown
+when both sources exist, static context for a sole source, and source-specific
+generation labels. A saved result uses the permanent View review row in Changes,
+including a clean or detached checkout. The reader header reserves the persistent
+side-toolbar control widths/gaps; source labels yield before those controls.
+Conversation returns to the same retained provider session. Results and pending
+requests stay bound to that session and canonical source across navigation and
+restart. Saving review disables cancellation without hiding the previous result.
+
+Findings use native selectable Markdown, plain priority labels, transparent file
+disclosures and fixed trailing change counts. Expanded findings show captured
+line references, rationale and next steps before their captured diff action.
+Summary and coverage remain visible independently of customized prose. Empty
+findings never use an approval or unqualified clean-state label. Out of date
+results remain copyable. Reader entrance/exit uses restrained shared motion;
+input focus and captured diff selection are immediate.

@@ -6,6 +6,37 @@ use grove_core::{
     codex::SavedSession,
 };
 
+fn retained_review_session(
+    template: Option<SavedSession>,
+    key: String,
+    provider: grove_core::codex::Provider,
+    source: &Source,
+    project: String,
+) -> SavedSession {
+    let mut saved = template.map_or_else(
+        || {
+            SavedSession::empty(
+                key.clone(),
+                provider,
+                project.clone(),
+                source.checkout.clone(),
+            )
+        },
+        |seed| seed.independent_conversation(key.clone()),
+    );
+    saved.cwd = source.checkout.clone();
+    saved.project = project;
+    saved.roots.clear();
+    let title = match &source.scope {
+        Scope::Local => "Review local changes".into(),
+        Scope::PullRequest { url } => {
+            format!("Review PR #{}", url.rsplit('/').next().unwrap_or(""))
+        }
+    };
+    grove_core::session_title::set_manual_title(&mut saved, &title);
+    saved
+}
+
 fn install(entry: &mut Entry, review: Arc<Review>, cx: &mut Context<Sidebar>) {
     entry.text = Some(cx.new(|cx| TextViewState::markdown(&review.summary_markdown(), cx)));
     entry.file_text = review
@@ -158,27 +189,8 @@ impl Sidebar {
             .ok()
             .map(|p| p.name.clone())
             .unwrap_or_default();
-            let mut saved = template.map_or_else(
-                || {
-                    SavedSession::empty(
-                        new_key.clone(),
-                        provider,
-                        project.clone(),
-                        source.checkout.clone(),
-                    )
-                },
-                |seed| seed.independent_conversation(new_key.clone()),
-            );
-            saved.cwd = source.checkout.clone();
-            saved.project = project;
-            saved.roots.clear();
-            let title = match &source.scope {
-                Scope::Local => "Review local changes".into(),
-                Scope::PullRequest { url } => {
-                    format!("Review PR #{}", url.rsplit('/').next().unwrap_or(""))
-                }
-            };
-            grove_core::session_title::set_manual_title(&mut saved, &title);
+            let saved =
+                retained_review_session(template, new_key.clone(), provider, &source, project);
             store.bind(&saved.key, &source)?;
             let id = self
                 .runtime

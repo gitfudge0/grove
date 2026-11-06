@@ -3,7 +3,7 @@
 use super::*;
 use std::io::Write as _;
 
-const FIXTURE_PATH: &str = "/grove-review-fixture";
+pub(super) const FIXTURE_PATH: &str = "/grove-review-fixture";
 const FIXTURE_FILE: &str = "src/webhooks/handler.ts";
 
 struct ReviewReaderFixture {
@@ -64,7 +64,7 @@ impl Render for ReviewReaderFixture {
             )
     }
 }
-fn initialize(cx: &mut App) {
+pub(super) fn initialize(cx: &mut App) {
     gpui_component::init(cx);
     cx.set_reduce_motion(true);
     cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
@@ -121,7 +121,7 @@ pub(super) fn frozen_review() -> Review {
         ],
     }
 }
-fn create_sidebar(window: &mut Window, cx: &mut App) -> (Entity<Sidebar>, FocusHandle) {
+pub(super) fn create_sidebar(window: &mut Window, cx: &mut App) -> (Entity<Sidebar>, FocusHandle) {
     let runtime = cx.new(crate::runtime::Runtime::new);
     let mut source = None;
     let sidebar = cx.new(|cx| {
@@ -192,7 +192,7 @@ fn fixture_sized(
     draw(cx);
     (sidebar.unwrap(), cx)
 }
-fn draw(cx: &mut gpui::VisualTestContext) {
+pub(super) fn draw(cx: &mut gpui::VisualTestContext) {
     cx.run_until_parked();
     cx.update(|window, cx| {
         let _ = window.draw(cx);
