@@ -145,6 +145,10 @@ fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
         .selectable(true)
 }
 impl Sidebar {
+    pub(super) fn dismiss_description(&mut self) {
+        self.descriptions.open = None;
+    }
+
     pub(super) fn description_is_open(&self, cx: &App) -> bool {
         let targets = self.checkout_targets(cx);
         let selected = super::checkout_panel::selected_checkout(
@@ -255,6 +259,8 @@ impl Sidebar {
         entry.run = run;
         entry.resolving = true;
         entry.error = None;
+        self.hide_review();
+        self.hide_questions();
         self.descriptions.open = Some(resolving_key.clone());
         self.descriptions.return_focus = Some(source.clone());
         self.descriptions.focus_pending = true;
@@ -463,6 +469,8 @@ impl Sidebar {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.reload_description_result(&target, cx);
                         this.descriptions.return_focus = Some(return_focus.clone());
+                        this.hide_review();
+                        this.hide_questions();
                         this.descriptions.open = Some(target.clone());
                         this.descriptions.focus_pending = true;
                         cx.notify();
@@ -675,6 +683,8 @@ impl Sidebar {
                 .with_focus_handle(open_focus)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.descriptions.return_focus = Some(return_focus.clone());
+                    this.hide_review();
+                    this.hide_questions();
                     this.descriptions.open = Some(target.clone());
                     this.descriptions.focus_pending = true;
                     cx.notify();

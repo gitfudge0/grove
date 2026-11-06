@@ -5,9 +5,12 @@ mod activity_mcp;
 pub mod agent;
 mod agent_guidance;
 pub mod app_theme;
+pub mod ask_skill;
 pub mod attention;
 pub mod change_description;
 pub mod change_description_store;
+pub mod change_questions;
+pub mod change_review;
 pub mod checkout_git;
 pub mod checkout_pr;
 pub mod checkpoint;
@@ -40,6 +43,7 @@ pub mod release_highlights;
 pub mod render_rows;
 mod reports;
 pub mod review_brief;
+pub mod review_skill;
 pub mod rich_plan;
 pub mod session_meta;
 pub mod session_title;
@@ -52,3 +56,6 @@ pub mod tmux;
 pub mod upgrade;
 
 mod transcript_items;
+
+pub mod change_result_store;
+pub mod conversation_result;

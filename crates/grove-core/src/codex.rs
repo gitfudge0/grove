@@ -594,7 +594,14 @@ impl Actor {
             crate::reports::REPORT_GUIDANCE,
             crate::activity::GUIDANCE,
             crate::describe_skill::GUIDANCE,
-            crate::describe_skill::SKILL,
+            format!(
+                "{}\n\n{}\n{}\n\n{}\n{}",
+                crate::describe_skill::SKILL,
+                crate::review_skill::GUIDANCE,
+                crate::review_skill::SKILL,
+                crate::ask_skill::GUIDANCE,
+                crate::ask_skill::SKILL
+            ),
             crate::rich_plan::GUIDANCE
         ));
         if let Some(roots) = writable_roots {
@@ -7746,6 +7753,7 @@ mod tests {
                 assert!(!guidance.contains(crate::tasks::CLAUDE_GUIDANCE));
                 assert!(guidance.contains(crate::reports::REPORT_GUIDANCE));
                 assert!(guidance.contains(crate::describe_skill::SKILL));
+                assert!(guidance.contains(crate::ask_skill::SKILL));
                 assert!(guidance.ends_with(crate::rich_plan::GUIDANCE));
                 if let Some(custom) = custom {
                     assert!(guidance.starts_with(&format!("{custom}\n\n")));

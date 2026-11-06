@@ -1312,7 +1312,9 @@ impl SettingsPanel {
                     grove_core::prompts::PromptKind::Commit => "git",
                     grove_core::prompts::PromptKind::PullRequest => "git-pull-request",
                     grove_core::prompts::PromptKind::DescribeChanges => "file",
+                    grove_core::prompts::PromptKind::AskChanges => "message-circle",
                     grove_core::prompts::PromptKind::SessionTitle => "edit",
+                    grove_core::prompts::PromptKind::ReviewChanges => "diff",
                 };
                 row = row.child(
                     self.choice(
@@ -1503,7 +1505,7 @@ impl SettingsPanel {
             )
             .child(self.prompt_requirements(kind, cx))
             .child(div().mt(rpx(SPACE_LG)).text_size(rpx(TEXT_MICRO)).text_color(c::FG_DIM())
-                .child(if kind == grove_core::prompts::PromptKind::DescribeChanges {
+                .child(if matches!(kind,grove_core::prompts::PromptKind::DescribeChanges|grove_core::prompts::PromptKind::AskChanges) {
                     "Supports native Markdown, tables, code blocks and Mermaid."
                 } else {
                     "Your instructions customize writing; Grove keeps its output and workflow requirements."
@@ -2978,6 +2980,7 @@ mod tests {
                 "prompt-pick-pull_request",
                 "prompt-pick-describe_changes",
                 "prompt-pick-session_title",
+                "prompt-pick-review_changes",
             ]) {
                 let bounds = cx.debug_bounds(selector).unwrap();
                 assert!(

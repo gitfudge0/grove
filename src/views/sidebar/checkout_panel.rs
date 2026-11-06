@@ -2899,6 +2899,8 @@ impl Sidebar {
         let selected = selected_checkout(&targets, self.checkout_panel.chosen_root.as_deref());
         self.restore_session_description(cx);
         let linked_description = self.linked_description_key();
+        self.restore_session_review(cx);
+        let linked_review = self.linked_review_key();
         let mut card = project_field_well(false, false)
             .id("checkout-card")
             .debug_selector(|| "checkout-card".into())
@@ -3687,6 +3689,7 @@ impl Sidebar {
         let description_path = linked_description
             .as_ref()
             .map(|linked| linked.path.clone())
+            .or_else(|| linked_review.as_ref().map(|linked| linked.path.clone()))
             .or_else(|| self.checkout_panel.path.clone());
         if let Some(path) = description_path {
             let local = self
@@ -3697,8 +3700,36 @@ impl Sidebar {
             let pr = self.checkout_description_pr();
             if linked_description.is_some() || local || pr.is_some() {
                 has_changes = true;
+                changes_section = changes_section.child(self.render_description_controls(
+                    &path,
+                    local,
+                    pr.clone(),
+                    window,
+                    cx,
+                ));
+            }
+            if linked_review.is_some() || local || pr.is_some() {
+                has_changes = true;
                 changes_section = changes_section
-                    .child(self.render_description_controls(&path, local, pr, window, cx));
+                    .child(self.render_review_controls(&path, local, pr, window, cx));
+            }
+        }
+        let linked_question = self.linked_question_key();
+        let question_path = linked_question
+            .as_ref()
+            .map(|key| key.path.clone())
+            .or_else(|| self.checkout_panel.path.clone());
+        if let Some(path) = question_path {
+            let local = self
+                .checkout_panel
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.files > 0);
+            let pr = self.checkout_description_pr();
+            if linked_question.is_some() || local || pr.is_some() {
+                has_changes = true;
+                changes_section = changes_section
+                    .child(self.render_question_controls(&path, local, pr, window, cx));
             }
         }
         if has_changes {
