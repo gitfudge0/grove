@@ -36,6 +36,9 @@ struct Link {
     schema_version: u32,
     session_key: String,
     source: Source,
+    /// Last captured input is recovery data, never authority to replay a job.
+    #[serde(default)]
+    input: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -123,25 +126,47 @@ impl<T: StoredResult> Store<T> {
             .join(format!("{}.json", hash(&source.identity()?))))
     }
     pub fn bind(&self, key: &str, source: &Source) -> Result<()> {
-        let _ = self.source_for_session(key)?;
-        write(
-            &self.path("sessions", key)?,
-            &Link {
-                schema_version: VERSION,
-                session_key: key.into(),
-                source: source.normalized()?,
-            },
-            LINK_LIMIT,
-        )
+        let source = source.normalized()?;
+        self.files.with_source_lock(&source, || {
+            let previous = self.session_link(key)?;
+            let input = previous
+                .filter(|link| link.source == source)
+                .and_then(|link| link.input);
+            write(
+                &self.path("sessions", key)?,
+                &Link {
+                    schema_version: VERSION,
+                    session_key: key.into(),
+                    source: source.clone(),
+                    input,
+                },
+                LINK_LIMIT,
+            )
+        })
     }
-    pub fn source_for_session(&self, key: &str) -> Result<Option<Source>> {
-        let Some(link) = read::<Link>(&self.path("sessions", key)?, LINK_LIMIT)? else {
+    fn session_link(&self, key: &str) -> Result<Option<Link>> {
+        let Some(mut link) = read::<Link>(&self.path("sessions", key)?, LINK_LIMIT)? else {
             return Ok(None);
         };
-        if link.schema_version != VERSION || link.session_key != key {
+        if link.schema_version != VERSION
+            || link.session_key != key
+            || link
+                .input
+                .as_ref()
+                .is_some_and(|input| input.len() > 64 * 1024)
+        {
             return Err("Invalid analysis session link".into());
         }
-        Ok(Some(link.source.normalized()?))
+        link.source = link.source.normalized()?;
+        Ok(Some(link))
+    }
+    pub fn source_for_session(&self, key: &str) -> Result<Option<Source>> {
+        Ok(self.session_link(key)?.map(|link| link.source))
+    }
+    /// The most recently captured input survives completion/retirement. It does
+    /// not recreate a pending request or authorize a new provider submission.
+    pub fn input_for_session(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.session_link(key)?.and_then(|link| link.input))
     }
     fn validate_request(&self, key: &str, request: &PendingRequest) -> Result<()> {
         let expected = self
@@ -166,6 +191,11 @@ impl<T: StoredResult> Store<T> {
         self.files.with_source_lock(&source, || {
             self.validate_request(key, request)?;
             let _ = self.pending_for_session(key)?;
+            let mut link = self
+                .session_link(key)?
+                .ok_or("Analysis session has no saved source")?;
+            link.input = Some(request.input.clone());
+            write(&self.path("sessions", key)?, &link, LINK_LIMIT)?;
             write(
                 &self.path("jobs", key)?,
                 &Job {
@@ -429,5 +459,61 @@ mod tests {
         symlink(&target, &file).unwrap();
         assert!(store.load(&src).is_err());
         assert_eq!(fs_err::read_to_string(&target).unwrap(), "{}");
+    }
+    #[test]
+    fn captured_input_survives_retirement_rebinding_and_second_restart_without_replay() {
+        let (dir, store, job) = setup();
+        let source = source(&job.snapshot);
+        store.bind("session", &source).unwrap();
+        store.save_pending("session", &job).unwrap();
+        // No provider transcript or canonical result exists for this captured request.
+        store.retire_generation("session", &job.generation).unwrap();
+        let reopened = Store::<Answer>::new(dir.path().join("private"));
+        assert_eq!(
+            reopened.input_for_session("session").unwrap(),
+            Some(job.input.clone())
+        );
+        assert!(reopened.pending_for_session("session").unwrap().is_none());
+        assert!(reopened.load(&source).unwrap().is_none());
+        reopened.bind("session", &source).unwrap();
+        let second = Store::<Answer>::new(dir.path().join("private"));
+        assert_eq!(
+            second.input_for_session("session").unwrap(),
+            Some(job.input.clone())
+        );
+        assert!(second.pending_for_session("session").unwrap().is_none());
+        second.save_pending("session", &job).unwrap();
+        second
+            .save_generation("session", &result(&job), &job.generation)
+            .unwrap();
+        assert_eq!(
+            second.input_for_session("session").unwrap(),
+            Some(job.input)
+        );
+        assert!(second.pending_for_session("session").unwrap().is_none());
+    }
+    #[test]
+    fn old_links_load_without_input_and_corrupt_input_link_is_preserved() {
+        let (_dir, store, job) = setup();
+        let source = source(&job.snapshot);
+        store.bind("session", &source).unwrap();
+        let path = store.path("sessions", "session").unwrap();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs_err::read(&path).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("input");
+        fs_err::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(
+            store.source_for_session("session").unwrap(),
+            Some(source.clone())
+        );
+        assert_eq!(store.input_for_session("session").unwrap(), None);
+        fs_err::write(&path, "corrupt link").unwrap();
+        assert!(store.input_for_session("session").is_err());
+        assert!(store.bind("session", &source).is_err());
+        assert!(store.save_pending("session", &job).is_err());
+        assert_eq!(fs_err::read_to_string(&path).unwrap(), "corrupt link");
+        fs_err::write(&path, vec![b' '; LINK_LIMIT as usize + 1]).unwrap();
+        assert!(store.input_for_session("session").is_err());
+        assert_eq!(fs_err::metadata(&path).unwrap().len(), LINK_LIMIT + 1);
     }
 }
