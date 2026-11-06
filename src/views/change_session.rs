@@ -158,7 +158,7 @@ impl<T: Workflow> ChangeSession<T> {
                 match result {
                     Ok((previous, request)) => {
                         if this.result.is_none() {
-                            this.result = previous.map(Arc::new)
+                            this.result = previous.map(Arc::new);
                         }
                         this.pending = Some(request);
                         this.phase = Phase::Waiting;
@@ -227,7 +227,7 @@ impl<T: Workflow> ChangeSession<T> {
     }
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         if !self.phase.busy() {
-            self.hydrate(cx)
+            self.hydrate(cx);
         }
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
@@ -310,7 +310,7 @@ impl<T: Workflow> ChangeSession<T> {
             self.sent = true;
             self.phase = Phase::Generating;
             self.session.update(cx, |session, cx| {
-                session.send(Action::Prompt(request.prompt.clone()), cx)
+                session.send(Action::Prompt(request.prompt.clone()), cx);
             });
             cx.notify();
             return;
@@ -358,7 +358,7 @@ impl<T: Workflow> ChangeSession<T> {
                 match saved {
                     Ok(result) => {
                         this.result = Some(Arc::new(result));
-                        this.error = None
+                        this.error = None;
                     }
                     Err(error) => this.error = Some(error),
                 }
@@ -391,7 +391,7 @@ impl<T: Workflow> ChangeSession<T> {
                 this.phase = Phase::Idle;
                 this.control = None;
                 if let Err(error) = retired {
-                    this.error = Some(error)
+                    this.error = Some(error);
                 }
                 cx.notify();
             });
