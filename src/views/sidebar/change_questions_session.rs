@@ -291,9 +291,9 @@ impl Sidebar {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if !this
+                if this
                     .question_session(id, cx)
-                    .is_some_and(|session| session.read(cx).state.saved.key == expected_key)
+                    .is_none_or(|session| session.read(cx).state.saved.key != expected_key)
                 {
                     return;
                 }
