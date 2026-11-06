@@ -79,4 +79,23 @@ mod tests {
         assert_eq!(completion('$', "ask").unwrap().0, "$ask");
         assert!(completion('@', "ask").is_none());
     }
+    #[test]
+    fn explicit_urls_are_validated_and_keep_the_question() {
+        for prefix in ["/ask", "$ask"] {
+            let url = "https://github.com/gitfudge0/grove/pull/18";
+            let parsed =
+                invocation(&format!("{prefix} {url} Why this guard?\nExplain it.")).unwrap();
+            assert_eq!(parsed.scope, ScopePreference::PullRequestUrl(url.into()));
+            assert_eq!(parsed.question, "Why this guard?\nExplain it.");
+            for url in [
+                "https://example.com/a/b/pull/18",
+                "http://github.com/a/b/pull/18",
+                "https://github.com/a/b/pull/0",
+                "https://github.com/a/b/pull/18?query=1",
+            ] {
+                assert!(is_invocation(&format!("{prefix} {url} Why?")));
+                assert!(invocation(&format!("{prefix} {url} Why?")).is_none());
+            }
+        }
+    }
 }

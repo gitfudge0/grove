@@ -159,6 +159,9 @@ fn validate(
     question: String,
     value: serde_json::Value,
 ) -> Result<Answer, String> {
+    if !text_valid(&question, 4000) {
+        return Err("Ask returned an invalid question identity".into());
+    }
     let p: Prediction = serde_json::from_value(value)
         .map_err(|_| "Ask returned invalid structured output. Retry the question.".to_string())?;
     if !text_valid(&p.answer, 20000)
@@ -449,5 +452,84 @@ mod tests {
         assert!(
             generate_snapshot(snapshot(), "", Provider::Claude, &CommitControl::default()).is_err()
         );
+    }
+    #[test]
+    fn normal_conversation_import_preserves_question_and_rejects_ambiguous_payloads() {
+        let question = "What was removed?\nKeep my question exactly.";
+        let json = prediction().to_string();
+        let response = format!("Answer ready.\n```grove-ask\n{json}\n```\n");
+        let answer = from_conversation(snapshot(), question, &response).unwrap();
+        assert_eq!(answer.question, question);
+        assert_eq!(answer.answer, prediction()["answer"].as_str().unwrap());
+        for invalid in [
+            format!("{response}{response}"),
+            format!("```text\n{response}\n```"),
+            format!("```grove-ask\n{json}"),
+            "Unstructured response".into(),
+        ] {
+            assert!(from_conversation(snapshot(), question, &invalid).is_err());
+        }
+    }
+    #[test]
+    fn canonical_answers_keep_exact_request_context_and_reject_another_question() {
+        use crate::change_result_store::{PendingRequest, Source, Store};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::<Answer>::new(directory.path().into());
+        let capture = snapshot();
+        let source = Source {
+            checkout: capture.checkout.clone(),
+            scope: capture.scope.clone(),
+        };
+        let first = "First exact question\nwith a second line";
+        let second = "Second exact question";
+        let request = |input: &str, generation: &str| PendingRequest {
+            snapshot: capture.clone(),
+            input: input.into(),
+            prompt: format!("Persist this exact composed prompt for {input}"),
+            generation: generation.into(),
+        };
+        store.bind("first-session", &source).unwrap();
+        store
+            .save_pending("first-session", &request(first, "first"))
+            .unwrap();
+        let restored = Store::<Answer>::new(directory.path().into());
+        assert_eq!(
+            restored.pending_for_session("first-session").unwrap(),
+            Some(request(first, "first"))
+        );
+        let answer = validate(capture.clone(), first.into(), prediction()).unwrap();
+        store
+            .save_generation("first-session", &answer, "first")
+            .unwrap();
+        store.bind("second-session", &source).unwrap();
+        store
+            .save_pending("second-session", &request(second, "second"))
+            .unwrap();
+        assert!(store
+            .save_generation("second-session", &answer, "second")
+            .is_err());
+        assert_eq!(store.load(&source).unwrap(), Some(answer));
+        let second_answer = validate(capture, second.into(), prediction()).unwrap();
+        store
+            .save_generation("second-session", &second_answer, "second")
+            .unwrap();
+        assert_eq!(restored.load(&source).unwrap(), Some(second_answer));
+        assert_eq!(
+            restored.source_for_session("first-session").unwrap(),
+            Some(source)
+        );
+    }
+    #[test]
+    fn custom_writing_text_cannot_remove_the_immutable_ask_contract() {
+        let kind = crate::prompts::PromptKind::AskChanges;
+        let text = crate::prompts::compose_with(
+            kind,
+            "Write in Hindi with a Mermaid diagram.",
+            "Captured source schema and question",
+        );
+        assert!(text.contains("Write in Hindi"));
+        assert!(text.contains("exact captured paths"));
+        assert!(text.contains("initial request is read-only"));
+        assert!(text.contains("Captured source schema and question"));
     }
 }
