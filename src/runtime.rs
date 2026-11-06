@@ -649,6 +649,14 @@ impl Runtime {
     }
     /// Register the exact Dashboard session entity so its composer and process retain ownership.
     /// A description is a normal retained conversation with its own stable key.
+    pub(crate) fn start_change_session(
+        &mut self,
+        saved: grove_core::codex::SavedSession,
+        cx: &mut Context<Self>,
+    ) -> Result<SessionId, String> {
+        self.start_description_session(saved, cx)
+    }
+
     pub(crate) fn start_description_session(
         &mut self,
         saved: grove_core::codex::SavedSession,

@@ -189,7 +189,7 @@ fn cancel(control: &CommitControl) -> Result<(), String> {
 pub fn prepare(path: &Path, scope: &Scope) -> Result<Snapshot, String> {
     prepare_with_control(path, scope, None)
 }
-fn prepare_with_control(
+pub fn prepare_with_control(
     path: &Path,
     scope: &Scope,
     control: Option<&CommitControl>,
@@ -432,7 +432,7 @@ pub(crate) fn validate(
 pub fn is_current(path: &Path, description: &Description) -> Result<bool, String> {
     snapshot_is_current(path, &description.snapshot)
 }
-/// Check a captured change source without requiring a description.
+/// Check captured freshness without requiring a generated description.
 pub fn snapshot_is_current(path: &Path, snapshot: &Snapshot) -> Result<bool, String> {
     let checkout = fs_err::canonicalize(path).map_err(|_| "Checkout is unavailable")?;
     match &snapshot.scope {
