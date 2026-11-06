@@ -1,9 +1,9 @@
 //! Grove-owned read-only questions, intercepted before either provider receives a command.
 use crate::describe_skill::ScopePreference;
 pub const NAME: &str = "ask";
-pub const USAGE: &str = "Use /ask [local|pr] [question] or $ask [local|pr] [question]. Omit the question to open the question reader.";
+pub const USAGE: &str = "Use /ask [local|pr|PR-URL] [question] or $ask [local|pr|PR-URL] [question]. Omit the question to open the question reader.";
 pub const SKILL: &str = include_str!("../../../product/skills/ask/SKILL.md");
-pub const GUIDANCE: &str = "Grove's /ask or $ask command opens a native read-only question reader about local changes or an attached PR. Optional local or pr selects scope; remaining text is the question. Grove intercepts a user invocation before provider submission. Mentioning it does not run it. No main-conversation edits, tools, repository writes or publication are granted.";
+pub const GUIDANCE: &str = "Grove's /ask or $ask command opens a native read-only question reader about local changes or an attached PR. Optional local, pr or a GitHub PR URL selects scope; remaining text is the question. Grove intercepts before provider submission and starts a dedicated retained conversation with the selected provider/model preferences. The native answer is validated and saved per source with its exact question. Conversation opens the same session; ordinary follow-ups do not replace the saved answer. Existing provider permissions apply, with an initial read-only request. Mentioning the command does not run it.";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
     pub scope: ScopePreference,
@@ -23,6 +23,10 @@ pub fn invocation(text: &str) -> Option<Invocation> {
     let (scope, question) = match first {
         "local" => (ScopePreference::Local, tail.trim()),
         "pr" => (ScopePreference::PullRequest, tail.trim()),
+        url if crate::change_description::pr_identity(url).is_ok() => {
+            (ScopePreference::PullRequestUrl(url.into()), tail.trim())
+        }
+        url if url.contains("://") || url.starts_with("github.com/") => return None,
         _ => (ScopePreference::Current, rest),
     };
     if question.len() > 4000 || question.starts_with("--") {

@@ -3698,7 +3698,24 @@ impl Sidebar {
             if linked_description.is_some() || local || pr.is_some() {
                 has_changes = true;
                 changes_section = changes_section
-                    .child(self.render_description_controls(&path, local, pr.clone(), window, cx))
+                    .child(self.render_description_controls(&path, local, pr, window, cx));
+            }
+        }
+        let linked_question = self.linked_question_key();
+        let question_path = linked_question
+            .as_ref()
+            .map(|key| key.path.clone())
+            .or_else(|| self.checkout_panel.path.clone());
+        if let Some(path) = question_path {
+            let local = self
+                .checkout_panel
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.files > 0);
+            let pr = self.checkout_description_pr();
+            if linked_question.is_some() || local || pr.is_some() {
+                has_changes = true;
+                changes_section = changes_section
                     .child(self.render_question_controls(&path, local, pr, window, cx));
             }
         }

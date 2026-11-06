@@ -1082,6 +1082,7 @@ pub struct CodexView {
     markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     pub(crate) description_scope: Option<grove_core::change_description::Scope>,
+    pub(crate) question_session: bool,
     input: Entity<InputState>,
     reference: Option<codex::ReferenceDraft>,
     submitted_reference: Option<String>,
@@ -1415,6 +1416,7 @@ impl CodexView {
             file_browser,
             native_plans: HashMap::new(),
             description_scope: None,
+            question_session: false,
             markdown_decorations,
             markdown_source: None,
             input,
@@ -3406,11 +3408,20 @@ impl CodexView {
         let plan_details = kind == "plan"
             && state.saved.provider == codex::Provider::Claude
             && item["tool"].is_string();
-        let text = description_conversation_text(
-            self.description_scope.as_ref(),
-            kind,
-            &codex::item_text(item),
-        );
+        let text = if self.question_session {
+            grove_core::conversation_result::display_text(
+                "ask",
+                "grove-ask",
+                kind,
+                &codex::item_text(item),
+            )
+        } else {
+            description_conversation_text(
+                self.description_scope.as_ref(),
+                kind,
+                &codex::item_text(item),
+            )
+        };
         let approval = (kind == "userMessage")
             .then(|| state.saved.rich_plans.approval_for_payload(&text))
             .flatten();
@@ -4379,7 +4390,8 @@ impl CodexView {
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dashboard_tray.is_some() {
             // Native commands neither need metadata discovery nor activate a conversation.
-            if grove_core::describe_skill::is_invocation(self.input.read(cx).value().as_ref())
+            if (grove_core::describe_skill::is_invocation(self.input.read(cx).value().as_ref())
+                || grove_core::ask_skill::is_invocation(self.input.read(cx).value().as_ref()))
                 && self.run_command(window, cx)
             {
                 return;
@@ -6981,11 +6993,20 @@ impl CodexView {
         }
         let copy_focus = self.ensure_control_focus(&format!("{key}:copy"), window, cx);
         let keyboard_key = key.clone();
-        let text = description_conversation_text(
-            self.description_scope.as_ref(),
-            "agentMessage",
-            &group.copy_text,
-        );
+        let text = if self.question_session {
+            grove_core::conversation_result::display_text(
+                "ask",
+                "grove-ask",
+                "agentMessage",
+                &group.copy_text,
+            )
+        } else {
+            description_conversation_text(
+                self.description_scope.as_ref(),
+                "agentMessage",
+                &group.copy_text,
+            )
+        };
         let keyboard_text = text.clone();
         let mut button = if copied {
             header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())

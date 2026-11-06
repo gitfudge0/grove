@@ -732,6 +732,8 @@ impl Sidebar {
                 CodexViewEvent::ScriptLaunched => this.snippet_launched(id, cx),
                 CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     // Opening a viewer must preserve the user's panel choices.
+                    this.hide_questions();
+                    this.dismiss_description();
                     cx.notify();
                 }
                 _ => {}
@@ -765,7 +767,12 @@ impl Sidebar {
                 self.observe_session_view_events(id, &view, cx);
             }
             let description_scope = self.description_scope_for_session(id);
+            let question_session = self.is_question_session(id);
             view.update(cx, |view, cx| {
+                if view.question_session != question_session {
+                    view.question_session = question_session;
+                    cx.notify();
+                }
                 if view.description_scope != description_scope {
                     view.description_scope = description_scope;
                     cx.notify();
@@ -1909,7 +1916,10 @@ impl Sidebar {
                 cx,
             );
         }
-        if self.questions_is_open(cx) { return self.render_questions(window,cx); }
+        self.restore_session_questions(cx);
+        if self.questions_is_open(cx) {
+            return self.render_questions(window, cx);
+        }
         self.restore_session_description(cx);
         if self.description_is_open(cx) {
             return self.render_description(window, cx);

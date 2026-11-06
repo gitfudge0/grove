@@ -1312,6 +1312,7 @@ impl SettingsPanel {
                     grove_core::prompts::PromptKind::Commit => "git",
                     grove_core::prompts::PromptKind::PullRequest => "git-pull-request",
                     grove_core::prompts::PromptKind::DescribeChanges => "file",
+                    grove_core::prompts::PromptKind::AskChanges => "message-circle",
                     grove_core::prompts::PromptKind::SessionTitle => "edit",
                 };
                 row = row.child(

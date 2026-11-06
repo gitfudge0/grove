@@ -1,11 +1,13 @@
 //! Native, checkout/session-owned questions. Each submission captures a new immutable diff.
 use super::*;
+use crate::views::change_session::{ChangeSession, Phase as SessionPhase};
 use crate::views::{
     components::{project_field_well, transcript_action},
     status::{self, StatusKind},
 };
 use gpui_component::{
     input::{Input, InputState},
+    menu::{PopupMenu, PopupMenuItem},
     text::{TextView, TextViewState},
     Selectable,
 };
@@ -13,16 +15,18 @@ use grove_core::{
     ask_skill::Invocation,
     change_description::{self as snapshot, Scope},
     change_questions::{self as domain, Answer},
-    commit_agent::CommitControl,
     describe_skill::ScopePreference,
 };
 use std::sync::Arc;
+#[path = "change_questions_session.rs"]
+mod session;
 const READER_WIDTH: f32 = 700.;
+const READER_TOOLBAR_INSET: f32 = CHROME_CONTROL_H * 3. + SPACE_LG * 2. + SPACE_20 * 2.;
 const FRESHNESS_INTERVAL: Duration = Duration::from_secs(5);
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct Key {
+pub(super) struct Key {
     owner: String,
-    path: String,
+    pub(super) path: String,
     scope: String,
 }
 fn owner(selection: &Option<Selection>) -> String {
@@ -48,17 +52,30 @@ pub(super) struct Questions {
     source: Option<FocusHandle>,
     focus_pending: bool,
     control_focus: HashMap<(String, String), FocusHandle>,
+    scope_focus: Option<FocusHandle>,
+    scope_menu: Option<Entity<PopupMenu>>,
+    scope_subscription: Option<gpui::Subscription>,
+    scope_menu_owner: Option<(String, String)>,
+    scope_position: gpui::Point<gpui::Pixels>,
+    scope_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    linked: HashMap<SessionId, Key>,
+    hydrated: HashSet<(SessionId, String)>,
+    #[cfg(test)]
+    store_root: Option<std::path::PathBuf>,
 }
 #[derive(Default)]
 struct Entry {
     pending_question: Option<String>,
-    auto_submit: bool,
     scope: Option<Scope>,
     input: Option<Entity<InputState>>,
     result: Option<Arc<Answer>>,
     text: Option<Entity<TextViewState>>,
     diff: Option<(String, Entity<TextViewState>)>,
-    cancel: Option<Arc<CommitControl>>,
+    controller: Option<Entity<ChangeSession<Answer>>>,
+    subscription: Option<gpui::Subscription>,
+    session: Option<SessionId>,
+    session_key: Option<String>,
+    phase: SessionPhase,
     run: u64,
     error: Option<String>,
     resolving: bool,
@@ -69,15 +86,6 @@ struct Entry {
     diff_scroll: ScrollHandle,
     receipt: Option<String>,
     receipt_started: Option<Instant>,
-}
-impl Drop for Questions {
-    fn drop(&mut self) {
-        for e in self.entries.values() {
-            if let Some(c) = &e.cancel {
-                c.cancel();
-            }
-        }
-    }
 }
 fn action(
     id: impl Into<SharedString>,
@@ -96,8 +104,27 @@ fn action(
                 .size(rpx(ICON_SM)),
         )
 }
+fn question_source_label(scope: &Scope) -> String {
+    match scope {
+        Scope::Local => "Local changes".into(),
+        Scope::PullRequest { url } => format!(
+            "PR #{}",
+            url.trim_end_matches('/').rsplit('/').next().unwrap_or("")
+        ),
+    }
+}
+fn question_source_text(label: String) -> gpui::Div {
+    div()
+        .debug_selector(|| "ask-source-context".into())
+        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
+        .pr(rpx(SPACE_2XL))
+        .text_size(rpx(TEXT_MICRO))
+        .text_color(c::FG_DIM())
+        .child(label)
+}
 fn text_view(text: &Entity<TextViewState>, window: &Window) -> TextView {
     TextView::new(text)
+        .markdown_extensions(super::super::mermaid::extensions())
         .style(super::super::codex_view::markdown_style(window))
         .selectable(true)
 }
@@ -115,21 +142,17 @@ fn patch_markdown(patch: &str) -> String {
 impl Sidebar {
     pub(super) fn hide_questions(&mut self) {
         self.questions.open = None;
-        if self.active_change_reader == Some("ask") {
-            self.active_change_reader = None;
-        }
     }
     pub(super) fn questions_is_open(&self, cx: &App) -> bool {
-        if self.active_change_reader != Some("ask") {
-            return false;
-        }
         let targets = self.checkout_targets(cx);
         let selected = super::checkout_panel::selected_checkout(
             &targets,
             self.checkout_panel.chosen_root.as_deref(),
         );
         self.questions.open.as_ref().is_some_and(|k| {
-            k.owner == owner(&self.selection) && selected.is_some_and(|(_, p)| p == k.path)
+            k.owner == owner(&self.selection)
+                && (self.linked_question_key().as_ref() == Some(k)
+                    || selected.is_some_and(|(_, p)| p == k.path))
         })
     }
     pub(super) fn close_questions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -149,11 +172,15 @@ impl Sidebar {
             }
         }
         self.questions.open = None;
-        if self.active_change_reader == Some("ask") {
-            self.active_change_reader = None;
-        }
         if let Some(f) = self.questions.source.take() {
             f.focus(window, cx);
+        } else if let Some(Selection::Session(id)) = self.selection {
+            if let Some(view) = self.codex_views.get(&id) {
+                view.focus_handle(cx).focus(window, cx);
+            } else {
+                self.focus.focus(window, cx);
+                self.pending_canvas_focus = Some(id);
+            }
         }
         cx.notify();
     }
@@ -181,6 +208,16 @@ impl Sidebar {
         self.files_active = false;
         self.checkout_panel.side_chat_owner = None;
         self.dismiss_description();
+        if let ScopePreference::PullRequestUrl(url) = &invocation.scope {
+            self.open_question(
+                path,
+                Scope::PullRequest { url: url.clone() },
+                invocation.question,
+                Some(source),
+                cx,
+            );
+            return;
+        }
         let scope = self
             .questions
             .scopes
@@ -203,7 +240,6 @@ impl Sidebar {
         e.pending_question = Some(invocation.question.clone());
         e.error = None;
         self.questions.open = Some(k.clone());
-        self.active_change_reader = Some("ask");
         self.questions.source = Some(source.clone());
         self.questions.focus_pending = true;
         cx.notify();
@@ -226,8 +262,7 @@ impl Sidebar {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.active_change_reader != Some("ask")
-                    || this.questions.open.as_ref() != Some(&k)
+                if this.questions.open.as_ref() != Some(&k)
                     || !this
                         .questions
                         .entries
@@ -275,6 +310,10 @@ impl Sidebar {
         source: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
+        if !question.trim().is_empty() {
+            self.start_question_conversation(path, scope, question, cx);
+            return;
+        }
         let k = key(&self.selection, &path, &scope);
         let has_question = !question.trim().is_empty();
         self.questions
@@ -284,14 +323,13 @@ impl Sidebar {
         e.scope = Some(scope);
         e.resolving = false;
         // Keep an edited native question if a second invocation arrives while work is running.
-        if has_question && e.cancel.is_none() {
+        if has_question && !e.phase.busy() {
             e.pending_question = Some(question);
         }
         if let Some(s) = source {
             self.questions.source = Some(s);
         }
         self.questions.open = Some(k);
-        self.active_change_reader = Some("ask");
         self.questions.focus_pending = true;
         self.files_active = false;
         self.dismiss_description();
@@ -304,7 +342,7 @@ impl Sidebar {
         let Some(e) = self.questions.entries.get(k) else {
             return;
         };
-        if e.cancel.is_some() || e.resolving {
+        if e.phase.busy() || e.resolving {
             return;
         }
         let Some(input) = &e.input else {
@@ -319,74 +357,13 @@ impl Sidebar {
             return;
         }
         let scope = e.scope.clone().unwrap_or(Scope::Local);
-        let provider = match self.checkout_commit_provider(cx) {
-            Ok(p) => p,
-            Err(e) => {
-                self.question_error(e, cx);
-                return;
-            }
-        };
-        self.questions.revision = self.questions.revision.wrapping_add(1);
-        let run = self.questions.revision;
-        let control = Arc::new(CommitControl::default());
-        let Some(e) = self.questions.entries.get_mut(k) else {
-            return;
-        };
-        e.run = run;
-        // An older freshness callback is fenced by run identity. Release its
-        // in-flight flag now so a failed replacement can recheck the old answer.
-        e.checking = false;
-        e.checked_at = None;
-        e.freshness = None;
-        e.cancel = Some(control.clone());
-        e.error = None;
-        e.receipt = None;
-        e.receipt_started = None;
-        let k = k.clone();
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let path = k.path.clone();
-            let result = cx
-                .background_spawn(async move {
-                    domain::generate(
-                        std::path::Path::new(&path),
-                        &scope,
-                        &question,
-                        provider,
-                        &control,
-                    )
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                let Some(e) = this.questions.entries.get_mut(&k).filter(|e| e.run == run) else {
-                    return;
-                };
-                e.cancel = None;
-                match result {
-                    Ok(answer) => {
-                        e.text = Some(cx.new(|cx| TextViewState::markdown(&answer.markdown(), cx)));
-                        e.result = Some(Arc::new(answer));
-                        e.freshness = None;
-                        e.checked_at = None;
-                        e.checking = false;
-                        e.diff = None;
-                        e.receipt = Some("Answer ready".into());
-                        e.receipt_started = Some(Instant::now());
-                    }
-                    Err(error) => e.error = Some(error),
-                }
-                if let Some(receipt) = this
-                    .questions
-                    .entries
-                    .get(&k)
-                    .and_then(|e| e.receipt_started)
-                {
-                    this.expire_question_receipt(k.clone(), run, receipt, cx);
-                }
-                cx.notify();
+        if let Some(controller) = e.controller.clone() {
+            controller.update(cx, |controller, cx| {
+                controller.start(k.path.clone(), scope, question, cx)
             });
-        })
-        .detach();
+        } else {
+            self.start_question_conversation(k.path.clone(), scope, question, cx);
+        }
     }
     fn expire_question_receipt(
         &self,
@@ -416,7 +393,7 @@ impl Sidebar {
         let Some(e) = self.questions.entries.get_mut(k) else {
             return;
         };
-        if e.cancel.is_some()
+        if e.phase.busy()
             || e.checking
             || e.checked_at
                 .is_some_and(|t| t.elapsed() < FRESHNESS_INTERVAL)
@@ -460,14 +437,86 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let menu_owner = (owner(&self.selection), path.to_string());
+        if self.questions.scope_menu.is_some()
+            && (self.questions.scope_menu_owner.as_ref() != Some(&menu_owner)
+                || !local
+                || pr.is_none())
+        {
+            self.questions.scope_menu = None;
+            self.questions.scope_subscription = None;
+            self.questions.scope_menu_owner = None;
+        }
+        if let Some(target) = self.linked_question_key() {
+            let entry = self.questions.entries.get(&target);
+            let saved = entry.is_some_and(|e| e.result.is_some());
+            let busy = entry.is_some_and(|e| e.phase.busy());
+            let stale = entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false))));
+            let source = entry
+                .and_then(|e| e.scope.as_ref())
+                .map(question_source_label);
+            let focus = self
+                .questions
+                .control_focus
+                .entry(menu_owner)
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
+            let source_focus = focus.clone();
+            return div()
+                .id("ask-controls")
+                .debug_selector(|| "ask-controls".into())
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .py(rpx(SPACE_LG))
+                .child(
+                    super::checkout_panel::checkout_loading_row(
+                        "ask-open",
+                        if saved {
+                            "View answer"
+                        } else {
+                            "Ask about changes"
+                        },
+                        "message-circle",
+                        false,
+                        window,
+                        cx,
+                    )
+                    .with_focus_handle(focus)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.reload_question(&target, cx);
+                        this.questions.open = Some(target.clone());
+                        this.questions.source = Some(source_focus.clone());
+                        this.questions.focus_pending = true;
+                        this.dismiss_description();
+                        cx.notify();
+                    })),
+                )
+                .when_some(source, |column, label| {
+                    column.child(question_source_text(label))
+                })
+                .when(busy || stale, |column| {
+                    column.child(div().px(rpx(SPACE_2XL)).child(status::label(
+                        "ask-panel-state",
+                        if busy {
+                            StatusKind::Working
+                        } else {
+                            StatusKind::Warning
+                        },
+                        if busy { "Generating…" } else { "Out of date" },
+                        ICON_SM,
+                        cx,
+                    )))
+                })
+                .into_any_element();
+        }
         if !local && pr.is_none() {
             return div().into_any_element();
         }
-        let owner_key = (owner(&self.selection), path.to_string());
         let preferred = self
             .questions
             .scopes
-            .get(&owner_key)
+            .get(&menu_owner)
             .cloned()
             .unwrap_or_else(|| {
                 if local {
@@ -479,6 +528,9 @@ impl Sidebar {
                 }
             });
         let scope = match (&preferred, &pr) {
+            (_, Some(pr)) if !local => Scope::PullRequest {
+                url: pr.url.clone(),
+            },
             (Scope::PullRequest { .. }, Some(pr)) => Scope::PullRequest {
                 url: pr.url.clone(),
             },
@@ -487,82 +539,167 @@ impl Sidebar {
         };
         self.questions
             .scopes
-            .insert(owner_key.clone(), scope.clone());
-        let mut row = div()
+            .insert(menu_owner.clone(), scope.clone());
+        let mut column = div()
             .id("ask-controls")
+            .debug_selector(|| "ask-controls".into())
             .flex()
             .flex_col()
             .gap(rpx(SPACE_SM))
-            .px(rpx(SPACE_2XL))
             .py(rpx(SPACE_LG));
-        row = row.child(
-            div()
-                .text_size(rpx(TEXT_SMALL))
-                .text_color(c::FG_DIM())
-                .child("Ask about changes"),
-        );
-        let mut choices = div().flex().flex_wrap().gap(rpx(SPACE_SM));
-        for (label, candidate, enabled, glyph) in [
-            ("Local changes", Scope::Local, local, "diff"),
-            (
-                "Attached PR",
-                pr.map_or(Scope::Local, |p| Scope::PullRequest { url: p.url }),
-                matches!(scope, Scope::PullRequest { .. })
-                    || self.checkout_description_pr().is_some(),
-                "git-pull-request",
-            ),
-        ] {
-            if !enabled {
-                continue;
-            }
-            let selected = candidate == scope;
-            let choice_key = owner_key.clone();
-            choices = choices.child(
-                action(format!("ask-scope-{label}"), label, glyph, window, cx)
-                    .selected(selected)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.questions
-                            .scopes
-                            .insert(choice_key.clone(), candidate.clone());
-                        cx.notify();
-                    })),
+        if let Some(pr) = pr.filter(|_| local) {
+            let focus = self
+                .questions
+                .scope_focus
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
+            let selected = scope.clone();
+            let target = menu_owner.clone();
+            let pr_scope = Scope::PullRequest { url: pr.url };
+            let bounds = self.questions.scope_bounds.clone();
+            column = column.child(
+                div()
+                    .mx(rpx(SPACE_2XL))
+                    .on_prepaint(move |value, _, _| bounds.set(value))
+                    .child(
+                        action(
+                            "ask-source",
+                            question_source_label(&scope),
+                            "chev-down",
+                            window,
+                            cx,
+                        )
+                        .justify_start()
+                        .with_focus_handle(focus)
+                        .selected(self.questions.scope_menu.is_some())
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                let position = this.questions.scope_bounds.get().bottom_left();
+                                this.open_question_sources(
+                                    target.clone(),
+                                    selected.clone(),
+                                    pr_scope.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
+                    ),
             );
+            if self.questions.scope_menu_owner.as_ref() == Some(&menu_owner) {
+                if let Some(menu) = self.questions.scope_menu.clone() {
+                    column = column.child(gpui::deferred(
+                        gpui::anchored()
+                            .position_mode(gpui::AnchoredPositionMode::Window)
+                            .position(self.questions.scope_position)
+                            .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
+                            .child(menu),
+                    ));
+                }
+            }
+        } else if matches!(scope, Scope::PullRequest { .. }) {
+            column = column.child(question_source_text(question_source_label(&scope)));
         }
         let target = path.to_string();
-        let source = self
+        let focus = self
             .questions
             .control_focus
-            .entry(owner_key)
+            .entry(menu_owner)
             .or_insert_with(|| cx.focus_handle())
             .clone();
-        let return_source = source.clone();
-        row.child(choices)
-            .child(
-                action(
-                    "ask-open",
-                    "Ask about changes",
-                    "message-circle",
-                    window,
+        let source_focus = focus.clone();
+        column = column.child(
+            super::checkout_panel::checkout_loading_row(
+                "ask-open",
+                "Ask about changes",
+                "message-circle",
+                false,
+                window,
+                cx,
+            )
+            .with_focus_handle(focus)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.open_question(
+                    target.clone(),
+                    scope.clone(),
+                    String::new(),
+                    Some(source_focus.clone()),
                     cx,
                 )
-                .with_focus_handle(source)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_question(
-                        target.clone(),
-                        scope.clone(),
-                        String::new(),
-                        Some(return_source.clone()),
-                        cx,
-                    );
-                })),
-            )
-            .into_any_element()
+            })),
+        );
+        if local {
+            column = column.child(question_source_text(
+                "Uncommitted changes, including new files.".into(),
+            ));
+        }
+        column.into_any_element()
+    }
+    fn open_question_sources(
+        &mut self,
+        target: (String, String),
+        selected: Scope,
+        pr_scope: Scope,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let menu_owner = target.clone();
+        let Some(focus) = self.questions.scope_focus.clone() else {
+            return;
+        };
+        let menu = PopupMenu::build(window, cx, move |menu, window, _| {
+            let mut menu =
+                crate::views::components::dropdown_menu(menu, window).action_context(focus);
+            for candidate in [Scope::Local, pr_scope.clone()] {
+                let owner = owner.clone();
+                let target = target.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(question_source_label(&candidate))
+                        .icon(gpui_component::Icon::default().path(match candidate {
+                            Scope::Local => "icons/diff.svg",
+                            Scope::PullRequest { .. } => "icons/git-pull-request.svg",
+                        }))
+                        .checked(candidate == selected)
+                        .on_click(move |_, _, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                this.questions
+                                    .scopes
+                                    .insert(target.clone(), candidate.clone());
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+            menu
+        });
+        self.questions.scope_subscription = Some(cx.subscribe_in(
+            &menu,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| {
+                this.questions.scope_menu = None;
+                this.questions.scope_subscription = None;
+                this.questions.scope_menu_owner = None;
+                if let Some(focus) = &this.questions.scope_focus {
+                    focus.focus(window, cx);
+                }
+                cx.notify();
+            },
+        ));
+        self.questions.scope_menu_owner = Some(menu_owner);
+        self.questions.scope_position = position;
+        menu.focus_handle(cx).focus(window, cx);
+        self.questions.scope_menu = Some(menu);
+        cx.notify();
     }
     pub(super) fn render_questions(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        super::super::mermaid::set_context(Some(cx.entity_id()), window, cx);
         let Some(k) = self.questions.open.clone() else {
             return div().into_any_element();
         };
@@ -583,7 +720,6 @@ impl Sidebar {
             if let Some(question) = e.pending_question.take() {
                 if let Some(input) = &e.input {
                     input.update(cx, |input, cx| input.set_value(question, window, cx));
-                    e.auto_submit = true;
                 }
             }
             if self.questions.focus_pending {
@@ -599,19 +735,10 @@ impl Sidebar {
                 self.questions.focus_pending = false;
             }
         }
-        let auto = self
-            .questions
-            .entries
-            .get_mut(&k)
-            .is_some_and(|e| std::mem::take(&mut e.auto_submit));
-        if auto {
-            let target = k.clone();
-            cx.defer_in(window, move |this, _, cx| this.submit_question(&target, cx));
-        }
         let Some(e) = self.questions.entries.get(&k) else {
             return div().into_any_element();
         };
-        let busy = e.cancel.is_some();
+        let busy = e.phase.busy();
         let label = e
             .result
             .as_ref()
@@ -623,6 +750,13 @@ impl Sidebar {
             .gap(rpx(SPACE_SM))
             .px(rpx(SPACE_20))
             .py(rpx(SPACE_LG))
+            .when(
+                self.checkout_panel.toggle_available
+                    && (self.checkout_panel.hidden
+                        || Self::logical_window_width(window)
+                            < super::checkout_panel::CHECKOUT_SIDE_VIEWPORT),
+                |header| header.pr(rpx(READER_TOOLBAR_INSET)),
+            )
             .child(
                 action(
                     "ask-back",
@@ -670,7 +804,7 @@ impl Sidebar {
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Ask about changes"),
             );
-            body=body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Each question uses a fresh captured diff, independently of previous answers. Your conversation and files stay unchanged."));
+            body=body.child(div().text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("Each native question uses a fresh captured diff. Conversation opens the retained session for ordinary follow-up questions."));
             if let Some(input) = &e.input {
                 body = body.child(
                     project_field_well(input.focus_handle(cx).is_focused(window), false)
@@ -710,24 +844,28 @@ impl Sidebar {
                     .child(status::label(
                         "ask-generating",
                         StatusKind::Working,
-                        "Reading the diff and answering…",
+                        if e.phase.saving() {
+                            "Saving answer…"
+                        } else {
+                            "Reading the diff and answering…"
+                        },
                         ICON_SM,
                         cx,
                     ))
                     .child(
-                        action("ask-cancel", "Cancel", "close", window, cx).on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                if let Some(c) = this
+                        action("ask-cancel", "Cancel", "close", window, cx)
+                            .disabled(e.phase.saving())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(controller) = this
                                     .questions
                                     .entries
                                     .get(&target)
-                                    .and_then(|e| e.cancel.as_ref())
+                                    .and_then(|e| e.controller.clone())
                                 {
-                                    c.cancel();
+                                    controller.update(cx, |controller, cx| controller.cancel(cx));
                                 }
                                 cx.notify();
-                            },
-                        )),
+                            })),
                     );
             } else if e.scope.is_some() {
                 let target = k.clone();
@@ -794,7 +932,7 @@ impl Sidebar {
             if let Some(answer) = &e.result {
                 let freshness = match &e.freshness {
                     Some(Ok(true)) => "Snapshot is current",
-                    Some(Ok(false)) => "Changes have moved on. Ask again to capture a fresh diff.",
+                    Some(Ok(false)) => "Out of date · Ask again to capture a fresh diff.",
                     Some(Err(_)) => {
                         "Snapshot freshness could not be verified. Ask again to refresh."
                     }
