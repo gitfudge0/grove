@@ -132,6 +132,9 @@ fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
         .selectable(true)
 }
 impl Sidebar {
+    pub(super) fn hide_review(&mut self) {
+        self.reviews.open = None;
+    }
     pub(super) fn review_is_open(&self, cx: &App) -> bool {
         let targets = self.checkout_targets(cx);
         let selected = super::checkout_panel::selected_checkout(

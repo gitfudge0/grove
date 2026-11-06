@@ -224,7 +224,7 @@ impl Sidebar {
         };
         self.files_active = false;
         self.checkout_panel.side_chat_owner = None;
-        self.reviews.open = None;
+        self.hide_review();
         self.dismiss_description();
         if let ScopePreference::PullRequestUrl(url) = &invocation.scope {
             let preference_key = (owner(&self.selection), path.clone());
@@ -357,7 +357,7 @@ impl Sidebar {
         self.questions.open = Some(k);
         self.questions.focus_pending = true;
         self.files_active = false;
-        self.reviews.open = None;
+        self.hide_review();
         self.dismiss_description();
         cx.notify();
     }
@@ -516,7 +516,7 @@ impl Sidebar {
                         this.questions.open = Some(target.clone());
                         this.questions.source = Some(source_focus.clone());
                         this.questions.focus_pending = true;
-                        this.reviews.open = None;
+                        this.hide_review();
                         this.dismiss_description();
                         cx.notify();
                     })),

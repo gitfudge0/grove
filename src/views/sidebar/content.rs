@@ -735,9 +735,8 @@ impl Sidebar {
                 CodexViewEvent::ScriptLaunched => this.snippet_launched(id, cx),
                 CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     // Opening a viewer must preserve the user's panel choices.
-                    this.reviews.open = None;
+                    this.hide_review();
                     this.hide_questions();
-                    this.reviews.open = None;
                     this.dismiss_description();
                     cx.notify();
                 }

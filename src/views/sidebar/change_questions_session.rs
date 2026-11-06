@@ -244,7 +244,7 @@ impl Sidebar {
         self.questions.source = None;
         self.questions.focus_pending = true;
         self.files_active = false;
-        self.reviews.open = None;
+        self.hide_review();
         self.dismiss_description();
         if let Some(controller) = self
             .questions
