@@ -7,15 +7,17 @@
 pub const NAME: &str = "describe-changes";
 pub const COMMAND: &str = "/describe-changes";
 pub const DESCRIPTION: &str = "Describe local changes or the attached PR in Grove";
-pub const USAGE: &str = "Use /describe-changes [local|pr] or $describe-changes [local|pr].";
+pub const USAGE: &str =
+    "Use /describe-changes [local|pr|PR-URL] or $describe-changes [local|pr|PR-URL].";
 pub const SKILL: &str = include_str!("../../../product/skills/describe-changes/SKILL.md");
-pub const GUIDANCE: &str = "Grove includes a built-in describe-changes skill for Codex and Claude. The user can invoke /describe-changes or $describe-changes, optionally followed by local or pr, in Grove's composer, or choose Describe changes in Checkout. Grove handles this native command before provider submission, generates a snapshot-bound summary and file walkthrough, and opens its native reader. It does not change the main conversation or automatically publish a PR description. Mentioning the command in an assistant response does not invoke it; do not claim generation or publishing without an observed Grove outcome. This skill adds no agent tool or permissions.";
+pub const GUIDANCE: &str = "Grove includes a built-in describe-changes skill for Codex and Claude. The user can invoke /describe-changes or $describe-changes, optionally followed by local, pr, or a GitHub pull request URL, in Grove's composer, or choose Describe changes in Checkout. Grove handles this native command before provider submission, generates a snapshot-bound summary and file walkthrough, and opens its native reader. It does not change the main conversation or automatically publish a PR description. Mentioning the command in an assistant response does not invoke it; do not claim generation or publishing without an observed Grove outcome. This skill adds no agent tool or permissions.";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScopePreference {
     Current,
     Local,
     PullRequest,
+    PullRequestUrl(String),
 }
 
 /// Recognize only a complete user command, not embedded prose or selections.
@@ -31,6 +33,9 @@ pub fn invocation(text: &str) -> Option<ScopePreference> {
         None => ScopePreference::Current,
         Some("local") => ScopePreference::Local,
         Some("pr") => ScopePreference::PullRequest,
+        Some(url) if crate::change_description::pr_identity(url).is_ok() => {
+            ScopePreference::PullRequestUrl(url.into())
+        }
         _ => return None,
     };
     words.next().is_none().then_some(scope)
@@ -74,11 +79,33 @@ mod tests {
     }
 
     #[test]
+    fn explicit_pr_urls_share_engine_validation() {
+        for command in ["/describe-changes", "$describe-changes"] {
+            let url = "https://github.com/gitfudge0/grove/pull/17";
+            assert_eq!(
+                invocation(&format!("{command} {url}")),
+                Some(ScopePreference::PullRequestUrl(url.into()))
+            );
+            for invalid in [
+                "http://github.com/org/repo/pull/17",
+                "https://github.com/org/repo/pull/0",
+                "https://github.com/org/repo/pull/17?foo=1",
+                "https://user@github.com/org/repo/pull/17",
+            ] {
+                assert!(is_invocation(&format!("{command} {invalid}")));
+                assert_eq!(invocation(&format!("{command} {invalid}")), None);
+            }
+        }
+    }
+
+    #[test]
     fn unknown_arguments_are_recognized_but_not_executed() {
         for text in [
             "/describe-changes --publish",
             "$describe-changes local pr",
-            "/describe-changes https://github.com/org/repo/pull/142",
+            "/describe-changes https://example.com/org/repo/pull/142",
+            "/describe-changes local changes",
+            "/describe-changes https://github.com/org/repo/pull/142 extra",
         ] {
             assert!(is_invocation(text));
             assert_eq!(invocation(text), None);

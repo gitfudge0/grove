@@ -497,6 +497,17 @@ fn hidden_checkout_skill_uses_selected_worktree_without_a_mounted_panel(
                     ..Default::default()
                 },
             );
+            let scope = Scope::PullRequest {
+                url: "https://github.com/gitfudge0/grove/pull/17".into(),
+            };
+            sidebar.descriptions.entries.insert(
+                key(&sidebar.selection, &path, &scope),
+                Entry {
+                    scope: Some(scope),
+                    cancel: Some(Arc::new(CommitControl::default())),
+                    ..Default::default()
+                },
+            );
             sidebar
         });
         sidebar_handle = Some(sidebar.clone());
@@ -512,7 +523,15 @@ fn hidden_checkout_skill_uses_selected_worktree_without_a_mounted_panel(
     });
     let sidebar = sidebar_handle.unwrap();
     let source = source_handle.unwrap();
-    for preference in [ScopePreference::Local, ScopePreference::Current] {
+    for preference in [
+        ScopePreference::Local,
+        ScopePreference::Current,
+        ScopePreference::PullRequestUrl("https://github.com/gitfudge0/grove/pull/17".into()),
+    ] {
+        let scope = match &preference {
+            ScopePreference::PullRequestUrl(url) => Scope::PullRequest { url: url.clone() },
+            _ => Scope::Local,
+        };
         cx.update(|window, cx| {
             sidebar.update(cx, |sidebar, cx| {
                 sidebar.descriptions.open = None;
@@ -521,7 +540,7 @@ fn hidden_checkout_skill_uses_selected_worktree_without_a_mounted_panel(
                 sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
                 source.focus(window, cx);
                 sidebar.invoke_description_skill(preference, source.clone(), cx);
-                let expected = key(&sidebar.selection, &path, &Scope::Local);
+                let expected = key(&sidebar.selection, &path, &scope);
                 assert_eq!(sidebar.descriptions.open.as_ref(), Some(&expected));
                 assert!(sidebar.description_is_open(cx));
                 assert!(!sidebar.files_active);
@@ -536,6 +555,56 @@ fn hidden_checkout_skill_uses_selected_worktree_without_a_mounted_panel(
         cx.update(|window, cx| {
             assert!(sidebar.read(cx).descriptions.open.is_none());
             assert!(source.is_focused(window));
+        });
+    }
+    // Exercise the Dashboard's actual event subscription without starting a model.
+    cx.update(|window, cx| sidebar.update(cx, |sidebar, cx| sidebar.open_dashboard(window, cx)));
+    for provider in [
+        grove_core::codex::Provider::Codex,
+        grove_core::codex::Provider::Claude,
+    ] {
+        let dashboard_view = cx.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let dashboard = sidebar.dashboard.as_ref().unwrap();
+                dashboard
+                    .session
+                    .update(cx, |session, _| session.state.saved.provider = provider);
+                assert_eq!(sidebar.checkout_commit_provider(cx).unwrap(), provider);
+                assert_eq!(sidebar.dashboard_checkout(cx).unwrap().1, path);
+                dashboard.view.clone()
+            })
+        });
+        dashboard_view.update(cx, |_, cx| {
+            cx.emit(
+                super::super::super::codex_view::CodexViewEvent::DescribeChanges(
+                    ScopePreference::PullRequestUrl(
+                        "https://github.com/gitfudge0/grove/pull/17".into(),
+                    ),
+                    source.clone(),
+                ),
+            )
+        });
+        cx.update(|_, cx| {
+            let sidebar = sidebar.read(cx);
+            let scope = Scope::PullRequest {
+                url: "https://github.com/gitfudge0/grove/pull/17".into(),
+            };
+            assert_eq!(
+                sidebar.descriptions.open.as_ref(),
+                Some(&key(&sidebar.selection, &path, &scope))
+            );
+            assert!(sidebar.description_is_open(cx));
+            assert!(sidebar
+                .dashboard
+                .as_ref()
+                .unwrap()
+                .session
+                .read(cx)
+                .is_deferred());
+            assert!(sidebar.runtime.read(cx).registry.read(cx).all().is_empty());
+        });
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| sidebar.close_description(window, cx))
         });
     }
 }

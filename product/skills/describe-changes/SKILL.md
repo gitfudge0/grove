@@ -13,8 +13,11 @@ or alter the main agent's conversation.
 
 Use `/describe-changes local` for staged, unstaged, and nonignored untracked
 changes. Use `/describe-changes pr` for the attached pull request's base-to-head
-diff. Without an argument, use the scope selected in Checkout, defaulting to local
-changes when no scope has been selected. If the checkout
+diff. Use `/describe-changes https://github.com/owner/repo/pull/17` to describe
+an explicit GitHub.com PR without changing the checkout or attaching it.
+Commands also work from the Dashboard before provider startup. Without an
+argument, use the scope selected in Checkout, defaulting to local changes when no
+scope has been selected. If the checkout
 has multiple possible scopes, keep that choice visible instead of combining them.
 
 ## Result

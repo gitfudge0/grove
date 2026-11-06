@@ -172,6 +172,16 @@ impl Sidebar {
             .scopes
             .get(&(owner(&self.selection), path.clone()))
             .cloned();
+        if let ScopePreference::PullRequestUrl(url) = &preference {
+            // An explicit URL does not replace Checkout's local/attached-PR choice.
+            self.begin_description(
+                path,
+                Scope::PullRequest { url: url.clone() },
+                Some(source),
+                cx,
+            );
+            return;
+        }
         if preference == ScopePreference::Local
             || (preference == ScopePreference::Current
                 && !matches!(selected_scope, Some(Scope::PullRequest { .. })))

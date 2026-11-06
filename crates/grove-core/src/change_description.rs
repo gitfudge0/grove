@@ -810,7 +810,7 @@ fn apply_budget(file: &mut SnapshotFile, remaining: &mut usize) {
         *remaining -= file.patch.len();
     }
 }
-fn pr_identity(value: &str) -> Result<(String, String, u64), String> {
+pub(crate) fn pr_identity(value: &str) -> Result<(String, String, u64), String> {
     let url = url::Url::parse(value).map_err(|_| "Invalid GitHub pull request URL")?;
     if url.scheme() != "https"
         || url.host_str() != Some("github.com")

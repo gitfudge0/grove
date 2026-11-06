@@ -160,8 +160,12 @@ supported; enterprise hosts report an unsupported URL rather than guessing.
 
 Grove bundles `describe-changes/SKILL.md`. In either provider's Grove composer,
 `/describe-changes` or `$describe-changes` opens the same native workflow. Optional
-`local` or `pr` arguments select a scope; otherwise use Checkout's visible choice, defaulting to local changes before
-a scope has been selected.
+`local`, `pr`, or a GitHub.com pull request URL selects a scope. Explicit URLs
+describe that PR without switching or attaching the checkout. Dashboard commands
+are intercepted before catalog discovery or conversation activation and use the
+Dashboard composer's selected provider and checkout. Without an argument, use
+Checkout's visible choice, defaulting to local changes before a scope has been
+selected.
 Completions reserve this name, and Grove intercepts the whole command before
 provider submission. The command draft stays intact; attachments and quoted
 references are rejected with an explanation and preserved. Invalid arguments show

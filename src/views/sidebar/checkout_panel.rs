@@ -1905,8 +1905,13 @@ impl Sidebar {
         &self,
         cx: &App,
     ) -> Result<grove_core::codex::Provider, String> {
+        if self.dashboard_open {
+            if let Some(dashboard) = &self.dashboard {
+                return Ok(dashboard.session.read(cx).state.saved.provider);
+            }
+        }
         let selected = match self.selection {
-            Some(Selection::Session(id)) => self
+            Some(Selection::Session(id) | Selection::Home(id)) => self
                 .runtime
                 .read(cx)
                 .registry

@@ -230,6 +230,24 @@ above; this run does not establish the cause of the activity test failure.
 
 ## Describe changes
 
+The command-routing regression covers actual Submit for both Codex and Claude,
+in session and Dashboard composers while catalog discovery is pending. It checks
+local/attached-PR/explicit-URL routing, invalid syntax, retained drafts and absence
+of provider submissions. Removing the Dashboard interception makes the regression
+fail. Five parser tests and both composer-command fixtures passed. Four native
+reader fixtures also passed; the hidden-panel case now includes explicit URLs and
+the actual Dashboard event subscription, selected-provider ownership and absence
+of conversation activation. These are Linux native fixtures, not a live full-shell
+keyboard-to-reader session. Claude live generation and macOS/Windows were not
+rerun for this correction.
+
+A read-only live Codex run against `gitfudge0/grove#17` read the PR successfully
+but rejected the model's structured result. A second run passed with 20 described
+files, current PR identity, and unchanged fixture HEAD, index and working state.
+No PR body was published. Model-format rejection remains a retryable limitation;
+this correction changes command routing, not the generation validator. The live
+smoke example accepts an optional PR URL to reproduce this boundary.
+
 Thirteen focused snapshot-engine tests passed. The core run also passed all
 four shared-skill parser/completion tests and seven commit-helper regressions. Coverage includes
 staged/unstaged/untracked data without index mutation, bounded reads despite
