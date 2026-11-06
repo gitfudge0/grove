@@ -72,7 +72,7 @@ fn initialize(cx: &mut App) {
     cx.set_global(crate::zoom::ZoomState::new(1.0));
     c::sync_component_theme(cx);
 }
-fn frozen_review() -> Review {
+pub(super) fn frozen_review() -> Review {
     Review {
         snapshot: grove_core::change_description::Snapshot {
             scope: Scope::PullRequest {

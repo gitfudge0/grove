@@ -439,4 +439,71 @@ mod tests {
                 .contains("canceled")
         );
     }
+    #[test]
+    fn conversation_import_keeps_typed_evidence_and_rejects_ambiguous_blocks() {
+        let json = prediction().to_string();
+        let response = format!("One issue found.\n```grove-review\n{json}\n```\n");
+        let review = from_conversation(snapshot(), &response).unwrap();
+        assert_eq!(review.findings[0].line_start, 10);
+        for text in [
+            format!("{response}\n{response}"),
+            format!("```grove-review\n{json}"),
+            "```grove-review\n{}\n```".into(),
+        ] {
+            assert!(from_conversation(snapshot(), &text).is_err());
+        }
+        assert!(conversation_prompt(&snapshot())
+            .unwrap()
+            .contains("grove-review"));
+    }
+    #[test]
+    fn saved_result_revalidates_derived_file_summaries() {
+        use crate::change_result_store::StoredResult;
+        let mut review = validate(snapshot(), prediction()).unwrap();
+        assert!(StoredResult::validate(&review).is_ok());
+        review.files[0].path = "invented.rs".into();
+        assert!(StoredResult::validate(&review).is_err());
+        let mut review = validate(snapshot(), prediction()).unwrap();
+        review.files[0].summary = vec!["Unvalidated alternative prose".into()];
+        assert!(StoredResult::validate(&review).is_err());
+    }
+    #[test]
+    fn review_storage_is_canonical_durable_and_refuses_corrupt_derived_data() {
+        use crate::change_result_store::{PendingRequest, Source, Store};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::<Review>::new(directory.path().into());
+        let review = validate(snapshot(), prediction()).unwrap();
+        let source = Source {
+            checkout: review.snapshot.checkout.clone(),
+            scope: review.snapshot.scope.clone(),
+        };
+        store.bind("review-session", &source).unwrap();
+        let job = PendingRequest {
+            snapshot: review.snapshot.clone(),
+            input: String::new(),
+            prompt: conversation_prompt(&review.snapshot).unwrap(),
+            generation: "review-generation".into(),
+        };
+        store.save_pending("review-session", &job).unwrap();
+        let path = store
+            .save_generation("review-session", &review, "review-generation")
+            .unwrap();
+        let reopened = Store::<Review>::new(directory.path().into());
+        assert_eq!(reopened.load(&source).unwrap(), Some(review.clone()));
+        assert_eq!(
+            reopened.source_for_session("review-session").unwrap(),
+            Some(source.normalized().unwrap())
+        );
+        assert!(reopened
+            .pending_for_session("review-session")
+            .unwrap()
+            .is_none());
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs_err::read(&path).unwrap()).unwrap();
+        record["result"]["files"][0]["path"] = serde_json::json!("invented.rs");
+        fs_err::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let bytes = fs_err::read(&path).unwrap();
+        assert!(reopened.load(&source).is_err());
+        assert_eq!(fs_err::read(&path).unwrap(), bytes);
+    }
 }

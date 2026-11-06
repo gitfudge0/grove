@@ -14446,6 +14446,91 @@ mod tests {
     }
 
     #[gpui::test]
+    fn review_command_submit_intercepts_dashboard_before_catalog_or_provider_startup(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                observed.borrow_mut().push(match event {
+                    CodexViewEvent::ReviewChanges(..) => "review",
+                    CodexViewEvent::DashboardSubmit => "provider startup",
+                    _ => "other",
+                });
+            })
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for dashboard in [false, true] {
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, _| {
+                            session.state.saved.provider = provider;
+                            session.catalog_loading = true;
+                        });
+                        view.dashboard_tray = dashboard.then(|| {
+                            cx.new(|_| {
+                                super::super::sidebar::dashboard::DestinationTray::picker_test_tray(
+                                    "/missing-native-command-fixture".into(),
+                                )
+                            })
+                        });
+                    });
+                });
+                for command in [
+                    "/review local",
+                    "$review pr",
+                    "/review https://github.com/gitfudge0/grove/pull/17",
+                ] {
+                    events.borrow_mut().clear();
+                    cx.update(|window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.input
+                                .update(cx, |input, cx| input.set_value(command, window, cx));
+                            view.submit(window, cx);
+                            assert_eq!(view.input.read(cx).value().as_ref(), command);
+                            assert!(view.submitted.is_none());
+                            assert!(view.session.read(cx).state.error.is_none());
+                        })
+                    });
+                    assert_eq!(
+                        *events.borrow(),
+                        ["review"],
+                        "{provider:?}, Dashboard={dashboard}, {command}"
+                    );
+                }
+                for command in [
+                    "/review local changes",
+                    "/review https://example.com/pull/17",
+                ] {
+                    events.borrow_mut().clear();
+                    cx.update(|window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.input
+                                .update(cx, |input, cx| input.set_value(command, window, cx));
+                            view.submit(window, cx);
+                            assert_eq!(
+                                view.session.read(cx).state.error.as_deref(),
+                                Some(grove_core::review_skill::USAGE)
+                            );
+                            assert_eq!(view.input.read(cx).value().as_ref(), command);
+                        })
+                    });
+                    assert!(events.borrow().is_empty());
+                }
+            }
+        }
+        assert!(!actions.try_iter().any(|action| matches!(
+            action,
+            Action::Submit { .. }
+                | Action::SubmitWithMode { .. }
+                | Action::Prompt(_)
+                | Action::PromptWithImages { .. }
+        )));
+    }
+
+    #[gpui::test]
     fn describe_skill_routes_both_providers_without_submitting_or_losing_drafts(
         cx: &mut gpui::TestAppContext,
     ) {

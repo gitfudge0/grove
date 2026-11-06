@@ -62,7 +62,7 @@ impl Sidebar {
             let busy = state.phase.busy();
             let saving = state.phase.saving();
             if let Some(entry) = this.reviews.entries.get_mut(&target) {
-                let saved = entry.saving && !saving;
+                let saved = entry.saving && !saving && error.is_none() && result.is_some();
                 entry.saving = saving;
                 if busy {
                     if entry.cancel.is_none() {
@@ -75,8 +75,10 @@ impl Sidebar {
                 if let Some(result) = result {
                     if entry.result.as_deref() != Some(result.as_ref()) {
                         install(entry, result, cx);
-                        entry.receipt = saved.then(|| "Review saved".into());
                     }
+                }
+                if saved {
+                    entry.receipt = Some("Review saved".into());
                 }
                 cx.notify();
             }
@@ -218,14 +220,16 @@ impl Sidebar {
         else {
             return;
         };
+        entry.run = entry.run.wrapping_add(1);
         entry.checking = false;
         entry.checked_at = None;
         entry.freshness = None;
+        entry.receipt = None;
         controller.update(cx, |c, cx| {
             c.start(target.path.clone(), scope, String::new(), cx)
         });
     }
-    pub(super) fn restore_session_review(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::views::sidebar) fn restore_session_review(&mut self, cx: &mut Context<Self>) {
         if self.dashboard_open {
             return;
         }
@@ -283,7 +287,7 @@ impl Sidebar {
             controller.update(cx, |c, cx| c.reload(cx));
         }
     }
-    pub(super) fn linked_review_key(&self) -> Option<Key> {
+    pub(in crate::views::sidebar) fn linked_review_key(&self) -> Option<Key> {
         if self.dashboard_open {
             return None;
         }
@@ -292,7 +296,10 @@ impl Sidebar {
         };
         self.reviews.linked.get(&id).cloned()
     }
-    pub(super) fn review_scope_for_session(&self, id: SessionId) -> Option<Scope> {
+    pub(in crate::views::sidebar) fn review_scope_for_session(
+        &self,
+        id: SessionId,
+    ) -> Option<Scope> {
         self.reviews
             .linked
             .get(&id)
@@ -300,3 +307,7 @@ impl Sidebar {
             .and_then(|e| e.scope.clone())
     }
 }
+
+#[cfg(test)]
+#[path = "change_review_retained_tests.rs"]
+mod tests;
