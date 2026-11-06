@@ -674,6 +674,53 @@ impl SavedSession {
         self.native_config_version = 1;
     }
 
+    pub fn empty(key: String, provider: Provider, project: String, cwd: String) -> Self {
+        Self {
+            session_review: Default::default(),
+            rich_plans: Default::default(),
+            side_chats: Default::default(),
+            fork_origin: None,
+            claude_resume: None,
+            claude_subagents: Default::default(),
+            edit_checkpoints: Vec::new(),
+            pending_edit: None,
+            rewind_drafts: Vec::new(),
+            provider,
+            composer: ComposerSettings::default(),
+            context: None,
+            key,
+            project,
+            cwd,
+            label: provider.label().into(),
+            title: None,
+            title_generation: None,
+            roots: Vec::new(),
+            thread_id: None,
+            items: Default::default(),
+            work_periods: Vec::new(),
+            draft: String::new(),
+            draft_images: Vec::new(),
+            draft_reference: None,
+            config_args: Vec::new(),
+            native_config_version: 1,
+            activity_reporting: false,
+        }
+    }
+
+    /// Start an independent conversation with the current provider preferences.
+    pub fn independent_conversation(&self, key: String) -> Self {
+        let mut saved = self.fresh_conversation();
+        saved.key = key;
+        saved.rewind_drafts.clear();
+        saved.session_review = SessionReview::default();
+        saved
+    }
+
+    /// Persist a host-created native conversation before starting its transport.
+    pub fn persist_recovery(&self) -> Result<(), String> {
+        persist(self)
+    }
+
     pub(crate) fn fresh_conversation(&self) -> Self {
         let mut saved = self.clone();
         saved.thread_id = None;
@@ -3847,4 +3894,38 @@ pub(crate) fn recover_saved_for_test(saved: &SavedSession) -> SavedSession {
     let dir = tempfile::tempdir().unwrap();
     persist_in_dir(saved, dir.path()).unwrap();
     load_from_dir(dir.path()).unwrap().sessions.remove(0)
+}
+
+#[cfg(test)]
+mod independent_conversation_tests {
+    use super::*;
+    #[test]
+    fn new_session_preserves_preferences_and_clears_conversation_ownership() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let mut source = SavedSession::empty(
+                "source".into(),
+                provider,
+                "project".into(),
+                "/checkout".into(),
+            );
+            source.thread_id = Some("old-thread".into());
+            source.composer.model = Some("selected-model".into());
+            source.composer.effort = Some("medium".into());
+            source.config_args = vec!["permission-settings".into()];
+            source.draft = "untouched original draft".into();
+            source.items.push(json!({"id":"old","type":"userMessage","content":[{"type":"text","text":"private old conversation"}]}));
+            source.session_review.summary = "old receipt".into();
+            let fresh = source.independent_conversation("new-session".into());
+            assert_eq!(fresh.key, "new-session");
+            assert_eq!(fresh.provider, provider);
+            assert_eq!(fresh.composer.model, source.composer.model);
+            assert_eq!(fresh.config_args, source.config_args);
+            assert!(fresh.thread_id.is_none());
+            assert!(fresh.items.is_empty());
+            assert!(fresh.draft.is_empty());
+            assert!(fresh.session_review.summary.is_empty());
+            assert_eq!(source.draft, "untouched original draft");
+            assert_eq!(source.items.len(), 1);
+        }
+    }
 }

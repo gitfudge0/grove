@@ -381,7 +381,7 @@ The right-panel and Side chat controls belong to the persistent side container, 
 
 Files remains available from the persistent top-right controls alongside Side chat and Side panel in both explorer states. Its folder icon toggles the explorer open and closed, with Show files/Hide files labels and expanded state reflecting the current state. Omit the redundant Files text heading. Its compact right-hand explorer browses the selected checkout inside the same inset, rounded neutral field-well surface as the Checkout card. The explorer omits a filter field and full directory path; its content-sized heading leads with the worktree icon, muted project name, separator and worktree name separated by the shared small gap, without stretching labels into columns. Its width matches the compact Checkout panel tier, with padded card edges and truncating labels. The Files toolbar stays outside the card without a panel-edge border or header divider; folders disclose independently and file selection has a neutral fill. File-type and folder icons may use shared theme accents to aid recognition, while labels remain legible neutral text and filenames identify types without relying on color. This file-type treatment is distinct from status and agent identity colors.
 
-Selecting a file or activating any local file link in the transcript opens a read-only viewer over the transcript area, leaving the explorer on the right. The viewer does not compress content into another right-side column. Its borderless single-row header keeps an icon-only Back action, truncating file path and fixed Source/Preview action aligned; the full path remains available on hover. The read-only footer has no divider. Back to conversation and Escape restore the conversation, scroll position and draft, with keyboard focus returned to the source control where available. Viewer and explorer state belong to their session and checkout; switching destinations must not show content from another checkout. Local file links, including document, image, HTML and plan-file links, open in the viewer and retain line references. Explicit links labeled with “in browser” open browser-supported local files directly in the default browser. The viewer offers a fixed, centered browser icon action for HTML, PDF, SVG and supported raster images; its slot aligns with the Back action. A line reference navigates to and marks that source line; Markdown line references open Source view. Explicit transcript links may select an individual file outside the checkout, with its full path retained; they do not expand the explorer’s root. Embedded HTML reports and native plan review/approval controls retain their separate interactions.
+Selecting a file or activating any local file link in the transcript opens a read-only viewer over the transcript area, preserving explorer visibility and the current side-panel choices. Only an explicit user action opens the explorer. The viewer does not compress content into another right-side column. Its borderless single-row header keeps an icon-only Back action, truncating file path and fixed Source/Preview action aligned; the full path remains available on hover. The read-only footer has no divider. Back to conversation and Escape restore the conversation, scroll position and draft, with keyboard focus returned to the source control where available. Viewer and explorer state belong to their session and checkout; switching destinations must not show content from another checkout. Local file links, including document, image, HTML and plan-file links, open in the viewer and retain line references. Explicit links labeled with “in browser” open browser-supported local files directly in the default browser. The viewer offers a fixed, centered browser icon action for HTML, PDF, SVG and supported raster images; its slot aligns with the Back action. A line reference navigates to and marks that source line; Markdown line references open Source view. Explicit transcript links may select an individual file outside the checkout, with its full path retained; they do not expand the explorer’s root. Embedded HTML reports and native plan review/approval controls retain their separate interactions.
 
 Source views use language-aware highlighting through the shared native syntax/theme adapter. App-theme changes update open content, line selection, code surfaces and chrome together without reopening the file or resetting the reading position. Markdown supports rendered and source views; supported images use the existing image viewer. Missing, inaccessible, oversized and binary files show honest read-only states. File access is bounded and checkout-relative browsing does not follow symlinks outside its root. Immediate file selection, focus and reading-position changes do not add decorative motion.
 
@@ -404,9 +404,22 @@ Describe changes belongs to the selected Checkout card and appears for local
 changes or an attached PR. Scope choices use neutral selected controls; generation
 uses the shared dense action recipe and status marks. Its native reader replaces
 the main reading area while preserving Checkout and the conversation/draft.
-Descriptions, in-flight results, previews and feedback remain bound to session,
-checkout and scope across navigation; another selected checkout must not display
-the previous checkout's reader.
+Each invocation starts a dedicated retained conversation, preserving the source
+composer draft. The reader and its Conversation action share that session. Once
+a description is linked, the right-side Checkout panel always shows a **Describe
+changes** action to reopen it, including when no local edits or attached PR remain.
+The saved-description action leads the card before filesystem, script and Git
+tools so it is initially reachable in the compact panel. This is a navigation
+action; generation and regeneration remain explicit actions.
+Saved results and links survive restart, with one canonical result per PR or local
+checkout. The conversation shows its command and completion prose; captured
+schema/diff transport and reserved result payloads stay in model context and
+recovery storage rather than filling the visible transcript. Descriptions, in-flight results, previews and feedback remain bound to
+their session and source across navigation; another selected checkout must not
+display the previous checkout's reader. Finalizing a successful generation shows
+Saving description and disables cancellation until the atomic save finishes.
+When the side toolbar overlays the main reading area, the header reserves its
+shared control widths and gaps so source labels truncate before those controls.
 
 The reader uses the existing selectable Markdown typography and Mermaid renderer,
 compact sentence-case headings, transparent file disclosures, fixed trailing

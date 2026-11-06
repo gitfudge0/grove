@@ -27,7 +27,7 @@ impl CommitControl {
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
-    pub(crate) fn canceled(&self) -> bool {
+    pub fn canceled(&self) -> bool {
         self.state.load(Ordering::Acquire) == 1
     }
     fn begin_commit(&self) -> Result<(), String> {

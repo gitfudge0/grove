@@ -136,9 +136,27 @@ WebKitGTK and WebView2 harnesses.
 Checkout offers **Describe changes** when the selected checkout has local changes
 or an attached GitHub PR. Choose **Local changes** (staged, unstaged and nonignored
 untracked files against HEAD) or the attached **PR** (GitHub's base-to-head diff).
-The scopes are never combined. Descriptions are cached for the owning session,
-checkout and scope during the app lifetime; they do not alter the conversation,
-composer draft, index or working files.
+The scopes are never combined. A command or Checkout action creates a dedicated,
+retained conversation with the selected provider and checkout, preserving the
+originating composer draft. A repeated invocation while that source is generating
+opens the active session. The immutable diff is captured and saved before the
+session's normal provider turn receives it. The validated final result opens in
+the native reader; its Conversation action returns to the same retained conversation.
+
+Grove keeps one canonical private JSON result per PR identity or local checkout
+under its configuration directory's `change-descriptions/sources/`. Stable hashed
+paths are independent of session, model and snapshot revision. Session links and
+captured jobs are separate recovery metadata. Regeneration atomically replaces the
+same result, with a locked source claim and unique request identity preventing an
+older generation from overwriting a newer one, even after restart. Acknowledged
+cancellation/failure retires only its own request and preserves the previous result.
+
+A linked session always exposes **Describe changes** in the right-side Checkout
+panel, including after local edits disappear or a PR is detached. It reopens the
+saved page; it does not run generation. Both links and results survive restart.
+Reopening reads the canonical result, and freshness checks show stale or unavailable
+source state. Interrupted jobs may import their exact completed conversation result;
+Grove never resubmits an uncertain request automatically.
 
 The native reader shows a behavior-focused summary, file walkthrough grouped by
 purpose, optional Mermaid flow and explicit coverage. File expansion exposes its
@@ -146,7 +164,9 @@ summary and the captured read-only patch, not a subsequently changed live file.
 Binary, oversized, missing and model-omitted patches remain visible as coverage
 limits. No test execution is implied. Background freshness checks mark changed or
 unverifiable snapshots; stale results remain readable/copyable but cannot publish.
-Cancellation stops the generation process and preserves the previous description.
+Cancellation interrupts the owning provider turn and preserves the previous
+saved description. Saving a completed result is a short finalization phase with
+Cancel disabled.
 
 **Copy Markdown** copies the generated result. **Update PR description** opens an
 editable native preview, preserves existing human context and the PR title, and
@@ -162,14 +182,19 @@ Grove bundles `describe-changes/SKILL.md`. In either provider's Grove composer,
 `/describe-changes` or `$describe-changes` opens the same native workflow. Optional
 `local`, `pr`, or a GitHub.com pull request URL selects a scope. Explicit URLs
 describe that PR without switching or attaching the checkout. Dashboard commands
-are intercepted before catalog discovery or conversation activation and use the
-Dashboard composer's selected provider and checkout. Without an argument, use
+are intercepted before catalog discovery or activation of the originating draft;
+the new session uses the Dashboard composer's selected provider and checkout. Without an argument, use
 Checkout's visible choice, defaulting to local changes before a scope has been
 selected.
 Completions reserve this name, and Grove intercepts the whole command before
-provider submission. The command draft stays intact; attachments and quoted
+submitting it to the originating provider. The new session receives a captured-diff
+generation prompt with a unique durable request identity. The command draft stays
+intact; attachments and quoted
 references are rejected with an explanation and preserved. Invalid arguments show
 usage. This is a user-invoked Grove skill, not an autonomous model tool; provider
 global skill directories remain unchanged, and read-only side conversations do
-not receive it. Codex and Claude generation uses their existing authenticated CLIs
-with tools, integrations and startup hooks disabled in a private temporary cwd.
+not receive it. Codex and Claude use their normal authenticated conversation
+transports and selected model/preferences. The generation prompt instructs the
+provider to use only the captured diff, without tools or repository writes; this
+skill does not expand the session's permissions. Later conversation turns remain
+ordinary user-directed conversation.

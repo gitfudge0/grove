@@ -7,6 +7,7 @@ mod agent_guidance;
 pub mod app_theme;
 pub mod attention;
 pub mod change_description;
+pub mod change_description_store;
 pub mod checkout_git;
 pub mod checkout_pr;
 pub mod checkpoint;

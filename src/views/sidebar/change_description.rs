@@ -15,14 +15,18 @@ use grove_core::{
     describe_skill::ScopePreference,
 };
 use std::sync::Arc;
+#[path = "change_description_session.rs"]
+mod session;
 
 const DESCRIPTION_WIDTH: f32 = 700.;
+// The persistent side toolbar has three shared square controls and two gaps.
+const READER_TOOLBAR_INSET: f32 = CHROME_CONTROL_H * 3. + SPACE_LG * 2. + SPACE_20 * 2.;
 const FRESHNESS_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Key {
+pub(super) struct Key {
     owner: String,
-    path: String,
+    pub(super) path: String,
     scope: String,
 }
 #[derive(Default)]
@@ -36,14 +40,23 @@ pub(super) struct Descriptions {
     return_focus: Option<FocusHandle>,
     open_source: Option<FocusHandle>,
     focus_pending: bool,
+    sessions: HashMap<SessionId, gpui::Subscription>,
+    hydrated: HashSet<(SessionId, String)>,
+    linked: HashMap<SessionId, Key>,
+    #[cfg(test)]
+    store_root: Option<std::path::PathBuf>,
 }
 #[derive(Default)]
 struct Entry {
     scope: Option<Scope>,
+    session: Option<SessionId>,
+    session_key: Option<String>,
+    pending: Option<session::Pending>,
     result: Option<Arc<Description>>,
     run: u64,
     cancel: Option<Arc<CommitControl>>,
     publishing: bool,
+    finalizing: bool,
     resolving: bool,
     error: Option<String>,
     freshness: Option<Result<bool, String>>,
@@ -114,6 +127,11 @@ impl Sidebar {
             self.checkout_panel.chosen_root.as_deref(),
         );
         self.descriptions.open.as_ref().is_some_and(|key| {
+            if key.owner == owner(&self.selection)
+                && self.linked_description_key().as_ref() == Some(key)
+            {
+                return true;
+            }
             key.owner == owner(&self.selection)
                 && selected.as_ref().is_some_and(|(_, path)| path == &key.path)
         })
@@ -147,6 +165,13 @@ impl Sidebar {
         self.descriptions.open = None;
         if let Some(source) = self.descriptions.return_focus.take() {
             source.focus(window, cx);
+        } else if let Some(Selection::Session(id)) = self.selection {
+            if let Some(view) = self.codex_views.get(&id) {
+                view.focus_handle(cx).focus(window, cx);
+            } else {
+                self.focus.focus(window, cx);
+                self.pending_canvas_focus = Some(id);
+            }
         }
         cx.notify();
     }
@@ -174,7 +199,7 @@ impl Sidebar {
             .cloned();
         if let ScopePreference::PullRequestUrl(url) = &preference {
             // An explicit URL does not replace Checkout's local/attached-PR choice.
-            self.begin_description(
+            self.start_description_conversation(
                 path,
                 Scope::PullRequest { url: url.clone() },
                 Some(source),
@@ -189,7 +214,7 @@ impl Sidebar {
             self.descriptions
                 .scopes
                 .insert((owner(&self.selection), path.clone()), Scope::Local);
-            self.begin_description(path, Scope::Local, Some(source), cx);
+            self.start_description_conversation(path, Scope::Local, Some(source), cx);
             return;
         }
         // Resolve the attached PR independently of the visibility and cached loading state of Checkout.
@@ -233,7 +258,7 @@ impl Sidebar {
                 if let Some(entry) = this.descriptions.entries.get_mut(&resolving_key) { entry.resolving = false; if let Err(error) = &scope { entry.error = Some(error.clone()); } }
                 if let Ok(scope) = scope {
                     this.descriptions.scopes.insert((resolving_key.owner.clone(), path.clone()), scope.clone());
-                    this.begin_description(path, scope, Some(source), cx);
+                    this.start_description_conversation(path, scope, Some(source), cx);
                 }
                 cx.notify();
             });
@@ -253,124 +278,54 @@ impl Sidebar {
         source: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
-        let provider = match self.checkout_commit_provider(cx) {
-            Ok(p) => p,
-            Err(error) => {
-                self.description_error(error, cx);
-                return;
-            }
-        };
+        // Regeneration stays in the owning description conversation. Every new
+        // command/Checkout request starts an independent session and links it to
+        // the same canonical source file.
         let key = key(&self.selection, &path, &scope);
         if self
             .descriptions
             .entries
             .get(&key)
-            .is_some_and(|entry| entry.cancel.is_some() || entry.publishing)
+            .is_some_and(|entry| entry.session.is_some())
         {
-            self.descriptions.open = Some(key);
-            self.descriptions.focus_pending = true;
-            if let Some(source) = source {
-                self.descriptions.return_focus = Some(source);
-            }
-            cx.notify();
-            return;
+            self.run_session_description(key, cx);
+        } else {
+            self.start_description_conversation(path, scope, source, cx);
         }
-        self.descriptions.revision = self.descriptions.revision.wrapping_add(1);
-        let run = self.descriptions.revision;
-        let cancel = Arc::new(CommitControl::default());
-        let entry = self.descriptions.entries.entry(key.clone()).or_default();
-        entry.scope = Some(scope.clone());
-        entry.cancel = Some(cancel.clone());
-        entry.run = run;
-        entry.error = None;
-        entry.receipt = None;
-        entry.preview = None;
-        if let Some(source) = source {
-            self.descriptions.return_focus = Some(source);
-        }
-        self.descriptions.open = Some(key.clone());
-        self.descriptions.focus_pending = true;
-        self.descriptions
-            .focus
-            .get_or_insert_with(|| cx.focus_handle());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    domain::generate(
-                        std::path::Path::new(&path),
-                        &scope,
-                        provider,
-                        &cancel,
-                        |_| {},
-                    )
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                let Some(entry) = this
-                    .descriptions
-                    .entries
-                    .get_mut(&key)
-                    .filter(|e| e.run == run)
-                else {
-                    return;
-                };
-                entry.cancel = None;
-                match result {
-                    Ok(description) => {
-                        let summary = format!(
-                            "# {}\n\n{}\n\n## Description\n\n{}",
-                            description.title,
-                            description.types.join(" · "),
-                            description
-                                .summary
-                                .iter()
-                                .map(|s| format!("- {s}"))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        );
-                        entry.text = Some(cx.new(|cx| TextViewState::markdown(&summary, cx)));
-                        entry.file_text.clear();
-                        for file in &description.files {
-                            let source = format!(
-                                "**{}**\n\n{}",
-                                file.title,
-                                file.summary
-                                    .iter()
-                                    .map(|s| format!("- {s}"))
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            );
-                            entry.file_text.insert(
-                                file.path.clone(),
-                                cx.new(|cx| TextViewState::markdown(&source, cx)),
-                            );
-                        }
-                        entry.diagram = description.diagram.as_ref().map(|diagram| {
-                            cx.new(|cx| {
-                                TextViewState::markdown(&format!("```mermaid\n{diagram}\n```"), cx)
-                            })
-                        });
-                        entry.result = Some(Arc::new(description));
-                        entry.freshness = None;
-                        entry.checked_at = None;
-                        entry.checking = false;
-                        entry.expanded.clear();
-                        entry.scroll = ScrollHandle::default();
-                        entry.diff = None;
-                        entry.receipt = Some("Description ready".into());
-                    }
-                    Err(error) => entry.error = Some(error),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
+
     fn cancel_description(&mut self, key: &Key, cx: &mut Context<Self>) {
+        let retired = self
+            .descriptions
+            .entries
+            .get(key)
+            .filter(|entry| !entry.finalizing)
+            .and_then(|entry| {
+                Some((
+                    entry.session_key.clone()?,
+                    entry.pending.as_ref()?.generation.clone(),
+                ))
+            });
+        if let Some((session_key, generation)) = retired {
+            self.retire_description_request(session_key, generation, cx);
+        }
         if let Some(entry) = self.descriptions.entries.get_mut(key) {
+            if entry.finalizing {
+                return;
+            }
             if let Some(cancel) = &entry.cancel {
                 cancel.cancel();
+            }
+            if let Some(id) = entry.session {
+                if let Some(session) = self.runtime.read(cx).registry.read(cx).codex(id).cloned() {
+                    session.update(cx, |session, cx| {
+                        if session.state.turn_id.is_some() {
+                            session.send(grove_core::codex::Action::Interrupt, cx);
+                        } else {
+                            cx.notify();
+                        }
+                    });
+                }
             }
             // Do not report cancellation until the child process has acknowledged exit.
         }
@@ -430,6 +385,60 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.restore_session_description(cx);
+        if let Some(target) = self.linked_description_key() {
+            self.check_description(&target, cx);
+            let entry = self.descriptions.entries.get(&target);
+            let busy = entry.is_some_and(|e| e.cancel.is_some());
+            let stale = entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false))));
+            let unavailable =
+                entry.is_some_and(|e| matches!(e.freshness, Some(Err(_))) || e.error.is_some());
+            let source_focus = self
+                .descriptions
+                .open_source
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
+            let return_focus = source_focus.clone();
+            return div()
+                .id("describe-controls")
+                .debug_selector(|| "describe-controls".into())
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .px(rpx(SPACE_2XL))
+                .py(rpx(SPACE_LG))
+                .child(
+                    action("describe-open", "Describe changes", "diff", window, cx)
+                        .with_focus_handle(source_focus)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.reload_description_result(&target, cx);
+                            this.descriptions.return_focus = Some(return_focus.clone());
+                            this.descriptions.open = Some(target.clone());
+                            this.descriptions.focus_pending = true;
+                            cx.notify();
+                        })),
+                )
+                .when(busy || stale || unavailable, |column| {
+                    column.child(status::label(
+                        "describe-panel-state",
+                        if busy {
+                            StatusKind::Working
+                        } else {
+                            StatusKind::Warning
+                        },
+                        if busy {
+                            "Generating…"
+                        } else if stale {
+                            "Out of date"
+                        } else {
+                            "Needs attention"
+                        },
+                        ICON_SM,
+                        cx,
+                    ))
+                })
+                .into_any_element();
+        }
         if !local_changes && pr.is_none() {
             return div().into_any_element();
         }
@@ -601,6 +610,9 @@ impl Sidebar {
         let Some(description) = &entry.result else {
             return;
         };
+        if std::path::Path::new(&description.snapshot.checkout) != std::path::Path::new(&key.path) {
+            return;
+        }
         let body = description.pr_body();
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -613,6 +625,7 @@ impl Sidebar {
         cx.notify();
     }
     fn publish_description(&mut self, key: &Key, cx: &mut Context<Self>) {
+        let store = self.description_store();
         let Some(entry) = self.descriptions.entries.get_mut(key) else {
             return;
         };
@@ -638,7 +651,8 @@ impl Sidebar {
             let path = key.path.clone();
             let result = cx
                 .background_spawn(async move {
-                    domain::publish(std::path::Path::new(&path), &description, &body)
+                    store?.publish_current(std::path::Path::new(&path), &description, &body)?;
+                    Ok::<_, String>(())
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -711,7 +725,14 @@ impl Sidebar {
             .items_center()
             .gap(rpx(SPACE_LG))
             .min_h(rpx(APPBAR_TOTAL_H))
-            .px(rpx(SPACE_3XL));
+            .px(rpx(SPACE_3XL))
+            .when(
+                self.checkout_panel.toggle_available
+                    && (self.checkout_panel.hidden
+                        || Self::logical_window_width(window)
+                            < super::checkout_panel::CHECKOUT_SIDE_VIEWPORT),
+                |header| header.pr(rpx(READER_TOOLBAR_INSET)),
+            );
         header = header.child(
             action(
                 "describe-back",
@@ -761,7 +782,11 @@ impl Sidebar {
             body = body.child(status::label(
                 "description-generating",
                 StatusKind::Working,
-                "Reading the diff and describing changes…",
+                if entry.finalizing {
+                    "Saving description…"
+                } else {
+                    "Reading the diff and describing changes…"
+                },
                 ICON_SM,
                 cx,
             ));
@@ -774,6 +799,7 @@ impl Sidebar {
                     window,
                     cx,
                 )
+                .disabled(entry.finalizing)
                 .on_click(cx.listener(move |this, _, _, cx| this.cancel_description(&target, cx))),
             );
         }
@@ -943,7 +969,11 @@ impl Sidebar {
                     body = body.child(status::label(
                         "description-stale",
                         StatusKind::Warning,
-                        "Changes updated since this description. Regenerate before publishing.",
+                        if matches!(description.snapshot.scope, Scope::Local) {
+                            "Changes updated since this description. Regenerate to refresh."
+                        } else {
+                            "Changes updated since this description. Regenerate before publishing."
+                        },
                         ICON_SM,
                         cx,
                     ));
@@ -1192,7 +1222,11 @@ impl Sidebar {
                         window,
                         cx,
                     )
-                    .disabled(busy || publishing || !matches!(entry.freshness, Some(Ok(true))))
+                    .disabled(
+                        busy || publishing
+                            || !matches!(entry.freshness, Some(Ok(true)))
+                            || description.snapshot.checkout != key.path,
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_description_preview(&target, window, cx);
                     })),
@@ -1246,3 +1280,7 @@ impl Sidebar {
 #[cfg(test)]
 #[path = "change_description_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "change_description_live_tests.rs"]
+mod live_tests;

@@ -15,7 +15,7 @@ use std::path::Path;
 
 const CARD_WIDTH: f32 = 280.;
 pub(super) const WIDE_VIEWPORT: f32 = MODAL_W_XL + MODAL_W_SM;
-const CHECKOUT_SIDE_VIEWPORT: f32 = MODAL_W_XL;
+pub(super) const CHECKOUT_SIDE_VIEWPORT: f32 = MODAL_W_XL;
 const NARROW_HEIGHT_FRACTION: f32 = 0.25;
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const REMOTE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -2811,6 +2811,8 @@ impl Sidebar {
         let wide = !self.is_zen() && Self::logical_window_width(window) >= CHECKOUT_SIDE_VIEWPORT;
         self.checkout_panel.agents_visible = !self.is_zen() || self.checkout_panel.expanded;
         let selected = selected_checkout(&targets, self.checkout_panel.chosen_root.as_deref());
+        self.restore_session_description(cx);
+        let linked_description = self.linked_description_key();
         let mut card = project_field_well(false, false)
             .id("checkout-card")
             .debug_selector(|| "checkout-card".into())
@@ -2820,6 +2822,11 @@ impl Sidebar {
             .px_0()
             .py(rpx(SPACE_SM))
             .gap(rpx(SPACE_XS));
+        if let Some(linked) = &linked_description {
+            // Saved artifacts remain reachable above the card's scrolling Git tools.
+            card =
+                card.child(self.render_description_controls(&linked.path, false, None, window, cx));
+        }
         if !agents_only {
             if let Some((idx, path)) = selected {
                 if self.checkout_panel.path.as_ref() != Some(&path) {
@@ -3595,7 +3602,12 @@ impl Sidebar {
                     );
             }
         }
-        if let Some(path) = self.checkout_panel.path.clone() {
+        if let Some(path) = self
+            .checkout_panel
+            .path
+            .clone()
+            .filter(|_| linked_description.is_none())
+        {
             let local = self
                 .checkout_panel
                 .summary

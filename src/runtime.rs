@@ -648,6 +648,55 @@ impl Runtime {
         Ok(id)
     }
     /// Register the exact Dashboard session entity so its composer and process retain ownership.
+    /// A description is a normal retained conversation with its own stable key.
+    pub(crate) fn start_description_session(
+        &mut self,
+        saved: grove_core::codex::SavedSession,
+        cx: &mut Context<Self>,
+    ) -> Result<SessionId, String> {
+        if !native_codex_enabled(&cx.global::<SettingsState>().store, None) {
+            return Err("Enable native agents before describing changes.".into());
+        }
+        if self
+            .provider_updates
+            .read(cx)
+            .is_updating(saved.provider.agent())
+        {
+            return Err("This provider is updating. Try again when it finishes.".into());
+        }
+        if let Some(error) = crate::entities::codex_session::workspace_restore_error(
+            &[std::path::PathBuf::from(&saved.cwd)],
+            None,
+        ) {
+            return Err(error);
+        }
+        if !std::path::Path::new(&saved.cwd).is_dir() {
+            return Err("The selected checkout is no longer available.".into());
+        }
+        if let Ok(project) = grove_core::session_meta::project_owner(
+            &cx.global::<SettingsState>().store.projects,
+            &saved.cwd,
+        ) {
+            if self.projects.read(cx).is_removing(&project.path)
+                || self.projects.read(cx).is_worktree_removing(&saved.cwd)
+            {
+                return Err(
+                    "Cannot start a description while its checkout is being removed.".into(),
+                );
+            }
+        }
+        let settings = &cx.global::<SettingsState>().store;
+        let args = saved.provider.agent().launch_args_for_backend(
+            true,
+            settings.yolo_enabled,
+            settings.chrome_enabled.unwrap_or(false),
+        );
+        saved.provider.launch_options(&args)?;
+        saved.persist_recovery()?;
+        let id = self.attach_native_codex(saved, args, cx);
+        Ok(id)
+    }
+
     pub(crate) fn adopt_dashboard_session(
         &mut self,
         session: Entity<crate::entities::codex_session::CodexSession>,

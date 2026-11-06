@@ -18,9 +18,30 @@ struct DescriptionReaderFixture {
 impl Render for DescriptionReaderFixture {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         window.set_rem_size(gpui::px(self.rem));
-        let reader = self
-            .sidebar
-            .update(cx, |sidebar, cx| sidebar.render_description(window, cx));
+        let reader = self.sidebar.update(cx, |sidebar, cx| {
+            if sidebar
+                .descriptions
+                .open
+                .as_ref()
+                .is_some_and(|target| target.owner == owner(&sidebar.selection))
+            {
+                sidebar.render_description(window, cx)
+            } else {
+                let controls =
+                    sidebar.render_description_controls(FIXTURE_PATH, false, None, window, cx);
+                div()
+                    .flex()
+                    .size_full()
+                    .child(
+                        div()
+                            .debug_selector(|| "description-fixture-conversation".into())
+                            .flex_1()
+                            .child("Conversation"),
+                    )
+                    .child(div().w(rpx(280.)).child(controls))
+                    .into_any_element()
+            }
+        });
         let sidebar = self.sidebar.clone();
         let measured = self.measured.clone();
         div()
@@ -433,84 +454,80 @@ fn describe_changes_linux_native_capture() {
         });
 }
 
-#[gpui::test]
-fn hidden_checkout_skill_uses_selected_worktree_without_a_mounted_panel(
+struct LinkedFixture {
+    sidebar: Entity<Sidebar>,
+    session: Entity<crate::entities::codex_session::CodexSession>,
+    id: SessionId,
+    actions: std::sync::mpsc::Receiver<grove_core::codex::Action>,
+    _updates: std::sync::mpsc::Sender<grove_core::codex::Snapshot>,
+    _store: tempfile::TempDir,
+}
+fn linked_fixture(
     cx: &mut gpui::TestAppContext,
-) {
-    let repository = tempfile::tempdir().unwrap();
-    let path = repository.path().to_string_lossy().into_owned();
-    assert!(std::process::Command::new("git")
-        .args(["init", "-b", "main"])
-        .current_dir(repository.path())
-        .output()
-        .unwrap()
-        .status
-        .success());
-    cx.update(|cx| {
-        initialize(cx);
-        cx.set_global(SettingsState::new(grove_core::storage::Store {
-            projects: vec![grove_core::storage::Project {
-                name: "Description skill fixture".into(),
-                path: path.clone(),
-                scripts: Default::default(),
-                archived: false,
-                worktree_dir: None,
-            }],
-            default_agent: Some(Agent::Codex),
-            ..Default::default()
-        }));
-    });
-    let mut sidebar_handle = None;
-    let mut source_handle = None;
+    provider: grove_core::codex::Provider,
+) -> (LinkedFixture, &mut gpui::VisualTestContext) {
+    cx.update(initialize);
+    let store_root = tempfile::tempdir().unwrap();
+    let store = grove_core::change_description_store::Store::new(store_root.path().into());
+    let description = frozen_description();
+    store.save(&description).unwrap();
+    let session_key = format!("description-navigation-{provider:?}");
+    store
+        .bind(
+            &session_key,
+            &grove_core::change_description_store::Source::from(&description),
+        )
+        .unwrap();
+    let (handle, actions) = grove_core::codex::Handle::channel();
+    let (updates, receive) = std::sync::mpsc::channel();
+    let mut retained = None;
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let runtime = cx.new(crate::runtime::Runtime::new);
-        runtime.read(cx).tree.clone().update(cx, |tree, _| {
-            tree.set_active_worktrees(
-                0,
-                vec![grove_core::git::Worktree {
-                    path: path.clone(),
-                    branch: "main".into(),
-                    mtime: None,
-                    is_main: true,
-                }],
-            );
-        });
-        let source = cx.focus_handle();
-        source_handle = Some(source.clone());
-        let sidebar = cx.new(|cx| {
-            let mut sidebar = Sidebar::new(runtime, window, cx);
-            sidebar.initial_selection_pending = false;
-            sidebar.selection = Some(Selection::Worktree(0, path.clone()));
-            sidebar.snapshot = sidebar
-                .runtime
-                .update(cx, |runtime, cx| runtime.snapshot(cx));
-            // No Checkout rendering occurs in this fixture. Its cached path and
-            // Git/PR state remain uninitialized, reproducing the hidden-panel bug.
-            sidebar.checkout_panel.hidden = true;
-            let local = key(&sidebar.selection, &path, &Scope::Local);
-            sidebar.descriptions.entries.insert(
-                local,
-                Entry {
-                    scope: Some(Scope::Local),
-                    // Join a preseeded run so the test never starts a model process.
-                    cancel: Some(Arc::new(CommitControl::default())),
-                    ..Default::default()
+        let (sidebar, source) = create_sidebar(window, cx);
+        let mut saved = grove_core::codex::SavedSession::empty(
+            session_key.clone(),
+            provider,
+            String::new(),
+            FIXTURE_PATH.into(),
+        );
+        saved.draft = "Keep this follow-up draft while reading changes".into();
+        saved.draft_images = vec!["retained-image-draft".into()];
+        let mut snapshot = grove_core::codex::Snapshot::new(saved);
+        snapshot.status = grove_core::codex::Status::Idle;
+        let session = cx.new(|cx| {
+            crate::entities::codex_session::CodexSession::from_connection(
+                snapshot,
+                grove_core::codex::Connection {
+                    handle,
+                    updates: receive.into(),
                 },
-            );
-            let scope = Scope::PullRequest {
-                url: "https://github.com/gitfudge0/grove/pull/17".into(),
-            };
-            sidebar.descriptions.entries.insert(
-                key(&sidebar.selection, &path, &scope),
-                Entry {
-                    scope: Some(scope),
-                    cancel: Some(Arc::new(CommitControl::default())),
-                    ..Default::default()
-                },
-            );
-            sidebar
+                cx,
+            )
         });
-        sidebar_handle = Some(sidebar.clone());
+        let runtime = sidebar.read(cx).runtime.clone();
+        let id = runtime.update(cx, |runtime, cx| {
+            runtime.adopt_dashboard_session(session.clone(), cx)
+        });
+        sidebar.update(cx, |sidebar, cx| {
+            let old = sidebar.descriptions.open.take().unwrap();
+            let mut entry = sidebar.descriptions.entries.remove(&old).unwrap();
+            sidebar.dashboard_open = false;
+            sidebar.selection = Some(Selection::Session(id));
+            sidebar.checkout_panel.chosen_root = Some(FIXTURE_PATH.into());
+            sidebar.snapshot = runtime.update(cx, |runtime, cx| runtime.snapshot(cx));
+            let target = key(
+                &sidebar.selection,
+                FIXTURE_PATH,
+                &description.snapshot.scope,
+            );
+            entry.session = Some(id);
+            entry.session_key = Some(session_key.clone());
+            sidebar.descriptions.entries.insert(target.clone(), entry);
+            sidebar.descriptions.linked.insert(id, target);
+            sidebar.descriptions.hydrated.insert((id, session_key));
+            sidebar.descriptions.store_root = Some(store_root.path().into());
+            cx.notify();
+        });
+        retained = Some((sidebar.clone(), session, id));
         let fixture = cx.new(|_| DescriptionReaderFixture {
             sidebar,
             source,
@@ -521,91 +538,205 @@ fn hidden_checkout_skill_uses_selected_worktree_without_a_mounted_panel(
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
     });
-    let sidebar = sidebar_handle.unwrap();
-    let source = source_handle.unwrap();
-    for preference in [
-        ScopePreference::Local,
-        ScopePreference::Current,
-        ScopePreference::PullRequestUrl("https://github.com/gitfudge0/grove/pull/17".into()),
+    cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(1000.)));
+    draw(cx);
+    let (sidebar, session, id) = retained.unwrap();
+    (
+        LinkedFixture {
+            sidebar,
+            session,
+            id,
+            actions,
+            _updates: updates,
+            _store: store_root,
+        },
+        cx,
+    )
+}
+fn assert_linked_draft(fixture: &LinkedFixture, cx: &gpui::VisualTestContext) {
+    fixture.session.read_with(cx, |session, _| {
+        assert_eq!(
+            session.state.saved.draft,
+            "Keep this follow-up draft while reading changes"
+        );
+        assert_eq!(session.state.saved.draft_images, ["retained-image-draft"]);
+    });
+}
+
+#[gpui::test]
+fn linked_session_panel_reopens_description_without_local_changes_or_attached_pr(
+    cx: &mut gpui::TestAppContext,
+) {
+    for provider in [
+        grove_core::codex::Provider::Codex,
+        grove_core::codex::Provider::Claude,
     ] {
-        let scope = match &preference {
-            ScopePreference::PullRequestUrl(url) => Scope::PullRequest { url: url.clone() },
-            _ => Scope::Local,
-        };
+        let (fixture, cx) = linked_fixture(cx, provider);
+        assert!(cx
+            .debug_bounds("description-fixture-conversation")
+            .is_some());
+        assert!(cx.debug_bounds("description-reader").is_none());
+        let open = cx.debug_bounds("describe-open").expect(
+            "linked result must remain in the side panel with no live changes or attached PR",
+        );
+        cx.simulate_click(open.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("description-reader").is_some());
+        fixture.sidebar.read_with(cx, |sidebar, cx| {
+            assert!(sidebar.description_is_open(cx));
+            assert_eq!(sidebar.selection, Some(Selection::Session(fixture.id)));
+        });
+        assert_linked_draft(&fixture, cx);
+        let conversation = cx.debug_bounds("describe-back").unwrap();
+        cx.simulate_click(conversation.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx
+            .debug_bounds("description-fixture-conversation")
+            .is_some());
+        assert!(cx.debug_bounds("description-reader").is_none());
+        assert_linked_draft(&fixture, cx);
+        let open = cx.debug_bounds("describe-open").unwrap();
+        cx.simulate_click(open.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("description-reader").is_some());
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        assert!(cx
+            .debug_bounds("description-fixture-conversation")
+            .is_some());
+        assert!(cx.debug_bounds("describe-open").is_some());
         cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                sidebar.descriptions.open = None;
-                sidebar.descriptions.scopes.clear();
-                sidebar.files_active = true;
-                sidebar.checkout_panel.side_chat_owner = sidebar.selection.clone();
-                source.focus(window, cx);
-                sidebar.invoke_description_skill(preference, source.clone(), cx);
-                let expected = key(&sidebar.selection, &path, &scope);
-                assert_eq!(sidebar.descriptions.open.as_ref(), Some(&expected));
+            let sidebar = fixture.sidebar.read(cx);
+            assert!(sidebar.descriptions.open.is_none());
+            assert!(sidebar
+                .descriptions
+                .open_source
+                .as_ref()
+                .unwrap()
+                .is_focused(window));
+        });
+        assert_linked_draft(&fixture, cx);
+        assert!(
+            fixture.actions.try_iter().all(|action| !matches!(
+                action,
+                grove_core::codex::Action::Prompt(_)
+                    | grove_core::codex::Action::Submit { .. }
+                    | grove_core::codex::Action::SubmitWithMode { .. }
+            )),
+            "opening a saved description must not regenerate or submit another prompt"
+        );
+    }
+}
+
+#[gpui::test]
+fn stale_linked_description_keeps_panel_action_and_never_leaks_to_another_session(
+    cx: &mut gpui::TestAppContext,
+) {
+    for provider in [
+        grove_core::codex::Provider::Codex,
+        grove_core::codex::Provider::Claude,
+    ] {
+        let (fixture, cx) = linked_fixture(cx, provider);
+        cx.update(|_, cx| {
+            fixture.sidebar.update(cx, |sidebar, cx| {
+                let target = sidebar
+                    .descriptions
+                    .linked
+                    .get(&fixture.id)
+                    .unwrap()
+                    .clone();
+                sidebar
+                    .descriptions
+                    .entries
+                    .get_mut(&target)
+                    .unwrap()
+                    .freshness = Some(Ok(false));
+                cx.notify();
+            })
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("status-mark-describe-panel-state")
+                .is_some(),
+            "the saved source needs a visible stale-state mark"
+        );
+        let open = cx.debug_bounds("describe-open").unwrap();
+        cx.simulate_click(open.center(), gpui::Modifiers::default());
+        draw(cx);
+        assert!(cx.debug_bounds("status-mark-description-stale").is_some());
+        let publish = cx.debug_bounds("describe-publish").unwrap();
+        cx.simulate_click(publish.center(), gpui::Modifiers::default());
+        draw(cx);
+        fixture.sidebar.read_with(cx, |sidebar, _| {
+            let target = sidebar.descriptions.linked.get(&fixture.id).unwrap();
+            assert!(
+                sidebar
+                    .descriptions
+                    .entries
+                    .get(target)
+                    .unwrap()
+                    .preview
+                    .is_none(),
+                "a stale description must not open a publishing preview"
+            );
+        });
+        let other = cx.update(|_, cx| {
+            let (handle, _actions) = grove_core::codex::Handle::channel();
+            let (_updates, receive) = std::sync::mpsc::channel();
+            let saved = grove_core::codex::SavedSession::empty(
+                format!("unrelated-{provider:?}"),
+                provider,
+                String::new(),
+                FIXTURE_PATH.into(),
+            );
+            let session = cx.new(|cx| {
+                crate::entities::codex_session::CodexSession::from_connection(
+                    grove_core::codex::Snapshot::new(saved),
+                    grove_core::codex::Connection {
+                        handle,
+                        updates: receive.into(),
+                    },
+                    cx,
+                )
+            });
+            let runtime = fixture.sidebar.read(cx).runtime.clone();
+            let id = runtime.update(cx, |runtime, cx| {
+                runtime.adopt_dashboard_session(session, cx)
+            });
+            fixture.sidebar.update(cx, |sidebar, cx| {
+                sidebar.selection = Some(Selection::Session(id));
+                sidebar
+                    .descriptions
+                    .hydrated
+                    .insert((id, format!("unrelated-{provider:?}")));
+                assert!(!sidebar.description_is_open(cx));
+                cx.notify();
+            });
+            id
+        });
+        draw(cx);
+        assert_ne!(other, fixture.id);
+        assert!(cx.debug_bounds("description-reader").is_none());
+        assert!(
+            cx.debug_bounds("describe-open").is_none(),
+            "an unrelated session must not borrow another session's description action"
+        );
+        cx.update(|_, cx| {
+            fixture.sidebar.update(cx, |sidebar, cx| {
+                sidebar.selection = Some(Selection::Session(fixture.id));
                 assert!(sidebar.description_is_open(cx));
-                assert!(!sidebar.files_active);
-                assert!(sidebar.checkout_panel.side_chat_owner.is_none());
-                assert_eq!(sidebar.descriptions.return_focus.as_ref(), Some(&source));
+                cx.notify();
             })
         });
         draw(cx);
         assert!(cx.debug_bounds("description-reader").is_some());
         cx.simulate_keystrokes("escape");
         draw(cx);
-        cx.update(|window, cx| {
-            assert!(sidebar.read(cx).descriptions.open.is_none());
-            assert!(source.is_focused(window));
-        });
-    }
-    // Exercise the Dashboard's actual event subscription without starting a model.
-    cx.update(|window, cx| sidebar.update(cx, |sidebar, cx| sidebar.open_dashboard(window, cx)));
-    for provider in [
-        grove_core::codex::Provider::Codex,
-        grove_core::codex::Provider::Claude,
-    ] {
-        let dashboard_view = cx.update(|_, cx| {
-            sidebar.update(cx, |sidebar, cx| {
-                let dashboard = sidebar.dashboard.as_ref().unwrap();
-                dashboard
-                    .session
-                    .update(cx, |session, _| session.state.saved.provider = provider);
-                assert_eq!(sidebar.checkout_commit_provider(cx).unwrap(), provider);
-                assert_eq!(sidebar.dashboard_checkout(cx).unwrap().1, path);
-                dashboard.view.clone()
-            })
-        });
-        dashboard_view.update(cx, |_, cx| {
-            cx.emit(
-                super::super::super::codex_view::CodexViewEvent::DescribeChanges(
-                    ScopePreference::PullRequestUrl(
-                        "https://github.com/gitfudge0/grove/pull/17".into(),
-                    ),
-                    source.clone(),
-                ),
-            )
-        });
-        cx.update(|_, cx| {
-            let sidebar = sidebar.read(cx);
-            let scope = Scope::PullRequest {
-                url: "https://github.com/gitfudge0/grove/pull/17".into(),
-            };
-            assert_eq!(
-                sidebar.descriptions.open.as_ref(),
-                Some(&key(&sidebar.selection, &path, &scope))
-            );
-            assert!(sidebar.description_is_open(cx));
-            assert!(sidebar
-                .dashboard
-                .as_ref()
-                .unwrap()
-                .session
-                .read(cx)
-                .is_deferred());
-            assert!(sidebar.runtime.read(cx).registry.read(cx).all().is_empty());
-        });
-        cx.update(|window, cx| {
-            sidebar.update(cx, |sidebar, cx| sidebar.close_description(window, cx))
-        });
+        assert!(cx.debug_bounds("describe-open").is_some());
+        assert!(cx
+            .debug_bounds("status-mark-describe-panel-state")
+            .is_some());
+        assert_linked_draft(&fixture, cx);
     }
 }
 
@@ -672,3 +803,7 @@ fn publish_failure_keeps_edited_preview_and_never_offers_generation_retry(
         );
     });
 }
+
+#[cfg(target_os = "linux")]
+#[path = "change_description_shell_tests.rs"]
+mod shell;

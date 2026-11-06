@@ -230,60 +230,89 @@ above; this run does not establish the cause of the activity test failure.
 
 ## Describe changes
 
-The command-routing regression covers actual Submit for both Codex and Claude,
-in session and Dashboard composers while catalog discovery is pending. It checks
-local/attached-PR/explicit-URL routing, invalid syntax, retained drafts and absence
-of provider submissions. Removing the Dashboard interception makes the regression
-fail. Five parser tests and both composer-command fixtures passed. Four native
-reader fixtures also passed; the hidden-panel case now includes explicit URLs and
-the actual Dashboard event subscription, selected-provider ownership and absence
-of conversation activation. These are Linux native fixtures, not a live full-shell
-keyboard-to-reader session. Claude live generation and macOS/Windows were not
-rerun for this correction.
+The current workflow creates a retained provider conversation and stores one
+canonical result per PR or local checkout. Focused engine tests cover immutable
+capture, cancellation, malformed/unknown/duplicate results, bounded conversation
+imports, omission coverage, PR pagination and head/base/body guards. The eight-word
+summary target is editorial; nine-word bullets remain valid, while the existing
+one-to-four bullet, character, type, path and diagram limits remain enforced.
+PR freshness can be checked from another checkout; publishing still requires the
+capture checkout or regeneration there.
 
-A read-only live Codex run against `gitfudge0/grove#17` read the PR successfully
-but rejected the model's structured result. A second run passed with 20 described
-files, current PR identity, and unchanged fixture HEAD, index and working state.
-No PR body was published. Model-format rejection remains a retryable limitation;
-this correction changes command routing, not the generation validator. The live
-smoke example accepts an optional PR URL to reproduce this boundary.
+The delivery run passed 29 combined engine/storage tests, five command-parser
+tests, the independent-conversation preference test, nine native reader/lifecycle
+tests, the conversation-presentation test and the shared Codex/Claude composer
+fixture. Opt-in native captures and live-provider acceptance are ignored by
+ordinary test runs and were exercised separately below.
 
-Thirteen focused snapshot-engine tests passed. The core run also passed all
-four shared-skill parser/completion tests and seven commit-helper regressions. Coverage includes
-staged/unstaged/untracked data without index mutation, bounded reads despite
-concurrent file growth and final-component symlink swaps, omitted/binary/oversized
-patches, immutable HEAD, cancellation of snapshot subprocesses, malformed model
-output, GitHub pagination/truncated patches, and head/base/body guards on a fake
-GitHub boundary. No real PR body was changed by verification.
+Storage checks exercise restart reload, stable source paths, PR normalization,
+local-root isolation, private files, corruption preservation, pending capture
+recovery, unique generation attempts, old-request rejection, terminal retirement,
+and canonical-result publication guards. Imports compare their own generation
+token under a cross-process source lock. A superseded or canceled request cannot
+replace the canonical result, delete a newer job or be revived after retirement.
 
-The shared Codex/Claude composer fixture passed: both invocation forms route to
-the native action without provider submission, preserve the command draft,
-reject/preserve attachments, show invalid-argument usage, and avoid duplicate
-built-in completions. Core startup fixtures also check both providers receive
-the bundled skill text. This does not establish a live main-composer-to-provider
-end-to-end path. Codex live generation on an isolated Git repository passed;
-Claude's live attempt failed and `claude auth status` reported signed out.
+Codex and Claude native fixtures exercise the real linked Describe changes panel
+action even without local edits or an attached PR, Conversation/Escape return,
+focus and draft/image preservation, stale publishing rejection and session
+isolation. Request-matching fixtures cover repeated generations, restart,
+incomplete output and a completed captured turn followed by an active or failed
+unrelated turn. Fresh-session checks preserve provider/model preferences while
+clearing conversation ownership and retaining the originating draft.
 
-Four Linux production-reader fixtures passed hidden/uninitialized Checkout skill
-routing, publication-error draft preservation, file disclosure, captured-diff navigation,
-Escape, stale publishing rejection, preview focus and source restoration.
-Native reader captures exposed a fixed-height multiline-preview overflow; the
-owning well now grows and a geometry regression checks input containment and a
-reachable, nonoverlapping confirmation action. Captures exercise the reader in
-an isolated native root, rather than the complete session/Checkout shell. They
-are not participant testing. The final constrained narrow capture measured
-320 logical pixels wide; the optional Mermaid capture retained an earlier diff
-frame, so native Mermaid appearance remains unverified. macOS and Windows
-remain untested.
+A live normal Codex conversation generated and persisted a local description in
+an isolated configuration; reopening the store returned the same canonical result,
+and fixture HEAD, index and working state stayed unchanged. The initial default
+model was unavailable to this account; an isolated supported-model override passed
+without changing global configuration. A normal PR #17 conversation returned a
+20-file result but exposed the former eight-word hard rejection. After the bounded
+validator fix, the exact retained response was imported against its original
+pending snapshot and persisted/reloaded successfully, without another model call.
+The supported smoke is `describe_session_smoke`, with an empty temporary
+`GROVE_CONFIG_DIR` and optional `GROVE_DESCRIPTION_SMOKE_MODEL` override. Claude's
+auth check reported signed out; no live Claude generation ran. No PR body was
+published by these checks.
 
-Broad checks are not green. The initial workspace run aborted in
-`activity_growth_keeps_heading_and_composer_anchored` after a stack overflow and
-reported failures in approvals, measured message slots, task-strip navigation,
-and a shell PTY fixture. The PTY and dashboard tests passed separately with a
-16 MiB test stack; the three CodexView geometry/focus tests still failed in
-isolation. The core run passed 817 tests with nine ignored and the two documented
-GUI-environment failures above. A run excluding those two encountered the tmux
-export-refresh test, which passed in isolation. These broader failures remain
-unresolved. Strict core/UI Clippy also reports existing diagnostics outside the
-new feature modules; the final reader and engine files have no reported lint
-diagnostics. Formatting, compilation, and repository-artifact checks passed.
+A live native Linux acceptance also passed from `Sidebar.invoke_description_skill`:
+it created a distinct Codex session/key, preserved the source draft, captured the
+local fixture, completed the normal provider turn, imported and saved the result,
+reloaded the same canonical result/link, cleared its pending job, returned to the
+new conversation and reopened the same reader with native right-panel Enter.
+Changing the isolated fixture produced staleness while preserving the saved data.
+The owned provider's shutdown acknowledgment was required for success. This starts
+at the native skill handler; the composer Submit boundary is fixture-tested
+separately. An initial acceptance attempt reached successful generation/import but
+looked in the wrong test configuration: SettingsState's test isolation replaced
+GROVE_CONFIG_DIR. The maintained harness now requires matching empty
+GROVE_CONFIG_DIR and GROVE_TEST_CONFIG_DIR and checks the resolved path before
+starting. The corrected run passed without writes to user configuration.
+
+Linux native full-shell QA uses an isolated configuration and mocked session
+connection. It observes the actual Sidebar, Checkout card, conversation, linked
+button and native reader. This is distinct from the live core-provider smoke;
+the live acceptance below separately exercises the normal provider. Actual
+Codex mock shell captures at 569.6 by 679.2 and 1424 by 1698 logical pixels passed
+native Enter/Escape navigation, retained drafts, reader/panel coexistence and stale
+state. Capture found and corrected a narrow header/toolbar overlap and a linked
+action below the card's visible scroll area; the action now leads the card and
+the header reserves the toolbar's shared width. Narrow and wide dark recaptures
+were inspected after the fixes. The requested light candidate still captured a
+dark frame despite Light metadata, so light appearance remains unverified.
+Native captures require a 16 MiB test stack in this environment; the default-stack
+attempt overflowed. The initial window measured about 570 by 679 logical pixels
+due to X11 scale; capture metadata records actual dimensions rather than treating
+requested window size as evidence. macOS, Windows and optional Mermaid appearance
+remain unverified for this revision.
+
+The full workspace and strict Clippy suites were not rerun for this correction.
+Earlier broad checks had unresolved approvals, measured-message/task-strip and
+GUI-environment failures; those are not established as fixed by focused feature
+checks. Formatting, compilation and repository-artifact policy remain delivery
+checks; focused suites do not imply a green full workspace.
+
+Transcript file-link explorer visibility: the shared sidebar routes preserve the
+user's explorer and side-panel choices while opening the file viewer. The Linux
+GPUI regression exercises Codex and Claude session fixtures and the native
+browser-to-transcript event chain with the explorer hidden and shown. Live Codex
+and Claude provider-boundary checks, native pointer/keyboard and screenshot QA,
+and macOS/Windows checks remain untested for this change.

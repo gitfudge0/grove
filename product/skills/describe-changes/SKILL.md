@@ -1,48 +1,49 @@
 ---
 name: describe-changes
-description: Describe the selected checkout's local changes or attached pull request in Grove, with a concise summary, grouped file walkthrough, optional diagram, and explicit coverage.
+description: Start a Grove description session for local changes or a GitHub PR, with a saved summary, file walkthrough and explicit coverage.
 ---
 
 # Describe changes in Grove
 
-This is a Grove-hosted skill shared by Codex and Claude sessions. The user invokes
-`/describe-changes` (or `$describe-changes`) in Grove's composer, or chooses
-**Describe changes** in Checkout. Grove runs the same native description workflow
-for both entry points; invoking the skill does not submit a conversational prompt
-or alter the main agent's conversation.
+The user invokes `/describe-changes` (or `$describe-changes`) in Grove's composer,
+or chooses **Describe changes** in Checkout. Grove intercepts the command and
+starts a dedicated, retained Codex or Claude conversation. The originating draft
+is preserved. An invocation while the same source is already generating opens
+that active session instead of starting duplicate work.
 
-Use `/describe-changes local` for staged, unstaged, and nonignored untracked
-changes. Use `/describe-changes pr` for the attached pull request's base-to-head
-diff. Use `/describe-changes https://github.com/owner/repo/pull/17` to describe
-an explicit GitHub.com PR without changing the checkout or attaching it.
-Commands also work from the Dashboard before provider startup. Without an
-argument, use the scope selected in Checkout, defaulting to local changes when no
-scope has been selected. If the checkout
-has multiple possible scopes, keep that choice visible instead of combining them.
+Use `/describe-changes local` for staged, unstaged and nonignored untracked edits,
+`/describe-changes pr` for the attached PR, or
+`/describe-changes https://github.com/owner/repo/pull/17` for an explicit GitHub.com
+PR. With no argument, use Checkout's selected scope, defaulting to local changes.
+Scopes are never combined. An explicit PR URL does not switch or attach the checkout.
 
-## Result
+Grove captures the immutable diff, saves the request for recovery, and sends it
+through the new session's normal provider turn. Generate from the supplied capture
+only: do not inspect additional files, run tools, edit repository files, run tests,
+commit, push or publish. Return the requested `grove-description` JSON block so
+Grove can validate and save it. This skill adds no tools or permissions.
 
-Generate a concise behavior-focused title and one to four summary bullets. Group
-the file walkthrough by purpose, with each file's path, short change title, and
-brief supporting details. Include a diagram only when it explains a meaningful
-flow. Derive all claims from the captured diff, and identify omitted or truncated
-files. Describing changes does not establish that tests passed.
+The result has a behavior-focused title, one to four concise summary bullets,
+a file walkthrough grouped by purpose, optional Mermaid flow and explicit omitted
+coverage. Describing a diff does not establish that tests passed.
 
-The native reader retains the exact snapshot identity. When the checkout or PR
-changes, preserve the prior description, mark it out of date, and offer
-regeneration. Cancellation and failure preserve the previous result and checkout.
+There is one canonical saved result per PR, or per local checkout, in Grove's
+private configuration storage. Sessions link to that result; regeneration replaces
+it at the same path. Interrupted requests remain recoverable. Acknowledged failure
+or cancellation preserves the last saved result and retires that request; an older
+or canceled request cannot overwrite a newer result or be resurrected on restart.
 
-Generation stays inside Grove. Copy Markdown is explicit. Updating an attached
-PR is a separate user action with an editable preview; keep its title and existing
-context, recheck the snapshot and current description, and reject a stale update.
-A local description has no PR publishing action. Never commit, push, merge, or
-publish merely because the user requested a description.
+The native page opens after generation and remains available through the
+**Describe changes** button in that session's right-side Checkout panel, including
+when the checkout has no remaining local edits or attached PR. **Conversation**
+returns to the retained conversation; the panel button reopens the page. Saved
+results survive restart. Changed or unverifiable snapshots retain their content,
+show staleness and offer regeneration.
 
-## Agent boundary
+**Copy Markdown** is explicit. **Update PR description** is a separate action
+with an editable preview, current-result and snapshot guards, preserved human
+context and an unchanged PR title. A local description has no publishing action.
 
-Grove handles these user-entered invocations before provider submission. Mentioning
-this command in an assistant response does not execute it. Do not claim that a
-description was generated or published unless Grove reports that outcome. For a
-conversational request, explain the changes using available evidence or direct the
-user to the native action; this skill does not grant an additional tool or expand
-provider permissions. Read-only side conversations do not receive this capability.
+Mentioning a command in an assistant reply does not invoke it. Do not claim
+creation, generation, saving or publication without an observed Grove outcome.
+Read-only side conversations do not receive this capability.

@@ -1080,6 +1080,7 @@ pub struct CodexView {
     markdown_decorations: TextDecorationCollection,
     markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
+    pub(crate) description_scope: Option<grove_core::change_description::Scope>,
     input: Entity<InputState>,
     reference: Option<codex::ReferenceDraft>,
     submitted_reference: Option<String>,
@@ -1412,6 +1413,7 @@ impl CodexView {
             html,
             file_browser,
             native_plans: HashMap::new(),
+            description_scope: None,
             markdown_decorations,
             markdown_source: None,
             input,
@@ -3403,7 +3405,11 @@ impl CodexView {
         let plan_details = kind == "plan"
             && state.saved.provider == codex::Provider::Claude
             && item["tool"].is_string();
-        let text = codex::item_text(item);
+        let text = description_conversation_text(
+            self.description_scope.as_ref(),
+            kind,
+            &codex::item_text(item),
+        );
         let approval = (kind == "userMessage")
             .then(|| state.saved.rich_plans.approval_for_payload(&text))
             .flatten();
@@ -6974,7 +6980,11 @@ impl CodexView {
         }
         let copy_focus = self.ensure_control_focus(&format!("{key}:copy"), window, cx);
         let keyboard_key = key.clone();
-        let text = group.copy_text.clone();
+        let text = description_conversation_text(
+            self.description_scope.as_ref(),
+            "agentMessage",
+            &group.copy_text,
+        );
         let keyboard_text = text.clone();
         let mut button = if copied {
             header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
@@ -10555,6 +10565,65 @@ fn reference_prompt_copy(text: &str) -> String {
         "Referenced selection · {roles}\n{}\n\n{}",
         reference.text, reply
     )
+}
+
+// Snapshot/schema transport is retained for recovery and model context, while
+// the conversation presents its user-facing command and completion prose.
+fn description_conversation_text(
+    scope: Option<&grove_core::change_description::Scope>,
+    kind: &str,
+    text: &str,
+) -> String {
+    let Some(scope) = scope else {
+        return text.into();
+    };
+    if kind == "userMessage"
+        && text.starts_with("Describe ONLY the supplied immutable change snapshot.")
+        && text.contains("\n\nGrove request identity: ")
+    {
+        return match scope {
+            grove_core::change_description::Scope::Local => "/describe-changes local".into(),
+            grove_core::change_description::Scope::PullRequest { url } => {
+                format!("/describe-changes {url}")
+            }
+        };
+    }
+    if kind != "agentMessage" {
+        return text.into();
+    }
+    let mut result = Vec::new();
+    let mut hidden = false;
+    let mut other_fence = false;
+    for line in text.lines() {
+        let marker = line.trim();
+        if hidden {
+            if marker == "```" {
+                hidden = false;
+            }
+            continue;
+        }
+        if other_fence {
+            result.push(line);
+            if marker == "```" {
+                other_fence = false;
+            }
+            continue;
+        }
+        if marker == "```grove-description" {
+            hidden = true;
+            continue;
+        }
+        if marker.starts_with("```") {
+            other_fence = true;
+        }
+        result.push(line);
+    }
+    let result = result.join("\n").trim().to_owned();
+    if result.is_empty() && text.contains("```grove-description") {
+        "Change description data".into()
+    } else {
+        result
+    }
 }
 
 fn reference_prompt_markdown(text: &str) -> String {
@@ -14193,6 +14262,45 @@ mod tests {
                 assert!(view.read(cx).input.focus_handle(cx).is_focused(window))
             });
         }
+    }
+
+    #[test]
+    fn description_conversations_present_commands_and_prose_without_transport_payloads() {
+        use grove_core::change_description::Scope;
+        let scope = Scope::PullRequest {
+            url: "https://github.com/gitfudge0/grove/pull/17".into(),
+        };
+        let prompt="Describe ONLY the supplied immutable change snapshot. schema and captured diff\n\nGrove request identity: unique-attempt";
+        assert_eq!(
+            description_conversation_text(Some(&scope), "userMessage", prompt),
+            "/describe-changes https://github.com/gitfudge0/grove/pull/17"
+        );
+        assert_eq!(
+            description_conversation_text(None, "userMessage", prompt),
+            prompt
+        );
+        let answer="Prepared the change summary.\n```grove-description\n{\"private-payload\":true}\n```\nMore explanation.";
+        assert_eq!(
+            description_conversation_text(Some(&scope), "agentMessage", answer),
+            "Prepared the change summary.\nMore explanation."
+        );
+        assert_eq!(
+            description_conversation_text(None, "agentMessage", answer),
+            answer
+        );
+        assert_eq!(
+            description_conversation_text(
+                Some(&scope),
+                "agentMessage",
+                "Prepared.\n```grove-description\npartial"
+            ),
+            "Prepared."
+        );
+        let quoted = "```markdown\n```grove-description\nquoted source\n```";
+        assert_eq!(
+            description_conversation_text(Some(&scope), "agentMessage", quoted),
+            quoted
+        );
     }
 
     #[gpui::test]
