@@ -401,16 +401,21 @@ Side-panel action feedback uses a rotating blue open ring during work and a gree
 ## Change-description reader
 
 Describe changes belongs to the selected Checkout card and appears for local
-changes or an attached PR. Scope choices use neutral selected controls; generation
-uses the shared dense action recipe and status marks. Its native reader replaces
+changes or an attached PR. A sole local source needs no selector; its action
+reads **Describe changes** with “Uncommitted changes, including new files.” beneath
+it. When both sources are available, a compact shared dropdown selects Local
+changes or the attached PR. A sole PR is static source context. Generation uses
+the shared dense action recipe and status marks. Its native reader replaces
 the main reading area while preserving Checkout and the conversation/draft.
 Each invocation starts a dedicated retained conversation, preserving the source
 composer draft. The reader and its Conversation action share that session. Once
-a description is linked, the right-side Checkout panel always shows a **Describe
-changes** action to reopen it, including when no local edits or attached PR remain.
+a saved description is linked, the right-side Checkout panel always shows a **View
+description** action with its source to reopen it, including when no local edits
+or attached PR remain.
 The saved-description action leads the card before filesystem, script and Git
 tools so it is initially reachable in the compact panel. This is a navigation
-action; generation and regeneration remain explicit actions.
+action; generation remains explicit, and regeneration belongs inside the reader.
+Saved results show **Out of date** when their captured source has changed.
 Saved results and links survive restart, with one canonical result per PR or local
 checkout. The conversation shows its command and completion prose; captured
 schema/diff transport and reserved result payloads stay in model context and

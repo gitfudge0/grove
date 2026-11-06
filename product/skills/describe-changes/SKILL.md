@@ -34,7 +34,7 @@ or cancellation preserves the last saved result and retires that request; an old
 or canceled request cannot overwrite a newer result or be resurrected on restart.
 
 The native page opens after generation and remains available through the
-**Describe changes** button in that session's right-side Checkout panel, including
+**View description** button in that session's right-side Checkout panel, including
 when the checkout has no remaining local edits or attached PR. **Conversation**
 returns to the retained conversation; the panel button reopens the page. Saved
 results survive restart. Changed or unverifiable snapshots retain their content,

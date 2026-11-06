@@ -134,9 +134,10 @@ WebKitGTK and WebView2 harnesses.
 ## Describe changes
 
 Checkout offers **Describe changes** when the selected checkout has local changes
-or an attached GitHub PR. Choose **Local changes** (staged, unstaged and nonignored
-untracked files against HEAD) or the attached **PR** (GitHub's base-to-head diff).
-The scopes are never combined. A command or Checkout action creates a dedicated,
+or an attached GitHub PR. When both sources are available, a compact dropdown
+chooses **Local changes** (staged, unstaged and nonignored untracked files against
+HEAD) or the attached **PR** (GitHub's base-to-head diff). A sole source requires no
+selector. The scopes are never combined. A command or Checkout action creates a dedicated,
 retained conversation with the selected provider and checkout, preserving the
 originating composer draft. A repeated invocation while that source is generating
 opens the active session. The immutable diff is captured and saved before the
@@ -151,9 +152,11 @@ same result, with a locked source claim and unique request identity preventing a
 older generation from overwriting a newer one, even after restart. Acknowledged
 cancellation/failure retires only its own request and preserves the previous result.
 
-A linked session always exposes **Describe changes** in the right-side Checkout
-panel, including after local edits disappear or a PR is detached. It reopens the
-saved page; it does not run generation. Both links and results survive restart.
+A linked session with a saved result always exposes **View description** in the
+right-side Checkout panel, including after local edits disappear or a PR is detached. It reopens the
+saved page with source context and an **Out of date** status when stale; it does
+not run generation. Regeneration is available inside the reader. Both links and
+results survive restart.
 Reopening reads the canonical result, and freshness checks show stale or unavailable
 source state. Interrupted jobs may import their exact completed conversation result;
 Grove never resubmits an uncertain request automatically.

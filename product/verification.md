@@ -230,6 +230,16 @@ above; this run does not establish the cause of the activity test failure.
 
 ## Describe changes
 
+The panel-controls follow-up passed ten focused native reader/lifecycle fixtures,
+including source-menu pointer/keyboard selection, Enter reopening, Escape/focus
+restoration, single-source visibility, loading rejection and PR-only fallback.
+Saved-page navigation fixtures cover both Codex and Claude; live provider calls
+were not repeated for this UI change. Linux production-control captures were
+inspected for local generation, source selection, saved navigation and staleness
+in dark and light themes. The changed-rem capture did not produce usable content,
+so zoom appearance remains unverified; this does not close the full-shell light
+rendering gap recorded below. The 33 UI conformance checks also passed.
+
 The current workflow creates a retained provider conversation and stores one
 canonical result per PR or local checkout. Focused engine tests cover immutable
 capture, cancellation, malformed/unknown/duplicate results, bounded conversation
