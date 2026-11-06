@@ -205,7 +205,7 @@ ordinary user-directed conversation.
 
 ## Built-in prompts
 
-Settings → Prompts edits Commit message, PR creation, Describe changes, and Session
+Settings → Prompts edits Commit message, PR creation, Describe changes, Review changes, and Session
 title writing instructions for Codex and Claude. Overrides apply across projects
 to future generations. Save persists each prompt; Restore default removes its
 override. A compact picker opens one spacious editor at a time. Unsaved edits
@@ -223,3 +223,94 @@ native Markdown components. The existing Mermaid field provides diagrams.
 Snapshot context, file walkthrough and honest coverage remain visible independently.
 Copy Markdown and PR update previews include extended content. Older saved results
 without extended content remain readable. Prompt changes never rewrite saved results.
+
+
+## Review changes
+
+Checkout's source-specific Review action, `/review [local|pr|PR-URL]` and
+`$review [local|pr|PR-URL]` work from Dashboard and either Codex or Claude composer
+before catalog discovery or source draft activation. Local scope captures staged,
+unstaged and nonignored untracked changes against HEAD. PR scope captures the
+attached or explicitly supplied GitHub PR against its base. These scopes never
+combine. Invalid arguments and attached images/references are rejected with the
+source draft preserved.
+
+Each request creates a dedicated retained conversation using the selected
+provider, model and normal session preferences, or reopens its already-active
+request for the same source. The originating conversation is never submitted.
+Grove captures a bounded immutable diff before the initial provider turn. The
+initial prompt asks for read-only analysis without tools, tests, publication or
+repository writes; this is an instruction within an ordinary session, not a
+separate tool-disabled sandbox or expanded permission grant. Later conversation
+turns are ordinary user-directed turns.
+
+The reader presents introduced, actionable P0–P3 findings with concrete triggers,
+consequences, rationale, next steps and exact captured old/new-side line ranges.
+Paths and ranges must match complete supplied patches and overlap changed lines.
+Coverage names omitted, partial and model-unreviewed files. No findings means no
+issues were identified in the reviewed patches, not merge approval or a guarantee
+of correctness. Captured diff navigation and Copy Markdown retain their snapshot.
+Custom Review writing instructions in Settings → Prompts can change the prose;
+Grove-owned schema, evidence and coverage validation remain mandatory.
+
+One private atomic canonical result per source replaces its predecessor only
+after validation. A permanent **View review** action remains in Changes beside
+the diff for the retained session, even if local changes or the attached PR no
+longer exist. Links and results survive restart. Conversation opens the same
+retained session; only captured request transport and reserved `grove-review`
+blocks are hidden from the visible transcript, remaining in model/recovery data.
+Ordinary later answers are never imported as a new original review. Stale results
+show **Out of date** and remain readable. Regeneration preserves the previous
+result on failure/cancellation; Saving review rejects cancellation until its
+atomic save finishes. Review does not automatically publish GitHub comments or
+apply fixes.
+## Ask about changes
+
+Checkout offers **Ask about changes** for local staged/unstaged/nonignored-untracked
+changes against HEAD, or the attached PR's base-to-head diff. A sole source is
+static context; when both exist, a compact dropdown chooses the source. Saved
+answers expose **View answer** in Changes beside the diff, including after the
+checkout becomes clean or its PR is detached. An **Out of date** label identifies
+changed snapshots; unavailable freshness stays explicit in the reader.
+
+`/ask [local|pr|GitHub-PR-URL] [question]` and `$ask` with the same arguments work
+in Dashboard and either provider's normal composer. Native routing happens before
+catalog discovery or Dashboard draft activation. A validated explicit URL targets
+that PR without replacing Checkout's local/attached source preference. Invalid
+URL-like sources show usage. Omit the question to open its accessible native field
+without a model turn; **Ask question** or Control/Command+Enter submits it. Plain
+Enter inserts a newline. Attachments/quoted references are rejected and preserved,
+as is the originating composer draft.
+
+A submitted new invocation creates a dedicated retained conversation inheriting
+the selected provider, model and preferences. Distinct invocations retain distinct
+question histories; subsequent native questions inside the reader reuse its
+conversation, each capturing a fresh diff. **Conversation** returns to that same
+session, where ordinary follow-ups remain ordinary and never overwrite the typed
+canonical answer. The initial captured request asks the normal provider to be
+read-only and rely on the supplied diff. Normal transport permissions remain in
+force; this is not a separate tool-disabled sandbox.
+
+The shared analysis store saves one latest validated answer per local checkout or
+PR in the separate `change-answers` namespace. Session links, exact captured
+question, composed prompt, pending generation identity and canonical answer survive
+restart. Canonical replacement is atomic and bound to the captured source and
+question. A newer generation claim prevents an older request overwriting it.
+Recovery imports only the final response belonging to the exact captured request;
+uncertain work is never automatically resubmitted. Cancel interrupts only its
+own active request and retires its pending job, preserving previous answers and
+the last captured question. Saving disables cancellation until its atomic write
+finishes. Already-mounted unsaved question edits are preserved during hydration.
+
+The native reader shows selectable Markdown (including supported tables/code and
+Mermaid), explicit coverage/limitations, and references validated against exact
+old/new lines present in complete captured patches. **Open reference** displays the
+captured patch, not a live file. Omitted/partial/binary patches cannot count as
+examined. The captured answer does not verify test results; the initial request asks the
+provider not to run tools or tests. Model claims remain interpretations of code. Old answers stay readable/copyable, and a fresh native submission captures
+the source again. Scope/session ownership and source focus survive navigation.
+
+Settings → Prompts → **Ask about changes** edits the writing instructions. The
+schema, captured citations, source/question identity and coverage requirements
+remain Grove-owned, separately visible, and cannot be removed by customization.
+Read-only side conversations do not receive this user-invoked skill.

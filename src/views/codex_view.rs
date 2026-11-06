@@ -1061,6 +1061,8 @@ fn snippet_shell_supported(language: &str) -> bool {
 pub(crate) enum CodexViewEvent {
     DashboardSubmit,
     DescribeChanges(grove_core::describe_skill::ScopePreference, FocusHandle),
+    ReviewChanges(grove_core::review_skill::ScopePreference, FocusHandle),
+    AskChanges(grove_core::ask_skill::Invocation, FocusHandle),
     ForkRequested(usize, bool),
     ScriptLaunched,
     FileOpened,
@@ -1081,6 +1083,8 @@ pub struct CodexView {
     markdown_source: Option<(String, u64, Vec<TextDecoration>)>,
     native_plans: HashMap<(String, String), Entity<super::native_plan::NativePlan>>,
     pub(crate) description_scope: Option<grove_core::change_description::Scope>,
+    pub(crate) review_scope: Option<grove_core::change_description::Scope>,
+    pub(crate) question_session: bool,
     input: Entity<InputState>,
     reference: Option<codex::ReferenceDraft>,
     submitted_reference: Option<String>,
@@ -1414,6 +1418,8 @@ impl CodexView {
             file_browser,
             native_plans: HashMap::new(),
             description_scope: None,
+            review_scope: None,
+            question_session: false,
             markdown_decorations,
             markdown_source: None,
             input,
@@ -3405,11 +3411,27 @@ impl CodexView {
         let plan_details = kind == "plan"
             && state.saved.provider == codex::Provider::Claude
             && item["tool"].is_string();
-        let text = description_conversation_text(
-            self.description_scope.as_ref(),
-            kind,
-            &codex::item_text(item),
-        );
+        let text = if self.review_scope.is_some() {
+            grove_core::conversation_result::display_text(
+                "review",
+                "grove-review",
+                kind,
+                &codex::item_text(item),
+            )
+        } else if self.question_session {
+            grove_core::conversation_result::display_text(
+                "ask",
+                "grove-ask",
+                kind,
+                &codex::item_text(item),
+            )
+        } else {
+            description_conversation_text(
+                self.description_scope.as_ref(),
+                kind,
+                &codex::item_text(item),
+            )
+        };
         let approval = (kind == "userMessage")
             .then(|| state.saved.rich_plans.approval_for_payload(&text))
             .flatten();
@@ -4378,7 +4400,9 @@ impl CodexView {
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dashboard_tray.is_some() {
             // Native commands neither need metadata discovery nor activate a conversation.
-            if grove_core::describe_skill::is_invocation(self.input.read(cx).value().as_ref())
+            if (grove_core::describe_skill::is_invocation(self.input.read(cx).value().as_ref())
+                || grove_core::review_skill::is_invocation(self.input.read(cx).value().as_ref())
+                || grove_core::ask_skill::is_invocation(self.input.read(cx).value().as_ref()))
                 && self.run_command(window, cx)
             {
                 return;
@@ -6980,11 +7004,27 @@ impl CodexView {
         }
         let copy_focus = self.ensure_control_focus(&format!("{key}:copy"), window, cx);
         let keyboard_key = key.clone();
-        let text = description_conversation_text(
-            self.description_scope.as_ref(),
-            "agentMessage",
-            &group.copy_text,
-        );
+        let text = if self.review_scope.is_some() {
+            grove_core::conversation_result::display_text(
+                "review",
+                "grove-review",
+                "agentMessage",
+                &group.copy_text,
+            )
+        } else if self.question_session {
+            grove_core::conversation_result::display_text(
+                "ask",
+                "grove-ask",
+                "agentMessage",
+                &group.copy_text,
+            )
+        } else {
+            description_conversation_text(
+                self.description_scope.as_ref(),
+                "agentMessage",
+                &group.copy_text,
+            )
+        };
         let keyboard_text = text.clone();
         let mut button = if copied {
             header_control_frame("codex-message-copy", "Copied", c::BG_HOVER())
@@ -8322,9 +8362,13 @@ impl CodexView {
             '$' => (
                 grove_core::describe_skill::completion('$', query)
                     .into_iter()
+                    .chain(grove_core::ask_skill::completion('$', query))
+                    .chain(grove_core::review_skill::completion('$', query))
                     .chain(state.skills.iter().filter_map(|skill| {
                         let name = skill["name"].as_str()?;
                         (name != grove_core::describe_skill::NAME
+                            && name != grove_core::review_skill::NAME
+                            && name != grove_core::ask_skill::NAME
                             && name.to_lowercase().contains(&query.to_lowercase())
                             && (state.saved.provider != codex::Provider::Claude
                                 || !host_command(name))
@@ -9046,6 +9090,53 @@ impl CodexView {
 
     fn run_command(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let native_command = self.input.read(cx).value().to_string();
+        if grove_core::ask_skill::is_invocation(&native_command) {
+            if self.reference.is_some() || !self.images.is_empty() || self.pending_image_pastes > 0
+            {
+                self.session.update(cx, |session, cx| {session.state.error = Some("Ask uses the checkout diff. Remove attachments or the quoted reference first; your draft is preserved.".into());cx.notify();});
+                return true;
+            }
+            let Some(invocation) = grove_core::ask_skill::invocation(&native_command) else {
+                self.session.update(cx, |session, cx| {
+                    session.state.error = Some(grove_core::ask_skill::USAGE.into());
+                    cx.notify();
+                });
+                return true;
+            };
+            self.session.update(cx, |session, cx| {
+                session.state.clear_error();
+                cx.notify();
+            });
+            cx.emit(CodexViewEvent::AskChanges(
+                invocation,
+                self.input.focus_handle(cx),
+            ));
+            return true;
+        }
+        if grove_core::review_skill::is_invocation(&native_command) {
+            if self.reference.is_some() || !self.images.is_empty() || self.pending_image_pastes > 0
+            {
+                self.session.update(cx, |session, cx| { session.state.error = Some("Review changes uses the checkout diff. Remove attachments or the quoted reference before invoking it; your draft is preserved.".into()); cx.notify(); });
+                return true;
+            }
+            let Some(preference) = grove_core::review_skill::invocation(&native_command) else {
+                self.session.update(cx, |session, cx| {
+                    session.state.error = Some(grove_core::review_skill::USAGE.into());
+                    cx.notify();
+                });
+                return true;
+            };
+            self.session.update(cx, |session, cx| {
+                session.state.clear_error();
+                cx.notify();
+            });
+            cx.emit(CodexViewEvent::ReviewChanges(
+                preference,
+                self.input.focus_handle(cx),
+            ));
+            // Keep this command draft intact: native actions do not send or replace a provider prompt.
+            return true;
+        }
         if grove_core::describe_skill::is_invocation(&native_command) {
             if self.reference.is_some() || !self.images.is_empty() || self.pending_image_pastes > 0
             {
@@ -10492,6 +10583,8 @@ fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> 
             "/describe-changes",
             "Describe the selected checkout or attached PR",
         ),
+        ("/review", "Review changes for actionable defects"),
+        ("/ask", "Ask about local changes or the attached PR"),
         ("/model", "Choose model"),
         ("/effort", "Choose reasoning effort"),
         ("/access", "Choose access level"),
@@ -10527,7 +10620,16 @@ fn slash_choices(state: &codex::Snapshot, query: &str) -> Vec<(String, String)> 
 fn host_command(name: &str) -> bool {
     matches!(
         name,
-        "describe-changes" | "model" | "effort" | "access" | "stop" | "queue" | "clear" | "compact"
+        "review"
+            | "ask"
+            | "describe-changes"
+            | "model"
+            | "effort"
+            | "access"
+            | "stop"
+            | "queue"
+            | "clear"
+            | "compact"
     )
 }
 
@@ -14389,6 +14491,249 @@ mod tests {
     }
 
     #[gpui::test]
+    fn ask_submit_intercepts_dashboard_and_normal_composer_before_discovery(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                if let CodexViewEvent::AskChanges(invocation, _) = event {
+                    observed.borrow_mut().push(invocation.clone());
+                } else if matches!(event, CodexViewEvent::DashboardSubmit) {
+                    panic!("Native Ask activated the Dashboard provider draft");
+                }
+            })
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for dashboard in [false, true] {
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, _| {
+                            session.state.saved.provider = provider;
+                            session.catalog_loading = true;
+                        });
+                        view.dashboard_tray = dashboard.then(|| {
+                            cx.new(|_| {
+                                super::super::sidebar::dashboard::DestinationTray::picker_test_tray(
+                                    "/native-ask-fixture".into(),
+                                )
+                            })
+                        });
+                    })
+                });
+                for command in [
+                    "/ask local What changed?",
+                    "$ask pr Why this guard?",
+                    "/ask https://github.com/gitfudge0/grove/pull/18 What changed?",
+                ] {
+                    events.borrow_mut().clear();
+                    cx.update(|window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.input
+                                .update(cx, |input, cx| input.set_value(command, window, cx));
+                            view.submit(window, cx);
+                            assert_eq!(view.input.read(cx).value().as_ref(), command);
+                            assert!(view.submitted.is_none());
+                        })
+                    });
+                    assert_eq!(events.borrow().len(), 1);
+                }
+                events.borrow_mut().clear();
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.input.update(cx, |input, cx| {
+                            input.set_value("/ask https://example.com/a/b/pull/18 Why?", window, cx)
+                        });
+                        view.submit(window, cx);
+                        assert_eq!(
+                            view.session.read(cx).state.error.as_deref(),
+                            Some(grove_core::ask_skill::USAGE)
+                        );
+                    })
+                });
+                assert!(events.borrow().is_empty());
+            }
+        }
+        assert!(!actions.try_iter().any(|action| matches!(
+            action,
+            Action::Submit { .. }
+                | Action::SubmitWithMode { .. }
+                | Action::Prompt(_)
+                | Action::PromptWithImages { .. }
+        )));
+    }
+
+    #[gpui::test]
+    fn review_command_submit_intercepts_dashboard_before_catalog_or_provider_startup(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                observed.borrow_mut().push(match event {
+                    CodexViewEvent::ReviewChanges(..) => "review",
+                    CodexViewEvent::DashboardSubmit => "provider startup",
+                    _ => "other",
+                });
+            })
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for dashboard in [false, true] {
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.session.update(cx, |session, _| {
+                            session.state.saved.provider = provider;
+                            session.catalog_loading = true;
+                        });
+                        view.dashboard_tray = dashboard.then(|| {
+                            cx.new(|_| {
+                                super::super::sidebar::dashboard::DestinationTray::picker_test_tray(
+                                    "/missing-native-command-fixture".into(),
+                                )
+                            })
+                        });
+                    });
+                });
+                for command in [
+                    "/review local",
+                    "$review pr",
+                    "/review https://github.com/gitfudge0/grove/pull/17",
+                ] {
+                    events.borrow_mut().clear();
+                    cx.update(|window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.input
+                                .update(cx, |input, cx| input.set_value(command, window, cx));
+                            view.submit(window, cx);
+                            assert_eq!(view.input.read(cx).value().as_ref(), command);
+                            assert!(view.submitted.is_none());
+                            assert!(view.session.read(cx).state.error.is_none());
+                        })
+                    });
+                    assert_eq!(
+                        *events.borrow(),
+                        ["review"],
+                        "{provider:?}, Dashboard={dashboard}, {command}"
+                    );
+                }
+                for command in [
+                    "/review local changes",
+                    "/review https://example.com/pull/17",
+                ] {
+                    events.borrow_mut().clear();
+                    cx.update(|window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.input
+                                .update(cx, |input, cx| input.set_value(command, window, cx));
+                            view.submit(window, cx);
+                            assert_eq!(
+                                view.session.read(cx).state.error.as_deref(),
+                                Some(grove_core::review_skill::USAGE)
+                            );
+                            assert_eq!(view.input.read(cx).value().as_ref(), command);
+                        })
+                    });
+                    assert!(events.borrow().is_empty());
+                }
+            }
+        }
+        assert!(!actions.try_iter().any(|action| matches!(
+            action,
+            Action::Submit { .. }
+                | Action::SubmitWithMode { .. }
+                | Action::Prompt(_)
+                | Action::PromptWithImages { .. }
+        )));
+    }
+
+    #[gpui::test]
+    fn ask_routes_both_providers_without_submitting_or_losing_drafts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                if let CodexViewEvent::AskChanges(invocation, _) = event {
+                    observed.borrow_mut().push(invocation.clone());
+                }
+            })
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, _| {
+                        session.state.saved.provider = provider;
+                        session.state.skills = vec![json!({"name":"ask","enabled":true})];
+                    });
+                    for command in [
+                        "/ask local Why does this return early?",
+                        "$ask pr What changed?",
+                    ] {
+                        view.input
+                            .update(cx, |input, cx| input.set_value(command, window, cx));
+                        assert!(view.run_command(window, cx));
+                        assert_eq!(view.input.read(cx).value().as_ref(), command);
+                    }
+                    view.pending_image_pastes = 1;
+                    assert!(view.run_command(window, cx));
+                    assert_eq!(view.pending_image_pastes, 1);
+                    assert!(view
+                        .session
+                        .read(cx)
+                        .state
+                        .error
+                        .as_ref()
+                        .unwrap()
+                        .contains("draft is preserved"));
+                    view.pending_image_pastes = 0;
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("/ask --publish", window, cx)
+                    });
+                    assert!(view.run_command(window, cx));
+                    assert_eq!(
+                        view.session.read(cx).state.error.as_deref(),
+                        Some(grove_core::ask_skill::USAGE)
+                    );
+                    assert_eq!(
+                        slash_choices(&view.session.read(cx).state, "ask")
+                            .iter()
+                            .filter(|(name, _)| name == "/ask")
+                            .count(),
+                        1
+                    );
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("$ask", window, cx);
+                        input.set_selected_range(4..4, cx);
+                    });
+                    assert_eq!(
+                        view.suggestion_choices(&view.session.read(cx).state, cx)
+                            .unwrap()
+                            .0
+                            .iter()
+                            .filter(|(name, _)| name == "$ask")
+                            .count(),
+                        1
+                    );
+                })
+            });
+        }
+        assert_eq!(events.borrow().len(), 4);
+        assert_eq!(events.borrow()[0].question, "Why does this return early?");
+        assert_eq!(
+            events.borrow()[1].scope,
+            grove_core::describe_skill::ScopePreference::PullRequest
+        );
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Submit { .. })));
+    }
+    #[gpui::test]
     fn describe_skill_routes_both_providers_without_submitting_or_losing_drafts(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -14474,6 +14819,90 @@ mod tests {
                 grove_core::describe_skill::ScopePreference::PullRequest,
                 grove_core::describe_skill::ScopePreference::Local,
                 grove_core::describe_skill::ScopePreference::PullRequest
+            ]
+        );
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Submit { .. })));
+    }
+    #[gpui::test]
+    fn review_skill_routes_both_providers_without_submitting_or_losing_drafts(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                if let CodexViewEvent::ReviewChanges(scope, _) = event {
+                    observed.borrow_mut().push(scope.clone());
+                }
+            })
+        });
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, _| {
+                        session.state.saved.provider = provider;
+                        session.state.skills = vec![json!({"name":"review","enabled":true})];
+                    });
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("/review local", window, cx);
+                    });
+                    assert!(view.run_command(window, cx));
+                    assert_eq!(view.input.read(cx).value().as_ref(), "/review local");
+                    view.pending_image_pastes = 1;
+                    view.input
+                        .update(cx, |input, cx| input.set_value("$review pr", window, cx));
+                    assert!(view.run_command(window, cx));
+                    assert_eq!(view.pending_image_pastes, 1);
+                    assert_eq!(view.input.read(cx).value().as_ref(), "$review pr");
+                    assert!(view
+                        .session
+                        .read(cx)
+                        .state
+                        .error
+                        .as_ref()
+                        .is_some_and(|error| error.contains("draft is preserved")));
+                    view.pending_image_pastes = 0;
+                    assert!(view.run_command(window, cx));
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("/review invalid", window, cx)
+                    });
+                    assert!(view.run_command(window, cx));
+                    assert_eq!(
+                        view.session.read(cx).state.error.as_deref(),
+                        Some(grove_core::review_skill::USAGE)
+                    );
+                    assert_eq!(
+                        slash_choices(&view.session.read(cx).state, "review")
+                            .iter()
+                            .filter(|(name, _)| name == "/review")
+                            .count(),
+                        1
+                    );
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("$review", window, cx);
+                        input.set_selected_range(7..7, cx);
+                    });
+                    let choices = view
+                        .suggestion_choices(&view.session.read(cx).state, cx)
+                        .unwrap()
+                        .0;
+                    assert_eq!(
+                        choices.iter().filter(|(name, _)| name == "$review").count(),
+                        1
+                    );
+                })
+            });
+        }
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                grove_core::review_skill::ScopePreference::Local,
+                grove_core::review_skill::ScopePreference::PullRequest,
+                grove_core::review_skill::ScopePreference::Local,
+                grove_core::review_skill::ScopePreference::PullRequest
             ]
         );
         assert!(!actions

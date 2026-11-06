@@ -513,6 +513,12 @@ impl Sidebar {
                     }
                     match event {
                         CodexViewEvent::DashboardSubmit => this.launch_dashboard(window, cx),
+                        CodexViewEvent::ReviewChanges(preference, focus) => {
+                            this.invoke_review_skill(preference.clone(), focus.clone(), cx);
+                        }
+                        CodexViewEvent::AskChanges(invocation, focus) => {
+                            this.invoke_ask_skill(invocation.clone(), focus.clone(), cx);
+                        }
                         CodexViewEvent::DescribeChanges(preference, focus) => {
                             this.invoke_description_skill(preference.clone(), focus.clone(), cx);
                         }

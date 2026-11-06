@@ -42,3 +42,5 @@ mod conformance;
 
 #[cfg(test)]
 mod file_drop_tests;
+
+pub(crate) mod change_session;

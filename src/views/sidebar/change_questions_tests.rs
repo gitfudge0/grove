@@ -1,0 +1,750 @@
+//! Frozen production-reader fixtures, not live provider or GitHub checks.
+use super::*;
+use gpui::AppContext as _;
+use std::io::Write as _;
+const PATH: &str = "/grove-ask-fixture";
+struct QuestionFixture {
+    sidebar: Entity<Sidebar>,
+    source: FocusHandle,
+    rem: f32,
+    width: f32,
+    height: f32,
+}
+impl Render for QuestionFixture {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(gpui::px(self.rem));
+        let reader = self
+            .sidebar
+            .update(cx, |sidebar, cx| sidebar.render_questions(window, cx));
+        let sidebar = self.sidebar.clone();
+        div()
+            .w(gpui::px(self.width))
+            .h(gpui::px(self.height))
+            .max_w_full()
+            .max_h_full()
+            .flex()
+            .flex_col()
+            .bg(c::BG())
+            .text_color(c::FG())
+            .font_family(crate::fonts::UI_FAMILY)
+            .text_size(rpx(TEXT_BODY))
+            .child(
+                action(
+                    "ask-fixture-source",
+                    "Conversation source",
+                    "arrow-left",
+                    window,
+                    cx,
+                )
+                .with_focus_handle(self.source.clone()),
+            )
+            .child(div().flex_1().min_h_0().child(reader))
+            .on_key_down(
+                cx.listener(move |_, event: &gpui::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        sidebar.update(cx, |s, cx| s.close_questions(window, cx));
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+    }
+}
+fn initialize(cx: &mut App) {
+    gpui_component::init(cx);
+    cx.set_reduce_motion(true);
+    cx.set_global(SettingsState::new(grove_core::storage::Store {
+        projects: vec![grove_core::storage::Project {
+            name: "Ask fixture".into(),
+            path: PATH.into(),
+            scripts: Default::default(),
+            archived: false,
+            worktree_dir: None,
+        }],
+        ..Default::default()
+    }));
+    cx.set_global(crate::zoom::CurrentPtyDims::default());
+    cx.set_global(crate::zoom::ZoomState::new(1.0));
+    c::sync_component_theme(cx);
+}
+fn frozen_answer() -> Answer {
+    Answer{snapshot:snapshot::Snapshot{scope:Scope::Local,fingerprint:"frozen-identity".into(),label:"Local changes · worktree".into(),head:"123456789abcdef".into(),files:vec![snapshot::SnapshotFile{path:"src/webhooks/handler.ts".into(),added:1,removed:0,patch:"@@ -1,2 +1,3 @@\n function deliver(event) {\n+  if (!claim(event.id)) return;\n   createOrder(event.data);\n".into(),omitted:None},snapshot::SnapshotFile{path:"assets/logo.png".into(),added:0,removed:0,patch:"".into(),omitted:Some("Binary patch unavailable".into())}],original_body:None,title:"".into(),base:"".into(),checkout:PATH.into()},question:"How are duplicate deliveries handled?".into(),answer:"The handler checks the delivery ID before creating an order. A duplicate returns early. This diff does not establish how long IDs are retained.".into(),citations:vec![domain::Citation{path:"src/webhooks/handler.ts".into(),side:domain::Side::New,start:2,end:2,explanation:"The guard returns for deliveries that cannot be claimed.".into()}],examined_files:vec!["src/webhooks/handler.ts".into()],limitations:vec!["The claim implementation is outside this diff.".into()]}
+}
+fn create_sidebar(window: &mut Window, cx: &mut App) -> (Entity<Sidebar>, FocusHandle) {
+    let runtime = cx.new(crate::runtime::Runtime::new);
+    runtime.read(cx).tree.clone().update(cx, |tree, _| {
+        tree.set_active_worktrees(
+            0,
+            vec![grove_core::git::Worktree {
+                path: PATH.into(),
+                branch: "fixture".into(),
+                mtime: None,
+                is_main: true,
+            }],
+        )
+    });
+    let source = cx.focus_handle();
+    let return_source = source.clone();
+    let sidebar = cx.new(|cx| {
+        let mut sidebar = Sidebar::new(runtime, window, cx);
+        sidebar.initial_selection_pending = false;
+        sidebar.snapshot = sidebar
+            .runtime
+            .update(cx, |runtime, cx| runtime.snapshot(cx));
+        sidebar.selection = Some(Selection::Worktree(0, PATH.into()));
+        let answer = Arc::new(frozen_answer());
+        let k = key(&sidebar.selection, PATH, &Scope::Local);
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .auto_grow(3, 10)
+        });
+        input.update(cx, |input, cx| {
+            input.set_value(answer.question.clone(), window, cx)
+        });
+        let text = cx.new(|cx| TextViewState::markdown(&answer.markdown(), cx));
+        sidebar.questions.entries.insert(
+            k.clone(),
+            Entry {
+                scope: Some(Scope::Local),
+                input: Some(input),
+                result: Some(answer),
+                text: Some(text),
+                freshness: Some(Ok(true)),
+                checking: true,
+                checked_at: Some(Instant::now()),
+                ..Default::default()
+            },
+        );
+        sidebar.questions.open = Some(k);
+        sidebar.questions.source = Some(return_source);
+        sidebar.questions.focus_pending = true;
+        sidebar
+    });
+    (sidebar, source)
+}
+fn fixture(cx: &mut gpui::TestAppContext) -> (Entity<Sidebar>, &mut gpui::VisualTestContext) {
+    cx.update(initialize);
+    let mut sidebar = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let (view, source) = create_sidebar(window, cx);
+        sidebar = Some(view.clone());
+        let fixture = cx.new(|_| QuestionFixture {
+            sidebar: view,
+            source,
+            rem: 16.,
+            width: 900.,
+            height: 1100.,
+        });
+        gpui_component::Root::new(fixture, window, cx).bordered(false)
+    });
+    cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(1100.)));
+    draw(cx);
+    (sidebar.unwrap(), cx)
+}
+fn draw(cx: &mut gpui::VisualTestContext) {
+    cx.run_until_parked();
+    cx.update(|window, cx| {
+        let _ = window.draw(cx);
+    });
+}
+#[gpui::test]
+fn question_reader_opens_captured_reference_and_restores_focus(cx: &mut gpui::TestAppContext) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|window, cx| {
+        let s = sidebar.read(cx);
+        let e = s.questions.entries.values().next().unwrap();
+        assert!(e
+            .input
+            .as_ref()
+            .unwrap()
+            .focus_handle(cx)
+            .is_focused(window));
+    });
+    let reference = cx.debug_bounds("ask-reference-0").unwrap();
+    cx.simulate_click(reference.center(), gpui::Modifiers::default());
+    draw(cx);
+    sidebar.read_with(cx, |s, _| {
+        let e = s.questions.entries.values().next().unwrap();
+        assert_eq!(
+            e.diff.as_ref().unwrap().0,
+            "src/webhooks/handler.ts · new 2–2"
+        );
+        assert_eq!(
+            e.result.as_ref().unwrap().snapshot.files[0].patch,
+            frozen_answer().snapshot.files[0].patch
+        );
+    });
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    sidebar.read_with(cx, |s, _| {
+        assert!(s.questions.entries.values().next().unwrap().diff.is_none())
+    });
+    let source = sidebar.read_with(cx, |s, _| s.questions.source.clone().unwrap());
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    cx.update(|window, cx| {
+        assert!(sidebar.read(cx).questions.open.is_none());
+        assert!(source.is_focused(window));
+    });
+}
+#[gpui::test]
+fn stale_answers_and_failed_retry_preserve_question_and_answer(cx: &mut gpui::TestAppContext) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |s, cx| {
+            let e = s.questions.entries.values_mut().next().unwrap();
+            e.freshness = Some(Ok(false));
+            e.error = Some("Provider unavailable".into());
+            cx.notify();
+        })
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("ask-copy").is_some());
+    cx.update(|window, cx| {
+        sidebar.update(cx, |s, cx| {
+            let k = s.questions.open.clone().unwrap();
+            let e = s.questions.entries.get_mut(&k).unwrap();
+            e.input
+                .as_ref()
+                .unwrap()
+                .update(cx, |input, cx| input.set_value("", window, cx));
+            s.submit_question(&k, cx);
+            let e = s.questions.entries.get(&k).unwrap();
+            assert_eq!(
+                e.result.as_ref().unwrap().question,
+                frozen_answer().question
+            );
+            assert!(e.error.as_deref().unwrap().contains("Enter a question"));
+        })
+    });
+}
+#[gpui::test]
+fn open_without_question_does_not_start_provider_and_key_owns_scope(cx: &mut gpui::TestAppContext) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |s, cx| {
+            let selection = s.selection.clone();
+            s.open_question(PATH.into(), Scope::Local, String::new(), None, cx);
+            assert!(s.questions.entries.values().all(|e| !e.phase.busy()));
+            let local = key(&selection, PATH, &Scope::Local);
+            assert_ne!(local, key(&selection, "/different-checkout", &Scope::Local));
+            assert_ne!(
+                local,
+                key(
+                    &selection,
+                    PATH,
+                    &Scope::PullRequest {
+                        url: "https://github.com/a/b/pull/1".into()
+                    }
+                )
+            );
+            assert_ne!(
+                local,
+                key(
+                    &Some(Selection::Worktree(1, PATH.into())),
+                    PATH,
+                    &Scope::Local
+                )
+            );
+        })
+    });
+}
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "opens an isolated native fixture under Xvfb; no provider calls"]
+fn ask_changes_linux_native_capture() {
+    gpui_platform::application().with_assets(crate::assets::Assets).run(|cx|{initialize(cx);crate::fonts::register(cx).unwrap();let mut sidebar_handle=None;let mut fixture_handle=None;let capture_width=if std::env::var("GROVE_ASK_CAPTURE_STATE").is_ok_and(|s|s=="stale-narrow"){340.}else{1000.};
+ let window=cx.open_window(gpui::WindowOptions{window_bounds:Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(gpui::point(gpui::px(20.),gpui::px(20.)),gpui::size(gpui::px(capture_width),gpui::px(1000.))))),..Default::default()},|window,cx|{window.set_window_title("Grove Ask changes QA");let(sidebar,source)=create_sidebar(window,cx);sidebar_handle=Some(sidebar.clone());let fixture=cx.new(|_|QuestionFixture{sidebar,source,rem:16.,width:capture_width,height:900.});fixture_handle=Some(fixture.clone());cx.new(|cx|gpui_component::Root::new(fixture,window,cx))}).unwrap();
+ let sidebar=sidebar_handle.unwrap();let fixture=fixture_handle.unwrap();cx.activate(true);cx.spawn(async move|cx|{
+ cx.background_executor().timer(Duration::from_millis(500)).await;
+ for(name,theme,rem,width,state)in[("answer-dark","grove-dark",16.,1000.,"answer"),("answer-light-zoom","grove-light",20.,1000.,"answer"),("stale-narrow","grove-dark",16.,340.,"stale"),("diff-dark","grove-dark",16.,1000.,"diff"),("error-dark","grove-dark",16.,1000.,"error")] {
+  if std::env::var("GROVE_ASK_CAPTURE_STATE").is_ok_and(|selected|selected!=name){continue;}
+  cx.update(|cx|{grove_core::theme::set_by_name(theme);c::sync_component_theme(cx);fixture.update(cx,|f,cx|{f.width=width;f.rem=rem;cx.notify();});});
+  cx.update_window(window.into(),|_,window,cx|{window.resize(gpui::size(gpui::px(width),gpui::px(1000.)));sidebar.update(cx,|s,cx|{let e=s.questions.entries.values_mut().next().unwrap();e.freshness=Some(Ok(state!="stale"));e.diff=None;e.error=None;e.scroll.set_offset(gpui::point(gpui::px(0.),gpui::px(0.)));if state=="error"{e.error=Some("Provider disconnected. Your previous answer and question are preserved.".into());}if state=="diff"{e.diff=Some(("src/webhooks/handler.ts · new 2–2".into(),cx.new(|cx|TextViewState::markdown(&patch_markdown(&e.result.as_ref().unwrap().snapshot.files[0].patch),cx))));}cx.notify();});fixture.update(cx,|_,cx|cx.notify());window.refresh();}).unwrap();
+  cx.background_executor().timer(Duration::from_millis(500)).await;
+  let output_root=std::env::var_os("GROVE_ASK_CAPTURE_OUTPUT").map(std::path::PathBuf::from).unwrap_or_else(||std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".grove-artifacts/ask-native"));
+  let output=output_root.join(format!("{name}.png"));std::fs::create_dir_all(output.parent().unwrap()).unwrap();assert!(std::process::Command::new("import").args(["-window","Grove Ask changes QA"]).arg(&output).status().unwrap().success());let mut metadata=std::fs::OpenOptions::new().create(true).append(true).open(output.parent().unwrap().join("captures.txt")).unwrap();writeln!(metadata,"{name}: theme={theme}, rem={rem}, requested width={width}").unwrap();
+ }
+ cx.update_window(window.into(),|_,window,cx| {fixture.read(cx).source.clone().focus(window,cx);sidebar.update(cx,|s,cx|{s.questions=Questions::default();cx.notify();});window.refresh();}).unwrap();
+ cx.background_executor().timer(Duration::from_millis(150)).await;
+ cx.update(|cx|cx.quit());}).detach();});
+}
+
+#[gpui::test]
+fn active_reader_navigation_preserves_question_and_answer_cache(cx: &mut gpui::TestAppContext) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|window, cx| {
+        sidebar.update(cx, |s, cx| {
+            let k = s.questions.open.clone().unwrap();
+            let answer = s.questions.entries.get(&k).unwrap().result.clone().unwrap();
+            s.hide_questions();
+            assert!(!s.questions_is_open(cx));
+            assert_eq!(
+                s.questions
+                    .entries
+                    .get(&k)
+                    .unwrap()
+                    .result
+                    .as_ref()
+                    .unwrap()
+                    .question,
+                answer.question
+            );
+            assert_eq!(
+                s.questions
+                    .entries
+                    .get(&k)
+                    .unwrap()
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .value()
+                    .as_ref(),
+                answer.question
+            );
+            s.questions.open = Some(k.clone());
+            s.toggle_files(window, cx);
+            s.hide_questions();
+            assert!(s.questions.open.is_none());
+            assert!(s.questions.entries.get(&k).unwrap().result.is_some());
+        })
+    });
+}
+
+#[gpui::test]
+fn deferred_question_cannot_submit_after_checkout_switch(cx: &mut gpui::TestAppContext) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |s, cx| {
+            let k = s.questions.open.clone().unwrap();
+            s.checkout_panel.chosen_root = Some("/another-checkout".into());
+            s.selection = Some(Selection::Worktree(0, "/another-checkout".into()));
+            s.submit_question(&k, cx);
+            assert!(!s.questions.entries.get(&k).unwrap().phase.busy());
+            assert!(s.questions.entries.get(&k).unwrap().result.is_some());
+        })
+    });
+}
+
+#[test]
+fn captured_markdown_context_cannot_close_diff_fence() {
+    let patch = "@@ -1,3 +1,3 @@\n ```\n-previous\n+![untrusted](https://example.invalid)\n ```";
+    let rendered = patch_markdown(patch);
+    assert!(rendered.starts_with("````diff\n"));
+    assert!(rendered.ends_with("\n````"));
+    assert!(rendered.contains(patch));
+}
+
+#[gpui::test]
+fn hidden_checkout_ask_opens_without_mounting_checkout_or_starting_provider(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |s, cx| {
+            s.questions = Questions::default();
+            s.checkout_panel.hidden = true;
+            s.files_active = true;
+            let source = cx.focus_handle();
+            s.invoke_ask_skill(
+                Invocation {
+                    scope: ScopePreference::Local,
+                    question: String::new(),
+                },
+                source,
+                cx,
+            );
+            let k = s.questions.open.as_ref().unwrap();
+            assert_eq!(k.path, PATH);
+            assert!(!s.questions.entries.get(k).unwrap().phase.busy());
+            assert!(!s.files_active);
+            assert!(s.checkout_panel.hidden);
+            assert!(s.questions.open.is_some());
+        })
+    });
+    draw(cx);
+    assert!(cx.debug_bounds("ask-question-well").is_some());
+}
+#[gpui::test]
+fn failed_pr_lookup_retry_reads_latest_question_at_activation(cx: &mut gpui::TestAppContext) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |s, cx| {
+            let e = s.questions.entries.values_mut().next().unwrap();
+            e.scope = None;
+            e.error = Some("Lookup failed".into());
+            cx.notify();
+        })
+    });
+    draw(cx);
+    let retry = cx.debug_bounds("ask-retry-pr").unwrap();
+    cx.update(|window, cx| {
+        sidebar.update(cx, |s, cx| {
+            let e = s.questions.entries.values_mut().next().unwrap();
+            e.input.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_value("Use the freshly edited question", window, cx)
+            });
+        })
+    });
+    cx.simulate_click(retry.center(), gpui::Modifiers::default());
+    sidebar.read_with(cx, |s, cx| {
+        let e = s
+            .questions
+            .entries
+            .iter()
+            .find(|(k, _)| k.scope == "resolving")
+            .unwrap()
+            .1;
+        let draft = e.pending_question.clone().or_else(|| {
+            e.input
+                .as_ref()
+                .map(|input| input.read(cx).value().to_string())
+        });
+        assert_eq!(draft.as_deref(), Some("Use the freshly edited question"));
+        assert!(!e.phase.busy());
+    });
+}
+
+#[gpui::test]
+fn question_keyboard_keeps_plain_enter_multiline_and_ctrl_enter_explicit(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|window, cx| {
+        sidebar.update(cx, |s, cx| {
+            s.questions
+                .entries
+                .values()
+                .next()
+                .unwrap()
+                .input
+                .as_ref()
+                .unwrap()
+                .update(cx, |input, cx| input.set_value("", window, cx));
+        })
+    });
+    cx.simulate_keystrokes("ctrl-enter");
+    draw(cx);
+    sidebar.read_with(cx, |s, cx| {
+        let e = s.questions.entries.values().next().unwrap();
+        assert!(!e.phase.busy());
+        assert!(e
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Enter a question")));
+        assert_eq!(e.input.as_ref().unwrap().read(cx).value().as_ref(), "");
+    });
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    sidebar.read_with(cx, |s, cx| {
+        assert!(s
+            .questions
+            .entries
+            .values()
+            .next()
+            .unwrap()
+            .input
+            .as_ref()
+            .unwrap()
+            .read(cx)
+            .value()
+            .contains('\n'))
+    });
+}
+
+fn typed_peer(
+    cx: &mut gpui::TestAppContext,
+    provider: grove_core::codex::Provider,
+) -> (
+    Entity<crate::entities::codex_session::CodexSession>,
+    std::sync::mpsc::Receiver<grove_core::codex::Action>,
+    std::sync::mpsc::Sender<grove_core::codex::Snapshot>,
+) {
+    use grove_core::codex::{Connection, Handle, SavedSession, Snapshot as SessionState, Status};
+    let (handle, actions) = Handle::channel();
+    let (updates, receive) = std::sync::mpsc::channel();
+    let mut state = SessionState::new(SavedSession::empty(
+        "ask-session".into(),
+        provider,
+        String::new(),
+        PATH.into(),
+    ));
+    state.saved.thread_id = Some("retained-thread".into());
+    state.status = Status::Idle;
+    state.saved.composer.model = Some("selected-model".into());
+    let session = cx.new(|cx| {
+        crate::entities::codex_session::CodexSession::from_connection(
+            state,
+            Connection {
+                handle,
+                updates: receive.into(),
+            },
+            cx,
+        )
+    });
+    (session, actions, updates)
+}
+fn settle_answer(cx: &mut gpui::TestAppContext, controller: &Entity<ChangeSession<Answer>>) {
+    for _ in 0..100 {
+        cx.run_until_parked();
+        if controller.read_with(cx, |c, _| !c.phase.busy()) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("Ask controller did not settle");
+}
+#[gpui::test]
+fn retained_answer_recovery_imports_exact_question_and_ignores_ordinary_followup(
+    cx: &mut gpui::TestAppContext,
+) {
+    use grove_core::{
+        change_result_store::{PendingRequest, Source, Store},
+        codex::{Action, Provider, Status, WorkPeriod},
+    };
+    cx.update(initialize);
+    for provider in [Provider::Codex, Provider::Claude] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::<Answer>::new(directory.path().join("answers"));
+        let mut answer = frozen_answer();
+        answer.question = "First captured question\nwith exact newlines".into();
+        let source = Source {
+            checkout: answer.snapshot.checkout.clone(),
+            scope: answer.snapshot.scope.clone(),
+        };
+        store.bind("ask-session", &source).unwrap();
+        let request = PendingRequest {
+            snapshot: answer.snapshot.clone(),
+            input: answer.question.clone(),
+            prompt: "Exact composed Ask prompt before settings changed".into(),
+            generation: "first-generation".into(),
+        };
+        store.save_pending("ask-session", &request).unwrap();
+        let response = serde_json::json!({"answer":answer.answer,"citations":answer.citations,"examined_files":answer.examined_files,"limitations":answer.limitations});
+        let text = format!("Answer ready.\n```grove-ask\n{response}\n```");
+        let (session, actions, _updates) = typed_peer(cx, provider);
+        session.update(cx, |session, cx| {
+            session.state.status = Status::Done;
+            session.state.saved.items = vec![
+                serde_json::json!({"type":"userMessage","content":[{"text":request.prompt}]}),
+                serde_json::json!({"type":"agentMessage","text":text}),
+            ]
+            .into();
+            session.state.saved.work_periods.push(WorkPeriod {
+                start_item: 0,
+                end_item: Some(2),
+                duration_ms: None,
+                subagents: vec![],
+            });
+            cx.notify();
+        });
+        let controller = cx.new(|cx| {
+            ChangeSession::<Answer>::new(session.clone(), store.clone(), "ask-session".into(), cx)
+        });
+        controller.update(cx, |controller, cx| controller.hydrate(cx));
+        settle_answer(cx, &controller);
+        let result = controller.read_with(cx, |controller, _| controller.result.clone().unwrap());
+        assert_eq!(result.question, answer.question);
+        assert_eq!(store.load(&source).unwrap().as_ref(), Some(result.as_ref()));
+        assert!(store.pending_for_session("ask-session").unwrap().is_none());
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Prompt(_))));
+        session.update(cx,|session,cx|{session.state.saved.items.push(serde_json::json!({"type":"userMessage","content":[{"text":"Explain the tradeoff in ordinary conversation"}]}));session.state.saved.items.push(serde_json::json!({"type":"agentMessage","text":"An ordinary follow-up, not a new canonical answer."}));session.state.saved.work_periods.push(WorkPeriod{start_item:2,end_item:Some(4),duration_ms:None,subagents:vec![]});cx.notify();});
+        cx.run_until_parked();
+        assert_eq!(
+            controller.read_with(cx, |controller, _| controller.result.clone().unwrap()),
+            result
+        );
+        assert_eq!(store.load(&source).unwrap().as_ref(), Some(result.as_ref()));
+        assert_eq!(
+            session.read_with(cx, |session, _| session.state.saved.composer.model.clone()),
+            Some("selected-model".into())
+        );
+        controller.update(cx, |controller, cx| {
+            controller.phase = SessionPhase::Saving;
+            controller.cancel(cx);
+            assert!(controller.phase.saving());
+            controller.phase = SessionPhase::Idle;
+        });
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Interrupt)));
+    }
+}
+#[gpui::test]
+fn linked_saved_answer_stays_available_without_selected_checkout(cx: &mut gpui::TestAppContext) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            let old = sidebar.questions.open.clone().unwrap();
+            let entry = sidebar.questions.entries.remove(&old).unwrap();
+            let id = SessionId::from_raw(999);
+            sidebar.selection = Some(Selection::Session(id));
+            sidebar.checkout_panel.chosen_root = Some("/different-checkout".into());
+            let target = key(&sidebar.selection, PATH, &Scope::Local);
+            sidebar.questions.entries.insert(target.clone(), entry);
+            sidebar.questions.linked.insert(id, target.clone());
+            sidebar.questions.open = Some(target);
+            assert!(sidebar.questions_is_open(cx));
+            assert!(sidebar.linked_question_key().is_some());
+            assert!(sidebar.is_question_session(id));
+            let _controls = sidebar.render_question_controls(PATH, false, None, window, cx);
+        })
+    });
+}
+
+#[gpui::test]
+fn question_header_and_back_remain_above_scroll_after_focus_at_narrow_widths(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(initialize);
+    let mut sidebar_handle = None;
+    let mut fixture_handle = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let (sidebar, source) = create_sidebar(window, cx);
+        sidebar_handle = Some(sidebar.clone());
+        let fixture = cx.new(|_| QuestionFixture {
+            sidebar,
+            source,
+            rem: 16.,
+            width: 900.,
+            height: 800.,
+        });
+        fixture_handle = Some(fixture.clone());
+        gpui_component::Root::new(fixture, window, cx).bordered(false)
+    });
+    let sidebar = sidebar_handle.unwrap();
+    let fixture = fixture_handle.unwrap();
+    for (width, rem) in [(900., 16.), (340., 16.), (900., 20.), (340., 20.)] {
+        cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+        cx.update(|_, cx| {
+            fixture.update(cx, |fixture, cx| {
+                fixture.width = width;
+                fixture.rem = rem;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let entry = sidebar.questions.entries.values_mut().next().unwrap();
+                entry
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .focus_handle(cx)
+                    .focus(window, cx);
+                entry
+                    .scroll
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(-160.)));
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let header = cx.debug_bounds("ask-reader-header").unwrap();
+        let back = cx.debug_bounds("ask-back").unwrap();
+        let scroll = cx.debug_bounds("ask-reader-scroll").unwrap();
+        assert!(
+            header.size.height >= gpui::px(26.),
+            "header collapsed at {width}/{rem}: {header:?}"
+        );
+        assert!(
+            back.origin.y >= header.origin.y
+                && back.origin.y + back.size.height <= header.origin.y + header.size.height,
+            "Back escaped header at {width}/{rem}"
+        );
+        assert!(
+            scroll.origin.y >= header.origin.y + header.size.height - gpui::px(1.),
+            "scroll overlapped header at {width}/{rem}: {header:?} {scroll:?}"
+        );
+        assert!(
+            back.origin.x >= gpui::px(0.) && back.origin.x + back.size.width <= gpui::px(width),
+            "Back unreachable at {width}/{rem}: {back:?}"
+        );
+    }
+}
+
+#[gpui::test]
+fn unqualified_ask_uses_linked_explicit_pr_without_attached_checkout(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            let old = sidebar.questions.open.clone().unwrap();
+            let mut entry = sidebar.questions.entries.remove(&old).unwrap();
+            let id = SessionId::from_raw(1001);
+            sidebar.selection = Some(Selection::Session(id));
+            let scope = Scope::PullRequest {
+                url: "https://github.com/example/external/pull/37".into(),
+            };
+            entry.scope = Some(scope.clone());
+            let target = key(&sidebar.selection, PATH, &scope);
+            sidebar.questions.entries.insert(target.clone(), entry);
+            sidebar.questions.linked.insert(id, target.clone());
+            sidebar.questions.open = None;
+            sidebar.invoke_ask_skill(
+                Invocation {
+                    scope: ScopePreference::Current,
+                    question: String::new(),
+                },
+                cx.focus_handle(),
+                cx,
+            );
+            assert_eq!(sidebar.questions.open.as_ref(), Some(&target));
+            assert_eq!(
+                sidebar.questions.entries.get(&target).unwrap().scope,
+                Some(scope)
+            );
+            assert!(sidebar
+                .questions
+                .entries
+                .values()
+                .all(|entry| !entry.resolving && !entry.phase.busy()));
+        })
+    });
+}
+
+#[gpui::test]
+fn changed_saved_identity_retires_link_and_keeps_unsaved_question_with_old_conversation(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            let old = sidebar.questions.open.clone().unwrap();
+            let mut entry = sidebar.questions.entries.remove(&old).unwrap();
+            let id = SessionId::from_raw(1002);
+            entry.input.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_value("Unsaved draft for the old conversation", window, cx)
+            });
+            entry.session = Some(id);
+            entry.session_key = Some("old-saved-key".into());
+            sidebar.selection = Some(Selection::Session(id));
+            let target = key(&sidebar.selection, PATH, &Scope::Local);
+            sidebar.questions.entries.insert(target.clone(), entry);
+            sidebar.questions.linked.insert(id, target.clone());
+            sidebar
+                .questions
+                .identities
+                .insert(id, "old-saved-key".into());
+            sidebar.questions.open = Some(target.clone());
+            sidebar.sync_question_identity(id, "new-saved-key");
+            assert!(sidebar.questions.linked.get(&id).is_none());
+            assert!(sidebar.questions.open.is_none());
+            assert!(!sidebar.questions.entries.contains_key(&target));
+            let retired = sidebar
+                .questions
+                .retired_entries
+                .get(&("old-saved-key".into(), PATH.into(), "local".into()))
+                .unwrap();
+            assert_eq!(
+                retired.input.as_ref().unwrap().read(cx).value().as_ref(),
+                "Unsaved draft for the old conversation"
+            );
+            assert!(retired.controller.is_none());
+        })
+    });
+}
