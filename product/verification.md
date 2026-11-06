@@ -537,7 +537,10 @@ import, exact question identity, canonical replacement and immutable prompt
 requirements; three parser tests cover local/attached/explicit PR URL forms.
 Both-provider fixtures passed two actual submit/router tests (including blocked
 Dashboard catalog discovery), typed recovery/no-resubmission and ordinary-followup
-isolation in the eleven native Ask tests. Three prompt-core tests, three Settings
+isolation in the fourteen native Ask tests (one capture test remains explicitly
+ignored by the normal test run). Final cases also cover same-runtime saved-key
+replacement, linked explicit-source defaults and fixed-header bounds after
+input focus/scroll at 340 and 900 logical pixels, rem 16 and 20. Three prompt-core tests, three Settings
 prompt tests and four shared controller tests passed. These are fixture checks,
 not live main-composer/provider UI checks. The initially reused shared-target core
 binary ran zero Ask tests and was rejected; touching the package entrypoint forced
@@ -559,3 +562,11 @@ captures are isolated production-reader fixtures; full-shell source-selector and
 provider UI behavior, macOS and Windows remain untested. Existing broad-suite
 and strict Clippy baseline failures are not claimed resolved. Coordinator final
 checks own the current integrated revisions and final installation.
+
+Final reader captures are under `.grove-artifacts/describe-parity-ask/`. The
+`final-v2/stale-narrow.png` frame omitted the header despite passing native bounds
+checks; it is preserved as unsuccessful visual evidence. A fresh single-state
+`narrow-probe/stale-narrow.png` from the same immutable binary shows the complete
+Conversation header, Ask heading and wrapped stale answer. This establishes that
+the earlier raster was transient capture/frame evidence, not a reproduced
+production geometry defect; full-shell narrow behavior remains unverified.
