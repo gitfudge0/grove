@@ -175,45 +175,69 @@ impl Sidebar {
         }
         cx.notify();
     }
+    fn review_command_source(
+        &self,
+        preference: &ScopePreference,
+        cx: &App,
+    ) -> Result<(String, Option<Scope>), String> {
+        let linked = self.linked_review_key();
+        if *preference == ScopePreference::Current {
+            if let Some(target) = &linked {
+                if let Some(scope) = self
+                    .reviews
+                    .entries
+                    .get(target)
+                    .and_then(|e| e.scope.clone())
+                {
+                    return Ok((target.path.clone(), Some(scope)));
+                }
+            }
+        }
+        let targets = self.checkout_targets(cx);
+        let path = super::checkout_panel::selected_checkout(
+            &targets,
+            self.checkout_panel.chosen_root.as_deref(),
+        )
+        .map(|(_, path)| path)
+        .or_else(|| linked.map(|target| target.path))
+        .ok_or("Select a checkout before reviewing changes.")?;
+        let scope = match preference {
+            ScopePreference::Local => Some(Scope::Local),
+            ScopePreference::PullRequest => None,
+            ScopePreference::PullRequestUrl(url) => Some(Scope::PullRequest { url: url.clone() }),
+            ScopePreference::Current => match self
+                .reviews
+                .scopes
+                .get(&(owner(&self.selection), path.clone()))
+            {
+                Some(Scope::PullRequest { .. }) => None,
+                _ => Some(Scope::Local),
+            },
+        };
+        Ok((path, scope))
+    }
     pub(super) fn invoke_review_skill(
         &mut self,
         preference: ScopePreference,
         source: FocusHandle,
         cx: &mut Context<Self>,
     ) {
-        let targets = self.checkout_targets(cx);
-        let Some((_, path)) = super::checkout_panel::selected_checkout(
-            &targets,
-            self.checkout_panel.chosen_root.as_deref(),
-        ) else {
-            self.review_error("Select a checkout before reviewing changes.", cx);
-            return;
+        let (path, scope) = match self.review_command_source(&preference, cx) {
+            Ok(source) => source,
+            Err(error) => {
+                self.review_error(error, cx);
+                return;
+            }
         };
-        // Native skill invocation replaces Files/Side chat without changing their drafts or requiring an already mounted Checkout card.
         self.files_active = false;
         self.checkout_panel.side_chat_owner = None;
-        let selected_scope = self
-            .reviews
-            .scopes
-            .get(&(owner(&self.selection), path.clone()))
-            .cloned();
-        if let ScopePreference::PullRequestUrl(url) = &preference {
-            self.start_review_conversation(
-                path,
-                Scope::PullRequest { url: url.clone() },
-                Some(source),
-                cx,
-            );
-            return;
-        }
-        if preference == ScopePreference::Local
-            || (preference == ScopePreference::Current
-                && !matches!(selected_scope, Some(Scope::PullRequest { .. })))
-        {
-            self.reviews
-                .scopes
-                .insert((owner(&self.selection), path.clone()), Scope::Local);
-            self.begin_review(path, Scope::Local, Some(source), cx);
+        if let Some(scope) = scope {
+            if matches!(scope, Scope::Local) && preference != ScopePreference::PullRequest {
+                self.reviews
+                    .scopes
+                    .insert((owner(&self.selection), path.clone()), scope.clone());
+            }
+            self.start_review_conversation(path, scope, Some(source), cx);
             return;
         }
         // Resolve the attached PR independently of the visibility and cached loading state of Checkout.
@@ -257,7 +281,7 @@ impl Sidebar {
                 if let Some(entry) = this.reviews.entries.get_mut(&resolving_key) { entry.resolving = false; if let Err(error) = &scope { entry.error = Some(error.clone()); } }
                 if let Ok(scope) = scope {
                     this.reviews.scopes.insert((resolving_key.owner.clone(), path.clone()), scope.clone());
-                    this.begin_review(path, scope, Some(source), cx);
+                    this.start_review_conversation(path, scope, Some(source), cx);
                 }
                 cx.notify();
             });
@@ -296,7 +320,10 @@ impl Sidebar {
         if let Some(entry) = self.reviews.entries.get(key) {
             if !entry.saving {
                 if let Some(controller) = entry.controller.clone() {
-                    controller.update(cx, |c, cx| c.cancel(cx));
+                    controller.update(
+                        cx,
+                        crate::views::change_session::ChangeSession::<Review>::cancel,
+                    );
                 }
             }
         }
@@ -849,6 +876,30 @@ impl Sidebar {
                     )),
                 );
             }
+        }
+        if !busy
+            && !entry.resolving
+            && entry.result.is_none()
+            && entry.error.is_none()
+            && entry.controller.is_some()
+        {
+            let target = key.clone();
+            body = body
+                .child(
+                    div()
+                        .text_color(c::FG_DIM())
+                        .child("No saved review yet. Generate it from this conversation."),
+                )
+                .child(
+                    action(
+                        "review-empty-generate",
+                        "Generate review",
+                        "diff",
+                        window,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.run_review(&target, cx))),
+                );
         }
         if let Some((path, view)) = &entry.diff {
             body = body

@@ -443,23 +443,47 @@ without a commit, push, PR or release.
 
 ## Retained Review parity
 
-The Review branch now uses the shared retained analysis controller and typed
-private store. Eleven core Review tests and five shared-command parser/completion
-checks passed, covering unchanged finding grounding/coverage and new strict
-conversation import, canonical restart reload and corrupt derived-file rejection.
-Production compilation passed. Native retained-session, Dashboard routing,
-source-picker and saved-reader controls are being verified separately; earlier
-one-shot reader evidence does not establish these new lifecycle paths.
+Review uses the shared retained analysis controller and a private typed store.
+Eleven core Review tests passed: existing finding grounding/coverage, strict
+conversation import, canonical restart reload, and derived-cache reconstruction.
+Only authoritative fields are persisted; legacy derived file text is ignored and
+rebuilt through the validator. Five command parser/completion checks passed after
+making a skill-text assertion independent of Markdown line wrapping.
+
+Seven focused feature tests passed, covering native source-picker keyboard and
+disabled behavior, captured diff/Escape, stale results, narrow back bounds, a
+both-provider channel fixture for retained result recovery/permanent View and
+same Conversation, factory model/draft preservation, and linked external PR
+routing without a registered checkout. The recovery fixture uses a fresh
+controller, explicit Idle/result-none wait, observed Sidebar updates and a
+refreshed frame. It does not treat an old in-memory cached result as a restart.
+Missing initial results expose explicit generation without automatic resubmission.
+Dashboard/normal-composer routing was also exercised before catalog readiness.
+Nine prompt/settings checks, four shared controller checks and 33 source
+conformance checks passed. Production compilation and formatting passed. Strict
+core/UI Clippy remains red on inherited diagnostics; the final logs contain no
+Review, review-skill or newly shared-controller/matcher diagnostic references.
 
 A normal Codex conversation in an isolated disposable Grove configuration passed
-with a persisted custom Review prompt. It returned the requested native Markdown
-heading/table and a grounded P1 authorization-regression finding, saved/reloaded
-the canonical result, retired its pending request, remained current and preserved
+with a persisted custom Review prompt. It returned a requested Markdown heading
+and table plus a grounded P1 authorization-regression finding, saved/reloaded the
+canonical result, retired its pending request, remained current and preserved
 HEAD, index and working state. Its owned provider process acknowledged shutdown.
-This was normal transport, not the old isolated one-shot helper. The first run
+This was normal transport, not the old isolated one-shot helper. That first run
 used the backend default model without recording its resolved identity; future
 smoke output records model and resolved_model. Claude authentication was checked
 again and reported signed out, so live Claude remains unverified. No real GitHub
+review or PR write was performed.
+
+Linux production-widget captures cover Local/both sources, selected source,
+saved/stale controls and light/zoom variants; inspected controls were readable
+without overlap. The menu raster did not display choices and does not establish
+popup visual correctness; keyboard selection has separate native test evidence.
+Reader captures use frozen validated-shape fixture content rather than a complete
+main-composer/provider handoff. Native full-shell flows, animated lifecycle,
+live main-composer end-to-end, macOS and Windows remain untested. A constrained
+320-logical-pixel reader is distinct from the wider outer native window, as
+recorded in capture metadata.
 review or PR write was performed. Full application shell flows, macOS and Windows
 remain untested until separately observed.
 ## Ask about changes

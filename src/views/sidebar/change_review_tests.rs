@@ -445,3 +445,52 @@ fn narrow_review_back_action_stays_visible_after_scrolling_and_diff(cx: &mut gpu
         assert_back(cx);
     }
 }
+
+#[gpui::test]
+fn unqualified_review_uses_linked_external_pr_before_checkout_fallback(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |s, cx| {
+            let id = SessionId::from_raw(999937);
+            s.selection = Some(Selection::Session(id));
+            s.dashboard_open = false;
+            let path = "/detached-review-checkout".to_owned();
+            let scope = Scope::PullRequest {
+                url: "https://github.com/example/external/pull/37".into(),
+            };
+            let target = key(&s.selection, &path, &scope);
+            s.reviews.entries.insert(
+                target.clone(),
+                Entry {
+                    scope: Some(scope.clone()),
+                    ..Default::default()
+                },
+            );
+            s.reviews.linked.insert(id, target);
+            assert!(s.checkout_targets(cx).is_empty());
+            assert_eq!(
+                s.review_command_source(&ScopePreference::Current, cx)
+                    .unwrap(),
+                (path.clone(), Some(scope))
+            );
+            assert_eq!(
+                s.review_command_source(&ScopePreference::Local, cx)
+                    .unwrap(),
+                (path.clone(), Some(Scope::Local))
+            );
+            assert_eq!(
+                s.review_command_source(&ScopePreference::PullRequest, cx)
+                    .unwrap(),
+                (path.clone(), None)
+            );
+            let explicit = "https://github.com/example/another/pull/12".to_owned();
+            assert_eq!(
+                s.review_command_source(&ScopePreference::PullRequestUrl(explicit.clone()), cx)
+                    .unwrap(),
+                (path, Some(Scope::PullRequest { url: explicit }))
+            );
+        })
+    });
+}
