@@ -121,6 +121,9 @@ impl Sidebar {
         self.dashboard_open = false;
         self.select(Selection::Session(id), cx);
         self.checkout_panel.chosen_root = Some(target.path.clone());
+        self.hide_questions();
+        self.dismiss_description();
+        self.files_active = false;
         self.reviews.open = Some(target);
         self.reviews.focus_pending = true;
         self.reviews.return_focus = None;

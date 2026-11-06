@@ -259,6 +259,7 @@ impl Sidebar {
         entry.run = run;
         entry.resolving = true;
         entry.error = None;
+        self.reviews.open = None;
         self.hide_questions();
         self.descriptions.open = Some(resolving_key.clone());
         self.descriptions.return_focus = Some(source.clone());
@@ -468,6 +469,7 @@ impl Sidebar {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.reload_description_result(&target, cx);
                         this.descriptions.return_focus = Some(return_focus.clone());
+                        this.reviews.open = None;
                         this.hide_questions();
                         this.descriptions.open = Some(target.clone());
                         this.descriptions.focus_pending = true;
@@ -681,6 +683,7 @@ impl Sidebar {
                 .with_focus_handle(open_focus)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.descriptions.return_focus = Some(return_focus.clone());
+                    this.reviews.open = None;
                     this.hide_questions();
                     this.descriptions.open = Some(target.clone());
                     this.descriptions.focus_pending = true;
