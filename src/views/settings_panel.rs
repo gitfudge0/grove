@@ -17,13 +17,12 @@ use gpui::{
     ScrollHandle, Subscription, Window,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{Disableable, ElementExt};
+use gpui_component::Disableable;
 use grove_core::{agent::Agent, storage::Store};
 use grove_core::{app_theme, theme::ThemeKind};
 use std::collections::HashSet;
 
 const FOCUS_SCAN_LIMIT: usize = 128;
-const PROMPT_EDITOR_H: f32 = 260.0;
 const THEME_ROW_H: f32 = 42.0;
 const THEME_KIND_W: f32 = 36.0;
 const THEME_SWATCH_RADIUS: f32 = 2.0;
@@ -35,17 +34,15 @@ enum Category {
     General,
     Agents,
     Terminal,
-    Prompts,
     Privacy,
     About,
 }
 
 impl Category {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 5] = [
         Self::General,
         Self::Agents,
         Self::Terminal,
-        Self::Prompts,
         Self::Privacy,
         Self::About,
     ];
@@ -55,7 +52,6 @@ impl Category {
             Self::General => "cog",
             Self::Agents => "brain",
             Self::Terminal => "terminal",
-            Self::Prompts => "edit",
             Self::Privacy => "lock",
             Self::About => "status-info",
         }
@@ -66,7 +62,6 @@ impl Category {
             Self::General => "General",
             Self::Agents => "Agents",
             Self::Terminal => "Terminal",
-            Self::Prompts => "Prompts",
             Self::Privacy => "Privacy",
             Self::About => "About",
         }
@@ -140,15 +135,6 @@ pub struct SettingsPanel {
     scroll: ScrollHandle,
     archived_panel: Option<Entity<super::sidebar::projects::ProjectPanel>>,
     archived_subscription: Option<Subscription>,
-    prompt_inputs: Vec<(grove_core::prompts::PromptKind, Entity<InputState>)>,
-    prompt_observers: Vec<Subscription>,
-    selected_prompt: grove_core::prompts::PromptKind,
-    prompt_requirements_open: bool,
-    prompt_requirements_focus: FocusHandle,
-    prompt_requirements_revision: u64,
-    prompt_requirements_height: std::rc::Rc<std::cell::Cell<f32>>,
-    prompt_requirements_painted: std::rc::Rc<std::cell::Cell<f32>>,
-    prompt_requirements_from: f32,
     theme_search: Option<Entity<InputState>>,
     theme_search_subscription: Option<Subscription>,
     theme_filter: Option<ThemeKind>,
@@ -189,15 +175,6 @@ impl SettingsPanel {
             show_theme_notices: false,
             archived_panel: None,
             archived_subscription: None,
-            prompt_inputs: Vec::new(),
-            prompt_observers: Vec::new(),
-            selected_prompt: grove_core::prompts::PromptKind::Commit,
-            prompt_requirements_open: false,
-            prompt_requirements_focus: cx.focus_handle().tab_stop(true),
-            prompt_requirements_revision: 0,
-            prompt_requirements_height: Default::default(),
-            prompt_requirements_painted: Default::default(),
-            prompt_requirements_from: 0.,
             theme_search: None,
             theme_search_subscription: None,
             theme_filter: None,
@@ -1106,417 +1083,7 @@ impl SettingsPanel {
             .child(control)
     }
 
-    fn prompt_state(
-        &self,
-        kind: grove_core::prompts::PromptKind,
-        cx: &App,
-    ) -> (&'static str, bool) {
-        let saved = grove_core::prompts::effective(
-            kind,
-            &cx.global::<SettingsState>().store.prompt_overrides,
-        );
-        let dirty = self
-            .prompt_inputs
-            .iter()
-            .find(|(candidate, _)| *candidate == kind)
-            .is_some_and(|(_, input)| input.read(cx).value().as_str() != saved);
-        let customized = cx
-            .global::<SettingsState>()
-            .store
-            .prompt_overrides
-            .contains_key(kind.key());
-        (
-            if dirty {
-                "Unsaved changes"
-            } else if customized {
-                "Customized"
-            } else {
-                "Grove default"
-            },
-            dirty,
-        )
-    }
-
-    fn select_prompt(&mut self, kind: grove_core::prompts::PromptKind, cx: &mut Context<Self>) {
-        if self.selected_prompt == kind {
-            return;
-        }
-        self.selected_prompt = kind;
-        self.prompt_requirements_open = false;
-        self.prompt_requirements_revision = 0;
-        self.prompt_requirements_painted.set(0.);
-        self.prompt_requirements_from = 0.;
-        self.scroll.set_offset(gpui::Point::default());
-        // Each InputState remains alive; switching never saves or replaces a draft.
-        cx.notify();
-    }
-
-    fn toggle_prompt_requirements(&mut self, cx: &mut Context<Self>) {
-        self.prompt_requirements_from = self.prompt_requirements_painted.get();
-        self.prompt_requirements_open = !self.prompt_requirements_open;
-        self.prompt_requirements_revision = self.prompt_requirements_revision.wrapping_add(1);
-        cx.notify();
-    }
-
-    fn prompt_requirements(
-        &self,
-        kind: grove_core::prompts::PromptKind,
-        cx: &Context<Self>,
-    ) -> gpui::Div {
-        use gpui::AnimationExt as _;
-        let expanded = self.prompt_requirements_open;
-        let measured = self.prompt_requirements_height.clone();
-        let owner = cx.entity().downgrade();
-        let content = div()
-            .w_full()
-            .min_w_0()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_LG))
-            .pt(rpx(SPACE_2XL))
-            .child(
-                div()
-                    .text_size(rpx(TEXT_MICRO))
-                    .text_color(c::FG_DIM())
-                    .child("Appended automatically after your writing instructions."),
-            )
-            .child(
-                super::components::readonly_value(
-                    format!("prompt-contract-{}", kind.key()),
-                    kind.contract().to_string(),
-                )
-                .text_size(rpx(TEXT_SMALL))
-                .line_height(rpx(CARD_LINE_SM_H))
-                .text_color(c::FG_DIM()),
-            )
-            .on_prepaint(move |bounds, _, cx| {
-                let height = f32::from(bounds.size.height);
-                if (measured.replace(height) - height).abs() > 0.5 {
-                    let _ = owner.update(cx, |_, cx| cx.notify());
-                }
-            });
-        let target = if expanded {
-            self.prompt_requirements_height.get()
-        } else {
-            0.
-        };
-        let painted = self.prompt_requirements_painted.clone();
-        let body = div()
-            .id("prompt-requirements-body")
-            .debug_selector(|| "prompt-requirements-body".into())
-            .w_full()
-            .min_w_0()
-            .overflow_hidden()
-            .child(content);
-        let body = if self.prompt_requirements_revision > 0 && !cx.reduce_motion() {
-            let from = self.prompt_requirements_from;
-            body.with_animation(
-                format!(
-                    "prompt-requirements-motion-{}-{}",
-                    kind.key(),
-                    self.prompt_requirements_revision
-                ),
-                gpui::Animation::new(std::time::Duration::from_millis(MOTION_BASE_MS))
-                    .with_easing(motion::ease_standard),
-                move |body, t| {
-                    let height = from + (target - from) * t;
-                    painted.set(height);
-                    body.max_h(gpui::px(height.max(0.)))
-                },
-            )
-            .into_any_element()
-        } else {
-            painted.set(target);
-            body.max_h(gpui::px(target)).into_any_element()
-        };
-        div()
-            .w_full()
-            .min_w_0()
-            .mt(rpx(SPACE_3XL))
-            .pt(rpx(SPACE_2XL))
-            .border_t_1()
-            .border_color(c::BORDER_SOFT())
-            .child(
-                super::components::inline_disclosure(
-                    "prompt-requirements-toggle",
-                    "Grove-managed requirements",
-                )
-                .debug_selector(|| "prompt-requirements-toggle".into())
-                .track_focus(&self.prompt_requirements_focus)
-                .w_full()
-                .h_auto()
-                .py(rpx(SPACE_SM))
-                .justify_start()
-                .gap(rpx(SPACE_SM))
-                .tab_index(0)
-                .tab_stop(true)
-                .aria_expanded(expanded)
-                .focus_visible(|style| style.bg(c::BG_HOVER()))
-                .child(crate::icons::icon(
-                    if expanded { "chev-down" } else { "chev-right" },
-                    ICON_SM,
-                    c::FG_DIM(),
-                ))
-                .child(crate::icons::icon("lock", ICON_SM, c::FG_DIM()))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(rpx(TEXT_SMALL))
-                        .child("Grove-managed requirements"),
-                )
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .text_size(rpx(TEXT_MICRO))
-                        .child("Read-only"),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_prompt_requirements(cx)))
-                .on_key_down(cx.listener(
-                    |this, event: &gpui::KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            && !event.is_held
-                        {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.toggle_prompt_requirements(cx);
-                        }
-                    },
-                )),
-            )
-            .child(body)
-    }
-
-    fn prompts_body(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        let mut picker = div()
-            .id("prompt-picker")
-            .debug_selector(|| "prompt-picker".into())
-            .w_full()
-            .min_w_0()
-            .mt(rpx(SPACE_3XL))
-            .border_1()
-            .border_color(c::BORDER_SOFT())
-            .rounded(rpx(RADIUS_GROUP))
-            .overflow_hidden()
-            .flex()
-            .flex_col();
-        for (row_index, kinds) in grove_core::prompts::PromptKind::ALL.chunks(2).enumerate() {
-            let mut row = div().w_full().min_w_0().flex().when(row_index > 0, |row| {
-                row.border_t_1().border_color(c::BORDER_SOFT())
-            });
-            for (column_index, &kind) in kinds.iter().enumerate() {
-                let selected = self.selected_prompt == kind;
-                let (state, dirty) = self.prompt_state(kind, cx);
-                let icon = match kind {
-                    grove_core::prompts::PromptKind::Commit => "git",
-                    grove_core::prompts::PromptKind::PullRequest => "git-pull-request",
-                    grove_core::prompts::PromptKind::DescribeChanges => "file",
-                    grove_core::prompts::PromptKind::SessionTitle => "edit",
-                    grove_core::prompts::PromptKind::ReviewChanges => "diff",
-                };
-                row = row.child(
-                    self.choice(
-                        format!("prompt-pick-{}", kind.key()),
-                        format!("{} · {state}", kind.label()),
-                        selected,
-                        true,
-                    )
-                    .debug_selector(move || format!("prompt-pick-{}", kind.key()))
-                    .flex_1()
-                    .min_w_0()
-                    .h_auto()
-                    .py(rpx(SPACE_2XL))
-                    .px(rpx(SPACE_2XL))
-                    .rounded_none()
-                    .relative()
-                    .when(column_index > 0, |control| {
-                        control.border_l_1().border_color(c::BORDER_SOFT())
-                    })
-                    .when(selected, |control| {
-                        control.child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .top(rpx(SPACE_LG))
-                                .bottom(rpx(SPACE_LG))
-                                .w(rpx(SPACE_XS))
-                                .bg(c::FG_DIM()),
-                        )
-                    })
-                    .child(crate::icons::icon(icon, ICON_SM, c::FG_DIM()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(rpx(SPACE_XS))
-                            .child(
-                                div()
-                                    .text_size(rpx(TEXT_SMALL))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(c::FG())
-                                    .child(kind.label()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(rpx(TEXT_MICRO))
-                                    .text_color(if dirty {
-                                        StatusKind::NeedsInput.color()
-                                    } else {
-                                        c::FG_DIM()
-                                    })
-                                    .child(state),
-                            ),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_prompt(kind, cx)))
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                && !event.is_held
-                            {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.select_prompt(kind, cx);
-                            }
-                        },
-                    )),
-                );
-            }
-            picker = picker.child(row);
-        }
-        let mut body = div().w_full().min_w_0().flex().flex_col().pt(rpx(SPACE_3XL))
-            .child(div().flex().flex_wrap().items_center().justify_between().gap(rpx(SPACE_SM))
-                .child(div().text_size(rpx(TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).child("Built-in prompts"))
-                .child(div().text_size(rpx(TEXT_MICRO)).text_color(c::FG_DIM()).child("All projects · Codex & Claude")))
-            .child(div().mt(rpx(SPACE_SM)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                .child("Make Grove’s writing your own. Saved instructions apply to future generations."))
-            .child(picker);
-        let Some((kind, input)) = self
-            .prompt_inputs
-            .iter()
-            .find(|(kind, _)| *kind == self.selected_prompt)
-        else {
-            return body;
-        };
-        let kind = *kind;
-        let value = input.read(cx).value().to_string();
-        let (state, dirty) = self.prompt_state(kind, cx);
-        let validation = grove_core::prompts::validate(&value).err();
-        let customized = cx
-            .global::<SettingsState>()
-            .store
-            .prompt_overrides
-            .contains_key(kind.key());
-        let save_input = input.clone();
-        let reset_input = input.clone();
-        body = body.child(div().id(format!("prompt-detail-{}", kind.key())).w_full().min_w_0().mt(rpx(SPACE_20)).flex().flex_col().gap(rpx(SPACE_LG))
-            .child(div().flex().flex_wrap().items_center().justify_between().gap(rpx(SPACE_SM))
-                .child(div().text_size(rpx(TEXT_TITLE)).font_weight(FontWeight::SEMIBOLD).child(kind.label()))
-                .child(div().text_size(rpx(TEXT_MICRO)).text_color(if dirty { StatusKind::NeedsInput.color() } else { c::FG_DIM() }).child(state)))
-            .child(div().text_size(rpx(TEXT_SMALL)).font_weight(FontWeight::MEDIUM).child("Writing instructions"))
-            .child(
-                        super::components::project_field_well(
-                            input.read(cx).focus_handle(cx).is_focused(window),
-                            validation.is_some(),
-                        )
-                        .h_auto()
-                        .py(rpx(super::components::FORM_FIELD_INSET))
-                        .debug_selector(move || format!("prompt-editor-{}", kind.key()))
-                        .child(
-                            Input::new(input)
-                                .h(rpx(PROMPT_EDITOR_H))
-                                .file_drop_overlay(crate::views::components::file_drop_overlay())
-                                .aria_label(format!("{} prompt", kind.label()))
-                                .appearance(false)
-                                .bordered(false)
-                                .focus_bordered(false)
-                                .p_0()
-                                .text_size(rpx(FORM_VALUE_SIZE))
-                                .text_color(c::FG()),
-                        ),
-                    )
-                    .when_some(validation, |el, error| {
-                        el.child(
-                            div()
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::RED())
-                                .child(error),
-                        )
-                    })
-
-            .child(div().flex().flex_wrap().justify_between().gap(rpx(SPACE_SM)).text_size(rpx(TEXT_MICRO)).text_color(c::FG_DIM())
-                .child("Voice, structure and level of detail")
-                .child(format!("{} B / 64 KiB", value.len())))
-            .child(super::components::form_actions().mt(rpx(SPACE_LG))
-                            .child(
-                                super::components::form_action(
-                                    format!("prompt-reset-{}", kind.key()),
-                                    "Restore default",
-                                    false,
-                                    window,
-                                    cx,
-                                )
-                                .disabled(!customized && !dirty)
-                                .debug_selector(move || format!("prompt-reset-{}", kind.key()))
-                                .icon(gpui_component::Icon::default().path("icons/reset.svg"))
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        if this.save(cx, |store| {
-                                            store.prompt_overrides.remove(kind.key());
-                                        }) {
-                                            reset_input.update(cx, |input, cx| {
-                                                input.set_value(kind.default_text(), window, cx)
-                                            });
-                                        }
-                                    },
-                                )),
-                            )
-                            .child(
-                                super::components::form_action(
-                                    format!("prompt-save-{}", kind.key()),
-                                    "Save prompt",
-                                    true,
-                                    window,
-                                    cx,
-                                )
-                                .disabled(!dirty || grove_core::prompts::validate(&value).is_err())
-                                .debug_selector(move || format!("prompt-save-{}", kind.key()))
-                                .icon(gpui_component::Icon::default().path("icons/check.svg"))
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        let text = save_input.read(cx).value().to_string();
-                                        if let Err(error) = grove_core::prompts::validate(&text) {
-                                            this.error = Some(error);
-                                            cx.notify();
-                                            return;
-                                        }
-                                        this.save(cx, |store| {
-                                            store
-                                                .prompt_overrides
-                                                .insert(kind.key().to_string(), text);
-                                        });
-                                    },
-                                )),
-                            )
-
-            )
-            .child(self.prompt_requirements(kind, cx))
-            .child(div().mt(rpx(SPACE_LG)).text_size(rpx(TEXT_MICRO)).text_color(c::FG_DIM())
-                .child(if matches!(kind,grove_core::prompts::PromptKind::DescribeChanges) {
-                    "Supports native Markdown, tables, code blocks and Mermaid."
-                } else {
-                    "Your instructions customize writing; Grove keeps its output and workflow requirements."
-                }))
-        );
-        body
-    }
-
     fn settings_body(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
-        if self.category == Category::Prompts {
-            return self.prompts_body(window, cx);
-        }
         let store = &cx.global::<SettingsState>().store;
         let active_theme = grove_core::theme::current();
         let theme_label = app_theme::by_id(&active_theme.name).map_or("Grove", |item| item.label);
@@ -2181,26 +1748,6 @@ impl Focusable for SettingsPanel {
 
 impl Render for SettingsPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.category == Category::Prompts && self.prompt_inputs.is_empty() {
-            for kind in grove_core::prompts::PromptKind::ALL {
-                let text = cx
-                    .global::<SettingsState>()
-                    .store
-                    .prompt_overrides
-                    .get(kind.key())
-                    .cloned()
-                    .unwrap_or_else(|| kind.default_text().to_owned());
-                let input = cx.new(|cx| {
-                    InputState::new(window, cx)
-                        .multi_line(true)
-                        .rows(7)
-                        .default_value(text)
-                });
-                self.prompt_observers
-                    .push(cx.observe(&input, |_, _, cx| cx.notify()));
-                self.prompt_inputs.push((kind, input));
-            }
-        }
         if self.page == Page::Archived {
             return div()
                 .id("settings-archived-page")
@@ -2388,23 +1935,18 @@ impl Render for SettingsPanel {
                                         body.pt(rpx(SPACE_20))
                                     })
                                     .child(body)
-                                    .when(
-                                        self.page != Page::Providers
-                                            && !(self.page == Page::Settings
-                                                && self.category == Category::Prompts),
-                                        |body| {
-                                            body.child(
-                                                div()
-                                                    .id("settings-save-note")
-                                                    .debug_selector(|| "settings-save-note".into())
-                                                    .pt(rpx(SPACE_3XL))
-                                                    .pb(rpx(SPACE_LG))
-                                                    .text_size(rpx(TEXT_MICRO))
-                                                    .text_color(c::FG_DIM())
-                                                    .child("Changes save automatically"),
-                                            )
-                                        },
-                                    ),
+                                    .when(self.page != Page::Providers, |body| {
+                                        body.child(
+                                            div()
+                                                .id("settings-save-note")
+                                                .debug_selector(|| "settings-save-note".into())
+                                                .pt(rpx(SPACE_3XL))
+                                                .pb(rpx(SPACE_LG))
+                                                .text_size(rpx(TEXT_MICRO))
+                                                .text_color(c::FG_DIM())
+                                                .child("Changes save automatically"),
+                                        )
+                                    }),
                             ),
                     ),
             )
@@ -2439,25 +1981,6 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    struct PromptCapture {
-        panel: Entity<SettingsPanel>,
-        width: f32,
-    }
-    #[cfg(target_os = "linux")]
-    impl Render for PromptCapture {
-        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            window.request_animation_frame();
-            div().size_full().flex().justify_center().child(
-                div()
-                    .w(gpui::px(self.width))
-                    .max_w_full()
-                    .h_full()
-                    .child(self.panel.clone()),
-            )
-        }
-    }
-
     fn setup(cx: &mut App) {
         gpui_component::init(cx);
         cx.set_global(SettingsState::new(Store::default()));
@@ -2476,154 +1999,6 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
-    }
-
-    /// Real GPUI surface capture; unlike VisualTestContext this exercises the
-    /// platform renderer and bundled fonts. Run with an isolated config dir.
-    #[cfg(target_os = "linux")]
-    #[test]
-    #[ignore = "opens an isolated native X11 Settings window"]
-    fn settings_prompts_linux_capture() {
-        assert!(
-            std::env::var_os("GROVE_CONFIG_DIR").is_some(),
-            "use an isolated config directory"
-        );
-        gpui_platform::application()
-            .with_assets(crate::assets::Assets)
-            .run(|cx| {
-                setup(cx);
-                crate::fonts::register(cx).unwrap();
-                // Each invocation captures one state, avoiding cross-theme presentation lag.
-                let case_name = std::env::var("GROVE_PROMPTS_QA_CASE").unwrap_or_else(|_| "picker-dark".into());
-                let initial_theme = if matches!(case_name.as_str(), "picker-light" | "picker-title") { "grove-light" } else { "grove-dark" };
-                grove_core::theme::set_by_name(initial_theme);
-                c::sync_component_theme(cx);
-                gpui_component::Theme::global_mut(cx).font_size = gpui::px(if case_name == "picker-zoom-draft" { 24. } else { 16. });
-                let qa_panel = std::rc::Rc::new(std::cell::RefCell::new(None));
-                let panel_slot = qa_panel.clone();
-                let qa_width = std::env::var("GROVE_PROMPTS_QA_WIDTH").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(900.);
-                let window = cx
-                    .open_window(
-                        gpui::WindowOptions {
-                            window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
-                                gpui::point(gpui::px(40.), gpui::px(40.)),
-                                gpui::size(gpui::px(600.), gpui::px(650.)),
-                            ))),
-                            ..Default::default()
-                        },
-                        move |window, cx| {
-                            window.set_window_title("Grove prompts QA");
-                            let runtime = cx.new(Runtime::new);
-                            let panel = cx.new(|cx| SettingsPanel::new(runtime, cx));
-                            panel.update(cx, |panel, cx| {
-                                panel.open(window, cx);
-                                panel.select_category(Category::Prompts, cx);
-                            });
-                            *panel_slot.borrow_mut() = Some(panel.clone());
-                            let fixture = cx.new(|_| PromptCapture { panel, width: qa_width });
-                            cx.new(|cx| gpui_component::Root::new(fixture, window, cx))
-                        },
-                    )
-                    .unwrap();
-                cx.activate(true);
-                cx.spawn(async move |cx| {
-                    use grove_core::prompts::PromptKind;
-                    let panel = qa_panel.borrow().clone().unwrap();
-                    let output_dir = std::env::var("GROVE_PROMPTS_QA_OUTPUT").unwrap_or_else(|_| ".grove-artifacts".into());
-                    for (name, theme, rem, kind, expanded, dirty) in [
-                        ("picker-dark", "grove-dark", 16., PromptKind::DescribeChanges, false, false),
-                        ("picker-light", "grove-light", 16., PromptKind::DescribeChanges, false, false),
-                        ("picker-zoom-draft", "grove-dark", 24., PromptKind::DescribeChanges, false, true),
-                        ("picker-title", "grove-light", 16., PromptKind::SessionTitle, true, false),
-                        ("picker-requirements", "grove-dark", 16., PromptKind::DescribeChanges, true, false),
-                    ] {
-                        if name != case_name { continue; }
-                        cx.update(|cx| {
-                            grove_core::theme::set_by_name(theme);
-                            c::sync_component_theme(cx);
-                            gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
-                        });
-                        cx.update_window(window.into(), |_, window, cx| {
-                            panel.update(cx, |panel, cx| {
-                                panel.select_prompt(kind, cx);
-                                panel.prompt_requirements_open = expanded;
-                                panel.prompt_requirements_revision = 0;
-                                if dirty {
-                                    let input = panel.prompt_inputs.iter().find(|(candidate, _)| *candidate == kind).unwrap().1.clone();
-                                    input.update(cx, |input, cx| {
-                                        input.set_value(format!("{}\n\nStart with user-visible behavior. Include a Before / After table when useful.", kind.default_text()), window, cx);
-                                    });
-                                }
-                                cx.notify();
-                            });
-                            window.set_rem_size(gpui::px(rem));
-                            window.refresh();
-                        })
-                        .unwrap();
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(600))
-                            .await;
-                        for _ in 0..2 {
-                            let (tx, rx) = futures::channel::oneshot::channel();
-                            cx.update_window(window.into(), |_, window, _| {
-                                window.on_next_frame(move |_, _| { let _ = tx.send(()); });
-                                window.refresh();
-                            }).unwrap();
-                            let _ = rx.await;
-                        }
-                        cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
-                        cx.update_window(window.into(), |_, window, cx| {
-                            window.refresh();
-                        }).unwrap();
-                        cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
-                        let output = format!("{output_dir}/{name}.png");
-                        assert!(std::process::Command::new("import")
-                            .args(["-window", "Grove prompts QA", &output])
-                            .status()
-                            .unwrap()
-                            .success());
-                        eprintln!("Native Settings capture: {output}");
-                        cx.update_window(window.into(), |_, window, cx| {
-                            panel.update(cx, |panel, cx| {
-                                panel.scroll.set_offset(gpui::point(gpui::px(0.), -panel.scroll.max_offset().y));
-                                cx.notify();
-                            });
-                            window.refresh();
-                        }).unwrap();
-                        cx.background_executor().timer(std::time::Duration::from_millis(350)).await;
-                        cx.update_window(window.into(), |_, window, cx| {
-                            window.refresh();
-                        }).unwrap();
-                        cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
-                        let output = format!("{output_dir}/{name}-bottom.png");
-                        assert!(std::process::Command::new("import").args(["-window", "Grove prompts QA", &output]).status().unwrap().success());
-                        cx.update(|cx| panel.update(cx, |panel, cx| { panel.scroll.set_offset(gpui::Point::default()); cx.notify(); }));
-                    }
-                    // Flush the platform input handler before destroying the isolated app.
-                    cx.update_window(window.into(), |_, window, cx| {
-                        panel.update(cx, |panel, cx| {
-                            panel.category = Category::General;
-                            panel.prompt_observers.clear();
-                            panel.prompt_inputs.clear();
-                            cx.notify();
-                        });
-                        window.blur();
-                        window.refresh();
-                    }).unwrap();
-                    for _ in 0..2 {
-                        cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
-                        cx.update_window(window.into(), |_, window, cx| {
-                            window.refresh();
-                        }).unwrap();
-                    }
-                    drop(panel);
-                    drop(qa_panel);
-                    cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
-                    cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
-                    cx.update(|cx| cx.quit());
-                })
-                .detach();
-            });
     }
 
     #[cfg(target_os = "linux")]
@@ -2759,255 +2134,6 @@ mod tests {
                 })
                 .detach();
             });
-    }
-
-    #[gpui::test]
-    fn prompt_editor_preserves_drafts_and_saves_and_restores(cx: &mut gpui::TestAppContext) {
-        let _guard = crate::settings::lock_test_config();
-        cx.update(setup);
-        let (panel, cx) = cx.add_window_view(|_, cx| {
-            let runtime = cx.new(Runtime::new);
-            SettingsPanel::new(runtime, cx)
-        });
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                panel.open(window, cx);
-                panel.select_category(Category::Prompts, cx);
-            })
-        });
-        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(1600.)));
-        draw(cx);
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                let input = panel.prompt_inputs[0].1.clone();
-                input.update(cx, |input, cx| {
-                    input.set_value("Write the commit message in French.", window, cx)
-                });
-                panel.select_category(Category::General, cx);
-                panel.select_category(Category::Prompts, cx);
-                assert_eq!(
-                    input.read(cx).value().as_str(),
-                    "Write the commit message in French."
-                );
-                assert!(cx
-                    .global::<SettingsState>()
-                    .store
-                    .prompt_overrides
-                    .is_empty());
-            })
-        });
-        draw(cx);
-        assert!(
-            cx.debug_bounds("prompt-editor-commit").unwrap().size.height
-                >= gpui::px(PROMPT_EDITOR_H)
-        );
-        let bounds = cx.debug_bounds("prompt-save-commit").unwrap();
-        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.update(|_, cx| {
-            assert_eq!(
-                cx.global::<SettingsState>().store.prompt_overrides["commit"],
-                "Write the commit message in French."
-            );
-            assert_eq!(
-                grove_core::storage::load().unwrap().prompt_overrides["commit"],
-                "Write the commit message in French."
-            );
-        });
-        let bounds = cx.debug_bounds("prompt-reset-commit").unwrap();
-        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.update(|_, cx| {
-            assert!(!cx
-                .global::<SettingsState>()
-                .store
-                .prompt_overrides
-                .contains_key("commit"));
-            assert_eq!(
-                panel.read(cx).prompt_inputs[0].1.read(cx).value().as_str(),
-                grove_core::prompts::PromptKind::Commit.default_text()
-            );
-        });
-    }
-
-    #[gpui::test]
-    fn prompt_picker_preserves_independent_drafts_and_keyboard_disclosure(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        use grove_core::prompts::PromptKind;
-        cx.update(setup);
-        let (panel, cx) = cx.add_window_view(|_, cx| {
-            let runtime = cx.new(Runtime::new);
-            SettingsPanel::new(runtime, cx)
-        });
-        cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(1400.)));
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                panel.open(window, cx);
-                panel.select_category(Category::Prompts, cx);
-                cx.set_reduce_motion(true);
-            })
-        });
-        draw(cx);
-        assert!(
-            cx.debug_bounds("settings-save-note").is_none(),
-            "Prompts must not claim to save automatically"
-        );
-        let commit_input = panel.read_with(cx, |panel, _| panel.prompt_inputs[0].1.clone());
-        cx.update(|window, cx| {
-            commit_input.update(cx, |input, cx| {
-                input.focus_handle(cx).focus(window, cx);
-                input.set_value("Use concise commit subjects.", window, cx);
-            })
-        });
-        draw(cx);
-        cx.simulate_keystrokes("end");
-        cx.simulate_keystrokes("space");
-        draw(cx);
-        assert!(
-            commit_input.read_with(cx, |input, _| input.value().ends_with(' ')),
-            "Space must reach the editor"
-        );
-        let draft = commit_input.read_with(cx, |input, _| input.value().to_string());
-        let bounds = cx.debug_bounds("prompt-pick-describe_changes").unwrap();
-        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("prompt-editor-commit").is_none());
-        assert!(cx.debug_bounds("prompt-editor-describe_changes").is_some());
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                let input = panel.prompt_inputs[2].1.clone();
-                input.update(cx, |input, cx| {
-                    input.set_value("Write a behavior summary.", window, cx)
-                });
-                assert_eq!(
-                    panel.prompt_state(PromptKind::Commit, cx),
-                    ("Unsaved changes", true)
-                );
-                assert_eq!(
-                    panel.prompt_state(PromptKind::DescribeChanges, cx),
-                    ("Unsaved changes", true)
-                );
-            })
-        });
-        draw(cx);
-        assert_eq!(
-            cx.debug_bounds("prompt-requirements-body")
-                .unwrap()
-                .size
-                .height,
-            gpui::px(0.)
-        );
-        let toggle = cx.debug_bounds("prompt-requirements-toggle").unwrap();
-        cx.simulate_click(toggle.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(panel.read_with(cx, |panel, _| panel.prompt_requirements_open));
-        assert!(
-            cx.debug_bounds("prompt-requirements-body")
-                .unwrap()
-                .size
-                .height
-                > gpui::px(0.)
-        );
-        // Exercise the disclosure through its focused native Space route.
-        cx.update(|window, cx| {
-            let focus = panel.read(cx).prompt_requirements_focus.clone();
-            focus.focus(window, cx);
-        });
-        cx.simulate_keystrokes("space");
-        draw(cx);
-        assert!(!panel.read_with(cx, |panel, _| panel.prompt_requirements_open));
-        assert_eq!(
-            cx.debug_bounds("prompt-requirements-body")
-                .unwrap()
-                .size
-                .height,
-            gpui::px(0.)
-        );
-        let commit = cx.debug_bounds("prompt-pick-commit").unwrap();
-        cx.simulate_click(commit.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert_eq!(
-            commit_input.read_with(cx, |input, _| input.value().to_string()),
-            draft
-        );
-        cx.simulate_keystrokes("tab");
-        cx.simulate_keystrokes("enter");
-        draw(cx);
-        assert_eq!(
-            panel.read_with(cx, |panel, _| panel.selected_prompt),
-            PromptKind::PullRequest
-        );
-        cx.update(|_, cx| {
-            assert!(cx
-                .global::<SettingsState>()
-                .store
-                .prompt_overrides
-                .is_empty());
-            panel.update(cx, |panel, cx| {
-                panel.select_category(Category::General, cx);
-                panel.select_category(Category::Prompts, cx);
-            });
-        });
-        draw(cx);
-        assert_eq!(
-            commit_input.read_with(cx, |input, _| input.value().to_string()),
-            draft
-        );
-    }
-
-    #[gpui::test]
-    fn prompt_picker_fits_narrow_zoom_and_rejects_empty_save(cx: &mut gpui::TestAppContext) {
-        cx.update(setup);
-        let (panel, cx) = cx.add_window_view(|_, cx| {
-            let runtime = cx.new(Runtime::new);
-            SettingsPanel::new(runtime, cx)
-        });
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                panel.open(window, cx);
-                panel.select_category(Category::Prompts, cx);
-            })
-        });
-        for (width, rem) in [(900., 16.), (480., 16.), (480., 24.)] {
-            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(1600.)));
-            cx.update(|window, _| window.set_rem_size(gpui::px(rem)));
-            draw(cx);
-            let picker = cx.debug_bounds("prompt-picker").unwrap();
-            for (kind, selector) in grove_core::prompts::PromptKind::ALL.into_iter().zip([
-                "prompt-pick-commit",
-                "prompt-pick-pull_request",
-                "prompt-pick-describe_changes",
-                "prompt-pick-session_title",
-                "prompt-pick-review_changes",
-            ]) {
-                let bounds = cx.debug_bounds(selector).unwrap();
-                assert!(
-                    bounds.left() >= picker.left() && bounds.right() <= picker.right(),
-                    "{kind:?} overflows at {width}/{rem}"
-                );
-            }
-            let editor = cx.debug_bounds("prompt-editor-commit").unwrap();
-            assert!(editor.right() <= picker.right());
-        }
-        cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| {
-                panel.prompt_inputs[0]
-                    .1
-                    .update(cx, |input, cx| input.set_value("", window, cx));
-            })
-        });
-        draw(cx);
-        let save = cx.debug_bounds("prompt-save-commit").unwrap();
-        cx.simulate_click(save.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.update(|_, cx| {
-            assert!(cx
-                .global::<SettingsState>()
-                .store
-                .prompt_overrides
-                .is_empty())
-        });
     }
 
     #[gpui::test]

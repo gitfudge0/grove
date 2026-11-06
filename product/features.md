@@ -205,15 +205,9 @@ ordinary user-directed conversation.
 
 ## Built-in prompts
 
-Settings → Prompts edits Commit message, PR creation, Describe changes, Review changes, and Session
-title writing instructions for Codex and Claude. Overrides apply across projects
-to future generations. Save persists each prompt; Restore default removes its
-override. A compact picker opens one spacious editor at a time. Unsaved edits
-survive prompt switching and category navigation for the Settings panel lifetime.
-Empty or oversized instructions cannot be saved. Grove-managed workflow and output
-requirements are selectable read-only text behind a disclosure and are always
-composed with overrides, whether the disclosure is open or closed.
-They preserve captured-data boundaries, output validation and explicit publication.
+Built-in writing prompts support Grove actions for Codex and Claude. Settings does
+not expose a Prompts category or prompt editor. Existing saved overrides remain
+compatible with future generations and Grove-managed workflow requirements.
 Create PR generates title and Markdown body from the published branch comparison,
 then opens the existing editable GitHub form; generation does not submit a PR.
 
@@ -251,7 +245,7 @@ Paths and ranges must match complete supplied patches and overlap changed lines.
 Coverage names omitted, partial and model-unreviewed files. No findings means no
 issues were identified in the reviewed patches, not merge approval or a guarantee
 of correctness. Captured diff navigation and Copy Markdown retain their snapshot.
-Custom Review writing instructions in Settings → Prompts can change the prose;
+Saved custom Review writing instructions can change the prose;
 Grove-owned schema, evidence and coverage validation remain mandatory.
 
 One private atomic canonical result per source replaces its predecessor only

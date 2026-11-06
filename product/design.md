@@ -441,20 +441,6 @@ return through diff/preview to the description, then restore the actual invoking
 control, including the Codex or Claude composer.
 
 
-## Built-in prompt settings
-
-Prompts is a Settings category with a compact two-column picker for the five
-built-in writing prompts and one full-width editor for the selected prompt.
-Each choice shows its default/customized/unsaved state; switching prompts or
-categories preserves independent drafts without saving them. The editor uses a
-spacious native form field well and DM Sans, attached validation, a byte count,
-and grouped Restore default and Save prompt actions. This category does not show
-the automatic-save notice. Failed persistence keeps the draft and reports the
-error. Grove-managed requirements remain selectable read-only text behind a
-foreground-only disclosure below the editor, collapsed when changing prompts.
-The disclosure makes room on expansion and collapse, retaining passive exit
-content and using immediate endpoints with Reduce motion. Prompt selection and
-focus changes remain immediate, matching existing Settings category behavior.
 Extended change-description content uses native selectable Markdown above the file
 walkthrough; snapshot context and coverage remain independent of authored content.
 

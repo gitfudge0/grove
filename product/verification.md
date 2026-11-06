@@ -562,3 +562,17 @@ older CLI versions, and desktop visual inspection are untested. The fix exposes
 provider-reported failures; it does not establish or repair the remote Jira
 failure's underlying authentication/network cause. The default local installation
 completed successfully after the final code changes.
+
+## Prompts Settings removal (2026-11-06)
+
+The Prompts category, editor, draft state and dedicated fixtures were removed.
+Built-in generation and saved override compatibility remain. Linux verification:
+18 Settings-related tests and 33 UI conformance checks passed, along with
+formatting and repository artifact checks. The existing isolated native Settings
+capture fixture showed General, Agents, Terminal, Privacy and About in light and
+dark at rem 16. Its rem 24 capture was blank, so enlarged-zoom native visual
+inspection remains unverified; GPUI geometry tests passed. Evidence is in
+`.grove-artifacts/remove-prompts/` and the fixture's external temporary captures.
+macOS and Windows native rendering were untested. Codex and Claude live provider
+behavior was untested; this removal changes only Settings UI, and no live
+generation was exercised.
