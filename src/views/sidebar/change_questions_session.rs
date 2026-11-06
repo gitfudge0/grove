@@ -31,6 +31,58 @@ impl Sidebar {
     pub(in crate::views::sidebar) fn is_question_session(&self, id: SessionId) -> bool {
         self.questions.linked.contains_key(&id)
     }
+    pub(super) fn sync_question_identity(&mut self, id: SessionId, session_key: &str) {
+        let previous = self
+            .questions
+            .identities
+            .insert(id, session_key.into())
+            .or_else(|| {
+                self.questions
+                    .linked
+                    .get(&id)
+                    .and_then(|target| self.questions.entries.get(target))
+                    .and_then(|entry| entry.session_key.clone())
+            });
+        let Some(previous) = previous.filter(|previous| previous != session_key) else {
+            return;
+        };
+        let previous_owner = owner(&Some(Selection::Session(id)));
+        self.questions.linked.remove(&id);
+        let keys: Vec<_> = self
+            .questions
+            .entries
+            .keys()
+            .filter(|target| target.owner == previous_owner)
+            .cloned()
+            .collect();
+        for target in keys {
+            if let Some(mut entry) = self.questions.entries.remove(&target) {
+                entry.subscription = None;
+                entry.controller = None;
+                entry.phase = SessionPhase::Idle;
+                entry.session = None;
+                entry.run = entry.run.wrapping_add(1);
+                entry.checking = false;
+                entry.checked_at = None;
+                // Retain unsaved native input with its old durable conversation identity.
+                self.questions
+                    .retired_entries
+                    .insert((previous.clone(), target.path, target.scope), entry);
+            }
+        }
+        if self
+            .questions
+            .open
+            .as_ref()
+            .is_some_and(|target| target.owner == previous_owner)
+        {
+            self.questions.open = None;
+            self.questions.source = None;
+        }
+        self.questions
+            .hydrated
+            .retain(|(session, _)| *session != id);
+    }
     fn attach_question_controller(
         &mut self,
         id: SessionId,
@@ -39,6 +91,10 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> Option<Key> {
         let session = self.question_session(id, cx)?;
+        if session.read(cx).state.saved.key != session_key {
+            return None;
+        }
+        self.sync_question_identity(id, &session_key);
         let store = match self.question_store() {
             Ok(store) => store,
             Err(error) => {
@@ -51,12 +107,9 @@ impl Sidebar {
             &source.checkout,
             &source.scope,
         );
-        if self
-            .questions
-            .entries
-            .get(&target)
-            .is_some_and(|e| e.controller.is_some())
-        {
+        if self.questions.entries.get(&target).is_some_and(|e| {
+            e.controller.is_some() && e.session_key.as_deref() == Some(session_key.as_str())
+        }) {
             return Some(target);
         }
         let controller =
@@ -92,7 +145,16 @@ impl Sidebar {
             }
             cx.notify();
         });
-        let entry = self.questions.entries.entry(target.clone()).or_default();
+        let preserved = self.questions.retired_entries.remove(&(
+            session_key.clone(),
+            target.path.clone(),
+            target.scope.clone(),
+        ));
+        let entry = self
+            .questions
+            .entries
+            .entry(target.clone())
+            .or_insert_with(|| preserved.unwrap_or_default());
         entry.scope = Some(source.scope);
         entry.session = Some(id);
         entry.session_key = Some(session_key);
@@ -206,10 +268,12 @@ impl Sidebar {
             return;
         };
         let session_key = session.read(cx).state.saved.key.clone();
+        self.sync_question_identity(id, &session_key);
         if !self.questions.hydrated.insert((id, session_key.clone())) {
             return;
         }
         let store = self.question_store();
+        let expected_key = session_key.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -227,6 +291,12 @@ impl Sidebar {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if !this
+                    .question_session(id, cx)
+                    .is_some_and(|session| session.read(cx).state.saved.key == expected_key)
+                {
+                    return;
+                }
                 match result {
                     Ok((Some(source), session_key, input)) => {
                         if let Some(target) =

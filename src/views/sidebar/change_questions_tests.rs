@@ -262,7 +262,8 @@ fn ask_changes_linux_native_capture() {
   cx.update(|cx|{grove_core::theme::set_by_name(theme);c::sync_component_theme(cx);fixture.update(cx,|f,cx|{f.width=width;f.rem=rem;cx.notify();});});
   cx.update_window(window.into(),|_,window,cx|{window.resize(gpui::size(gpui::px(width),gpui::px(1000.)));sidebar.update(cx,|s,cx|{let e=s.questions.entries.values_mut().next().unwrap();e.freshness=Some(Ok(state!="stale"));e.diff=None;e.error=None;e.scroll.set_offset(gpui::point(gpui::px(0.),gpui::px(0.)));if state=="error"{e.error=Some("Provider disconnected. Your previous answer and question are preserved.".into());}if state=="diff"{e.diff=Some(("src/webhooks/handler.ts · new 2–2".into(),cx.new(|cx|TextViewState::markdown(&patch_markdown(&e.result.as_ref().unwrap().snapshot.files[0].patch),cx))));}cx.notify();});fixture.update(cx,|_,cx|cx.notify());window.refresh();}).unwrap();
   cx.background_executor().timer(Duration::from_millis(500)).await;
-  let output=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".grove-artifacts/ask-native").join(format!("{name}.png"));std::fs::create_dir_all(output.parent().unwrap()).unwrap();assert!(std::process::Command::new("import").args(["-window","Grove Ask changes QA"]).arg(&output).status().unwrap().success());let mut metadata=std::fs::OpenOptions::new().create(true).append(true).open(output.parent().unwrap().join("captures.txt")).unwrap();writeln!(metadata,"{name}: theme={theme}, rem={rem}, requested width={width}").unwrap();
+  let output_root=std::env::var_os("GROVE_ASK_CAPTURE_OUTPUT").map(std::path::PathBuf::from).unwrap_or_else(||std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".grove-artifacts/ask-native"));
+  let output=output_root.join(format!("{name}.png"));std::fs::create_dir_all(output.parent().unwrap()).unwrap();assert!(std::process::Command::new("import").args(["-window","Grove Ask changes QA"]).arg(&output).status().unwrap().success());let mut metadata=std::fs::OpenOptions::new().create(true).append(true).open(output.parent().unwrap().join("captures.txt")).unwrap();writeln!(metadata,"{name}: theme={theme}, rem={rem}, requested width={width}").unwrap();
  }
  cx.update_window(window.into(),|_,window,cx| {fixture.read(cx).source.clone().focus(window,cx);sidebar.update(cx,|s,cx|{s.questions=Questions::default();cx.notify();});window.refresh();}).unwrap();
  cx.background_executor().timer(Duration::from_millis(150)).await;
@@ -590,6 +591,160 @@ fn linked_saved_answer_stays_available_without_selected_checkout(cx: &mut gpui::
             assert!(sidebar.linked_question_key().is_some());
             assert!(sidebar.is_question_session(id));
             let _controls = sidebar.render_question_controls(PATH, false, None, window, cx);
+        })
+    });
+}
+
+#[gpui::test]
+fn question_header_and_back_remain_above_scroll_after_focus_at_narrow_widths(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(initialize);
+    let mut sidebar_handle = None;
+    let mut fixture_handle = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let (sidebar, source) = create_sidebar(window, cx);
+        sidebar_handle = Some(sidebar.clone());
+        let fixture = cx.new(|_| QuestionFixture {
+            sidebar,
+            source,
+            rem: 16.,
+            width: 900.,
+            height: 800.,
+        });
+        fixture_handle = Some(fixture.clone());
+        gpui_component::Root::new(fixture, window, cx).bordered(false)
+    });
+    let sidebar = sidebar_handle.unwrap();
+    let fixture = fixture_handle.unwrap();
+    for (width, rem) in [(900., 16.), (340., 16.), (900., 20.), (340., 20.)] {
+        cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+        cx.update(|_, cx| {
+            fixture.update(cx, |fixture, cx| {
+                fixture.width = width;
+                fixture.rem = rem;
+                cx.notify();
+            })
+        });
+        draw(cx);
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let entry = sidebar.questions.entries.values_mut().next().unwrap();
+                entry
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .focus_handle(cx)
+                    .focus(window, cx);
+                entry
+                    .scroll
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(-160.)));
+                cx.notify();
+            })
+        });
+        draw(cx);
+        let header = cx.debug_bounds("ask-reader-header").unwrap();
+        let back = cx.debug_bounds("ask-back").unwrap();
+        let scroll = cx.debug_bounds("ask-reader-scroll").unwrap();
+        assert!(
+            header.size.height >= gpui::px(26.),
+            "header collapsed at {width}/{rem}: {header:?}"
+        );
+        assert!(
+            back.origin.y >= header.origin.y
+                && back.origin.y + back.size.height <= header.origin.y + header.size.height,
+            "Back escaped header at {width}/{rem}"
+        );
+        assert!(
+            scroll.origin.y >= header.origin.y + header.size.height - gpui::px(1.),
+            "scroll overlapped header at {width}/{rem}: {header:?} {scroll:?}"
+        );
+        assert!(
+            back.origin.x >= gpui::px(0.) && back.origin.x + back.size.width <= gpui::px(width),
+            "Back unreachable at {width}/{rem}: {back:?}"
+        );
+    }
+}
+
+#[gpui::test]
+fn unqualified_ask_uses_linked_explicit_pr_without_attached_checkout(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|_, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            let old = sidebar.questions.open.clone().unwrap();
+            let mut entry = sidebar.questions.entries.remove(&old).unwrap();
+            let id = SessionId::from_raw(1001);
+            sidebar.selection = Some(Selection::Session(id));
+            let scope = Scope::PullRequest {
+                url: "https://github.com/example/external/pull/37".into(),
+            };
+            entry.scope = Some(scope.clone());
+            let target = key(&sidebar.selection, PATH, &scope);
+            sidebar.questions.entries.insert(target.clone(), entry);
+            sidebar.questions.linked.insert(id, target.clone());
+            sidebar.questions.open = None;
+            sidebar.invoke_ask_skill(
+                Invocation {
+                    scope: ScopePreference::Current,
+                    question: String::new(),
+                },
+                cx.focus_handle(),
+                cx,
+            );
+            assert_eq!(sidebar.questions.open.as_ref(), Some(&target));
+            assert_eq!(
+                sidebar.questions.entries.get(&target).unwrap().scope,
+                Some(scope)
+            );
+            assert!(sidebar
+                .questions
+                .entries
+                .values()
+                .all(|entry| !entry.resolving && !entry.phase.busy()));
+        })
+    });
+}
+
+#[gpui::test]
+fn changed_saved_identity_retires_link_and_keeps_unsaved_question_with_old_conversation(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (sidebar, cx) = fixture(cx);
+    cx.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            let old = sidebar.questions.open.clone().unwrap();
+            let mut entry = sidebar.questions.entries.remove(&old).unwrap();
+            let id = SessionId::from_raw(1002);
+            entry.input.as_ref().unwrap().update(cx, |input, cx| {
+                input.set_value("Unsaved draft for the old conversation", window, cx)
+            });
+            entry.session = Some(id);
+            entry.session_key = Some("old-saved-key".into());
+            sidebar.selection = Some(Selection::Session(id));
+            let target = key(&sidebar.selection, PATH, &Scope::Local);
+            sidebar.questions.entries.insert(target.clone(), entry);
+            sidebar.questions.linked.insert(id, target.clone());
+            sidebar
+                .questions
+                .identities
+                .insert(id, "old-saved-key".into());
+            sidebar.questions.open = Some(target.clone());
+            sidebar.sync_question_identity(id, "new-saved-key");
+            assert!(sidebar.questions.linked.get(&id).is_none());
+            assert!(sidebar.questions.open.is_none());
+            assert!(!sidebar.questions.entries.contains_key(&target));
+            let retired = sidebar
+                .questions
+                .retired_entries
+                .get(&("old-saved-key".into(), PATH.into(), "local".into()))
+                .unwrap();
+            assert_eq!(
+                retired.input.as_ref().unwrap().read(cx).value().as_ref(),
+                "Unsaved draft for the old conversation"
+            );
+            assert!(retired.controller.is_none());
         })
     });
 }

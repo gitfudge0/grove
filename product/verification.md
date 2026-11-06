@@ -443,8 +443,9 @@ without a commit, push, PR or release.
 
 ## Ask about changes
 
-The Ask engine reuses the Describe snapshot collector and private tool-disabled
-provider runner. Focused Linux core checks cover malformed structured answers,
+The initial Ask implementation reused the Describe snapshot collector and a
+private tool-disabled provider runner. The retained-session update below replaces
+that UI generation path with normal provider turns. Focused Linux core checks cover malformed structured answers,
 unknown/omitted/duplicate examined files, citations outside captured old/new hunk
 lines, deletion-side references, cross-hunk ranges, cancellation before provider
 launch, and empty questions. Snapshot/no-index-write guarantees retain the
@@ -481,3 +482,35 @@ the harness now focuses its source and releases the reader before quitting.
 One-state-per-process captures avoid retained frames; the corrected narrow
 bootstrap capture shows the actual wrapped reader. These remain isolated native
 fixtures, not full-shell interaction, live provider UI, or participant testing.
+
+
+## Retained Ask conversations and durable answers
+
+Ask now uses the shared typed result store/controller on normal retained provider
+sessions. Eight Ask core tests cover its schema/citations, fenced conversation
+import, exact question identity, canonical replacement and immutable prompt
+requirements; three parser tests cover local/attached/explicit PR URL forms.
+Both-provider fixtures passed two actual submit/router tests (including blocked
+Dashboard catalog discovery), typed recovery/no-resubmission and ordinary-followup
+isolation in the eleven native Ask tests. Three prompt-core tests, three Settings
+prompt tests and four shared controller tests passed. These are fixture checks,
+not live main-composer/provider UI checks. The initially reused shared-target core
+binary ran zero Ask tests and was rejected; touching the package entrypoint forced
+an actual current-source build and the expected eight test names/counts.
+
+An isolated live normal Codex conversation passed with a persisted custom Ask
+prompt: the answer included the requested Markdown heading/table and validated
+captured references. The exact multiline question and composed prompt survived
+pending storage; canonical result/link reload and pending cleanup passed, with
+HEAD, index and working state unchanged. This exercised the normal provider
+transport, rather than the old one-shot helper. A fresh Claude auth check reported
+signed out, and the normal Claude smoke failed with expired OAuth credentials.
+Claude live generation remains unverified pending sign-in.
+
+The initial request asks the provider to avoid tools/tests/writes, but normal
+session permissions apply. The canonical footer therefore says test results were
+not verified, rather than asserting that no test process could have run. Native
+captures are isolated production-reader fixtures; full-shell source-selector and
+provider UI behavior, macOS and Windows remain untested. Existing broad-suite
+and strict Clippy baseline failures are not claimed resolved. Coordinator final
+checks own the current integrated revisions and final installation.
