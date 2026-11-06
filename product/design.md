@@ -459,3 +459,5 @@ Summary and coverage remain visible independently of customized prose. Empty
 findings never use an approval or unqualified clean-state label. Out of date
 results remain copyable. Reader entrance/exit uses restrained shared motion;
 input focus and captured diff selection are immediate.
+
+Checkout overflow controls omit hover tooltips while preserving accessible names. Local changes, Git and Scripts reserve matching fixed trailing control bounds and insets. Checkout action rows share leading icon slots and the small icon-to-label gap. The Scripts empty message aligns with its heading; the heading plus control is the sole add action in that section. These static geometry and copy changes need no motion.

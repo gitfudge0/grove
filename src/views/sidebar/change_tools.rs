@@ -143,7 +143,7 @@ impl Sidebar {
             );
         if !states.is_empty() {
             heading = heading.child(
-                components::header_control_with_label_tooltip(
+                components::header_control(
                     id,
                     if local {
                         "Local changes actions"

@@ -576,3 +576,5 @@ inspection remains unverified; GPUI geometry tests passed. Evidence is in
 macOS and Windows native rendering were untested. Codex and Claude live provider
 behavior was untested; this removal changes only Settings UI, and no live
 generation was exercised.
+
+Checkout menu alignment follow-up (2026-11-06): the Linux GPUI Checkout layout fixture passed, including equal trailing bounds for Local changes, Git and Scripts overflow controls, and absence of the duplicate Add script row. The script register/editor interaction fixture and all 33 source conformance checks passed; repository artifact policy passed. The layout fixture's stale expectation for a standalone Describe changes row was updated to the existing section-menu behavior. Actual native screenshot/hover/focus inspection, light/dark and zoom appearance, and macOS/Windows rendering remain untested because native computer control is unavailable. Codex and Claude were exercised only as session fixtures within the layout test; live provider behavior is untested for both and no provider transport behavior changed.

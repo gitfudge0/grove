@@ -142,7 +142,7 @@ impl Sidebar {
             .px(rpx(SPACE_2XL))
             .flex()
             .items_center()
-            .gap(rpx(SPACE_2XL))
+            .gap(rpx(SPACE_SM))
             .text_size(rpx(TEXT_BODY))
             .hover(|style| style.bg(c::BG_HOVER()).text_color(c::FG()))
             .focus_visible(|style| style.bg(c::BG_HOVER()))
@@ -151,7 +151,11 @@ impl Sidebar {
                     .absolute()
                     .inset_0(),
             )
-            .child(icon("git-branch", ICON_SM, c::FG_DIM()))
+            .child(div().w(rpx(ICON_LG)).flex_shrink_0().child(icon(
+                "git-branch",
+                ICON_MD,
+                c::FG_DIM(),
+            )))
             .child(div().flex_1().min_w_0().truncate().child(label))
             .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
                 this.branch_hover(*hovered, window, cx);

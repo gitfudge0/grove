@@ -934,6 +934,8 @@ impl Sidebar {
                         "Add script",
                         checkout_action("checkout-script-add", "Add script", false, window, cx)
                             .debug_selector(|| "checkout-script-add".into())
+                            .w(rpx(CHROME_CONTROL_H))
+                            .h(rpx(CHROME_CONTROL_H))
                             .icon_only()
                             .icon(
                                 gpui_component::Icon::default()
@@ -948,9 +950,7 @@ impl Sidebar {
                                 );
                             })),
                     ))
-                    .child(script_control_tooltip(
-                        "checkout-script-manage-tooltip",
-                        "Manage project scripts",
+                    .child(
                         checkout_action(
                             "checkout-script-manage",
                             "Manage project scripts",
@@ -959,6 +959,8 @@ impl Sidebar {
                             cx,
                         )
                         .debug_selector(|| "checkout-script-manage".into())
+                        .w(rpx(CHROME_CONTROL_H))
+                        .h(rpx(CHROME_CONTROL_H))
                         .icon_only()
                         .icon(
                             gpui_component::Icon::default()
@@ -974,7 +976,7 @@ impl Sidebar {
                                 );
                             },
                         )),
-                    )),
+                    ),
             );
         for entry in entries.iter().take(if show_all {
             usize::MAX
@@ -1208,28 +1210,14 @@ impl Sidebar {
             }
         }
         if entries.is_empty() {
-            let project_path = project.path.clone();
-            section = section
-                .child(
-                    div()
-                        .pl(rpx(CHECKOUT_LABEL_INSET))
-                        .pr(rpx(SPACE_2XL))
-                        .py(rpx(SPACE_LG))
-                        .text_size(rpx(TEXT_SMALL))
-                        .text_color(c::FG_DIM())
-                        .child("No scripts yet. Add a shell command or prompt."),
-                )
-                .child(
-                    checkout_row("checkout-script", "Add script", "plus", window, cx).on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.act(
-                                Action::EditProjectScripts(project_path.clone(), true),
-                                window,
-                                cx,
-                            );
-                        }),
-                    ),
-                );
+            section = section.child(
+                div()
+                    .px(rpx(SPACE_2XL))
+                    .py(rpx(SPACE_LG))
+                    .text_size(rpx(TEXT_SMALL))
+                    .text_color(c::FG_DIM())
+                    .child("No scripts yet. Add a shell command or prompt."),
+            );
         } else if entries.len() > SCRIPT_VISIBLE_ROWS {
             let project_path = project.path.clone();
             section = section.child(
@@ -3078,6 +3066,8 @@ impl Sidebar {
                                     cx,
                                 )
                                 .debug_selector(|| "checkout-recovery-menu".into())
+                                .w(rpx(CHROME_CONTROL_H))
+                                .h(rpx(CHROME_CONTROL_H))
                                 .icon_only()
                                 .icon(
                                     gpui_component::Icon::default()
@@ -3087,7 +3077,6 @@ impl Sidebar {
                                 .with_focus_handle(
                                     self.checkout_panel.trigger_focus["recovery"].clone(),
                                 )
-                                .tooltip("Discard local edits or revert a commit")
                                 .mr(rpx(SPACE_2XL))
                                 .relative()
                                 .child({
@@ -6865,11 +6854,6 @@ mod tests {
                 "checkout-finder-label",
             ),
             (
-                "checkout-script",
-                "checkout-script-icon",
-                "checkout-script-label",
-            ),
-            (
                 "checkout-commit-publish",
                 "checkout-commit-publish-icon",
                 "checkout-commit-publish-label",
@@ -6880,6 +6864,11 @@ mod tests {
                 "checkout-changes-label",
             ),
         ];
+        assert!(cx.debug_bounds("checkout-script").is_none());
+        let scripts_more = cx.debug_bounds("checkout-script-manage").unwrap();
+        let recovery_more = cx.debug_bounds("checkout-recovery-menu").unwrap();
+        assert_eq!(scripts_more.right(), recovery_more.right());
+        assert_eq!(scripts_more.size, recovery_more.size);
         let mut icon_x = None;
         for (id, icon_id, label_id) in rows {
             let row = cx.debug_bounds(id).unwrap();
@@ -6938,15 +6927,16 @@ mod tests {
             let commit = cx.debug_bounds("checkout-commit-publish").unwrap();
             let changes = cx.debug_bounds("checkout-changes").unwrap();
             assert!(changes.bottom() <= commit.top() && commit.bottom() <= pr.top());
-            let description = cx.debug_bounds("describe-changes").unwrap();
+            assert!(cx.debug_bounds("describe-changes").is_none());
+            let local_more = cx.debug_bounds("checkout-local-tools").unwrap();
+            assert_eq!(local_more.right(), scripts_more.right());
+            assert_eq!(local_more.size, scripts_more.size);
             let changes_heading = cx.debug_bounds("checkout-changes-heading").unwrap();
             let git_heading = cx.debug_bounds("checkout-git-heading").unwrap();
             let pr_heading = cx.debug_bounds("checkout-pr-heading").unwrap();
             let scripts_heading = cx.debug_bounds("checkout-scripts-heading").unwrap();
             assert!(changes_heading.bottom() <= changes.top());
-            assert!(
-                changes.bottom() <= description.top() && description.bottom() <= git_heading.top()
-            );
+            assert!(changes.bottom() <= git_heading.top());
             assert!(git_heading.bottom() <= commit.top());
             assert!(commit.bottom() <= pr_heading.top() && pr_heading.bottom() <= pr.top());
             assert!(pr.bottom() <= scripts_heading.top());
