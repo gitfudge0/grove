@@ -1,4 +1,4 @@
-//! Tool-free questions about one immutable change snapshot; no repository writes.
+//! Validated questions and answers bound to one immutable change snapshot.
 use crate::{
     change_description::{self, Scope, Snapshot},
     codex::Provider,

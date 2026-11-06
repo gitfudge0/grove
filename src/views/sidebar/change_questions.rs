@@ -60,6 +60,8 @@ pub(super) struct Questions {
     scope_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     linked: HashMap<SessionId, Key>,
     hydrated: HashSet<(SessionId, String)>,
+    identities: HashMap<SessionId, String>,
+    retired_entries: HashMap<(String, String, String), Entry>,
     #[cfg(test)]
     store_root: Option<std::path::PathBuf>,
 }
@@ -197,6 +199,21 @@ impl Sidebar {
         source: FocusHandle,
         cx: &mut Context<Self>,
     ) {
+        // A retained answer's visible source is authoritative for an unqualified
+        // command, including explicit PRs no longer attached to this checkout.
+        if invocation.scope == ScopePreference::Current {
+            if let Some(target) = self.linked_question_key() {
+                if let Some(scope) = self
+                    .questions
+                    .entries
+                    .get(&target)
+                    .and_then(|entry| entry.scope.clone())
+                {
+                    self.open_question(target.path, scope, invocation.question, Some(source), cx);
+                    return;
+                }
+            }
+        }
         let targets = self.checkout_targets(cx);
         let Some((_, path)) = super::checkout_panel::selected_checkout(
             &targets,
@@ -791,6 +808,9 @@ impl Sidebar {
             |a| a.snapshot.label.clone(),
         );
         let header = div()
+            .debug_selector(|| "ask-reader-header".into())
+            .min_h(rpx(APPBAR_TOTAL_H))
+            .flex_shrink_0()
             .flex()
             .flex_wrap()
             .items_center()
@@ -1096,6 +1116,7 @@ impl Sidebar {
             .child(
                 div()
                     .id("ask-reader-scroll")
+                    .debug_selector(|| "ask-reader-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
