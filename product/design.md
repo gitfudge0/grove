@@ -441,7 +441,7 @@ control, including the Codex or Claude composer.
 
 ## Built-in prompt settings
 
-Prompts is a Settings category with a compact two-by-two picker for the four
+Prompts is a Settings category with a compact two-column picker for the
 built-in writing prompts and one full-width editor for the selected prompt.
 Each choice shows its default/customized/unsaved state; switching prompts or
 categories preserves independent drafts without saving them. The editor uses a
@@ -459,17 +459,27 @@ walkthrough; snapshot context and coverage remain independent of authored conten
 
 ## Change-question reader
 
-Ask about changes is a Checkout action and shared Codex/Claude composer command.
-It reuses the change-description reader's session/checkout/scope ownership,
-selectable native Markdown, captured-diff treatment and quiet status marks. Its
-accessible multiline question field uses the project field well, grows within
-the reader scroll, and retains its draft through failure/cancellation/navigation.
-Submit is an explicit icon-leading action; Control/Command+Enter also submits.
-Opening focuses the question; Escape returns through captured references before
-restoring the invoking control. Scope selection uses neutral selected controls.
-Busy controls reject duplicate submission, Cancel waits for process exit, and
-old answers retain their snapshot and coverage while a replacement is generated.
-Reading/input/source focus is immediate; reader replacement uses shared restrained
-motion with reduced-motion endpoints. Narrow layouts wrap header actions and keep
-the question field and answer inside the reader. No publishing or repair controls
-are offered by this read-only workflow.
+Ask about changes follows the current Describe source/action treatment: one
+compact source dropdown when two sources exist, static sole-source context, and
+an icon-leading **View answer** action in Changes once a saved answer is linked.
+Saved links remain usable after clean/detached sources. The retained conversation
+and native reader share identity; Conversation opens that same session. A readable
+header reserves the persistent side-toolbar controls' shared width/gaps when they
+overlay the canvas. Source labels yield before fixed actions.
+
+The accessible multiline question uses the project field well, grows inside the
+reader scroll, and retains its draft during errors, cancellation and navigation.
+Opening focuses the field; plain Enter remains multiline and the native secondary-
+Enter action submits. Only an explicit native question starts another canonical
+generation. Ordinary conversation follow-ups retain their own context. Old answers
+keep their captured source/question and coverage during replacements. Saving uses
+an honest status and disables Cancel; success means the canonical write completed.
+Questions/answers render selectable native Markdown with compact source context,
+transparent reading surfaces, and captured diff navigation. Escape returns through
+a captured reference to the answer, then to its conversation/source control.
+
+Picker/focus/input changes are immediate. Reader replacement uses the existing
+restrained motion and reduced-motion endpoints. Narrow layouts wrap content while
+reserving header actions. No publication or repair actions belong to this reader.
+Ask writing preferences use the existing Settings prompt picker/editor, with
+independent drafts and immutable schema/citation/coverage requirements beneath.

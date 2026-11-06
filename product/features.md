@@ -227,32 +227,51 @@ without extended content remain readable. Prompt changes never rewrite saved res
 
 ## Ask about changes
 
-Checkout offers **Ask about changes** for local edits or an attached GitHub PR.
-Choose a scope, enter a question in the native reader, then **Ask question** (or
-Control/Command+Enter). `/ask [local|pr] [question]` and `$ask [local|pr] [question]`
-in either Codex or Claude's composer invoke the same reader; omitting the question
-opens its field without calling a model. `local`/`pr` are reserved first words;
-to ask a question beginning with one of those words, select the scope explicitly.
-The native action works with Checkout hidden, preserves the command draft, and
-rejects attachments or quoted references without discarding them. Provider skill
-catalogs cannot duplicate the reserved `ask` completion. Read-only side chats do
-not receive this bundled skill.
+Checkout offers **Ask about changes** for local staged/unstaged/nonignored-untracked
+changes against HEAD, or the attached PR's base-to-head diff. A sole source is
+static context; when both exist, a compact dropdown chooses the source. Saved
+answers expose **View answer** in Changes beside the diff, including after the
+checkout becomes clean or its PR is detached. An **Out of date** label identifies
+changed snapshots; unavailable freshness stays explicit in the reader.
 
-Each submission independently captures its scope using the Describe snapshot
-engine: local staged/unstaged/nonignored-untracked changes against HEAD, or the
-attached PR's base-to-head diff. No conversational follow-up context is implied.
-Answers, questions and in-flight work belong to session, checkout and scope for
-the app lifetime. Questions and previous answers survive errors/cancellation;
-a successful new answer replaces the previous one for that scope. No repository,
-index, main conversation or PR writes occur. The authenticated provider CLI is
-called with tools/integrations/hooks disabled in a private temporary directory.
+`/ask [local|pr|GitHub-PR-URL] [question]` and `$ask` with the same arguments work
+in Dashboard and either provider's normal composer. Native routing happens before
+catalog discovery or Dashboard draft activation. A validated explicit URL targets
+that PR without replacing Checkout's local/attached source preference. Invalid
+URL-like sources show usage. Omit the question to open its accessible native field
+without a model turn; **Ask question** or Control/Command+Enter submits it. Plain
+Enter inserts a newline. Attachments/quoted references are rejected and preserved,
+as is the originating composer draft.
 
-The reader shows selectable Markdown, explicit file coverage and limitations,
-and references validated against exact old/new source lines present in complete
-captured patches. **Open reference** displays that captured patch, rather than a
-live file. Citations establish location, not that the model's interpretation is
-correct. Missing/partial/binary patches cannot count as examined. Ask does not run
-tests or inspect unchanged repository files. Freshness checks mark changed or
-unverifiable snapshots; old answers remain readable/copyable and **Ask question**
-captures a fresh diff. Escape returns from a captured patch to the answer, then
-to the actual invoking control. Questions and answers are not persisted on disk.
+A submitted new invocation creates a dedicated retained conversation inheriting
+the selected provider, model and preferences. Distinct invocations retain distinct
+question histories; subsequent native questions inside the reader reuse its
+conversation, each capturing a fresh diff. **Conversation** returns to that same
+session, where ordinary follow-ups remain ordinary and never overwrite the typed
+canonical answer. The initial captured request asks the normal provider to be
+read-only and rely on the supplied diff. Normal transport permissions remain in
+force; this is not a separate tool-disabled sandbox.
+
+The shared analysis store saves one latest validated answer per local checkout or
+PR in the separate `change-answers` namespace. Session links, exact captured
+question, composed prompt, pending generation identity and canonical answer survive
+restart. Canonical replacement is atomic and bound to the captured source and
+question. A newer generation claim prevents an older request overwriting it.
+Recovery imports only the final response belonging to the exact captured request;
+uncertain work is never automatically resubmitted. Cancel interrupts only its
+own active request and retires its pending job, preserving previous answers and
+the last captured question. Saving disables cancellation until its atomic write
+finishes. Already-mounted unsaved question edits are preserved during hydration.
+
+The native reader shows selectable Markdown (including supported tables/code and
+Mermaid), explicit coverage/limitations, and references validated against exact
+old/new lines present in complete captured patches. **Open reference** displays the
+captured patch, not a live file. Omitted/partial/binary patches cannot count as
+examined. The captured answer does not verify test results; the initial request asks the
+provider not to run tools or tests. Model claims remain interpretations of code. Old answers stay readable/copyable, and a fresh native submission captures
+the source again. Scope/session ownership and source focus survive navigation.
+
+Settings → Prompts → **Ask about changes** edits the writing instructions. The
+schema, captured citations, source/question identity and coverage requirements
+remain Grove-owned, separately visible, and cannot be removed by customization.
+Read-only side conversations do not receive this user-invoked skill.

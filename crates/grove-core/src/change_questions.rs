@@ -63,7 +63,7 @@ impl Answer {
         text.push_str("\n## Coverage and limits\n\n");
         let _ = writeln!(
             text,
-            "{} of {} changed files examined. Snapshot: {}. Tests were not executed by Ask.",
+            "{} of {} changed files examined. Snapshot: {}. Test results were not verified by Ask.",
             self.examined_files.len(),
             self.snapshot.files.len(),
             self.snapshot.label
@@ -395,7 +395,7 @@ mod tests {
         let a = validate(snapshot(), "What changes?".into(), prediction()).unwrap();
         assert!(a.markdown().contains("1 of 2 changed files"));
         assert!(a.markdown().contains("Binary"));
-        assert!(a.markdown().contains("Tests were not executed"));
+        assert!(a.markdown().contains("Test results were not verified"));
     }
     #[test]
     fn rejects_invented_or_omitted_files_and_uncaptured_lines() {

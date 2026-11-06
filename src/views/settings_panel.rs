@@ -1504,7 +1504,7 @@ impl SettingsPanel {
             )
             .child(self.prompt_requirements(kind, cx))
             .child(div().mt(rpx(SPACE_LG)).text_size(rpx(TEXT_MICRO)).text_color(c::FG_DIM())
-                .child(if kind == grove_core::prompts::PromptKind::DescribeChanges {
+                .child(if matches!(kind,grove_core::prompts::PromptKind::DescribeChanges|grove_core::prompts::PromptKind::AskChanges) {
                     "Supports native Markdown, tables, code blocks and Mermaid."
                 } else {
                     "Your instructions customize writing; Grove keeps its output and workflow requirements."

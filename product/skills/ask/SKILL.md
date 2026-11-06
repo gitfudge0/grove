@@ -1,12 +1,12 @@
 ---
 name: ask
-description: Answer a question about selected local changes or the attached PR in Grove.
+description: Answer a question about local changes or a GitHub PR in Grove.
 ---
 
-The user invokes `/ask [local|pr] [question]` or `$ask [local|pr] [question]`
-in Grove's composer, or chooses **Ask about changes** in Checkout. Omitting the
-question opens an editable question field. Grove handles this command before
-provider submission; it preserves the composer and uses a separate tool-free
-model call on an immutable diff. Replies cite captured lines and disclose omitted
-patches. No repository writes or external publication occur. Read-only side
-conversations do not receive this skill. See `product/features.md` for behavior.
+Invoke `/ask [local|pr|GitHub-PR-URL] [question]` or the equivalent `$ask` in
+Dashboard or either provider's composer. Omitting the question opens a native
+field. A submitted question creates a retained conversation with the selected
+provider/model preferences; native answers are validated and saved per source.
+Conversation opens that same session. Ordinary follow-ups do not replace the
+saved answer. The initial request is read-only; normal provider permissions apply.
+Read-only side conversations do not receive this skill. See `product/features.md`.

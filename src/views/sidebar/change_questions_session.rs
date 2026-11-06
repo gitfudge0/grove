@@ -19,7 +19,7 @@ impl Sidebar {
     ) -> Option<Entity<crate::entities::codex_session::CodexSession>> {
         self.runtime.read(cx).registry.read(cx).codex(id).cloned()
     }
-    pub(super) fn linked_question_key(&self) -> Option<Key> {
+    pub(in crate::views::sidebar) fn linked_question_key(&self) -> Option<Key> {
         if self.dashboard_open {
             return None;
         }
@@ -28,7 +28,7 @@ impl Sidebar {
         };
         self.questions.linked.get(&id).cloned()
     }
-    pub(super) fn is_question_session(&self, id: SessionId) -> bool {
+    pub(in crate::views::sidebar) fn is_question_session(&self, id: SessionId) -> bool {
         self.questions.linked.contains_key(&id)
     }
     fn attach_question_controller(
@@ -101,7 +101,7 @@ impl Sidebar {
         self.questions.linked.insert(id, target.clone());
         Some(target)
     }
-    fn start_question_conversation(
+    pub(super) fn start_question_conversation(
         &mut self,
         path: String,
         scope: Scope,
@@ -144,7 +144,7 @@ impl Sidebar {
                 },
                 |seed| seed.independent_conversation(new_key.clone()),
             );
-            saved.cwd = source.checkout.clone();
+            saved.cwd.clone_from(&source.checkout);
             saved.project = project;
             saved.roots.clear();
             grove_core::session_title::set_manual_title(
@@ -190,12 +190,12 @@ impl Sidebar {
             .and_then(|e| e.controller.clone())
         {
             controller.update(cx, |controller, cx| {
-                controller.start(source.checkout, source.scope, question, cx)
+                controller.start(source.checkout, source.scope, question, cx);
             });
         }
         cx.notify();
     }
-    pub(super) fn restore_session_questions(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::views::sidebar) fn restore_session_questions(&mut self, cx: &mut Context<Self>) {
         if self.dashboard_open {
             return;
         }
@@ -219,6 +219,7 @@ impl Sidebar {
                         store
                             .pending_for_session(&session_key)?
                             .map(|request| request.input)
+                            .or(store.input_for_session(&session_key)?)
                     } else {
                         None
                     };
@@ -232,7 +233,11 @@ impl Sidebar {
                             this.attach_question_controller(id, session_key, source, cx)
                         {
                             if let Some(input) = input {
-                                if let Some(entry) = this.questions.entries.get_mut(&target) {
+                                if let Some(entry) =
+                                    this.questions.entries.get_mut(&target).filter(|entry| {
+                                        entry.input.is_none() && entry.pending_question.is_none()
+                                    })
+                                {
                                     entry.pending_question = Some(input);
                                 }
                             }
@@ -242,7 +247,7 @@ impl Sidebar {
                                 .get(&target)
                                 .and_then(|e| e.controller.clone())
                             {
-                                controller.update(cx, |controller, cx| controller.hydrate(cx));
+                                controller.update(cx, ChangeSession::hydrate);
                             }
                         }
                     }
@@ -254,14 +259,14 @@ impl Sidebar {
         })
         .detach();
     }
-    fn reload_question(&mut self, target: &Key, cx: &mut Context<Self>) {
+    pub(super) fn reload_question(&mut self, target: &Key, cx: &mut Context<Self>) {
         if let Some(controller) = self
             .questions
             .entries
             .get(target)
             .and_then(|e| e.controller.clone())
         {
-            controller.update(cx, |controller, cx| controller.reload(cx));
+            controller.update(cx, ChangeSession::reload);
         }
     }
 }

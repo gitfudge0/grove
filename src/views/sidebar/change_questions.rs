@@ -9,7 +9,7 @@ use gpui_component::{
     input::{Input, InputState},
     menu::{PopupMenu, PopupMenuItem},
     text::{TextView, TextViewState},
-    Selectable,
+    Disableable, Selectable,
 };
 use grove_core::{
     ask_skill::Invocation,
@@ -209,6 +209,8 @@ impl Sidebar {
         self.checkout_panel.side_chat_owner = None;
         self.dismiss_description();
         if let ScopePreference::PullRequestUrl(url) = &invocation.scope {
+            let preference_key = (owner(&self.selection), path.clone());
+            let previous = self.questions.scopes.get(&preference_key).cloned();
             self.open_question(
                 path,
                 Scope::PullRequest { url: url.clone() },
@@ -216,6 +218,11 @@ impl Sidebar {
                 Some(source),
                 cx,
             );
+            if let Some(previous) = previous {
+                self.questions.scopes.insert(preference_key, previous);
+            } else {
+                self.questions.scopes.remove(&preference_key);
+            }
             return;
         }
         let scope = self
@@ -359,7 +366,7 @@ impl Sidebar {
         let scope = e.scope.clone().unwrap_or(Scope::Local);
         if let Some(controller) = e.controller.clone() {
             controller.update(cx, |controller, cx| {
-                controller.start(k.path.clone(), scope, question, cx)
+                controller.start(k.path.clone(), scope, question, cx);
             });
         } else {
             self.start_question_conversation(k.path.clone(), scope, question, cx);
@@ -441,13 +448,15 @@ impl Sidebar {
         if self.questions.scope_menu.is_some()
             && (self.questions.scope_menu_owner.as_ref() != Some(&menu_owner)
                 || !local
-                || pr.is_none())
+                || pr.is_none()
+                || self.linked_question_key().is_some())
         {
             self.questions.scope_menu = None;
             self.questions.scope_subscription = None;
             self.questions.scope_menu_owner = None;
         }
         if let Some(target) = self.linked_question_key() {
+            self.check_question(&target, cx);
             let entry = self.questions.entries.get(&target);
             let saved = entry.is_some_and(|e| e.result.is_some());
             let busy = entry.is_some_and(|e| e.phase.busy());
@@ -556,6 +565,10 @@ impl Sidebar {
             let selected = scope.clone();
             let target = menu_owner.clone();
             let pr_scope = Scope::PullRequest { url: pr.url };
+            let keyboard_target = target.clone();
+            let keyboard_selected = selected.clone();
+            let keyboard_pr = pr_scope.clone();
+            let keyboard_focus = focus.clone();
             let bounds = self.questions.scope_bounds.clone();
             column = column.child(
                 div()
@@ -585,7 +598,26 @@ impl Sidebar {
                                 );
                             },
                         )),
-                    ),
+                    )
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if keyboard_focus.is_focused(window)
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            {
+                                let position = this.questions.scope_bounds.get().bottom_left();
+                                this.open_question_sources(
+                                    keyboard_target.clone(),
+                                    keyboard_selected.clone(),
+                                    keyboard_pr.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                );
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        },
+                    )),
             );
             if self.questions.scope_menu_owner.as_ref() == Some(&menu_owner) {
                 if let Some(menu) = self.questions.scope_menu.clone() {
@@ -626,7 +658,7 @@ impl Sidebar {
                     String::new(),
                     Some(source_focus.clone()),
                     cx,
-                )
+                );
             })),
         );
         if local {
@@ -739,10 +771,22 @@ impl Sidebar {
             return div().into_any_element();
         };
         let busy = e.phase.busy();
-        let label = e
-            .result
-            .as_ref()
-            .map_or("Ask about changes".into(), |a| a.snapshot.label.clone());
+        let label = e.result.as_ref().map_or_else(
+            || {
+                e.scope.as_ref().map_or_else(
+                    || "Ask about changes".into(),
+                    |scope| match scope {
+                        Scope::Local => "Local changes".into(),
+                        Scope::PullRequest { url } => url
+                            .trim_end_matches('/')
+                            .strip_prefix("https://github.com/")
+                            .unwrap_or(url)
+                            .replace("/pull/", " #"),
+                    },
+                )
+            },
+            |a| a.snapshot.label.clone(),
+        );
         let header = div()
             .flex()
             .flex_wrap()
@@ -862,7 +906,7 @@ impl Sidebar {
                                     .get(&target)
                                     .and_then(|e| e.controller.clone())
                                 {
-                                    controller.update(cx, |controller, cx| controller.cancel(cx));
+                                    controller.update(cx, ChangeSession::cancel);
                                 }
                                 cx.notify();
                             })),

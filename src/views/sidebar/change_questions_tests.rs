@@ -458,9 +458,9 @@ fn typed_peer(
 ) -> (
     Entity<crate::entities::codex_session::CodexSession>,
     std::sync::mpsc::Receiver<grove_core::codex::Action>,
-    std::sync::mpsc::Sender<grove_core::codex::SessionState>,
+    std::sync::mpsc::Sender<grove_core::codex::Snapshot>,
 ) {
-    use grove_core::codex::{Connection, Handle, SavedSession, SessionState, Status};
+    use grove_core::codex::{Connection, Handle, SavedSession, Snapshot as SessionState, Status};
     let (handle, actions) = Handle::channel();
     let (updates, receive) = std::sync::mpsc::channel();
     let mut state = SessionState::new(SavedSession::empty(
