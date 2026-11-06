@@ -34,8 +34,7 @@ impl Render for DescriptionReaderFixture {
             {
                 sidebar.render_description(window, cx)
             } else {
-                let controls =
-                    sidebar.render_description_controls(FIXTURE_PATH, false, None, window, cx);
+                let controls = sidebar.render_change_tools_heading(FIXTURE_PATH, false, window, cx);
                 div()
                     .flex()
                     .size_full()
@@ -611,10 +610,12 @@ fn linked_session_panel_reopens_description_without_local_changes_or_attached_pr
             .debug_bounds("description-fixture-conversation")
             .is_some());
         assert!(cx.debug_bounds("description-reader").is_none());
-        let open = cx.debug_bounds("describe-open").expect(
+        let open = cx.debug_bounds("checkout-pr-tools").expect(
             "linked result must remain in the side panel with no live changes or attached PR",
         );
         cx.simulate_click(open.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("down enter");
         draw(cx);
         assert!(cx.debug_bounds("description-reader").is_some());
         fixture.sidebar.read_with(cx, |sidebar, cx| {
@@ -630,8 +631,10 @@ fn linked_session_panel_reopens_description_without_local_changes_or_attached_pr
             .is_some());
         assert!(cx.debug_bounds("description-reader").is_none());
         assert_linked_draft(&fixture, cx);
-        let open = cx.debug_bounds("describe-open").unwrap();
+        let open = cx.debug_bounds("checkout-pr-tools").unwrap();
         cx.simulate_click(open.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("down enter");
         draw(cx);
         assert!(cx.debug_bounds("description-reader").is_some());
         cx.simulate_keystrokes("escape");
@@ -639,14 +642,15 @@ fn linked_session_panel_reopens_description_without_local_changes_or_attached_pr
         assert!(cx
             .debug_bounds("description-fixture-conversation")
             .is_some());
-        assert!(cx.debug_bounds("describe-open").is_some());
+        assert!(cx.debug_bounds("checkout-pr-tools").is_some());
         cx.update(|window, cx| {
             let sidebar = fixture.sidebar.read(cx);
             assert!(sidebar.descriptions.open.is_none());
             assert!(sidebar
-                .descriptions
-                .open_source
-                .as_ref()
+                .checkout_panel
+                .change_tools
+                .focus
+                .get(&false)
                 .unwrap()
                 .is_focused(window));
         });
@@ -660,6 +664,43 @@ fn linked_session_panel_reopens_description_without_local_changes_or_attached_pr
             )),
             "opening a saved description must not regenerate or submit another prompt"
         );
+    }
+}
+
+#[gpui::test]
+fn retained_explicit_pr_stays_separate_from_the_attached_pr(cx: &mut gpui::TestAppContext) {
+    for provider in [
+        grove_core::codex::Provider::Codex,
+        grove_core::codex::Provider::Claude,
+    ] {
+        let (fixture, cx) = linked_fixture(cx, provider);
+        cx.update(|_, cx| {
+            fixture.sidebar.update(cx, |sidebar, cx| {
+                let mut attached = controls_pr();
+                attached.url = "https://github.com/example/northstar/pull/999".into();
+                sidebar.set_change_tools_sources(FIXTURE_PATH, false, Some(attached.clone()));
+                let entries = sidebar.change_tools_entries(FIXTURE_PATH, false, cx);
+                let descriptions: Vec<_> = entries
+                    .into_iter()
+                    .filter(|(tool, _)| *tool == 0)
+                    .map(|(_, state)| state)
+                    .collect();
+                assert_eq!(
+                    descriptions.len(),
+                    2,
+                    "current generation and retained result are independently reachable"
+                );
+                assert_eq!(
+                    descriptions[0].scope,
+                    Scope::PullRequest { url: attached.url }
+                );
+                assert_eq!(descriptions[0].label, "Describe changes");
+                assert_eq!(descriptions[1].scope, frozen_description().snapshot.scope);
+                assert_eq!(descriptions[1].label, "Open description");
+            })
+        });
+        assert_linked_draft(&fixture, cx);
+        assert!(fixture.actions.try_iter().next().is_none());
     }
 }
 
@@ -691,12 +732,14 @@ fn stale_linked_description_keeps_panel_action_and_never_leaks_to_another_sessio
         });
         draw(cx);
         assert!(
-            cx.debug_bounds("status-mark-describe-panel-state")
+            cx.debug_bounds("status-mark-checkout-pr-describe-state")
                 .is_some(),
             "the saved source needs a visible stale-state mark"
         );
-        let open = cx.debug_bounds("describe-open").unwrap();
+        let open = cx.debug_bounds("checkout-pr-tools").unwrap();
         cx.simulate_click(open.center(), gpui::Modifiers::default());
+        draw(cx);
+        cx.simulate_keystrokes("down enter");
         draw(cx);
         assert!(cx.debug_bounds("status-mark-description-stale").is_some());
         let publish = cx.debug_bounds("describe-publish").unwrap();
@@ -753,7 +796,7 @@ fn stale_linked_description_keeps_panel_action_and_never_leaks_to_another_sessio
         assert_ne!(other, fixture.id);
         assert!(cx.debug_bounds("description-reader").is_none());
         assert!(
-            cx.debug_bounds("describe-open").is_none(),
+            cx.debug_bounds("checkout-pr-tools").is_none(),
             "an unrelated session must not borrow another session's description action"
         );
         cx.update(|_, cx| {
@@ -767,9 +810,9 @@ fn stale_linked_description_keeps_panel_action_and_never_leaks_to_another_sessio
         assert!(cx.debug_bounds("description-reader").is_some());
         cx.simulate_keystrokes("escape");
         draw(cx);
-        assert!(cx.debug_bounds("describe-open").is_some());
+        assert!(cx.debug_bounds("checkout-pr-tools").is_some());
         assert!(cx
-            .debug_bounds("status-mark-describe-panel-state")
+            .debug_bounds("status-mark-checkout-pr-describe-state")
             .is_some());
         assert_linked_draft(&fixture, cx);
     }
@@ -846,6 +889,8 @@ mod shell;
 /// The production controls with frozen availability; no provider or GitHub IO.
 struct DescriptionControlsFixture {
     sidebar: Entity<Sidebar>,
+    width: f32,
+    _observer: gpui::Subscription,
     local: bool,
     pr: bool,
     bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
@@ -873,13 +918,17 @@ impl Render for DescriptionControlsFixture {
             cx,
         );
         let controls = self.sidebar.update(cx, |sidebar, cx| {
-            sidebar.render_description_controls(
-                FIXTURE_PATH,
-                self.local,
-                self.pr.then(controls_pr),
-                window,
-                cx,
-            )
+            sidebar.set_change_tools_sources(FIXTURE_PATH, self.local, self.pr.then(controls_pr));
+            let local = sidebar.render_change_tools_heading(FIXTURE_PATH, true, window, cx);
+            let pr = self
+                .pr
+                .then(|| sidebar.render_change_tools_heading(FIXTURE_PATH, false, window, cx));
+            div()
+                .flex()
+                .flex_col()
+                .child(local)
+                .children(pr)
+                .into_any_element()
         });
         div()
             .size_full()
@@ -890,7 +939,7 @@ impl Render for DescriptionControlsFixture {
             .p(rpx(SPACE_3XL))
             .child(
                 div()
-                    .w(rpx(FIXTURE_PANEL_WIDTH))
+                    .w(rpx(self.width))
                     .on_prepaint(move |rect, _, _| bounds.set(rect))
                     .rounded(rpx(RADIUS_PANEL))
                     .bg(c::FIELD_FILL())
@@ -911,7 +960,9 @@ fn description_controls_only_offer_real_choices_and_keyboard_selection(
             sidebar.descriptions.open = None;
             sidebar.descriptions.entries.clear();
         });
-        let fixture = cx.new(|_| DescriptionControlsFixture {
+        let fixture = cx.new(|cx| DescriptionControlsFixture {
+            width: FIXTURE_PANEL_WIDTH,
+            _observer: cx.observe(&sidebar, |_, _, cx| cx.notify()),
             sidebar: sidebar.clone(),
             local: true,
             pr: false,
@@ -923,126 +974,105 @@ fn description_controls_only_offer_real_choices_and_keyboard_selection(
     });
     let (sidebar, fixture) = handles.unwrap();
     draw(cx);
-    let action = cx.debug_bounds("describe-changes").unwrap();
-    let controls = cx.debug_bounds("describe-controls").unwrap();
-    assert_eq!(
-        action.left(),
-        controls.left(),
-        "hover begins at the card edge"
-    );
-    assert_eq!(
-        action.right(),
-        controls.right(),
-        "hover fills the card width"
-    );
-    let glyph = cx.debug_bounds("describe-changes-icon").unwrap();
-    assert_eq!(glyph.left() - action.left(), gpui::px(SPACE_2XL));
     assert!(
         cx.debug_bounds("describe-source").is_none(),
-        "one source must not masquerade as a choice"
+        "section scope requires no picker"
     );
-    cx.update(|_, cx| {
-        fixture.update(cx, |fixture, cx| {
-            fixture.pr = true;
-            cx.notify();
-        })
-    });
+    let trigger = cx
+        .debug_bounds("checkout-local-tools")
+        .expect("local section keeps its own menu");
+    cx.simulate_click(trigger.center(), gpui::Modifiers::default());
     draw(cx);
-    let source = cx
-        .debug_bounds("describe-source")
-        .expect("both sources need a picker");
-    cx.simulate_click(source.center(), gpui::Modifiers::default());
-    draw(cx);
-    sidebar.read_with(cx, |sidebar, _| {
-        assert!(sidebar.descriptions.scope_menu.is_some())
-    });
-    // The first item is Local changes. A second Down selects PR #142.
-    cx.simulate_keystrokes("down down enter");
-    draw(cx);
-    sidebar.read_with(cx, |sidebar, _| {
-        assert_eq!(
-            sidebar
-                .descriptions
-                .scopes
-                .get(&(owner(&sidebar.selection), FIXTURE_PATH.into())),
-            Some(&Scope::PullRequest {
-                url: controls_pr().url
-            })
-        );
-        assert!(sidebar.descriptions.scope_menu.is_none());
-    });
-    // Enter opens the source button as well; Escape retains the selection/focus.
-    cx.simulate_keystrokes("enter");
-    draw(cx);
-    sidebar.read_with(cx, |sidebar, _| {
-        assert!(sidebar.descriptions.scope_menu.is_some())
+    sidebar.read_with(cx, |s, _| {
+        assert!(s.checkout_panel.change_tools.menu.is_some())
     });
     cx.simulate_keystrokes("escape");
     draw(cx);
     cx.update(|window, cx| {
-        let sidebar = sidebar.read(cx);
-        assert!(sidebar.descriptions.scope_menu.is_none());
-        assert!(sidebar
-            .descriptions
-            .scope_focus
-            .as_ref()
-            .unwrap()
-            .is_focused(window));
+        let s = sidebar.read(cx);
+        assert!(s.checkout_panel.change_tools.menu.is_none());
+        assert!(s.checkout_panel.change_tools.focus[&true].is_focused(window));
     });
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    sidebar.read_with(cx, |s, _| {
+        assert!(s.checkout_panel.change_tools.menu.is_some())
+    });
+    cx.simulate_keystrokes("escape");
     cx.update(|_, cx| {
-        sidebar.update(cx, |sidebar, cx| {
-            let scope = Scope::PullRequest {
-                url: controls_pr().url,
-            };
-            let target = key(&sidebar.selection, FIXTURE_PATH, &scope);
-            sidebar.descriptions.entries.insert(
-                target,
-                Entry {
-                    scope: Some(scope),
-                    cancel: Some(Arc::new(CommitControl::default())),
-                    ..Default::default()
-                },
-            );
+        fixture.update(cx, |f, cx| {
+            f.pr = true;
             cx.notify();
         })
     });
     draw(cx);
-    let source = cx.debug_bounds("describe-source").unwrap();
-    cx.simulate_click(source.center(), gpui::Modifiers::default());
-    cx.simulate_keystrokes("enter");
+    assert!(cx.debug_bounds("checkout-local-tools").is_some());
+    assert!(cx.debug_bounds("checkout-pr-tools").is_some());
+    cx.update(|window, cx| {
+        let focus = sidebar.read(cx).checkout_panel.change_tools.focus[&true].clone();
+        focus.focus(window, cx);
+    });
     draw(cx);
-    sidebar.read_with(cx, |sidebar, _| {
+    // Isolated fixtures omit Sidebar's unconsumed Tab router; inspect its native traversal order.
+    cx.update(Window::focus_next);
+    draw(cx);
+    cx.update(|window, cx| {
         assert!(
-            sidebar.descriptions.scope_menu.is_none(),
-            "loading sources must reject activation"
+            sidebar.read(cx).checkout_panel.change_tools.focus[&false].is_focused(window),
+            "Tab reaches the PR section menu; actual={:?}, local={:?}, pr={:?}",
+            window.focused(cx),
+            sidebar.read(cx).checkout_panel.change_tools.focus[&true],
+            sidebar.read(cx).checkout_panel.change_tools.focus[&false]
         )
     });
-    // A PR-only checkout must describe the PR even after Local was selected.
+
     cx.update(|_, cx| {
-        sidebar.update(cx, |sidebar, _| {
-            sidebar.descriptions.scopes.insert(
-                (owner(&sidebar.selection), FIXTURE_PATH.into()),
-                Scope::Local,
+        sidebar.update(cx, |s, cx| {
+            let local = s
+                .description_tool_state(FIXTURE_PATH, true, Some(Scope::Local), cx)
+                .unwrap();
+            let pr_scope = Scope::PullRequest {
+                url: controls_pr().url,
+            };
+            let pr = s
+                .description_tool_state(FIXTURE_PATH, false, Some(pr_scope.clone()), cx)
+                .unwrap();
+            assert_eq!(local.scope, Scope::Local);
+            assert_eq!(pr.scope, pr_scope);
+            assert_eq!(local.label, "Describe changes");
+            assert_eq!(pr.label, "Describe changes");
+            let target = key(&s.selection, FIXTURE_PATH, &Scope::Local);
+            let mut result = frozen_description();
+            result.snapshot.scope = Scope::Local;
+            s.descriptions.entries.insert(
+                target.clone(),
+                Entry {
+                    scope: Some(Scope::Local),
+                    result: Some(Arc::new(result)),
+                    freshness: Some(Ok(false)),
+                    checking: true,
+                    ..Default::default()
+                },
             );
-        });
-        fixture.update(cx, |fixture, cx| {
-            fixture.local = false;
-            cx.notify();
-        });
-    });
-    draw(cx);
-    assert!(cx.debug_bounds("describe-source").is_none());
-    assert!(cx.debug_bounds("describe-source-context").is_some());
-    sidebar.read_with(cx, |sidebar, _| {
-        assert_eq!(
-            sidebar
-                .descriptions
-                .scopes
-                .get(&(owner(&sidebar.selection), FIXTURE_PATH.into())),
-            Some(&Scope::PullRequest {
-                url: controls_pr().url
-            })
-        )
+            let saved = s
+                .description_tool_state(FIXTURE_PATH, true, Some(Scope::Local), cx)
+                .unwrap();
+            assert_eq!(saved.label, "Open description");
+            assert!(
+                saved.status.is_some(),
+                "staleness remains visible outside menus"
+            );
+            s.descriptions.entries.get_mut(&target).unwrap().cancel =
+                Some(Arc::new(CommitControl::default()));
+            let busy = s
+                .description_tool_state(FIXTURE_PATH, true, Some(Scope::Local), cx)
+                .unwrap();
+            assert_eq!(busy.label, "Open description progress");
+            assert!(
+                busy.status.is_some(),
+                "progress remains visible outside menus"
+            );
+        })
     });
 }
 
@@ -1082,7 +1112,9 @@ fn describe_controls_linux_native_capture() {
                             sidebar.descriptions.open = None;
                             sidebar.descriptions.entries.clear();
                         });
-                        let fixture = cx.new(|_| DescriptionControlsFixture {
+                        let fixture = cx.new(|cx| DescriptionControlsFixture {
+                            width: FIXTURE_PANEL_WIDTH,
+                            _observer: cx.observe(&sidebar, |_, _, cx| cx.notify()),
                             sidebar: sidebar.clone(),
                             local: true,
                             pr: false,
@@ -1112,6 +1144,7 @@ fn describe_controls_linux_native_capture() {
                     "light",
                     "light-hover",
                     "zoom",
+                    "narrow",
                 ] {
                     cx.update_window(window.into(), |_, window, cx| {
                         if matches!(state, "hover" | "light-hover") {
@@ -1141,18 +1174,17 @@ fn describe_controls_linux_native_capture() {
                         if state == "menu" {
                             sidebar.update(cx, |sidebar, cx| {
                                 sidebar
-                                    .descriptions
-                                    .scope_focus
-                                    .as_ref()
+                                    .checkout_panel
+                                    .change_tools
+                                    .focus
+                                    .get(&true)
                                     .unwrap()
                                     .focus(window, cx);
                             });
                             controls_press_key(window, cx, "enter");
                         }
                         if state == "selected" {
-                            controls_press_key(window, cx, "down");
-                            controls_press_key(window, cx, "down");
-                            controls_press_key(window, cx, "enter");
+                            controls_press_key(window, cx, "escape");
                         }
                         if state == "loading" {
                             sidebar.update(cx, |sidebar, cx| {
@@ -1221,6 +1253,14 @@ fn describe_controls_linux_native_capture() {
                         }
                         if state == "zoom" {
                             window.set_rem_size(gpui::px(20.));
+                        }
+                        if state == "narrow" {
+                            fixture.update(cx, |fixture, cx| {
+                                fixture.width = 180.;
+                                cx.notify();
+                            });
+                            window.set_rem_size(gpui::px(16.));
+                            window.resize(gpui::size(gpui::px(320.), gpui::px(480.)));
                         }
                         fixture.update(cx, |_, cx| cx.notify());
                         window.refresh();

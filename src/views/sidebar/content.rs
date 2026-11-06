@@ -726,9 +726,6 @@ impl Sidebar {
                 CodexViewEvent::ReviewChanges(preference, source) if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     this.invoke_review_skill(preference.clone(), source.clone(), cx);
                 }
-                CodexViewEvent::AskChanges(invocation, source) if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
-                    this.invoke_ask_skill(invocation.clone(), source.clone(), cx);
-                }
                 CodexViewEvent::DescribeChanges(preference, source) if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     this.invoke_description_skill(preference.clone(), source.clone(), cx);
                 }
@@ -736,7 +733,6 @@ impl Sidebar {
                 CodexViewEvent::FileOpened if matches!(this.selection, Some(Selection::Session(selected) | Selection::Home(selected)) if selected == id) => {
                     // Opening a viewer must preserve the user's panel choices.
                     this.hide_review();
-                    this.hide_questions();
                     this.dismiss_description();
                     cx.notify();
                 }
@@ -778,12 +774,7 @@ impl Sidebar {
                     cx.notify();
                 }
             });
-            let question_session = self.is_question_session(id);
             view.update(cx, |view, cx| {
-                if view.question_session != question_session {
-                    view.question_session = question_session;
-                    cx.notify();
-                }
                 if view.description_scope != description_scope {
                     view.description_scope = description_scope;
                     cx.notify();
@@ -1930,10 +1921,6 @@ impl Sidebar {
         self.restore_session_review(cx);
         if self.review_is_open(cx) {
             return self.render_review(window, cx);
-        }
-        self.restore_session_questions(cx);
-        if self.questions_is_open(cx) {
-            return self.render_questions(window, cx);
         }
         self.restore_session_description(cx);
         if self.description_is_open(cx) {

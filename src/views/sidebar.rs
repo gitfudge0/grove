@@ -5,8 +5,8 @@ mod agent_preview;
 mod branch_history;
 mod branch_preview;
 mod change_description;
-mod change_questions;
 mod change_review;
+mod change_tools;
 mod checkout_panel;
 mod content;
 mod files;
@@ -391,7 +391,6 @@ pub struct Sidebar {
     checkout_panel: checkout_panel::CheckoutPanel,
     descriptions: change_description::Descriptions,
     reviews: change_review::Reviews,
-    questions: change_questions::Questions,
     files_active: bool,
     files_owner: Option<Selection>,
     files_toggle_focus: Option<FocusHandle>,
@@ -653,7 +652,6 @@ impl Sidebar {
             checkout_panel: checkout_panel::CheckoutPanel::default(),
             descriptions: change_description::Descriptions::default(),
             reviews: change_review::Reviews::default(),
-            questions: change_questions::Questions::default(),
             files_active: false,
             files_owner: None,
             files_toggle_focus: None,
@@ -2163,6 +2161,7 @@ impl Sidebar {
     }
 
     fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.checkout_panel.change_tools.dismiss();
         self.dashboard_open = false;
         if self.destination == global_navigation::Destination::History {
             self.destination = global_navigation::Destination::Sessions;
@@ -5586,12 +5585,6 @@ impl Render for Sidebar {
                 }
                 if this.review_is_open(cx) && event.keystroke.key == "escape" {
                     this.close_review(window, cx);
-                    window.prevent_default();
-                    cx.stop_propagation();
-                    return;
-                }
-                if this.questions_is_open(cx) && event.keystroke.key == "escape" {
-                    this.close_questions(window, cx);
                     window.prevent_default();
                     cx.stop_propagation();
                     return;

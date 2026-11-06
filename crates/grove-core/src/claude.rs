@@ -286,10 +286,6 @@ fn launch_command_profile(
         guidance.push_str("\n\n");
         guidance.push_str(crate::describe_skill::GUIDANCE);
         guidance.push_str("\n\n");
-        guidance.push_str(crate::ask_skill::GUIDANCE);
-        guidance.push_str("\n\n");
-        guidance.push_str(crate::ask_skill::SKILL);
-        guidance.push_str("\n\n");
         guidance.push_str(crate::describe_skill::SKILL);
         guidance.push_str("\n\n");
         guidance.push_str(crate::review_skill::GUIDANCE);
@@ -4014,7 +4010,7 @@ mod tests {
                 assert!(appended[0][1].contains("<!-- grove:integrated-report -->"));
                 assert!(appended[0][1].contains(crate::reports::REPORT_GUIDANCE));
                 assert!(appended[0][1].contains(crate::describe_skill::SKILL));
-                assert!(appended[0][1].contains(crate::ask_skill::SKILL));
+                assert!(appended[0][1].contains(crate::review_skill::SKILL));
                 assert!(appended[0][1].ends_with(crate::rich_plan::GUIDANCE));
                 if !custom.is_empty() {
                     assert!(appended[0][1].starts_with("Custom guidance\n\n"));

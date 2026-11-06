@@ -5,9 +5,8 @@ use crate::views::{
     status::{self, StatusKind},
 };
 use gpui_component::{
-    menu::{PopupMenu, PopupMenuItem},
     text::{TextView, TextViewState},
-    Disableable, Selectable,
+    Disableable,
 };
 use grove_core::{
     change_description::Scope,
@@ -37,16 +36,8 @@ pub(super) struct Reviews {
     scopes: HashMap<(String, String), Scope>,
     revision: u64,
     focus: Option<FocusHandle>,
-    source: Option<FocusHandle>,
     return_focus: Option<FocusHandle>,
-    open_source: Option<FocusHandle>,
     focus_pending: bool,
-    scope_focus: Option<FocusHandle>,
-    scope_menu: Option<Entity<PopupMenu>>,
-    scope_subscription: Option<gpui::Subscription>,
-    scope_menu_owner: Option<(String, String)>,
-    scope_position: gpui::Point<gpui::Pixels>,
-    scope_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     sessions: HashMap<SessionId, gpui::Subscription>,
     hydrated: HashSet<(SessionId, String)>,
     linked: HashMap<SessionId, Key>,
@@ -106,24 +97,6 @@ fn action(
                 .path(SharedString::from(format!("icons/{glyph}.svg")))
                 .size(rpx(ICON_SM)),
         )
-}
-fn review_source_label(scope: &Scope) -> String {
-    match scope {
-        Scope::Local => "Local changes".into(),
-        Scope::PullRequest { url } => format!(
-            "PR #{}",
-            url.trim_end_matches('/').rsplit('/').next().unwrap_or("")
-        ),
-    }
-}
-fn review_source_text(label: String) -> gpui::Div {
-    div()
-        .debug_selector(|| "review-source-context".into())
-        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
-        .pr(rpx(SPACE_2XL))
-        .text_size(rpx(TEXT_MICRO))
-        .text_color(c::FG_DIM())
-        .child(label)
 }
 fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
     TextView::new(view)
@@ -256,7 +229,6 @@ impl Sidebar {
         entry.run = run;
         entry.resolving = true;
         entry.error = None;
-        self.hide_questions();
         self.dismiss_description();
         self.files_active = false;
         self.reviews.open = Some(resolving_key.clone());
@@ -379,382 +351,90 @@ impl Sidebar {
         })
         .detach();
     }
-    pub(super) fn render_review_controls(
+    fn review_target(&self, path: &str, scope: &Scope) -> Key {
+        self.linked_review_key()
+            .filter(|target| {
+                target.path == path
+                    && self
+                        .reviews
+                        .entries
+                        .get(target)
+                        .and_then(|entry| entry.scope.as_ref())
+                        == Some(scope)
+            })
+            .unwrap_or_else(|| key(&self.selection, path, scope))
+    }
+
+    pub(super) fn review_tool_state(
         &mut self,
         path: &str,
-        local_changes: bool,
-        pr: Option<grove_core::checkout_pr::PullRequest>,
-        window: &Window,
+        local: bool,
+        live: Option<Scope>,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.restore_session_review(cx);
-        let menu_owner = (owner(&self.selection), path.to_owned());
-        if self.reviews.scope_menu.is_some()
-            && (self.reviews.scope_menu_owner.as_ref() != Some(&menu_owner)
-                || !local_changes
-                || pr.is_none()
-                || self.linked_review_key().is_some())
-        {
-            self.reviews.scope_menu = None;
-            self.reviews.scope_subscription = None;
-            self.reviews.scope_menu_owner = None;
+    ) -> Option<super::change_tools::ChangeToolState> {
+        let retained = self
+            .linked_review_key()
+            .filter(|target| target.path == path)
+            .and_then(|target| self.reviews.entries.get(&target))
+            .and_then(|entry| entry.scope.clone())
+            .filter(|scope| matches!(scope, Scope::Local) == local);
+        let available = live.is_some();
+        let scope = live.or(retained)?;
+        let target = self.review_target(path, &scope);
+        self.check_review(&target, cx);
+        let entry = self.reviews.entries.get(&target);
+        let saved = entry.is_some_and(|entry| entry.result.is_some());
+        let busy = entry.is_some_and(|entry| entry.cancel.is_some() || entry.resolving);
+        if !available && !saved && !busy {
+            return None;
         }
-        if let Some(target) = self.linked_review_key() {
-            self.check_review(&target, cx);
-            let entry = self.reviews.entries.get(&target);
-            let busy = entry.is_some_and(|e| e.cancel.is_some());
-            let stale = entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false))));
-            let unavailable =
-                entry.is_some_and(|e| matches!(e.freshness, Some(Err(_))) || e.error.is_some());
-            let saved = entry.is_some_and(|e| e.result.is_some());
-            let source = entry
-                .and_then(|e| e.scope.as_ref())
-                .map(review_source_label);
-            let source_focus = self
-                .reviews
-                .open_source
-                .get_or_insert_with(|| cx.focus_handle())
-                .clone();
-            let return_focus = source_focus.clone();
-            return div()
-                .id("review-controls")
-                .debug_selector(|| "review-controls".into())
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_SM))
-                .py(rpx(SPACE_LG))
-                .child(
-                    super::checkout_panel::checkout_loading_row(
-                        "review-open",
-                        if saved {
-                            "View review"
-                        } else {
-                            "Review changes"
-                        },
-                        "diff",
-                        false,
-                        window,
-                        cx,
-                    )
-                    .with_focus_handle(source_focus)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.reload_review_result(&target, cx);
-                        this.reviews.return_focus = Some(return_focus.clone());
-                        this.hide_questions();
-                        this.dismiss_description();
-                        this.files_active = false;
-                        this.reviews.open = Some(target.clone());
-                        this.reviews.focus_pending = true;
-                        cx.notify();
-                    })),
-                )
-                .when_some(source, |column, source| {
-                    column.child(review_source_text(source))
-                })
-                .when(busy || stale || unavailable, |column| {
-                    column.child(div().px(rpx(SPACE_2XL)).child(status::label(
-                        "review-panel-state",
-                        if busy {
-                            StatusKind::Working
-                        } else {
-                            StatusKind::Warning
-                        },
-                        if busy {
-                            "Generating…"
-                        } else if stale {
-                            "Out of date"
-                        } else {
-                            "Needs attention"
-                        },
-                        ICON_SM,
-                        cx,
-                    )))
-                })
-                .into_any_element();
-        }
-        if !local_changes && pr.is_none() {
-            return div().into_any_element();
-        }
-        let owner_key = (owner(&self.selection), path.to_owned());
-        let scope = self
-            .reviews
-            .scopes
-            .entry(owner_key.clone())
-            .or_insert_with(|| {
-                pr.as_ref().map_or(Scope::Local, |pr| Scope::PullRequest {
-                    url: pr.url.clone(),
-                })
-            })
-            .clone();
-        let scope = match (&scope, &pr) {
-            (_, Some(pr)) if !local_changes => Scope::PullRequest {
-                url: pr.url.clone(),
-            },
-            (Scope::PullRequest { .. }, Some(pr)) => Scope::PullRequest {
-                url: pr.url.clone(),
-            },
-            (Scope::PullRequest { .. }, None) => Scope::Local,
-            _ => scope,
+        let status = if busy {
+            Some((StatusKind::Working, "Reviewing changes…"))
+        } else if entry.is_some_and(|entry| entry.error.is_some()) {
+            Some((StatusKind::Failed, "Review failed"))
+        } else if entry.is_some_and(|entry| matches!(entry.freshness, Some(Ok(false)))) {
+            Some((StatusKind::Warning, "Review out of date"))
+        } else if entry.is_some_and(|entry| matches!(entry.freshness, Some(Err(_)))) {
+            Some((StatusKind::Warning, "Review freshness unavailable"))
+        } else {
+            None
         };
-        self.reviews.scopes.insert(owner_key.clone(), scope.clone());
-        let key = key(&self.selection, path, &scope);
-        let entry = self.reviews.entries.get(&key);
-        let busy = entry.is_some_and(|e| e.cancel.is_some() || e.saving);
-        let exists = entry.is_some_and(|e| e.result.is_some());
-        let mut column = div()
-            .id("review-controls")
-            .debug_selector(|| "review-controls".into())
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_SM))
-            .py(rpx(SPACE_LG));
-        // A sole source is context, not a choice. Only offer a picker when
-        // local edits and the attached PR are both available.
-        if let Some(pr) = pr.as_ref().filter(|_| local_changes) {
-            let selected = scope.clone();
-            let target = owner_key.clone();
-            let pr_scope = Scope::PullRequest {
-                url: pr.url.clone(),
-            };
-            let focus = self
-                .reviews
-                .scope_focus
-                .get_or_insert_with(|| cx.focus_handle())
-                .clone();
-            let keyboard_target = target.clone();
-            let keyboard_selected = selected.clone();
-            let keyboard_pr = pr_scope.clone();
-            let keyboard_focus = focus.clone();
-            let bounds = self.reviews.scope_bounds.clone();
-            column = column.child(
-                div()
-                    .mx(rpx(SPACE_2XL))
-                    .on_prepaint(move |value, _, _| bounds.set(value))
-                    .child(
-                        action(
-                            "review-source",
-                            review_source_label(&scope),
-                            "chev-down",
-                            window,
-                            cx,
-                        )
-                        .justify_start()
-                        .with_focus_handle(focus)
-                        .selected(
-                            self.reviews.scope_menu.is_some()
-                                && self.reviews.scope_menu_owner.as_ref() == Some(&owner_key),
-                        )
-                        .disabled(busy)
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                let position = this.reviews.scope_bounds.get().bottom_left();
-                                this.open_review_sources(
-                                    target.clone(),
-                                    selected.clone(),
-                                    pr_scope.clone(),
-                                    position,
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
-                    )
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                            if !busy
-                                && keyboard_focus.is_focused(window)
-                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            {
-                                let position = this.reviews.scope_bounds.get().bottom_left();
-                                this.open_review_sources(
-                                    keyboard_target.clone(),
-                                    keyboard_selected.clone(),
-                                    keyboard_pr.clone(),
-                                    position,
-                                    window,
-                                    cx,
-                                );
-                                window.prevent_default();
-                                cx.stop_propagation();
-                            }
-                        },
-                    )),
-            );
-            if self.reviews.scope_menu_owner.as_ref() == Some(&owner_key) && !busy {
-                if let Some(menu) = self.reviews.scope_menu.clone() {
-                    column = column.child(gpui::deferred(
-                        gpui::anchored()
-                            .position_mode(gpui::AnchoredPositionMode::Window)
-                            .position(self.reviews.scope_position)
-                            .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
-                            .child(menu),
-                    ));
-                }
+        Some(super::change_tools::ChangeToolState {
+            scope,
+            label: if busy {
+                "Open review progress"
+            } else if saved {
+                "Open review"
             } else {
-                self.reviews.scope_menu = None;
-                self.reviews.scope_subscription = None;
-                self.reviews.scope_menu_owner = None;
-            }
-        } else if exists || matches!(scope, Scope::PullRequest { .. }) {
-            column = column.child(review_source_text(review_source_label(&scope)));
-        }
-        let focus = self
-            .reviews
-            .source
-            .get_or_insert_with(|| cx.focus_handle())
-            .clone();
-        let target = path.to_owned();
-        let chosen = scope.clone();
-        if !exists {
-            column = column.child(
-                super::checkout_panel::checkout_loading_row(
-                    "review-changes",
-                    if entry.is_some_and(|e| e.saving) {
-                        "Saving review…"
-                    } else if busy {
-                        "Reviewing changes…"
-                    } else {
-                        match &scope {
-                            Scope::Local => "Review local changes",
-                            Scope::PullRequest { .. } => "Review pull request",
-                        }
-                    },
-                    "diff",
-                    busy,
-                    window,
-                    cx,
-                )
-                .with_focus_handle(focus)
-                .disabled(busy || (matches!(scope, Scope::Local) && !local_changes))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.begin_review(
-                        target.clone(),
-                        chosen.clone(),
-                        this.reviews.source.clone(),
-                        cx,
-                    );
-                })),
-            );
-        }
-        if exists {
-            let open_focus = self
-                .reviews
-                .open_source
-                .get_or_insert_with(|| cx.focus_handle())
-                .clone();
-            let return_focus = open_focus.clone();
-            let target = key.clone();
-            column = column.child(
-                super::checkout_panel::checkout_loading_row(
-                    "review-open",
-                    "View review",
-                    "diff",
-                    false,
-                    window,
-                    cx,
-                )
-                .with_focus_handle(open_focus)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.reviews.return_focus = Some(return_focus.clone());
-                    this.hide_questions();
-                    this.dismiss_description();
-                    this.files_active = false;
-                    this.reviews.open = Some(target.clone());
-                    this.reviews.focus_pending = true;
-                    cx.notify();
-                })),
-            );
-        }
-        if exists && entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false)))) {
-            column = column.child(div().px(rpx(SPACE_2XL)).child(status::label(
-                "review-panel-state",
-                StatusKind::Warning,
-                "Out of date",
-                ICON_SM,
-                cx,
-            )));
-        }
-        if busy {
-            let target = key.clone();
-            column = column.child(
-                action("review-cancel", "Cancel generation", "close", window, cx)
-                    .mx(rpx(SPACE_2XL))
-                    .disabled(entry.is_some_and(|e| e.saving))
-                    .on_click(cx.listener(move |this, _, _, cx| this.cancel_review(&target, cx))),
-            );
-        }
-        column
-            .child(
-                div()
-                    .text_size(rpx(TEXT_MICRO))
-                    .text_color(c::FG_DIM())
-                    .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
-                    .pr(rpx(SPACE_2XL))
-                    .child(if matches!(scope, Scope::Local) {
-                        "Uncommitted changes, including new files."
-                    } else {
-                        "Pull request changes compared with its base."
-                    }),
-            )
-            .into_any_element()
+                "Review changes"
+            },
+            status,
+        })
     }
-    fn open_review_sources(
+
+    pub(super) fn open_review_tool(
         &mut self,
-        target: (String, String),
-        selected: Scope,
-        pr_scope: Scope,
-        position: gpui::Point<gpui::Pixels>,
-        window: &mut Window,
+        path: String,
+        scope: Scope,
+        source: FocusHandle,
         cx: &mut Context<Self>,
     ) {
-        let owner = cx.entity().downgrade();
-        let source = target.clone();
-        let Some(focus) = self.reviews.scope_focus.clone() else {
-            return;
-        };
-        let menu = PopupMenu::build(window, cx, move |menu, window, _| {
-            let mut menu =
-                crate::views::components::dropdown_menu(menu, window).action_context(focus);
-            for candidate in [Scope::Local, pr_scope.clone()] {
-                let owner = owner.clone();
-                let target = target.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(review_source_label(&candidate))
-                        .icon(gpui_component::Icon::default().path(match candidate {
-                            Scope::Local => "icons/diff.svg",
-                            Scope::PullRequest { .. } => "icons/git-pull-request.svg",
-                        }))
-                        .checked(candidate == selected)
-                        .on_click(move |_, _, cx| {
-                            let _ = owner.update(cx, |this, cx| {
-                                this.reviews
-                                    .scopes
-                                    .insert(target.clone(), candidate.clone());
-                                cx.notify();
-                            });
-                        }),
-                );
-            }
-            menu
+        let target = self.review_target(&path, &scope);
+        let existing = self.reviews.entries.get(&target).is_some_and(|entry| {
+            entry.result.is_some() || entry.cancel.is_some() || entry.resolving
         });
-        self.reviews.scope_subscription = Some(cx.subscribe_in(
-            &menu,
-            window,
-            |this, _, _: &gpui::DismissEvent, window, cx| {
-                this.reviews.scope_menu = None;
-                this.reviews.scope_subscription = None;
-                this.reviews.scope_menu_owner = None;
-                if let Some(focus) = &this.reviews.scope_focus {
-                    focus.focus(window, cx);
-                }
-                cx.notify();
-            },
-        ));
-        self.reviews.scope_menu_owner = Some(source);
-        self.reviews.scope_position = position;
-        menu.focus_handle(cx).focus(window, cx);
-        self.reviews.scope_menu = Some(menu);
-        cx.notify();
+        self.files_active = false;
+        self.checkout_panel.side_chat_owner = None;
+        if existing {
+            self.reload_review_result(&target, cx);
+            self.dismiss_description();
+            self.reviews.return_focus = Some(source);
+            self.reviews.open = Some(target);
+            self.reviews.focus_pending = true;
+            cx.notify();
+        } else {
+            self.start_review_conversation(path, scope, Some(source), cx);
+        }
     }
     pub(super) fn render_review(
         &mut self,

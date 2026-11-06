@@ -6,9 +6,8 @@ use crate::views::{
 };
 use gpui_component::{
     input::{Input, InputState},
-    menu::{PopupMenu, PopupMenuItem},
     text::{TextView, TextViewState},
-    Disableable, Selectable,
+    Disableable,
 };
 use grove_core::{
     change_description::{self as domain, Description, Scope},
@@ -37,15 +36,7 @@ pub(super) struct Descriptions {
     scopes: HashMap<(String, String), Scope>,
     revision: u64,
     focus: Option<FocusHandle>,
-    source: Option<FocusHandle>,
-    scope_focus: Option<FocusHandle>,
-    scope_menu: Option<Entity<PopupMenu>>,
-    scope_subscription: Option<gpui::Subscription>,
-    scope_menu_owner: Option<(String, String)>,
-    scope_position: gpui::Point<gpui::Pixels>,
-    scope_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     return_focus: Option<FocusHandle>,
-    open_source: Option<FocusHandle>,
     focus_pending: bool,
     sessions: HashMap<SessionId, gpui::Subscription>,
     hydrated: HashSet<(SessionId, String)>,
@@ -119,24 +110,6 @@ fn action(
                 .path(SharedString::from(format!("icons/{glyph}.svg")))
                 .size(rpx(ICON_SM)),
         )
-}
-fn description_source_label(scope: &Scope) -> String {
-    match scope {
-        Scope::Local => "Local changes".into(),
-        Scope::PullRequest { url } => format!(
-            "PR #{}",
-            url.trim_end_matches('/').rsplit('/').next().unwrap_or("")
-        ),
-    }
-}
-fn description_source_text(label: String) -> gpui::Div {
-    div()
-        .debug_selector(|| "describe-source-context".into())
-        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
-        .pr(rpx(SPACE_2XL))
-        .text_size(rpx(TEXT_MICRO))
-        .text_color(c::FG_DIM())
-        .child(label)
 }
 fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
     TextView::new(view)
@@ -260,7 +233,6 @@ impl Sidebar {
         entry.resolving = true;
         entry.error = None;
         self.hide_review();
-        self.hide_questions();
         self.descriptions.open = Some(resolving_key.clone());
         self.descriptions.return_focus = Some(source.clone());
         self.descriptions.focus_pending = true;
@@ -408,381 +380,90 @@ impl Sidebar {
         })
         .detach();
     }
-    pub(super) fn render_description_controls(
+    fn description_target(&self, path: &str, scope: &Scope) -> Key {
+        self.linked_description_key()
+            .filter(|target| {
+                target.path == path
+                    && self
+                        .descriptions
+                        .entries
+                        .get(target)
+                        .and_then(|entry| entry.scope.as_ref())
+                        == Some(scope)
+            })
+            .unwrap_or_else(|| key(&self.selection, path, scope))
+    }
+
+    pub(super) fn description_tool_state(
         &mut self,
         path: &str,
-        local_changes: bool,
-        pr: Option<grove_core::checkout_pr::PullRequest>,
-        window: &Window,
+        local: bool,
+        live: Option<Scope>,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        self.restore_session_description(cx);
-        let menu_owner = (owner(&self.selection), path.to_owned());
-        if self.descriptions.scope_menu.is_some()
-            && (self.descriptions.scope_menu_owner.as_ref() != Some(&menu_owner)
-                || !local_changes
-                || pr.is_none()
-                || self.linked_description_key().is_some())
-        {
-            self.descriptions.scope_menu = None;
-            self.descriptions.scope_subscription = None;
-            self.descriptions.scope_menu_owner = None;
+    ) -> Option<super::change_tools::ChangeToolState> {
+        let retained = self
+            .linked_description_key()
+            .filter(|target| target.path == path)
+            .and_then(|target| self.descriptions.entries.get(&target))
+            .and_then(|entry| entry.scope.clone())
+            .filter(|scope| matches!(scope, Scope::Local) == local);
+        let available = live.is_some();
+        let scope = live.or(retained)?;
+        let target = self.description_target(path, &scope);
+        self.check_description(&target, cx);
+        let entry = self.descriptions.entries.get(&target);
+        let saved = entry.is_some_and(|entry| entry.result.is_some());
+        let busy = entry.is_some_and(|entry| entry.cancel.is_some() || entry.resolving);
+        if !available && !saved && !busy {
+            return None;
         }
-        if let Some(target) = self.linked_description_key() {
-            self.check_description(&target, cx);
-            let entry = self.descriptions.entries.get(&target);
-            let busy = entry.is_some_and(|e| e.cancel.is_some());
-            let stale = entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false))));
-            let unavailable =
-                entry.is_some_and(|e| matches!(e.freshness, Some(Err(_))) || e.error.is_some());
-            let saved = entry.is_some_and(|e| e.result.is_some());
-            let source = entry
-                .and_then(|e| e.scope.as_ref())
-                .map(description_source_label);
-            let source_focus = self
-                .descriptions
-                .open_source
-                .get_or_insert_with(|| cx.focus_handle())
-                .clone();
-            let return_focus = source_focus.clone();
-            return div()
-                .id("describe-controls")
-                .debug_selector(|| "describe-controls".into())
-                .flex()
-                .flex_col()
-                .gap(rpx(SPACE_SM))
-                .py(rpx(SPACE_LG))
-                .child(
-                    super::checkout_panel::checkout_loading_row(
-                        "describe-open",
-                        if saved {
-                            "View description"
-                        } else {
-                            "Describe changes"
-                        },
-                        "diff",
-                        false,
-                        window,
-                        cx,
-                    )
-                    .with_focus_handle(source_focus)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.reload_description_result(&target, cx);
-                        this.descriptions.return_focus = Some(return_focus.clone());
-                        this.hide_review();
-                        this.hide_questions();
-                        this.descriptions.open = Some(target.clone());
-                        this.descriptions.focus_pending = true;
-                        cx.notify();
-                    })),
-                )
-                .when_some(source, |column, source| {
-                    column.child(description_source_text(source))
-                })
-                .when(busy || stale || unavailable, |column| {
-                    column.child(div().px(rpx(SPACE_2XL)).child(status::label(
-                        "describe-panel-state",
-                        if busy {
-                            StatusKind::Working
-                        } else {
-                            StatusKind::Warning
-                        },
-                        if busy {
-                            "Generating…"
-                        } else if stale {
-                            "Out of date"
-                        } else {
-                            "Needs attention"
-                        },
-                        ICON_SM,
-                        cx,
-                    )))
-                })
-                .into_any_element();
-        }
-        if !local_changes && pr.is_none() {
-            return div().into_any_element();
-        }
-        let owner_key = (owner(&self.selection), path.to_owned());
-        let scope = self
-            .descriptions
-            .scopes
-            .entry(owner_key.clone())
-            .or_insert_with(|| {
-                pr.as_ref().map_or(Scope::Local, |pr| Scope::PullRequest {
-                    url: pr.url.clone(),
-                })
-            })
-            .clone();
-        let scope = match (&scope, &pr) {
-            (_, Some(pr)) if !local_changes => Scope::PullRequest {
-                url: pr.url.clone(),
-            },
-            (Scope::PullRequest { .. }, Some(pr)) => Scope::PullRequest {
-                url: pr.url.clone(),
-            },
-            (Scope::PullRequest { .. }, None) => Scope::Local,
-            _ => scope,
+        let status = if busy {
+            Some((StatusKind::Working, "Describing changes…"))
+        } else if entry.is_some_and(|entry| entry.error.is_some()) {
+            Some((StatusKind::Failed, "Description failed"))
+        } else if entry.is_some_and(|entry| matches!(entry.freshness, Some(Ok(false)))) {
+            Some((StatusKind::Warning, "Description out of date"))
+        } else if entry.is_some_and(|entry| matches!(entry.freshness, Some(Err(_)))) {
+            Some((StatusKind::Warning, "Description freshness unavailable"))
+        } else {
+            None
         };
-        self.descriptions
-            .scopes
-            .insert(owner_key.clone(), scope.clone());
-        let key = key(&self.selection, path, &scope);
-        let entry = self.descriptions.entries.get(&key);
-        let busy = entry.is_some_and(|e| e.cancel.is_some() || e.publishing);
-        let exists = entry.is_some_and(|e| e.result.is_some());
-        let mut column = div()
-            .id("describe-controls")
-            .debug_selector(|| "describe-controls".into())
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_SM))
-            .py(rpx(SPACE_LG));
-        // A sole source is context, not a choice. Only offer a picker when
-        // local edits and the attached PR are both available.
-        if let Some(pr) = pr.as_ref().filter(|_| local_changes) {
-            let selected = scope.clone();
-            let target = owner_key.clone();
-            let pr_scope = Scope::PullRequest {
-                url: pr.url.clone(),
-            };
-            let focus = self
-                .descriptions
-                .scope_focus
-                .get_or_insert_with(|| cx.focus_handle())
-                .clone();
-            let keyboard_target = target.clone();
-            let keyboard_selected = selected.clone();
-            let keyboard_pr = pr_scope.clone();
-            let keyboard_focus = focus.clone();
-            let bounds = self.descriptions.scope_bounds.clone();
-            column = column.child(
-                div()
-                    .mx(rpx(SPACE_2XL))
-                    .on_prepaint(move |value, _, _| bounds.set(value))
-                    .child(
-                        action(
-                            "describe-source",
-                            description_source_label(&scope),
-                            "chev-down",
-                            window,
-                            cx,
-                        )
-                        .justify_start()
-                        .with_focus_handle(focus)
-                        .selected(
-                            self.descriptions.scope_menu.is_some()
-                                && self.descriptions.scope_menu_owner.as_ref() == Some(&owner_key),
-                        )
-                        .disabled(busy)
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                let position = this.descriptions.scope_bounds.get().bottom_left();
-                                this.open_description_sources(
-                                    target.clone(),
-                                    selected.clone(),
-                                    pr_scope.clone(),
-                                    position,
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
-                    )
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                            if !busy
-                                && keyboard_focus.is_focused(window)
-                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
-                            {
-                                let position = this.descriptions.scope_bounds.get().bottom_left();
-                                this.open_description_sources(
-                                    keyboard_target.clone(),
-                                    keyboard_selected.clone(),
-                                    keyboard_pr.clone(),
-                                    position,
-                                    window,
-                                    cx,
-                                );
-                                window.prevent_default();
-                                cx.stop_propagation();
-                            }
-                        },
-                    )),
-            );
-            if self.descriptions.scope_menu_owner.as_ref() == Some(&owner_key) && !busy {
-                if let Some(menu) = self.descriptions.scope_menu.clone() {
-                    column = column.child(gpui::deferred(
-                        gpui::anchored()
-                            .position_mode(gpui::AnchoredPositionMode::Window)
-                            .position(self.descriptions.scope_position)
-                            .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
-                            .child(menu),
-                    ));
-                }
+        Some(super::change_tools::ChangeToolState {
+            scope,
+            label: if busy {
+                "Open description progress"
+            } else if saved {
+                "Open description"
             } else {
-                self.descriptions.scope_menu = None;
-                self.descriptions.scope_subscription = None;
-                self.descriptions.scope_menu_owner = None;
-            }
-        } else if exists || matches!(scope, Scope::PullRequest { .. }) {
-            column = column.child(description_source_text(description_source_label(&scope)));
-        }
-        let focus = self
-            .descriptions
-            .source
-            .get_or_insert_with(|| cx.focus_handle())
-            .clone();
-        let target = path.to_owned();
-        let chosen = scope.clone();
-        if !exists {
-            column = column.child(
-                super::checkout_panel::checkout_loading_row(
-                    "describe-changes",
-                    if entry.is_some_and(|e| e.publishing) {
-                        "Updating description…"
-                    } else if busy {
-                        "Describing changes…"
-                    } else {
-                        "Describe changes"
-                    },
-                    "diff",
-                    busy,
-                    window,
-                    cx,
-                )
-                .with_focus_handle(focus)
-                .disabled(busy || (matches!(scope, Scope::Local) && !local_changes))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.begin_description(
-                        target.clone(),
-                        chosen.clone(),
-                        this.descriptions.source.clone(),
-                        cx,
-                    );
-                })),
-            );
-        }
-        if exists {
-            let open_focus = self
-                .descriptions
-                .open_source
-                .get_or_insert_with(|| cx.focus_handle())
-                .clone();
-            let return_focus = open_focus.clone();
-            let target = key.clone();
-            column = column.child(
-                super::checkout_panel::checkout_loading_row(
-                    "describe-open",
-                    "View description",
-                    "diff",
-                    false,
-                    window,
-                    cx,
-                )
-                .with_focus_handle(open_focus)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.descriptions.return_focus = Some(return_focus.clone());
-                    this.hide_review();
-                    this.hide_questions();
-                    this.descriptions.open = Some(target.clone());
-                    this.descriptions.focus_pending = true;
-                    cx.notify();
-                })),
-            );
-        }
-        if exists && entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false)))) {
-            column = column.child(div().px(rpx(SPACE_2XL)).child(status::label(
-                "describe-panel-state",
-                StatusKind::Warning,
-                "Out of date",
-                ICON_SM,
-                cx,
-            )));
-        }
-        if busy {
-            let target = key.clone();
-            column = column.child(
-                action("describe-cancel", "Cancel generation", "close", window, cx)
-                    .mx(rpx(SPACE_2XL))
-                    .disabled(entry.is_some_and(|e| e.publishing))
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.cancel_description(&target, cx)),
-                    ),
-            );
-        }
-        column
-            .child(
-                div()
-                    .text_size(rpx(TEXT_MICRO))
-                    .text_color(c::FG_DIM())
-                    .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
-                    .pr(rpx(SPACE_2XL))
-                    .child(if matches!(scope, Scope::Local) {
-                        "Uncommitted changes, including new files."
-                    } else {
-                        "Pull request changes compared with its base."
-                    }),
-            )
-            .into_any_element()
+                "Describe changes"
+            },
+            status,
+        })
     }
-    fn open_description_sources(
+
+    pub(super) fn open_description_tool(
         &mut self,
-        target: (String, String),
-        selected: Scope,
-        pr_scope: Scope,
-        position: gpui::Point<gpui::Pixels>,
-        window: &mut Window,
+        path: String,
+        scope: Scope,
+        source: FocusHandle,
         cx: &mut Context<Self>,
     ) {
-        let owner = cx.entity().downgrade();
-        let source = target.clone();
-        let Some(focus) = self.descriptions.scope_focus.clone() else {
-            return;
-        };
-        let menu = PopupMenu::build(window, cx, move |menu, window, _| {
-            let mut menu =
-                crate::views::components::dropdown_menu(menu, window).action_context(focus);
-            for candidate in [Scope::Local, pr_scope.clone()] {
-                let owner = owner.clone();
-                let target = target.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(description_source_label(&candidate))
-                        .icon(gpui_component::Icon::default().path(match candidate {
-                            Scope::Local => "icons/diff.svg",
-                            Scope::PullRequest { .. } => "icons/git-pull-request.svg",
-                        }))
-                        .checked(candidate == selected)
-                        .on_click(move |_, _, cx| {
-                            let _ = owner.update(cx, |this, cx| {
-                                this.descriptions
-                                    .scopes
-                                    .insert(target.clone(), candidate.clone());
-                                cx.notify();
-                            });
-                        }),
-                );
-            }
-            menu
+        let target = self.description_target(&path, &scope);
+        let existing = self.descriptions.entries.get(&target).is_some_and(|entry| {
+            entry.result.is_some() || entry.cancel.is_some() || entry.resolving
         });
-        self.descriptions.scope_subscription = Some(cx.subscribe_in(
-            &menu,
-            window,
-            |this, _, _: &gpui::DismissEvent, window, cx| {
-                this.descriptions.scope_menu = None;
-                this.descriptions.scope_subscription = None;
-                this.descriptions.scope_menu_owner = None;
-                if let Some(focus) = &this.descriptions.scope_focus {
-                    focus.focus(window, cx);
-                }
-                cx.notify();
-            },
-        ));
-        self.descriptions.scope_menu_owner = Some(source);
-        self.descriptions.scope_position = position;
-        menu.focus_handle(cx).focus(window, cx);
-        self.descriptions.scope_menu = Some(menu);
-        cx.notify();
+        self.files_active = false;
+        self.checkout_panel.side_chat_owner = None;
+        if existing {
+            self.reload_description_result(&target, cx);
+            self.hide_review();
+            self.descriptions.return_focus = Some(source);
+            self.descriptions.open = Some(target);
+            self.descriptions.focus_pending = true;
+            cx.notify();
+        } else {
+            self.start_description_conversation(path, scope, Some(source), cx);
+        }
     }
     fn open_description_preview(&mut self, key: &Key, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.descriptions.entries.get_mut(key) else {

@@ -1312,7 +1312,6 @@ impl SettingsPanel {
                     grove_core::prompts::PromptKind::Commit => "git",
                     grove_core::prompts::PromptKind::PullRequest => "git-pull-request",
                     grove_core::prompts::PromptKind::DescribeChanges => "file",
-                    grove_core::prompts::PromptKind::AskChanges => "message-circle",
                     grove_core::prompts::PromptKind::SessionTitle => "edit",
                     grove_core::prompts::PromptKind::ReviewChanges => "diff",
                 };
@@ -1505,7 +1504,7 @@ impl SettingsPanel {
             )
             .child(self.prompt_requirements(kind, cx))
             .child(div().mt(rpx(SPACE_LG)).text_size(rpx(TEXT_MICRO)).text_color(c::FG_DIM())
-                .child(if matches!(kind,grove_core::prompts::PromptKind::DescribeChanges|grove_core::prompts::PromptKind::AskChanges) {
+                .child(if matches!(kind,grove_core::prompts::PromptKind::DescribeChanges) {
                     "Supports native Markdown, tables, code blocks and Mermaid."
                 } else {
                     "Your instructions customize writing; Grove keeps its output and workflow requirements."

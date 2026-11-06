@@ -157,10 +157,10 @@ fn describe_changes_full_sidebar_linux_capture() {
         cx.spawn(async move |cx| {
             let _keep_alive = (repository, actions, updates);
             cx.background_executor().timer(Duration::from_millis(900)).await;
-            for (name, state) in [("shell-conversation-dark", "conversation"), ("shell-description-dark", "description"), ("shell-back-conversation-dark", "back"), ("shell-stale-panel-dark", "stale"), ("shell-stale-description-dark", "stale-description"), ("shell-narrow-description-dark", "narrow"), ("shell-stale-description-light", "light")] {
+            for (name, state) in [("shell-conversation-dark", "conversation"), ("shell-menu-dark", "menu"), ("shell-description-dark", "description"), ("shell-back-conversation-dark", "back"), ("shell-stale-panel-dark", "stale"), ("shell-stale-description-dark", "stale-description"), ("shell-narrow-description-dark", "narrow"), ("shell-stale-description-light", "light")] {
                 cx.update_window(window.into(), |_, window, cx| {
-                    if matches!(state, "description" | "stale-description") {
-                        let focus = sidebar.read(cx).descriptions.open_source.as_ref().expect("actual Checkout panel must render linked action").clone();
+                    if matches!(state, "menu" | "description" | "stale-description") {
+                        let focus = sidebar.read(cx).checkout_panel.change_tools.focus.get(&false).expect("actual Checkout panel must render PR menu").clone();
                         focus.focus(window, cx);
                         window.refresh();
                     }
@@ -176,13 +176,17 @@ fn describe_changes_full_sidebar_linux_capture() {
                     }
                 }).unwrap();
                 cx.background_executor().timer(Duration::from_millis(120)).await;
-                if matches!(state, "description" | "stale-description") {
+                if state == "menu" {
                     cx.update_window(window.into(), |_, window, cx| press_key(window, cx, "enter")).unwrap();
+                }
+                if matches!(state, "description" | "stale-description") {
+                    cx.update_window(window.into(), |_, window, cx| { press_key(window, cx, "enter"); press_key(window, cx, "down"); press_key(window, cx, "enter"); }).unwrap();
                 }
                 cx.background_executor().timer(Duration::from_millis(420)).await;
                 let mut metadata = std::fs::OpenOptions::new().create(true).append(true).open(output.join("shell-measurements.txt")).unwrap();
                 cx.update_window(window.into(), |_, window, cx| {
                     let sidebar = sidebar.read(cx);
+                    if state == "menu" { assert!(sidebar.checkout_panel.change_tools.menu.is_some(), "actual Checkout section menu opened"); }
                     let open = sidebar.descriptions.open.is_some();
                     assert_eq!(open, matches!(state, "description" | "stale-description" | "narrow" | "light"), "native keyboard activation: {state}");
                     assert_eq!(session.read(cx).state.saved.draft, "Can you walk me through the duplicate-delivery guard?");

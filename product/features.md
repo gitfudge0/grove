@@ -133,11 +133,11 @@ WebKitGTK and WebView2 harnesses.
 
 ## Describe changes
 
-Checkout offers **Describe changes** when the selected checkout has local changes
-or an attached GitHub PR. When both sources are available, a compact dropdown
-chooses **Local changes** (staged, unstaged and nonignored untracked files against
-HEAD) or the attached **PR** (GitHub's base-to-head diff). A sole source requires no
-selector. The scopes are never combined. A command or Checkout action creates a dedicated,
+Checkout offers **Describe changes** in the always-visible overflow menu beside
+the **Local changes** and **Pull request** section headings. Placement establishes
+scope: local changes include staged, unstaged and nonignored untracked files
+against HEAD; the PR uses GitHub's base-to-head diff. No source dropdown or
+separate tool action rows are shown. The scopes are never combined. A command or Checkout action creates a dedicated,
 retained conversation with the selected provider and checkout, preserving the
 originating composer draft. A repeated invocation while that source is generating
 opens the active session. The immutable diff is captured and saved before the
@@ -152,8 +152,8 @@ same result, with a locked source claim and unique request identity preventing a
 older generation from overwriting a newer one, even after restart. Acknowledged
 cancellation/failure retires only its own request and preserves the previous result.
 
-A linked session with a saved result always exposes **View description** in the
-right-side Checkout panel, including after local edits disappear or a PR is detached. It reopens the
+A saved result exposes **Open description** in its source section's overflow
+menu, including after local edits disappear or a PR is detached. It reopens the
 saved page with source context and an **Out of date** status when stale; it does
 not run generation. Regeneration is available inside the reader. Both links and
 results survive restart.
@@ -187,8 +187,8 @@ Grove bundles `describe-changes/SKILL.md`. In either provider's Grove composer,
 describe that PR without switching or attaching the checkout. Dashboard commands
 are intercepted before catalog discovery or activation of the originating draft;
 the new session uses the Dashboard composer's selected provider and checkout. Without an argument, use
-Checkout's visible choice, defaulting to local changes before a scope has been
-selected.
+local changes. Section menus provide their source explicitly; command source
+arguments remain available for precise selection.
 Completions reserve this name, and Grove intercepts the whole command before
 submitting it to the originating provider. The new session receives a captured-diff
 generation prompt with a unique durable request identity. The command draft stays
@@ -227,12 +227,13 @@ without extended content remain readable. Prompt changes never rewrite saved res
 
 ## Review changes
 
-Checkout's source-specific Review action, `/review [local|pr|PR-URL]` and
+Checkout's source-specific **Review changes** menu action, `/review [local|pr|PR-URL]` and
 `$review [local|pr|PR-URL]` work from Dashboard and either Codex or Claude composer
 before catalog discovery or source draft activation. Local scope captures staged,
 unstaged and nonignored untracked changes against HEAD. PR scope captures the
 attached or explicitly supplied GitHub PR against its base. These scopes never
-combine. Invalid arguments and attached images/references are rejected with the
+combine. An omitted command scope uses the captured source in a retained review
+session, otherwise local changes. Invalid arguments and attached images/references are rejected with the
 source draft preserved.
 
 Each request creates a dedicated retained conversation using the selected
@@ -254,9 +255,8 @@ Custom Review writing instructions in Settings → Prompts can change the prose;
 Grove-owned schema, evidence and coverage validation remain mandatory.
 
 One private atomic canonical result per source replaces its predecessor only
-after validation. A permanent **View review** action remains in Changes beside
-the diff for the retained session, even if local changes or the attached PR no
-longer exist. Links and results survive restart. Conversation opens the same
+after validation. An **Open review** entry remains in the corresponding source section's overflow
+menu, even if local changes or the attached PR no longer exist. Links and results survive restart. Conversation opens the same
 retained session; only captured request transport and reserved `grove-review`
 blocks are hidden from the visible transcript, remaining in model/recovery data.
 Ordinary later answers are never imported as a new original review. Stale results
@@ -264,53 +264,3 @@ show **Out of date** and remain readable. Regeneration preserves the previous
 result on failure/cancellation; Saving review rejects cancellation until its
 atomic save finishes. Review does not automatically publish GitHub comments or
 apply fixes.
-## Ask about changes
-
-Checkout offers **Ask about changes** for local staged/unstaged/nonignored-untracked
-changes against HEAD, or the attached PR's base-to-head diff. A sole source is
-static context; when both exist, a compact dropdown chooses the source. Saved
-answers expose **View answer** in Changes beside the diff, including after the
-checkout becomes clean or its PR is detached. An **Out of date** label identifies
-changed snapshots; unavailable freshness stays explicit in the reader.
-
-`/ask [local|pr|GitHub-PR-URL] [question]` and `$ask` with the same arguments work
-in Dashboard and either provider's normal composer. Native routing happens before
-catalog discovery or Dashboard draft activation. A validated explicit URL targets
-that PR without replacing Checkout's local/attached source preference. Invalid
-URL-like sources show usage. Omit the question to open its accessible native field
-without a model turn; **Ask question** or Control/Command+Enter submits it. Plain
-Enter inserts a newline. Attachments/quoted references are rejected and preserved,
-as is the originating composer draft.
-
-A submitted new invocation creates a dedicated retained conversation inheriting
-the selected provider, model and preferences. Distinct invocations retain distinct
-question histories; subsequent native questions inside the reader reuse its
-conversation, each capturing a fresh diff. **Conversation** returns to that same
-session, where ordinary follow-ups remain ordinary and never overwrite the typed
-canonical answer. The initial captured request asks the normal provider to be
-read-only and rely on the supplied diff. Normal transport permissions remain in
-force; this is not a separate tool-disabled sandbox.
-
-The shared analysis store saves one latest validated answer per local checkout or
-PR in the separate `change-answers` namespace. Session links, exact captured
-question, composed prompt, pending generation identity and canonical answer survive
-restart. Canonical replacement is atomic and bound to the captured source and
-question. A newer generation claim prevents an older request overwriting it.
-Recovery imports only the final response belonging to the exact captured request;
-uncertain work is never automatically resubmitted. Cancel interrupts only its
-own active request and retires its pending job, preserving previous answers and
-the last captured question. Saving disables cancellation until its atomic write
-finishes. Already-mounted unsaved question edits are preserved during hydration.
-
-The native reader shows selectable Markdown (including supported tables/code and
-Mermaid), explicit coverage/limitations, and references validated against exact
-old/new lines present in complete captured patches. **Open reference** displays the
-captured patch, not a live file. Omitted/partial/binary patches cannot count as
-examined. The captured answer does not verify test results; the initial request asks the
-provider not to run tools or tests. Model claims remain interpretations of code. Old answers stay readable/copyable, and a fresh native submission captures
-the source again. Scope/session ownership and source focus survive navigation.
-
-Settings → Prompts → **Ask about changes** edits the writing instructions. The
-schema, captured citations, source/question identity and coverage requirements
-remain Grove-owned, separately visible, and cannot be removed by customization.
-Read-only side conversations do not receive this user-invoked skill.

@@ -6,7 +6,8 @@ description: Start a Grove description session for local changes or a GitHub PR,
 # Describe changes in Grove
 
 The user invokes `/describe-changes` (or `$describe-changes`) in Grove's composer,
-or chooses **Describe changes** in Checkout. Grove intercepts the command and
+or chooses **Describe changes** from the overflow menu beside Checkout's
+**Local changes** or **Pull request** heading. Grove intercepts the command and
 starts a dedicated, retained Codex or Claude conversation. The originating draft
 is preserved. An invocation while the same source is already generating opens
 that active session instead of starting duplicate work.
@@ -14,7 +15,8 @@ that active session instead of starting duplicate work.
 Use `/describe-changes local` for staged, unstaged and nonignored untracked edits,
 `/describe-changes pr` for the attached PR, or
 `/describe-changes https://github.com/owner/repo/pull/17` for an explicit GitHub.com
-PR. With no argument, use Checkout's selected scope, defaulting to local changes.
+PR. With no argument, use local changes. The section menu supplies its own
+source explicitly.
 Scopes are never combined. An explicit PR URL does not switch or attach the checkout.
 
 Grove captures the immutable diff, saves the request for recovery, and sends it
@@ -34,9 +36,9 @@ or cancellation preserves the last saved result and retires that request; an old
 or canceled request cannot overwrite a newer result or be resurrected on restart.
 
 The native page opens after generation and remains available through the
-**View description** button in that session's right-side Checkout panel, including
+**Open description** entry in the corresponding Checkout section menu, including
 when the checkout has no remaining local edits or attached PR. **Conversation**
-returns to the retained conversation; the panel button reopens the page. Saved
+returns to the retained conversation; the menu entry reopens the page. Saved
 results survive restart. Changed or unverifiable snapshots retain their content,
 show staleness and offer regeneration.
 

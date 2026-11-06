@@ -206,10 +206,10 @@ mod tests {
                 title: String::new(),
                 original_body: None,
             },
-            input: "Earlier question".into(),
+            input: "Local description".into(),
             prompt: compose_request(
-                "ask",
-                "/ask local Earlier question",
+                "describe-changes",
+                "/describe-changes local",
                 "generation-one",
                 "Original custom writing instructions",
             ),
@@ -282,34 +282,39 @@ mod tests {
     #[test]
     fn display_is_per_request_and_independent_of_prompt_customization() {
         let old = compose_request(
-            "ask",
-            "/ask local Earlier question",
+            "describe-changes",
+            "/describe-changes local",
             "old",
             "French custom instructions",
         );
         let new = compose_request(
-            "ask",
-            "/ask pr Later question",
+            "describe-changes",
+            "/describe-changes pr",
             "new",
             "Different instructions",
         );
         assert_eq!(
-            display_text("ask", "grove-ask", "userMessage", &old),
-            "/ask local Earlier question"
+            display_text("describe-changes", "grove-description", "userMessage", &old),
+            "/describe-changes local"
         );
         assert_eq!(
-            display_text("ask", "grove-ask", "userMessage", &new),
-            "/ask pr Later question"
+            display_text("describe-changes", "grove-description", "userMessage", &new),
+            "/describe-changes pr"
         );
         assert_eq!(
             display_text("review", "grove-review", "userMessage", &old),
             old
         );
         let response =
-            "Useful answer\n```rust\nlet x = 1;\n```\n```grove-ask\n{}\n```\nMore explanation";
+            "Useful description\n```rust\nlet x = 1;\n```\n```grove-description\n{}\n```\nMore explanation";
         assert_eq!(
-            display_text("ask", "grove-ask", "agentMessage", response),
-            "Useful answer\n```rust\nlet x = 1;\n```\nMore explanation"
+            display_text(
+                "describe-changes",
+                "grove-description",
+                "agentMessage",
+                response
+            ),
+            "Useful description\n```rust\nlet x = 1;\n```\nMore explanation"
         );
     }
 }

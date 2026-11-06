@@ -78,6 +78,7 @@ fn script_control_tooltip(
 
 #[derive(Default)]
 pub(super) struct CheckoutPanel {
+    pub(super) change_tools: super::change_tools::ChangeTools,
     pub(super) feedback: super::action_feedback::Feedbacks,
     pub(super) script_feedback_observers: HashMap<u64, gpui::Subscription>,
     pub(super) script_feedback_tokens: HashMap<u64, u64>,
@@ -1685,6 +1686,7 @@ impl Sidebar {
                     .child(message.clone()),
             );
         }
+        visible |= self.has_change_tools(path, false, cx);
         if visible {
             Some(
                 div()
@@ -1692,10 +1694,7 @@ impl Sidebar {
                     .flex_col()
                     .min_w_0()
                     .child(checkout_divider("checkout-pr-divider"))
-                    .child(checkout_section_heading(
-                        "checkout-pr-heading",
-                        "Pull request",
-                    ))
+                    .child(self.render_change_tools_heading(path, false, window, cx))
                     .child(section)
                     .into_any_element(),
             )
@@ -2111,6 +2110,29 @@ impl Sidebar {
             focus.focus(window, cx);
         }
         cx.notify();
+    }
+
+    pub(super) fn checkout_has_local_changes(&self, path: &str) -> bool {
+        self.checkout_panel.path.as_deref() == Some(path)
+            && self
+                .checkout_panel
+                .summary
+                .as_ref()
+                .is_some_and(|summary| summary.files > 0)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_change_tools_sources(
+        &mut self,
+        path: &str,
+        local: bool,
+        pr: Option<PullRequest>,
+    ) {
+        self.checkout_panel.path = Some(path.into());
+        let mut summary = diff::summarize(&[]);
+        summary.files = usize::from(local);
+        self.checkout_panel.summary = Some(summary);
+        self.checkout_panel.pr_state = Some(Ok(pr));
     }
 
     pub(super) fn checkout_description_pr(&self) -> Option<PullRequest> {
@@ -2919,6 +2941,7 @@ impl Sidebar {
         if !agents_only {
             if let Some((idx, path)) = selected {
                 if self.checkout_panel.path.as_ref() != Some(&path) {
+                    self.checkout_panel.change_tools.dismiss();
                     self.checkout_panel.focus_confirmation = false;
                     self.checkout_panel.restore_focus = false;
                     self.checkout_panel.return_focus = None;
@@ -3686,59 +3709,27 @@ impl Sidebar {
                 );
             }
         }
-        let description_path = linked_description
-            .as_ref()
-            .map(|linked| linked.path.clone())
-            .or_else(|| linked_review.as_ref().map(|linked| linked.path.clone()))
-            .or_else(|| self.checkout_panel.path.clone());
-        if let Some(path) = description_path {
-            let local = self
-                .checkout_panel
-                .summary
-                .as_ref()
-                .is_some_and(|summary| summary.files > 0);
-            let pr = self.checkout_description_pr();
-            if linked_description.is_some() || local || pr.is_some() {
-                has_changes = true;
-                changes_section = changes_section.child(self.render_description_controls(
-                    &path,
-                    local,
-                    pr.clone(),
-                    window,
-                    cx,
-                ));
-            }
-            if linked_review.is_some() || local || pr.is_some() {
-                has_changes = true;
-                changes_section = changes_section
-                    .child(self.render_review_controls(&path, local, pr, window, cx));
-            }
-        }
-        let linked_question = self.linked_question_key();
-        let question_path = linked_question
-            .as_ref()
-            .map(|key| key.path.clone())
-            .or_else(|| self.checkout_panel.path.clone());
-        if let Some(path) = question_path {
-            let local = self
-                .checkout_panel
-                .summary
-                .as_ref()
-                .is_some_and(|summary| summary.files > 0);
-            let pr = self.checkout_description_pr();
-            if linked_question.is_some() || local || pr.is_some() {
-                has_changes = true;
-                changes_section = changes_section
-                    .child(self.render_question_controls(&path, local, pr, window, cx));
+        let tools_path = self
+            .checkout_panel
+            .path
+            .clone()
+            .or_else(|| linked_description.as_ref().map(|key| key.path.clone()))
+            .or_else(|| linked_review.as_ref().map(|key| key.path.clone()));
+        if let Some(path) = &tools_path {
+            has_changes |= self.has_change_tools(path, true, cx);
+            if pr_section.is_none() && self.has_change_tools(path, false, cx) {
+                pr_section = self.render_checkout_pr(path, None, window, cx);
             }
         }
         if has_changes {
             card = card
                 .child(checkout_divider("checkout-changes-divider"))
-                .child(checkout_section_heading(
-                    "checkout-changes-heading",
-                    "Changes",
-                ))
+                .child(if let Some(path) = &tools_path {
+                    self.render_change_tools_heading(path, true, window, cx)
+                } else {
+                    checkout_section_heading("checkout-changes-heading", "Local changes")
+                        .into_any_element()
+                })
                 .child(changes_section);
         }
         if has_git {

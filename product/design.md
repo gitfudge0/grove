@@ -400,32 +400,34 @@ Side-panel action feedback uses a rotating blue open ring during work and a gree
 
 ## Change-description reader
 
-Describe changes belongs to the selected Checkout card and appears for local
-changes or an attached PR. A sole local source needs no selector; its action
-reads **Describe changes** with “Uncommitted changes, including new files.” beneath
-it. When both sources are available, a compact shared dropdown selects Local
-changes or the attached PR. A sole PR is static source context. Generation uses
-the shared dense action recipe and status marks. Its native reader replaces
-the main reading area while preserving Checkout and the conversation/draft.
-Each invocation starts a dedicated retained conversation, preserving the source
-composer draft. The reader and its Conversation action share that session. Once
-a saved description is linked, the right-side Checkout panel always shows a **View
-description** action with its source to reopen it, including when no local edits
-or attached PR remain.
-The saved-description action stays in Changes beside the diff, including when
-the checkout becomes clean. Saving, stale results and active generation never
-move it to another group. This is a navigation
-action; generation remains explicit, and regeneration belongs inside the reader.
-Saved results show **Out of date** when their captured source has changed.
-Saved results and links survive restart, with one canonical result per PR or local
-checkout. The conversation shows its command and completion prose; captured
-schema/diff transport and reserved result payloads stay in model context and
-recovery storage rather than filling the visible transcript. Descriptions, in-flight results, previews and feedback remain bound to
-their session and source across navigation; another selected checkout must not
-display the previous checkout's reader. Finalizing a successful generation shows
-Saving description and disables cancellation until the atomic save finishes.
-When the side toolbar overlays the main reading area, the header reserves its
-shared control widths and gaps so source labels truncate before those controls.
+Describe and Review are scoped by their Checkout section. **Local changes** and
+**Pull request** headings each have a persistent, right-aligned catalog **more**
+control when generation or retained results are available. There is no source
+picker, action row, or separate saved-result row. The accessible control names
+are **Local changes actions** and **Pull request actions**. Use the shared header
+control and dropdown menu recipes, with leading catalog icons for menu entries.
+Enter, Space and Down open the menu; Escape dismisses it and restores its trigger.
+Menu state and activation remain bound to the checkout, selection and source.
+Opening a menu is immediate input feedback; reader replacement retains its shared
+restrained motion and reduced-motion behavior.
+
+The menu offers **Describe changes** and **Review changes** for new work, **Open
+description** and **Open review** for saved results, and progress navigation for
+active work. Opening a saved result never regenerates it. Regeneration and
+cancellation stay in the reader. Working, failure, out-of-date and unavailable
+freshness states remain visible in their source section even with the menu
+closed. Fresh saved results need no additional panel badge. Clean or detached
+sources retain entries only for saved/active results; detached PR context names
+the captured PR. No menu entry silently substitutes another source.
+
+Generation starts a dedicated retained conversation and preserves the source
+composer draft. The reader and Conversation action share that session. Saved
+results survive restart, remain bound to their session/source, and remain
+reachable after local changes disappear or a PR is detached. Finalizing disables
+cancellation until the canonical save finishes. Regeneration preserves the old
+result on failure/cancellation. Readers reserve the shared side-toolbar columns
+so source labels truncate before fixed actions. Schema/diff transport remains in
+model context and recovery storage rather than the visible transcript.
 
 The reader uses the existing selectable Markdown typography and Mermaid renderer,
 compact sentence-case headings, transparent file disclosures, fixed trailing
@@ -441,7 +443,7 @@ control, including the Codex or Claude composer.
 
 ## Built-in prompt settings
 
-Prompts is a Settings category with a compact two-column picker for the six
+Prompts is a Settings category with a compact two-column picker for the five
 built-in writing prompts and one full-width editor for the selected prompt.
 Each choice shows its default/customized/unsaved state; switching prompts or
 categories preserves independent drafts without saving them. The editor uses a
@@ -459,14 +461,10 @@ walkthrough; snapshot context and coverage remain independent of authored conten
 
 ## Change-review reader
 
-Review uses the change-description reader's placement, compact source dropdown
-when both sources exist, static context for a sole source, and source-specific
-generation labels. A saved result uses the permanent View review row in Changes,
-including a clean or detached checkout. The reader header reserves the persistent
-side-toolbar control widths/gaps; source labels yield before those controls.
-Conversation returns to the same retained provider session. Results and pending
-requests stay bound to that session and canonical source across navigation and
-restart. Saving review disables cancellation without hiding the previous result.
+Review shares the section-scoped overflow menus and retained-result behavior above.
+Conversation opens the same retained provider session. Pending requests and results
+retain session/source identity across navigation and restart. Saving disables
+cancellation while preserving any previous result.
 
 Findings use native selectable Markdown, plain priority labels, transparent file
 disclosures and fixed trailing change counts. Expanded findings show captured
@@ -475,29 +473,3 @@ Summary and coverage remain visible independently of customized prose. Empty
 findings never use an approval or unqualified clean-state label. Out of date
 results remain copyable. Reader entrance/exit uses restrained shared motion;
 input focus and captured diff selection are immediate.
-## Change-question reader
-
-Ask about changes follows the current Describe source/action treatment: one
-compact source dropdown when two sources exist, static sole-source context, and
-an icon-leading **View answer** action in Changes once a saved answer is linked.
-Saved links remain usable after clean/detached sources. The retained conversation
-and native reader share identity; Conversation opens that same session. A readable
-header reserves the persistent side-toolbar controls' shared width/gaps when they
-overlay the canvas. Source labels yield before fixed actions.
-
-The accessible multiline question uses the project field well, grows inside the
-reader scroll, and retains its draft during errors, cancellation and navigation.
-Opening focuses the field; plain Enter remains multiline and the native secondary-
-Enter action submits. Only an explicit native question starts another canonical
-generation. Ordinary conversation follow-ups retain their own context. Old answers
-keep their captured source/question and coverage during replacements. Saving uses
-an honest status and disables Cancel; success means the canonical write completed.
-Questions/answers render selectable native Markdown with compact source context,
-transparent reading surfaces, and captured diff navigation. Escape returns through
-a captured reference to the answer, then to its conversation/source control.
-
-Picker/focus/input changes are immediate. Reader replacement uses the existing
-restrained motion and reduced-motion endpoints. Narrow layouts wrap content while
-reserving header actions. No publication or repair actions belong to this reader.
-Ask writing preferences use the existing Settings prompt picker/editor, with
-independent drafts and immutable schema/citation/coverage requirements beneath.

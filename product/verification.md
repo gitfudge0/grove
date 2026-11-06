@@ -486,87 +486,50 @@ live main-composer end-to-end, macOS and Windows remain untested. A constrained
 recorded in capture metadata.
 review or PR write was performed. Full application shell flows, macOS and Windows
 remain untested until separately observed.
-## Ask about changes
 
-The initial Ask implementation reused the Describe snapshot collector and a
-private tool-disabled provider runner. The retained-session update below replaces
-that UI generation path with normal provider turns. Focused Linux core checks cover malformed structured answers,
-unknown/omitted/duplicate examined files, citations outside captured old/new hunk
-lines, deletion-side references, cross-hunk ranges, cancellation before provider
-launch, and empty questions. Snapshot/no-index-write guarantees retain the
-existing Describe regressions. Both-provider composer fixtures check native
-`/ask`/`$ask` routing, reserved completions, command draft preservation and
-attachment rejection without provider submission. These fixtures do not prove a
-live main-composer-to-provider end-to-end path.
+## Section-scoped Describe and Review menus
 
-A live Codex Ask call on an isolated Git fixture produced a validated answer
-citing new lines 2–5 of the captured patch; Git status and the index were unchanged.
-The live Claude attempt failed; `claude auth status` reported `loggedIn: false`
-and `authMethod: none`. Claude live generation remains unverified pending sign-in.
+The checkout's Local changes and Pull request headers now own persistent overflow
+menus. Ask command routing, prompt settings, reader, core generation, smoke examples
+and bundled guidance were removed. A repository identifier sweep found no remaining
+Ask feature references; general provider questions and Side chat are separate
+features and remain supported.
 
-Native production-reader fixtures exercise captured-reference navigation,
-Escape/source focus, stale/error answer preservation, question-only opening,
-session/checkout/scope ownership and deferred-submit checkout isolation. Native
-captures use the production reader in an isolated Linux root, not the full Grove
-shell or a live provider session. macOS and Windows remain untested. Existing
-broader suite and strict Clippy failures recorded above are not claimed resolved.
+Linux fixture checks cover source-specific menu entries, Enter/Escape and focus
+restoration, native Tab-stop traversal, saved/stale/working states, retained results
+on clean/detached sources, and a retained explicit PR alongside a different attached
+PR. Codex and Claude fixture cases preserve draft/session ownership and verify
+composer/Dashboard routing without submitting the originating draft. The focused
+sidebar, retained-controller, routing, Settings and all 33 UI conformance checks
+passed. Changed Rust formatting and repository artifact checks passed.
 
-Final focused results: five Ask core tests, two skill-parser tests, nine Ask
-native/keyboard tests, one both-provider composer test and four inherited
-Describe reader regressions passed. The keyboard fixture caught the vendor
-Input consuming Control+Enter before raw key handlers; the reader now captures
-its native secondary-Enter action, preserving plain Enter as a newline.
-Formatting, compilation and repository-artifact checks passed. Strict core
-Clippy still reports 21 diagnostics outside Ask; strict UI-only Clippy reports
-103 outside the new Ask modules after correcting its new diagnostic.
+Native X11 fixtures exercise actual Grove headers, menus and retained readers.
+Full-shell captures show the new placement and keyboard reader round trips for
+Codex and Claude fixtures. Isolated header captures cover dark/light and an actual 180-pixel-wide component.
+The requested native zoom capture did not establish a changed rendered scale.
+Window-manager tiling prevented the requested full-shell resize;
+full-shell captures labelled light still rendered dark, so those labels do not
+establish full-shell narrow/light verification. These captures are exploratory
+native QA, not a certified macOS measured-reference parity result. macOS and
+Windows were not exercised.
 
-Linux native answer captures were inspected in Grove Dark at rem 16 and Grove
-Light at rem 20, plus a captured-diff view, provider-error state and a 340-logical-
-pixel constrained stale reader. An initial capture quit with an InputState leak;
-the harness now focuses its source and releases the reader before quitting.
-One-state-per-process captures avoid retained frames; the corrected narrow
-bootstrap capture shows the actual wrapped reader. These remain isolated native
-fixtures, not full-shell interaction, live provider UI, or participant testing.
+Live Codex Describe and Review retained-conversation smokes passed canonical
+reload, pending cleanup, current snapshots and unchanged fixture HEAD/index/work
+state. They bypass the new menus and have no originating composer: live menu
+invocation and draft preservation are not established by them. Claude reached the
+normal provider boundary but both attempts failed with expired OAuth credentials;
+Claude live generation remains unverified. No account configuration was changed.
 
+A broader core run passed 872 tests with 9 ignored and 3 failures. The agent-path
+and recovered-GitHub-CLI tests also fail individually because installed executables
+are selected instead of their fixture executables; their owning source files are
+unchanged by this work. The tmux environment test passed individually after failing
+in the parallel run. The broad suite is therefore not a clean pass. Logs and native
+evidence for this run live under ignored `.grove-artifacts/change-tools-exploration/`
+and the section-menus/section-menu native capture directories.
 
-## Retained Ask conversations and durable answers
-
-Ask now uses the shared typed result store/controller on normal retained provider
-sessions. Eight Ask core tests cover its schema/citations, fenced conversation
-import, exact question identity, canonical replacement and immutable prompt
-requirements; three parser tests cover local/attached/explicit PR URL forms.
-Both-provider fixtures passed two actual submit/router tests (including blocked
-Dashboard catalog discovery), typed recovery/no-resubmission and ordinary-followup
-isolation in the fourteen native Ask tests (one capture test remains explicitly
-ignored by the normal test run). Final cases also cover same-runtime saved-key
-replacement, linked explicit-source defaults and fixed-header bounds after
-input focus/scroll at 340 and 900 logical pixels, rem 16 and 20. Three prompt-core tests, three Settings
-prompt tests and four shared controller tests passed. These are fixture checks,
-not live main-composer/provider UI checks. The initially reused shared-target core
-binary ran zero Ask tests and was rejected; touching the package entrypoint forced
-an actual current-source build and the expected eight test names/counts.
-
-An isolated live normal Codex conversation passed with a persisted custom Ask
-prompt: the answer included the requested Markdown heading/table and validated
-captured references. The exact multiline question and composed prompt survived
-pending storage; canonical result/link reload and pending cleanup passed, with
-HEAD, index and working state unchanged. This exercised the normal provider
-transport, rather than the old one-shot helper. A fresh Claude auth check reported
-signed out, and the normal Claude smoke failed with expired OAuth credentials.
-Claude live generation remains unverified pending sign-in.
-
-The initial request asks the provider to avoid tools/tests/writes, but normal
-session permissions apply. The canonical footer therefore says test results were
-not verified, rather than asserting that no test process could have run. Native
-captures are isolated production-reader fixtures; full-shell source-selector and
-provider UI behavior, macOS and Windows remain untested. Existing broad-suite
-and strict Clippy baseline failures are not claimed resolved. Coordinator final
-checks own the current integrated revisions and final installation.
-
-Final reader captures are under `.grove-artifacts/describe-parity-ask/`. The
-`final-v2/stale-narrow.png` frame omitted the header despite passing native bounds
-checks; it is preserved as unsuccessful visual evidence. A fresh single-state
-`narrow-probe/stale-narrow.png` from the same immutable binary shows the complete
-Conversation header, Ask heading and wrapped stale answer. This establishes that
-the earlier raster was transient capture/frame evidence, not a reproduced
-production geometry defect; full-shell narrow behavior remains unverified.
+The review-specific isolated menu capture retained an earlier frame; it is not
+independent visual evidence for Review. The inspected shared menu capture shows
+both Describe and Review entries, while Review reader/session behavior is covered
+by fixtures. Final `./install.sh` succeeded on Linux using the local profile;
+`~/.local/bin/grove` matched `target/local/grove` by SHA-256 after installation.

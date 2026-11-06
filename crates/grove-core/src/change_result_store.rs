@@ -286,12 +286,12 @@ mod tests {
     use super::*;
     use crate::change_description::{Scope, SnapshotFile};
     #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-    struct Answer {
+    struct TestResult {
         snapshot: Snapshot,
         input: String,
         text: String,
     }
-    impl StoredResult for Answer {
+    impl StoredResult for TestResult {
         const DIRECTORY: &'static str = "test-analysis";
         fn snapshot(&self) -> &Snapshot {
             &self.snapshot
@@ -307,7 +307,7 @@ mod tests {
             }
         }
     }
-    fn setup() -> (tempfile::TempDir, Store<Answer>, PendingRequest) {
+    fn setup() -> (tempfile::TempDir, Store<TestResult>, PendingRequest) {
         let dir = tempfile::tempdir().unwrap();
         let snapshot = Snapshot {
             checkout: dir.path().to_string_lossy().into_owned(),
@@ -326,29 +326,29 @@ mod tests {
                 omitted: None,
             }],
         };
-        let store = Store::<Answer>::new(dir.path().join("private"));
+        let store = Store::<TestResult>::new(dir.path().join("private"));
         let job = PendingRequest {
             snapshot,
-            input: "Why this change?".into(),
+            input: "Review focus: correctness".into(),
             prompt: "Exact customized original prompt\nwith request identity".into(),
             generation: "generation-one".into(),
         };
         (dir, store, job)
     }
-    fn result(job: &PendingRequest) -> Answer {
-        Answer {
+    fn result(job: &PendingRequest) -> TestResult {
+        TestResult {
             snapshot: job.snapshot.clone(),
             input: job.input.clone(),
-            text: "Grounded answer".into(),
+            text: "Grounded review".into(),
         }
     }
     #[test]
-    fn question_and_exact_prompt_survive_restart_and_invalid_results_preserve_canonical() {
+    fn input_and_exact_prompt_survive_restart_and_invalid_results_preserve_canonical() {
         let (dir, store, job) = setup();
         let src = source(&job.snapshot);
         store.bind("session", &src).unwrap();
         store.save_pending("session", &job).unwrap();
-        let reopened = Store::<Answer>::new(dir.path().join("private"));
+        let reopened = Store::<TestResult>::new(dir.path().join("private"));
         assert_eq!(
             reopened.pending_for_session("session").unwrap(),
             Some(job.clone())
@@ -379,7 +379,7 @@ mod tests {
         store.save_pending("older", &one).unwrap();
         let mut two = one.clone();
         two.generation = "second".into();
-        two.input = "A different question".into();
+        two.input = "Review focus: data loss".into();
         two.prompt = "Second exact prompt".into();
         store.save_pending("newer", &two).unwrap();
         assert!(store
@@ -400,12 +400,12 @@ mod tests {
         assert_eq!(store.pending_for_session("newer").unwrap(), Some(two));
     }
     #[test]
-    fn request_and_result_must_match_bound_snapshot_and_question() {
+    fn request_and_result_must_match_bound_snapshot_and_input() {
         let (_dir, store, job) = setup();
         store.bind("session", &source(&job.snapshot)).unwrap();
         store.save_pending("session", &job).unwrap();
         let mut wrong = result(&job);
-        wrong.input = "Wrong question".into();
+        wrong.input = "Wrong review focus".into();
         assert!(store
             .save_generation("session", &wrong, &job.generation)
             .is_err());
@@ -468,7 +468,7 @@ mod tests {
         store.save_pending("session", &job).unwrap();
         // No provider transcript or canonical result exists for this captured request.
         store.retire_generation("session", &job.generation).unwrap();
-        let reopened = Store::<Answer>::new(dir.path().join("private"));
+        let reopened = Store::<TestResult>::new(dir.path().join("private"));
         assert_eq!(
             reopened.input_for_session("session").unwrap(),
             Some(job.input.clone())
@@ -476,7 +476,7 @@ mod tests {
         assert!(reopened.pending_for_session("session").unwrap().is_none());
         assert!(reopened.load(&source).unwrap().is_none());
         reopened.bind("session", &source).unwrap();
-        let second = Store::<Answer>::new(dir.path().join("private"));
+        let second = Store::<TestResult>::new(dir.path().join("private"));
         assert_eq!(
             second.input_for_session("session").unwrap(),
             Some(job.input.clone())

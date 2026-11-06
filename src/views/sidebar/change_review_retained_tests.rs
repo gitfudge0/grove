@@ -20,7 +20,7 @@ impl Render for RetainedFixture {
             if s.reviews.open.is_some() {
                 s.render_review(window, cx)
             } else {
-                s.render_review_controls(&self.path, false, None, window, cx)
+                s.render_change_tools_heading(&self.path, false, window, cx)
             }
         })
     }
@@ -138,7 +138,7 @@ fn retained_review_restores_canonical_result_and_permanent_view_for_both_provide
             let _ = window.draw(cx);
         });
         assert!(
-            cx.debug_bounds("review-open").is_some(),
+            cx.debug_bounds("checkout-pr-tools").is_some(),
             "permanent View review must survive a clean/detached source"
         );
         sidebar.read_with(cx, |s, _| {
@@ -152,8 +152,10 @@ fn retained_review_restores_canonical_result_and_permanent_view_for_both_provide
                 "hydration preserves the conversation rather than forcing the reader"
             );
         });
-        let open = cx.debug_bounds("review-open").unwrap();
+        let open = cx.debug_bounds("checkout-pr-tools").unwrap();
         cx.simulate_click(open.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down down enter");
         cx.run_until_parked();
         cx.update(|window, cx| {
             sidebar.update(cx, |s, cx| {

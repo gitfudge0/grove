@@ -21,8 +21,8 @@ fn git(path: &std::path::Path, args: &[&str]) -> Result<String, String> {
 fn ensure(condition: bool, message: &str) -> Result<(), String> {
     condition.then_some(()).ok_or_else(|| message.into())
 }
-fn press_enter(window: &mut Window, cx: &mut App) {
-    let keystroke = gpui::Keystroke::parse("enter").unwrap();
+fn press_key(window: &mut Window, cx: &mut App, name: &str) {
+    let keystroke = gpui::Keystroke::parse(name).unwrap();
     window.dispatch_event(
         gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
             keystroke: keystroke.clone(),
@@ -245,13 +245,15 @@ fn describe_changes_live_native_session_pipeline() {
                         let sidebar = sidebar.read(cx);
                         ensure(sidebar.descriptions.open.is_none(), "Back did not return to conversation")?;
                         ensure(sidebar.selection == Some(Selection::Session(new_id)), "Back selected a different conversation")?;
-                        let focus = sidebar.descriptions.open_source.as_ref().ok_or("Right-panel Describe changes button was not rendered")?.clone();
+                        let focus = sidebar.checkout_panel.change_tools.focus.get(&true).ok_or("Right-panel local changes menu was not rendered")?.clone();
                         focus.focus(window, cx);
                         window.refresh();
                         Ok::<_, String>(())
                     }).map_err(|error| error.to_string())??;
                     cx.background_executor().timer(Duration::from_millis(100)).await;
-                    cx.update_window(window.into(), |_, window, cx| press_enter(window, cx)).map_err(|error| error.to_string())?;
+                    cx.update_window(window.into(), |_, window, cx| { press_key(window, cx, "enter"); }).map_err(|error| error.to_string())?;
+                    cx.background_executor().timer(Duration::from_millis(100)).await;
+                    cx.update_window(window.into(), |_, window, cx| { press_key(window, cx, "down"); press_key(window, cx, "enter"); }).map_err(|error| error.to_string())?;
                     cx.background_executor().timer(Duration::from_millis(250)).await;
                     cx.update_window(window.into(), |_, _, cx| {
                         let sidebar = sidebar.read(cx);
