@@ -6,6 +6,7 @@ use crate::views::{
 };
 use gpui_component::{
     input::{Input, InputState},
+    menu::{PopupMenu, PopupMenuItem},
     text::{TextView, TextViewState},
     Disableable, Selectable,
 };
@@ -15,14 +16,18 @@ use grove_core::{
     describe_skill::ScopePreference,
 };
 use std::sync::Arc;
+#[path = "change_description_session.rs"]
+mod session;
 
 const DESCRIPTION_WIDTH: f32 = 700.;
+// The persistent side toolbar has three shared square controls and two gaps.
+const READER_TOOLBAR_INSET: f32 = CHROME_CONTROL_H * 3. + SPACE_LG * 2. + SPACE_20 * 2.;
 const FRESHNESS_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct Key {
+pub(super) struct Key {
     owner: String,
-    path: String,
+    pub(super) path: String,
     scope: String,
 }
 #[derive(Default)]
@@ -33,17 +38,32 @@ pub(super) struct Descriptions {
     revision: u64,
     focus: Option<FocusHandle>,
     source: Option<FocusHandle>,
+    scope_focus: Option<FocusHandle>,
+    scope_menu: Option<Entity<PopupMenu>>,
+    scope_subscription: Option<gpui::Subscription>,
+    scope_menu_owner: Option<(String, String)>,
+    scope_position: gpui::Point<gpui::Pixels>,
+    scope_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     return_focus: Option<FocusHandle>,
     open_source: Option<FocusHandle>,
     focus_pending: bool,
+    sessions: HashMap<SessionId, gpui::Subscription>,
+    hydrated: HashSet<(SessionId, String)>,
+    linked: HashMap<SessionId, Key>,
+    #[cfg(test)]
+    store_root: Option<std::path::PathBuf>,
 }
 #[derive(Default)]
 struct Entry {
     scope: Option<Scope>,
+    session: Option<SessionId>,
+    session_key: Option<String>,
+    pending: Option<session::Pending>,
     result: Option<Arc<Description>>,
     run: u64,
     cancel: Option<Arc<CommitControl>>,
     publishing: bool,
+    finalizing: bool,
     resolving: bool,
     error: Option<String>,
     freshness: Option<Result<bool, String>>,
@@ -100,6 +120,24 @@ fn action(
                 .size(rpx(ICON_SM)),
         )
 }
+fn description_source_label(scope: &Scope) -> String {
+    match scope {
+        Scope::Local => "Local changes".into(),
+        Scope::PullRequest { url } => format!(
+            "PR #{}",
+            url.trim_end_matches('/').rsplit('/').next().unwrap_or("")
+        ),
+    }
+}
+fn description_source_text(label: String) -> gpui::Div {
+    div()
+        .debug_selector(|| "describe-source-context".into())
+        .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
+        .pr(rpx(SPACE_2XL))
+        .text_size(rpx(TEXT_MICRO))
+        .text_color(c::FG_DIM())
+        .child(label)
+}
 fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
     TextView::new(view)
         .markdown_extensions(super::super::mermaid::extensions())
@@ -107,22 +145,18 @@ fn text_view(view: &Entity<TextViewState>, window: &Window) -> TextView {
         .selectable(true)
 }
 impl Sidebar {
-    pub(super) fn dismiss_description(&mut self) {
-        self.descriptions.open = None;
-        if self.active_change_reader == Some("describe") {
-            self.active_change_reader = None;
-        }
-    }
     pub(super) fn description_is_open(&self, cx: &App) -> bool {
-        if self.active_change_reader != Some("describe") {
-            return false;
-        }
         let targets = self.checkout_targets(cx);
         let selected = super::checkout_panel::selected_checkout(
             &targets,
             self.checkout_panel.chosen_root.as_deref(),
         );
         self.descriptions.open.as_ref().is_some_and(|key| {
+            if key.owner == owner(&self.selection)
+                && self.linked_description_key().as_ref() == Some(key)
+            {
+                return true;
+            }
             key.owner == owner(&self.selection)
                 && selected.as_ref().is_some_and(|(_, path)| path == &key.path)
         })
@@ -154,11 +188,15 @@ impl Sidebar {
             }
         }
         self.descriptions.open = None;
-        if self.active_change_reader == Some("describe") {
-            self.active_change_reader = None;
-        }
         if let Some(source) = self.descriptions.return_focus.take() {
             source.focus(window, cx);
+        } else if let Some(Selection::Session(id)) = self.selection {
+            if let Some(view) = self.codex_views.get(&id) {
+                view.focus_handle(cx).focus(window, cx);
+            } else {
+                self.focus.focus(window, cx);
+                self.pending_canvas_focus = Some(id);
+            }
         }
         cx.notify();
     }
@@ -168,7 +206,6 @@ impl Sidebar {
         source: FocusHandle,
         cx: &mut Context<Self>,
     ) {
-        self.hide_questions();
         let targets = self.checkout_targets(cx);
         let Some((_, path)) = super::checkout_panel::selected_checkout(
             &targets,
@@ -185,6 +222,16 @@ impl Sidebar {
             .scopes
             .get(&(owner(&self.selection), path.clone()))
             .cloned();
+        if let ScopePreference::PullRequestUrl(url) = &preference {
+            // An explicit URL does not replace Checkout's local/attached-PR choice.
+            self.start_description_conversation(
+                path,
+                Scope::PullRequest { url: url.clone() },
+                Some(source),
+                cx,
+            );
+            return;
+        }
         if preference == ScopePreference::Local
             || (preference == ScopePreference::Current
                 && !matches!(selected_scope, Some(Scope::PullRequest { .. })))
@@ -192,7 +239,7 @@ impl Sidebar {
             self.descriptions
                 .scopes
                 .insert((owner(&self.selection), path.clone()), Scope::Local);
-            self.begin_description(path, Scope::Local, Some(source), cx);
+            self.start_description_conversation(path, Scope::Local, Some(source), cx);
             return;
         }
         // Resolve the attached PR independently of the visibility and cached loading state of Checkout.
@@ -209,8 +256,6 @@ impl Sidebar {
         entry.resolving = true;
         entry.error = None;
         self.descriptions.open = Some(resolving_key.clone());
-
-        self.active_change_reader = Some("describe");
         self.descriptions.return_focus = Some(source.clone());
         self.descriptions.focus_pending = true;
         cx.notify();
@@ -225,7 +270,7 @@ impl Sidebar {
                 Ok(pr)
             }).await;
             let _ = this.update(cx, |this, cx| {
-                let active = this.active_change_reader == Some("describe") && this.descriptions.open.as_ref() == Some(&resolving_key) && this.descriptions.entries.get(&resolving_key).is_some_and(|entry| entry.run == run && entry.resolving);
+                let active = this.descriptions.open.as_ref() == Some(&resolving_key) && this.descriptions.entries.get(&resolving_key).is_some_and(|entry| entry.run == run && entry.resolving);
                 if !active { return; }
                 let targets = this.checkout_targets(cx);
                 let still_selected = owner(&this.selection) == resolving_key.owner && super::checkout_panel::selected_checkout(&targets, this.checkout_panel.chosen_root.as_deref()).is_some_and(|(_, current)| current == path);
@@ -238,7 +283,7 @@ impl Sidebar {
                 if let Some(entry) = this.descriptions.entries.get_mut(&resolving_key) { entry.resolving = false; if let Err(error) = &scope { entry.error = Some(error.clone()); } }
                 if let Ok(scope) = scope {
                     this.descriptions.scopes.insert((resolving_key.owner.clone(), path.clone()), scope.clone());
-                    this.begin_description(path, scope, Some(source), cx);
+                    this.start_description_conversation(path, scope, Some(source), cx);
                 }
                 cx.notify();
             });
@@ -258,129 +303,54 @@ impl Sidebar {
         source: Option<FocusHandle>,
         cx: &mut Context<Self>,
     ) {
-        self.hide_questions();
-        let provider = match self.checkout_commit_provider(cx) {
-            Ok(p) => p,
-            Err(error) => {
-                self.description_error(error, cx);
-                return;
-            }
-        };
+        // Regeneration stays in the owning description conversation. Every new
+        // command/Checkout request starts an independent session and links it to
+        // the same canonical source file.
         let key = key(&self.selection, &path, &scope);
         if self
             .descriptions
             .entries
             .get(&key)
-            .is_some_and(|entry| entry.cancel.is_some() || entry.publishing)
+            .is_some_and(|entry| entry.session.is_some())
         {
-            self.descriptions.open = Some(key);
-
-            self.active_change_reader = Some("describe");
-            self.descriptions.focus_pending = true;
-            if let Some(source) = source {
-                self.descriptions.return_focus = Some(source);
-            }
-            cx.notify();
-            return;
+            self.run_session_description(key, cx);
+        } else {
+            self.start_description_conversation(path, scope, source, cx);
         }
-        self.descriptions.revision = self.descriptions.revision.wrapping_add(1);
-        let run = self.descriptions.revision;
-        let cancel = Arc::new(CommitControl::default());
-        let entry = self.descriptions.entries.entry(key.clone()).or_default();
-        entry.scope = Some(scope.clone());
-        entry.cancel = Some(cancel.clone());
-        entry.run = run;
-        entry.error = None;
-        entry.receipt = None;
-        entry.preview = None;
-        if let Some(source) = source {
-            self.descriptions.return_focus = Some(source);
-        }
-        self.descriptions.open = Some(key.clone());
-
-        self.active_change_reader = Some("describe");
-        self.descriptions.focus_pending = true;
-        self.descriptions
-            .focus
-            .get_or_insert_with(|| cx.focus_handle());
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    domain::generate(
-                        std::path::Path::new(&path),
-                        &scope,
-                        provider,
-                        &cancel,
-                        |_| {},
-                    )
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                let Some(entry) = this
-                    .descriptions
-                    .entries
-                    .get_mut(&key)
-                    .filter(|e| e.run == run)
-                else {
-                    return;
-                };
-                entry.cancel = None;
-                match result {
-                    Ok(description) => {
-                        let summary = format!(
-                            "# {}\n\n{}\n\n## Description\n\n{}",
-                            description.title,
-                            description.types.join(" · "),
-                            description
-                                .summary
-                                .iter()
-                                .map(|s| format!("- {s}"))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        );
-                        entry.text = Some(cx.new(|cx| TextViewState::markdown(&summary, cx)));
-                        entry.file_text.clear();
-                        for file in &description.files {
-                            let source = format!(
-                                "**{}**\n\n{}",
-                                file.title,
-                                file.summary
-                                    .iter()
-                                    .map(|s| format!("- {s}"))
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            );
-                            entry.file_text.insert(
-                                file.path.clone(),
-                                cx.new(|cx| TextViewState::markdown(&source, cx)),
-                            );
-                        }
-                        entry.diagram = description.diagram.as_ref().map(|diagram| {
-                            cx.new(|cx| {
-                                TextViewState::markdown(&format!("```mermaid\n{diagram}\n```"), cx)
-                            })
-                        });
-                        entry.result = Some(Arc::new(description));
-                        entry.freshness = None;
-                        entry.checked_at = None;
-                        entry.checking = false;
-                        entry.expanded.clear();
-                        entry.scroll = ScrollHandle::default();
-                        entry.diff = None;
-                        entry.receipt = Some("Description ready".into());
-                    }
-                    Err(error) => entry.error = Some(error),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
+
     fn cancel_description(&mut self, key: &Key, cx: &mut Context<Self>) {
+        let retired = self
+            .descriptions
+            .entries
+            .get(key)
+            .filter(|entry| !entry.finalizing)
+            .and_then(|entry| {
+                Some((
+                    entry.session_key.clone()?,
+                    entry.pending.as_ref()?.generation.clone(),
+                ))
+            });
+        if let Some((session_key, generation)) = retired {
+            self.retire_description_request(session_key, generation, cx);
+        }
         if let Some(entry) = self.descriptions.entries.get_mut(key) {
+            if entry.finalizing {
+                return;
+            }
             if let Some(cancel) = &entry.cancel {
                 cancel.cancel();
+            }
+            if let Some(id) = entry.session {
+                if let Some(session) = self.runtime.read(cx).registry.read(cx).codex(id).cloned() {
+                    session.update(cx, |session, cx| {
+                        if session.state.turn_id.is_some() {
+                            session.send(grove_core::codex::Action::Interrupt, cx);
+                        } else {
+                            cx.notify();
+                        }
+                    });
+                }
             }
             // Do not report cancellation until the child process has acknowledged exit.
         }
@@ -440,6 +410,88 @@ impl Sidebar {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.restore_session_description(cx);
+        let menu_owner = (owner(&self.selection), path.to_owned());
+        if self.descriptions.scope_menu.is_some()
+            && (self.descriptions.scope_menu_owner.as_ref() != Some(&menu_owner)
+                || !local_changes
+                || pr.is_none()
+                || self.linked_description_key().is_some())
+        {
+            self.descriptions.scope_menu = None;
+            self.descriptions.scope_subscription = None;
+            self.descriptions.scope_menu_owner = None;
+        }
+        if let Some(target) = self.linked_description_key() {
+            self.check_description(&target, cx);
+            let entry = self.descriptions.entries.get(&target);
+            let busy = entry.is_some_and(|e| e.cancel.is_some());
+            let stale = entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false))));
+            let unavailable =
+                entry.is_some_and(|e| matches!(e.freshness, Some(Err(_))) || e.error.is_some());
+            let saved = entry.is_some_and(|e| e.result.is_some());
+            let source = entry
+                .and_then(|e| e.scope.as_ref())
+                .map(description_source_label);
+            let source_focus = self
+                .descriptions
+                .open_source
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
+            let return_focus = source_focus.clone();
+            return div()
+                .id("describe-controls")
+                .debug_selector(|| "describe-controls".into())
+                .flex()
+                .flex_col()
+                .gap(rpx(SPACE_SM))
+                .py(rpx(SPACE_LG))
+                .child(
+                    super::checkout_panel::checkout_loading_row(
+                        "describe-open",
+                        if saved {
+                            "View description"
+                        } else {
+                            "Describe changes"
+                        },
+                        "diff",
+                        false,
+                        window,
+                        cx,
+                    )
+                    .with_focus_handle(source_focus)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.reload_description_result(&target, cx);
+                        this.descriptions.return_focus = Some(return_focus.clone());
+                        this.descriptions.open = Some(target.clone());
+                        this.descriptions.focus_pending = true;
+                        cx.notify();
+                    })),
+                )
+                .when_some(source, |column, source| {
+                    column.child(description_source_text(source))
+                })
+                .when(busy || stale || unavailable, |column| {
+                    column.child(div().px(rpx(SPACE_2XL)).child(status::label(
+                        "describe-panel-state",
+                        if busy {
+                            StatusKind::Working
+                        } else {
+                            StatusKind::Warning
+                        },
+                        if busy {
+                            "Generating…"
+                        } else if stale {
+                            "Out of date"
+                        } else {
+                            "Needs attention"
+                        },
+                        ICON_SM,
+                        cx,
+                    )))
+                })
+                .into_any_element();
+        }
         if !local_changes && pr.is_none() {
             return div().into_any_element();
         }
@@ -455,6 +507,9 @@ impl Sidebar {
             })
             .clone();
         let scope = match (&scope, &pr) {
+            (_, Some(pr)) if !local_changes => Scope::PullRequest {
+                url: pr.url.clone(),
+            },
             (Scope::PullRequest { .. }, Some(pr)) => Scope::PullRequest {
                 url: pr.url.clone(),
             },
@@ -474,49 +529,97 @@ impl Sidebar {
             .flex()
             .flex_col()
             .gap(rpx(SPACE_SM))
-            .px(rpx(SPACE_2XL))
             .py(rpx(SPACE_LG));
-        column = column.child(
-            div()
-                .text_size(rpx(TEXT_SMALL))
-                .text_color(c::FG_DIM())
-                .child("Describe"),
-        );
-        let mut choices = div().flex().flex_wrap().gap(rpx(SPACE_SM));
-        for (label, candidate, enabled, glyph) in [
-            (
-                "Local changes".to_string(),
-                Scope::Local,
-                local_changes,
-                "diff",
-            ),
-            (
-                pr.as_ref()
-                    .map_or("Attached PR".into(), |p| format!("PR #{}", p.number)),
-                pr.as_ref()
-                    .map_or(Scope::Local, |p| Scope::PullRequest { url: p.url.clone() }),
-                pr.is_some(),
-                "git-pull-request",
-            ),
-        ] {
-            if !enabled {
-                continue;
-            }
-            let selected = candidate == scope;
+        // A sole source is context, not a choice. Only offer a picker when
+        // local edits and the attached PR are both available.
+        if let Some(pr) = pr.as_ref().filter(|_| local_changes) {
+            let selected = scope.clone();
             let target = owner_key.clone();
-            choices = choices.child(
-                action(format!("describe-scope-{glyph}"), label, glyph, window, cx)
-                    .selected(selected)
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.descriptions
-                            .scopes
-                            .insert(target.clone(), candidate.clone());
-                        cx.notify();
-                    })),
+            let pr_scope = Scope::PullRequest {
+                url: pr.url.clone(),
+            };
+            let focus = self
+                .descriptions
+                .scope_focus
+                .get_or_insert_with(|| cx.focus_handle())
+                .clone();
+            let keyboard_target = target.clone();
+            let keyboard_selected = selected.clone();
+            let keyboard_pr = pr_scope.clone();
+            let keyboard_focus = focus.clone();
+            let bounds = self.descriptions.scope_bounds.clone();
+            column = column.child(
+                div()
+                    .mx(rpx(SPACE_2XL))
+                    .on_prepaint(move |value, _, _| bounds.set(value))
+                    .child(
+                        action(
+                            "describe-source",
+                            description_source_label(&scope),
+                            "chev-down",
+                            window,
+                            cx,
+                        )
+                        .justify_start()
+                        .with_focus_handle(focus)
+                        .selected(
+                            self.descriptions.scope_menu.is_some()
+                                && self.descriptions.scope_menu_owner.as_ref() == Some(&owner_key),
+                        )
+                        .disabled(busy)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                let position = this.descriptions.scope_bounds.get().bottom_left();
+                                this.open_description_sources(
+                                    target.clone(),
+                                    selected.clone(),
+                                    pr_scope.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
+                    )
+                    .on_key_down(cx.listener(
+                        move |this, event: &gpui::KeyDownEvent, window, cx| {
+                            if !busy
+                                && keyboard_focus.is_focused(window)
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            {
+                                let position = this.descriptions.scope_bounds.get().bottom_left();
+                                this.open_description_sources(
+                                    keyboard_target.clone(),
+                                    keyboard_selected.clone(),
+                                    keyboard_pr.clone(),
+                                    position,
+                                    window,
+                                    cx,
+                                );
+                                window.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        },
+                    )),
             );
+            if self.descriptions.scope_menu_owner.as_ref() == Some(&owner_key) && !busy {
+                if let Some(menu) = self.descriptions.scope_menu.clone() {
+                    column = column.child(gpui::deferred(
+                        gpui::anchored()
+                            .position_mode(gpui::AnchoredPositionMode::Window)
+                            .position(self.descriptions.scope_position)
+                            .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
+                            .child(menu),
+                    ));
+                }
+            } else {
+                self.descriptions.scope_menu = None;
+                self.descriptions.scope_subscription = None;
+                self.descriptions.scope_menu_owner = None;
+            }
+        } else if exists || matches!(scope, Scope::PullRequest { .. }) {
+            column = column.child(description_source_text(description_source_label(&scope)));
         }
-        column = column.child(choices);
         let focus = self
             .descriptions
             .source
@@ -524,35 +627,34 @@ impl Sidebar {
             .clone();
         let target = path.to_owned();
         let chosen = scope.clone();
-        column = column.child(
-            super::checkout_panel::checkout_loading_row(
-                "describe-changes",
-                if entry.is_some_and(|e| e.publishing) {
-                    "Updating description…"
-                } else if busy {
-                    "Describing changes…"
-                } else if exists {
-                    "Regenerate description"
-                } else {
-                    "Describe changes"
-                },
-                "diff",
-                busy,
-                window,
-                cx,
-            )
-            .px(rpx(SPACE_LG))
-            .with_focus_handle(focus)
-            .disabled(busy || (matches!(scope, Scope::Local) && !local_changes))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.begin_description(
-                    target.clone(),
-                    chosen.clone(),
-                    this.descriptions.source.clone(),
+        if !exists {
+            column = column.child(
+                super::checkout_panel::checkout_loading_row(
+                    "describe-changes",
+                    if entry.is_some_and(|e| e.publishing) {
+                        "Updating description…"
+                    } else if busy {
+                        "Describing changes…"
+                    } else {
+                        "Describe changes"
+                    },
+                    "diff",
+                    busy,
+                    window,
                     cx,
-                );
-            })),
-        );
+                )
+                .with_focus_handle(focus)
+                .disabled(busy || (matches!(scope, Scope::Local) && !local_changes))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.begin_description(
+                        target.clone(),
+                        chosen.clone(),
+                        this.descriptions.source.clone(),
+                        cx,
+                    );
+                })),
+            );
+        }
         if exists {
             let open_focus = self
                 .descriptions
@@ -562,22 +664,37 @@ impl Sidebar {
             let return_focus = open_focus.clone();
             let target = key.clone();
             column = column.child(
-                action("describe-open", "Open description", "eye", window, cx)
-                    .with_focus_handle(open_focus)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.descriptions.return_focus = Some(return_focus.clone());
-                        this.descriptions.open = Some(target.clone());
-
-                        this.active_change_reader = Some("describe");
-                        this.descriptions.focus_pending = true;
-                        cx.notify();
-                    })),
+                super::checkout_panel::checkout_loading_row(
+                    "describe-open",
+                    "View description",
+                    "diff",
+                    false,
+                    window,
+                    cx,
+                )
+                .with_focus_handle(open_focus)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.descriptions.return_focus = Some(return_focus.clone());
+                    this.descriptions.open = Some(target.clone());
+                    this.descriptions.focus_pending = true;
+                    cx.notify();
+                })),
             );
+        }
+        if exists && entry.is_some_and(|e| matches!(e.freshness, Some(Ok(false)))) {
+            column = column.child(div().px(rpx(SPACE_2XL)).child(status::label(
+                "describe-panel-state",
+                StatusKind::Warning,
+                "Out of date",
+                ICON_SM,
+                cx,
+            )));
         }
         if busy {
             let target = key.clone();
             column = column.child(
                 action("describe-cancel", "Cancel generation", "close", window, cx)
+                    .mx(rpx(SPACE_2XL))
                     .disabled(entry.is_some_and(|e| e.publishing))
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.cancel_description(&target, cx)),
@@ -589,13 +706,73 @@ impl Sidebar {
                 div()
                     .text_size(rpx(TEXT_MICRO))
                     .text_color(c::FG_DIM())
+                    .pl(rpx(SPACE_2XL + ICON_LG + SPACE_SM))
+                    .pr(rpx(SPACE_2XL))
                     .child(if matches!(scope, Scope::Local) {
-                        "Staged + unstaged + untracked · compared with HEAD"
+                        "Uncommitted changes, including new files."
                     } else {
-                        "Attached PR · compared with its base"
+                        "Pull request changes compared with its base."
                     }),
             )
             .into_any_element()
+    }
+    fn open_description_sources(
+        &mut self,
+        target: (String, String),
+        selected: Scope,
+        pr_scope: Scope,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let source = target.clone();
+        let Some(focus) = self.descriptions.scope_focus.clone() else {
+            return;
+        };
+        let menu = PopupMenu::build(window, cx, move |menu, window, _| {
+            let mut menu =
+                crate::views::components::dropdown_menu(menu, window).action_context(focus);
+            for candidate in [Scope::Local, pr_scope.clone()] {
+                let owner = owner.clone();
+                let target = target.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(description_source_label(&candidate))
+                        .icon(gpui_component::Icon::default().path(match candidate {
+                            Scope::Local => "icons/diff.svg",
+                            Scope::PullRequest { .. } => "icons/git-pull-request.svg",
+                        }))
+                        .checked(candidate == selected)
+                        .on_click(move |_, _, cx| {
+                            let _ = owner.update(cx, |this, cx| {
+                                this.descriptions
+                                    .scopes
+                                    .insert(target.clone(), candidate.clone());
+                                cx.notify();
+                            });
+                        }),
+                );
+            }
+            menu
+        });
+        self.descriptions.scope_subscription = Some(cx.subscribe_in(
+            &menu,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| {
+                this.descriptions.scope_menu = None;
+                this.descriptions.scope_subscription = None;
+                this.descriptions.scope_menu_owner = None;
+                if let Some(focus) = &this.descriptions.scope_focus {
+                    focus.focus(window, cx);
+                }
+                cx.notify();
+            },
+        ));
+        self.descriptions.scope_menu_owner = Some(source);
+        self.descriptions.scope_position = position;
+        menu.focus_handle(cx).focus(window, cx);
+        self.descriptions.scope_menu = Some(menu);
+        cx.notify();
     }
     fn open_description_preview(&mut self, key: &Key, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.descriptions.entries.get_mut(key) else {
@@ -613,6 +790,9 @@ impl Sidebar {
         let Some(description) = &entry.result else {
             return;
         };
+        if std::path::Path::new(&description.snapshot.checkout) != std::path::Path::new(&key.path) {
+            return;
+        }
         let body = description.pr_body();
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -625,6 +805,7 @@ impl Sidebar {
         cx.notify();
     }
     fn publish_description(&mut self, key: &Key, cx: &mut Context<Self>) {
+        let store = self.description_store();
         let Some(entry) = self.descriptions.entries.get_mut(key) else {
             return;
         };
@@ -650,7 +831,8 @@ impl Sidebar {
             let path = key.path.clone();
             let result = cx
                 .background_spawn(async move {
-                    domain::publish(std::path::Path::new(&path), &description, &body)
+                    store?.publish_current(std::path::Path::new(&path), &description, &body)?;
+                    Ok::<_, String>(())
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -723,7 +905,14 @@ impl Sidebar {
             .items_center()
             .gap(rpx(SPACE_LG))
             .min_h(rpx(APPBAR_TOTAL_H))
-            .px(rpx(SPACE_3XL));
+            .px(rpx(SPACE_3XL))
+            .when(
+                self.checkout_panel.toggle_available
+                    && (self.checkout_panel.hidden
+                        || Self::logical_window_width(window)
+                            < super::checkout_panel::CHECKOUT_SIDE_VIEWPORT),
+                |header| header.pr(rpx(READER_TOOLBAR_INSET)),
+            );
         header = header.child(
             action(
                 "describe-back",
@@ -773,7 +962,11 @@ impl Sidebar {
             body = body.child(status::label(
                 "description-generating",
                 StatusKind::Working,
-                "Reading the diff and describing changes…",
+                if entry.finalizing {
+                    "Saving description…"
+                } else {
+                    "Reading the diff and describing changes…"
+                },
                 ICON_SM,
                 cx,
             ));
@@ -786,6 +979,7 @@ impl Sidebar {
                     window,
                     cx,
                 )
+                .disabled(entry.finalizing)
                 .on_click(cx.listener(move |this, _, _, cx| this.cancel_description(&target, cx))),
             );
         }
@@ -955,7 +1149,11 @@ impl Sidebar {
                     body = body.child(status::label(
                         "description-stale",
                         StatusKind::Warning,
-                        "Changes updated since this description. Regenerate before publishing.",
+                        if matches!(description.snapshot.scope, Scope::Local) {
+                            "Changes updated since this description. Regenerate to refresh."
+                        } else {
+                            "Changes updated since this description. Regenerate before publishing."
+                        },
                         ICON_SM,
                         cx,
                     ));
@@ -981,6 +1179,14 @@ impl Sidebar {
             }
             if let Some(text) = &entry.text {
                 body = body.child(text_view(text, window));
+            }
+            if !description.content.is_empty() {
+                body = body.child(
+                    TextView::markdown("description-custom-content", description.content.clone())
+                        .markdown_extensions(super::super::mermaid::extensions())
+                        .style(super::super::codex_view::markdown_style(window))
+                        .selectable(true),
+                );
             }
             body = body.child(
                 div()
@@ -1117,10 +1323,7 @@ impl Sidebar {
                                             patch
                                                 .lines()
                                                 .map(|line| {
-                                                    line.trim_start()
-                                                        .chars()
-                                                        .take_while(|c| *c == '`')
-                                                        .count()
+                                                    line.chars().take_while(|c| *c == '`').count()
                                                 })
                                                 .max()
                                                 .unwrap_or(0)
@@ -1207,7 +1410,11 @@ impl Sidebar {
                         window,
                         cx,
                     )
-                    .disabled(busy || publishing || !matches!(entry.freshness, Some(Ok(true))))
+                    .disabled(
+                        busy || publishing
+                            || !matches!(entry.freshness, Some(Ok(true)))
+                            || description.snapshot.checkout != key.path,
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_description_preview(&target, window, cx);
                     })),
@@ -1261,3 +1468,7 @@ impl Sidebar {
 #[cfg(test)]
 #[path = "change_description_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "change_description_live_tests.rs"]
+mod live_tests;
