@@ -12,7 +12,7 @@ use gpui::{
 };
 use gpui_component::{
     text::{markdown_ast, MarkdownExtensions, MarkdownNode, MarkdownParseContext, TextView},
-    Selectable,
+    Disableable, Selectable,
 };
 use std::{
     cell::Cell,
@@ -1481,6 +1481,52 @@ impl Render for HtmlArtifact {
                     .on_click(cx.listener(Self::toggle_expand_click)),
             );
         }
+        let browser_action = recovery_action(
+            "html-open-browser",
+            "Open in browser",
+            "external-link",
+            window,
+            cx,
+        )
+        .disabled(self.loading_file)
+        .on_click(cx.listener(|this, _, _, cx| {
+            let target = if let Some(path) = &this.path {
+                Ok(path.clone())
+            } else {
+                // Keep exported documents available after the browser handoff.
+                (|| -> Result<PathBuf, String> {
+                    use std::io::Write;
+                    let mut file = tempfile::Builder::new()
+                        .prefix("grove-document-")
+                        .suffix(".html")
+                        .tempfile()
+                        .map_err(|e| e.to_string())?;
+                    file.write_all(this.version.active.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                    let (_, path) = file.keep().map_err(|e| e.to_string())?;
+                    Ok(path)
+                })()
+            };
+            this.recovery_error = None;
+            cx.spawn(async move |this, cx| {
+                let result = match target {
+                    Ok(path) => match gpui::http_client::Url::from_file_path(path) {
+                        Ok(url) => {
+                            crate::platform::inline_html::open_in_browser(url.to_string()).await
+                        }
+                        Err(_) => Err("Invalid document path".to_owned()),
+                    },
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    let _ = this.update(cx, |this, cx| {
+                        this.recovery_error = Some(format!("Couldn’t open in browser: {error}"));
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+        }));
         let version_notice = self.version.pending.is_some().then(|| div().p(rpx(SPACE_LG)).text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM()).child("A new version is available. Load new version resets this document’s edits, tab and scroll."));
         let mut body = div()
             .id("html-document-body")
@@ -1560,6 +1606,7 @@ impl Render for HtmlArtifact {
                     // Measured CSS pixels are logical pixels; the cap follows UI zoom.
                     let cap = rpx(REPORT_MAX_HEIGHT).to_pixels(window.rem_size());
                     gpui::px(self.report_height).min(cap)
+                        + rpx(CONTROL_H + SPACE_LG).to_pixels(window.rem_size())
                 } else {
                     rpx(INLINE_HEIGHT).to_pixels(window.rem_size())
                 })
@@ -1583,6 +1630,21 @@ impl Render for HtmlArtifact {
                     .when_some(version_notice, gpui::ParentElement::child)
             })
             .child(body)
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .p(rpx(SPACE_SM))
+                    .child(browser_action),
+            )
+            .when_some(self.recovery_error.clone(), |card, error| {
+                card.child(
+                    div()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(c::FG_DIM())
+                        .child(error),
+                )
+            })
             .into_any_element()
     }
 }

@@ -171,6 +171,7 @@ copyright = "Copyright (c) 2026 Grove"
 deb_depends = ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libx11-6", "libxext6", "xwayland"]
 
 [dependencies]
+tempfile.workspace = true
 grove-core = { path = "crates/grove-core" }
 grove-terminal = { path = "crates/grove-terminal" }
 # `grove_terminal::pty::spawn` takes a `portable_pty::CommandBuilder`, which

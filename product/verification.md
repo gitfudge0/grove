@@ -607,6 +607,12 @@ macOS and Windows remain untested. Artifacts and logs are under
 `.grove-artifacts/error-disclosure/`. Expand/collapse is immediate input feedback,
 matching existing transcript work/tool disclosures.
 
+HTML browser action: Linux `cargo check` and repository artifact policy passed.
+The persistent inline/expanded action and fenced-document export still need native
+visual and keyboard checks (normal/narrow widths, themes and zoom), browser-launch
+interaction checks, and live Codex and Claude transcript checks. Neither provider
+was exercised live for this change; macOS and Windows remain untested.
+
 ## Contextual plan decisions and finalization (2026-11-06)
 
 The plan reader now places decisions beside Markdown sections, routes custom
