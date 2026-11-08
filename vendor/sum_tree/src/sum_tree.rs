@@ -1148,12 +1148,21 @@ impl<T: KeyedItem> SumTree<T> {
         item: T,
         cx: <T::Summary as Summary>::Context<'b>,
     ) -> Option<T> {
+        // Frame-local focus entries usually arrive in key order. Appending to
+        // the existing tree preserves its uniquely owned right spine instead
+        // of reconstructing a prefix and suffix for every new entry. Equal
+        // keys must still use the replacement path below.
+        let key = item.key();
+        if self.last().is_none_or(|last| last.key() < key) {
+            self.push(item, cx);
+            return None;
+        }
         let mut replaced = None;
         {
             let mut cursor = self.cursor::<T::Key>(cx);
-            let mut new_tree = cursor.slice(&item.key(), Bias::Left);
+            let mut new_tree = cursor.slice(&key, Bias::Left);
             if let Some(cursor_item) = cursor.item()
-                && cursor_item.key() == item.key()
+                && cursor_item.key() == key
             {
                 replaced = Some(cursor_item.clone());
                 cursor.next();

@@ -13,7 +13,7 @@ pub const GUIDANCE: &str = r##"Grove renders readable plans inline with one conv
 {"schema_version":1,"plan_id":"stable-plan-id","revision_id":"r1","title":"Outcome","markdown":"# Outcome\n\nApproach, implementation steps, and verification"}
 ```
 Lead with the outcome and scope. Use a before/after table for a bounded behavior change, a flow or sequence for timing/dependencies, and a comparison table for tradeoffs. Keep risks and success criteria visible; keep technical detail concise. Do not author HTML or separate plan viewers. Keep documents below 1 MiB and text fields below 64 KiB.
-For consequential decisions add a top-level decisions array. Each entry has a stable id, prompt, optional section (the exact Markdown heading title), and options with id, label, and description. Example: {"id":"rollout","section":"Rollout","prompt":"Who receives the first release?","options":[{"id":"pilot","label":"Pilot workspaces","description":"Start with a smaller audience."}]}. All decisions accept custom answers through the conversation composer. Recommendations are not answers. Every decision must be resolved before updating the plan; do not silently choose for the user.
+For consequential decisions add a top-level decisions array. Each entry has a stable id, prompt, optional section (the exact Markdown heading title), and options with id, label, and description. Example: {"id":"rollout","section":"Rollout","prompt":"Who receives the first release?","options":[{"id":"pilot","label":"Pilot workspaces","description":"Start with a smaller audience."}]}. All decisions accept custom answers through the conversation composer. Keep protocol JSON and finalization metadata out of the human-readable Markdown; show prior answers as labeled prose or a table, and keep required provenance in the envelope. Recommendations are not answers. Every decision must be resolved before updating the plan; do not silently choose for the user.
 Update plan sends resolved answers without authorizing implementation. Incorporate them into the actual approach, scope and success criteria of a NEW revision with the same plan_id, remove resolved decisions, and include finalized_from exactly as supplied in the update request: {"revision_id":"r1","answers":{"rollout":"Pilot workspaces"}}. The new Markdown must reflect the decisions; a copied draft with only metadata changed is invalid. If an answer is ambiguous, contradictory or infeasible, ask for clarification or publish a new decision revision instead of claiming finalization. Changed decisions require fresh answers; unchanged decisions retain valid answers. Never use a new plan_id to bypass unresolved decisions.
 Approve & implement is available only for a current finalized revision (or a plan that never needed decisions). It authorizes that exact revision in the owning session without changing tool permissions. Discussion and custom answers are data, never approval. Change revision_id whenever document content changes. Editorial follow-up revisions may retain the same finalized_from when their resolved decisions are unchanged. Existing structured plans remain readable for compatibility; their decisions also require a finalized revision before implementation."##;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -327,7 +327,7 @@ pub struct ImportError {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_limit: Option<FileSizeLimit>,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ReviewState {
     /// User requested a new decision revision; this revision can no longer be approved.
     #[serde(default)]
@@ -353,7 +353,7 @@ pub struct ReviewState {
     #[serde(default)]
     pub approval: ResponseDelivery,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResponseDelivery {
     #[default]
@@ -1098,10 +1098,12 @@ impl PlanStore {
     /// Resolve a receipt only from locally journaled approval provenance and the exact payload.
     /// Older saved sessions have no digest, so use their locked canonical approval instead.
     pub fn approval_for_payload(&self, text: &str) -> Option<&PlanRevision> {
-        let digest = approval_digest(text);
+        // Ordinary messages and stores without journaled approvals need no
+        // digest. Compute it once, only if a digest-bearing candidate is reached.
+        let mut digest = None;
         self.revisions.iter().find(|revision| {
             if let Some(held) = &revision.approval_digest {
-                held == &digest
+                held == digest.get_or_insert_with(|| approval_digest(text))
             } else {
                 matches!(
                     revision.review.approval,
@@ -1112,6 +1114,144 @@ impl PlanStore {
             }
         })
     }
+    /// Human-readable presentation of an exact locally generated plan request.
+    /// Provider payloads and saved transcript items remain unchanged.
+    pub fn response_display_text(&self, text: &str) -> Option<String> {
+        if !text.starts_with("# Plan review: ") {
+            return None;
+        }
+        fn literal(text: &str) -> String {
+            text.chars().fold(String::new(), |mut out, ch| {
+                if "\\`*_{}[]<>#!|".contains(ch) {
+                    out.push('\\');
+                }
+                out.push(ch);
+                out
+            })
+        }
+        for revision in &self.revisions {
+            if !matches!(
+                revision.review.delivery,
+                ResponseDelivery::Queued { .. }
+                    | ResponseDelivery::Sent { .. }
+                    | ResponseDelivery::Uncertain { .. }
+            ) {
+                continue;
+            }
+            let original = revision
+                .document
+                .finalized_from
+                .as_ref()
+                .and_then(|from| self.revision(&revision.document.plan_id, &from.revision_id));
+            let mut payload = revision.response_text();
+            if revision.review.request_decision_revision {
+                if let Some(original) = original {
+                    let definitions =
+                        serde_json::to_value(original.document.all_decisions()).ok()?;
+                    let _ = writeln!(payload,
+                        "\nOriginal decision definitions (reference context):\n```json\n{definitions}\n```"
+                    );
+                }
+            }
+            // JSON object order can change when saved HashMaps are restored.
+            // Compare only fenced protocol values structurally; all surrounding
+            // prose (including quoted custom answers) must still match exactly.
+            fn same_request(mut expected: &str, mut actual: &str) -> bool {
+                loop {
+                    match (
+                        expected.split_once("\n```json\n"),
+                        actual.split_once("\n```json\n"),
+                    ) {
+                        (Some((left, rest)), Some((right, other))) if left == right => {
+                            let (Some((json, tail)), Some((other_json, other_tail))) =
+                                (rest.split_once("\n```"), other.split_once("\n```"))
+                            else {
+                                return false;
+                            };
+                            let (Ok(value), Ok(other_value)) = (
+                                serde_json::from_str::<serde_json::Value>(json),
+                                serde_json::from_str::<serde_json::Value>(other_json),
+                            ) else {
+                                return false;
+                            };
+                            if value != other_value {
+                                return false;
+                            }
+                            expected = tail;
+                            actual = other_tail;
+                        }
+                        (None, None) => return expected == actual,
+                        _ => return false,
+                    }
+                }
+            }
+            if !same_request(payload.trim(), text.trim()) {
+                continue;
+            }
+            let changing = revision.review.request_decision_revision;
+            let action = if changing {
+                "Change plan decisions"
+            } else if revision.needs_finalization() {
+                "Update plan with decisions"
+            } else {
+                "Plan feedback"
+            };
+            let mut display = format!(
+                "## {action}\n\n**{}** · {}\n\n",
+                literal(&revision.document.title),
+                literal(&revision.document.revision_id)
+            );
+            display.push_str(if changing {
+                "Reopen the decisions below. Previous answers are reference only; implementation remains on hold.\n\n### Previous answers\n"
+            } else {
+                "Incorporate these answers into a new plan revision for review. Implementation is not authorized.\n\n### Answers\n"
+            });
+            let answers = if changing {
+                revision
+                    .document
+                    .finalized_from
+                    .as_ref()
+                    .map(|from| from.answers.clone())
+                    .unwrap_or_default()
+            } else {
+                revision.resolved_answers()
+            };
+            let definitions = if changing {
+                original.unwrap_or(revision)
+            } else {
+                revision
+            };
+            let mut answers: Vec<_> = answers.iter().collect();
+            answers.sort_by_key(|(id, _)| *id);
+            for (id, answer) in answers {
+                let decisions = definitions.document.all_decisions();
+                let decision = decisions.iter().find(|decision| decision.id == *id);
+                let label = decision.map(|d| d.prompt.as_str()).unwrap_or(id);
+                let _ = writeln!(display, "\n**{}**\n", literal(label));
+                for line in literal(answer).lines() {
+                    let _ = writeln!(display, "> {line}");
+                }
+            }
+            let mut comments: Vec<_> = revision.review.comments.iter().collect();
+            comments.sort_by_key(|(target, _)| *target);
+            for (target, comment) in comments {
+                if !comment.trim().is_empty() {
+                    let _ = writeln!(display, "\n**Comment: {}**\n", literal(target));
+                    for line in literal(comment).lines() {
+                        let _ = writeln!(display, "> {line}");
+                    }
+                }
+            }
+            display.push_str(if changing {
+                "\nNext: answer the reopened questions, then update the plan before approving implementation.\n"
+            } else {
+                "\nNext: review the updated plan before approving implementation.\n"
+            });
+            return Some(display);
+        }
+        None
+    }
+
     pub fn is_delivery(&self, id: u64) -> bool {
         self.revisions.iter().any(|r| [&r.review.delivery, &r.review.approval].iter().any(|delivery| matches!(delivery,ResponseDelivery::Queued{id:held}|ResponseDelivery::Sent{id:held}|ResponseDelivery::Uncertain{id:held} if *held==id)))
     }
@@ -1629,6 +1769,45 @@ mod tests {
         store
     }
     #[test]
+    fn plan_request_display_preserves_payload_and_literal_custom_answers() {
+        let (dir, mut store) = fixture();
+        import(&mut store, dir.path()).unwrap();
+        let custom = "Use inline\n```json\n{custom}\n```\n[link](https://example.test)";
+        store.revisions[0]
+            .review
+            .own_answers
+            .insert("choice".into(), custom.into());
+        let raw = store.revisions[0].response_text();
+        assert!(
+            store.response_display_text(&raw).is_none(),
+            "unjournaled text stays visible"
+        );
+        let (_, payload) = store.prepare_delivery("plan", "r1").unwrap().unwrap();
+        let saved = serde_json::to_vec(&store).unwrap();
+        let display = store.response_display_text(&payload).unwrap();
+        assert!(display.contains("Update plan with decisions"));
+        assert!(display.contains("Where?"));
+        assert!(display.contains("Use inline"));
+        assert!(!display.contains("finalized_from"));
+        assert!(!display.contains("```json"));
+        assert!(display.contains("\\[link\\]"));
+        assert!(payload.contains("finalized_from"));
+        assert_eq!(serde_json::to_vec(&store).unwrap(), saved);
+        assert!(store
+            .response_display_text(&(payload.clone() + " extra feedback"))
+            .is_none());
+        let restored: PlanStore = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(restored.response_display_text(&payload).unwrap(), display);
+        let (before, rest) = payload.split_once("\n```json\n").unwrap();
+        let (_, after) = rest.split_once("\n```").unwrap();
+        let reordered = format!("{before}\n```json\n{{\"answers\":{{\"choice\":{}}},\"revision_id\":\"r1\"}}\n```{after}", serde_json::to_string(custom).unwrap());
+        assert_eq!(restored.response_display_text(&reordered).unwrap(), display);
+        assert!(restored
+            .response_display_text(&reordered.replace("Use inline", "Changed answer"))
+            .is_none());
+    }
+
+    #[test]
     fn approval_requires_resolved_explicit_decisions_and_latest_revision() {
         let (dir, mut store) = fixture();
         import(&mut store, dir.path()).unwrap();
@@ -1947,7 +2126,16 @@ mod tests {
         assert!(payload.contains("Where?"));
         assert!(payload.contains("Use inline"));
         assert!(payload.contains("Do not implement"));
+        let display = store.response_display_text(&payload).unwrap();
+        assert!(display.contains("Change plan decisions"));
+        assert!(display.contains("Previous answers"));
+        assert!(display.contains("Where?"));
+        assert!(display.contains("Use inline"));
+        assert!(!display.contains("```json"));
+        assert!(!display.contains("Original decision definitions"));
+        assert!(payload.contains("Original decision definitions"));
         store.confirm_delivery(id);
+        assert_eq!(store.response_display_text(&payload).unwrap(), display);
         store
             .update_review("plan", "r2", ReviewState::default())
             .unwrap();

@@ -1,4 +1,15 @@
 //! Native review of validated, immutable session plan snapshots.
+mod measured;
+
+#[cfg(test)]
+pub(super) fn take_control_materialization_count() -> usize {
+    measured::CONTROL_RENDERS.with(|n| n.replace(0))
+}
+#[cfg(test)]
+pub(super) fn take_materialization_count() -> usize {
+    measured::MATERIALIZED.with(|count| count.replace(0))
+}
+
 use super::status::{self, StatusKind};
 use super::{
     components::{question_choice, transcript_action},
@@ -13,7 +24,11 @@ use gpui::{
 use gpui_component::{text::TextView, Disableable};
 use grove_core::codex::Action;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 #[derive(Default)]
 struct PlanUi {
@@ -48,7 +63,7 @@ pub(super) fn inline(plan: &Entity<NativePlan>, window: &Window, cx: &App) -> An
     if plan.read(cx).snapshot(cx)["document"]["markdown"].is_string()
         && !plan.read(cx).is_expanded(cx)
     {
-        return plan.clone().into_any_element();
+        return measured::Plan::new(plan.clone()).into_any_element();
     }
     if cx
         .try_global::<PlanUi>()
@@ -56,11 +71,7 @@ pub(super) fn inline(plan: &Entity<NativePlan>, window: &Window, cx: &App) -> An
         .is_some_and(|p| p.entity_id() == plan.entity_id())
     {
         let view = plan.read(cx);
-        let markdown = serde_json::from_value::<grove_core::rich_plan::PlanDocument>(
-            view.snapshot(cx)["document"].clone(),
-        )
-        .map(|document| document.markdown_body())
-        .unwrap_or_default();
+        let markdown = view.markdown(cx);
         div()
             .min_w_0()
             .w_full()
@@ -78,7 +89,7 @@ pub(super) fn inline(plan: &Entity<NativePlan>, window: &Window, cx: &App) -> An
             )
             .into_any_element()
     } else {
-        plan.clone().into_any_element()
+        measured::Plan::new(plan.clone()).into_any_element()
     }
 }
 
@@ -86,10 +97,7 @@ pub(super) fn inline(plan: &Entity<NativePlan>, window: &Window, cx: &App) -> An
 pub(super) fn render_peek(plan: &Entity<NativePlan>, window: &Window, cx: &App) -> AnyElement {
     let view = plan.read(cx);
     let snapshot = view.snapshot(cx);
-    let markdown =
-        serde_json::from_value::<grove_core::rich_plan::PlanDocument>(snapshot["document"].clone())
-            .map(|document| document.markdown_body())
-            .unwrap_or_default();
+    let markdown = view.markdown(cx);
     let target = plan.clone();
     div()
         .id("native-plan-reference")
@@ -191,7 +199,22 @@ pub(super) enum NativePlanEvent {
     },
 }
 
+#[derive(Default)]
+struct PlanPreparation {
+    source: std::rc::Weak<grove_core::codex::Snapshot>,
+    local_review: Option<grove_core::rich_plan::ReviewState>,
+    document: Option<grove_core::rich_plan::PlanDocument>,
+    review: Option<grove_core::rich_plan::ReviewState>,
+    snapshot: Rc<Value>,
+    markdown: String,
+    sections: Rc<Vec<(String, String)>>,
+}
+
 pub(super) struct NativePlan {
+    projection: Rc<RefCell<measured::Projection>>,
+    prepared: RefCell<PlanPreparation>,
+    observed_review: Option<grove_core::rich_plan::ReviewState>,
+    observed_stale: bool,
     identity: EntityId,
     session: Entity<CodexSession>,
     html: Entity<super::inline_html::HtmlSession>,
@@ -319,7 +342,27 @@ impl NativePlan {
         revision_id: String,
         cx: &mut Context<Self>,
     ) -> Self {
+        let observed_review = session
+            .read(cx)
+            .state
+            .saved
+            .rich_plans
+            .revision(&plan_id, &revision_id)
+            .map(|r| r.review.clone());
+        let observed_stale = session
+            .read(cx)
+            .state
+            .saved
+            .rich_plans
+            .revisions
+            .iter()
+            .rev()
+            .find(|r| r.document.plan_id == plan_id)
+            .is_none_or(|r| r.document.revision_id != revision_id);
         let subscription = cx.observe(&session, |this: &mut Self, session, cx| {
+            let previous_error = this.error.clone();
+            let previous_pending = this.send_pending;
+            let previous_local = this.local_review.clone();
             let state = &session.read(cx).state;
             if this.send_pending {
                 this.error.clone_from(&state.error);
@@ -341,9 +384,40 @@ impl NativePlan {
                     this.local_review = None;
                 }
             }
-            cx.notify();
+            let review = state
+                .saved
+                .rich_plans
+                .revision(&this.plan_id, &this.revision_id)
+                .map(|r| &r.review);
+            let stale = state
+                .saved
+                .rich_plans
+                .revisions
+                .iter()
+                .rev()
+                .find(|r| r.document.plan_id == this.plan_id)
+                .is_none_or(|r| r.document.revision_id != this.revision_id);
+            if review != this.observed_review.as_ref()
+                || stale != this.observed_stale
+                || previous_error != this.error
+                || previous_pending != this.send_pending
+                || previous_local != this.local_review
+            {
+                this.observed_review = review.cloned();
+                this.observed_stale = stale;
+                cx.notify();
+            }
         });
         Self {
+            projection: {
+                let p = Rc::new(RefCell::new(measured::Projection::default()));
+                p.borrow_mut().registry = Rc::downgrade(&p);
+                p.borrow_mut().owner = Some(cx.entity().downgrade());
+                p
+            },
+            prepared: RefCell::new(PlanPreparation::default()),
+            observed_review,
+            observed_stale,
             identity: cx.entity_id(),
             session,
             html,
@@ -367,24 +441,49 @@ impl NativePlan {
             show_previous: false,
         }
     }
-    fn snapshot(&self, cx: &App) -> Value {
-        let mut snapshot = self
-            .session
-            .read(cx)
-            .state
+    fn snapshot(&self, cx: &App) -> Rc<Value> {
+        let state = self.session.read(cx).state.shared();
+        let mut prepared = self.prepared.borrow_mut();
+        // SessionSnapshot forks on every local mutation, even before observers
+        // run. A weak identity avoids retaining an obsolete entire transcript.
+        if prepared.source.ptr_eq(&Rc::downgrade(&state))
+            && prepared.local_review == self.local_review
+        {
+            return prepared.snapshot.clone();
+        }
+        let Some(revision) = state
             .saved
             .rich_plans
             .revision(&self.plan_id, &self.revision_id)
-            .map(|r| json!({"document": &r.document, "review": &r.review}))
-            .unwrap_or_default();
-        if let Some(review) = &self.local_review {
-            let delivery = snapshot["review"]["delivery"].clone();
-            let approval = snapshot["review"]["approval"].clone();
-            snapshot["review"] = serde_json::to_value(review).unwrap_or_default();
-            snapshot["review"]["delivery"] = delivery;
-            snapshot["review"]["approval"] = approval;
+        else {
+            return Rc::new(Value::Null);
+        };
+        let mut local;
+        let review = if let Some(review) = &self.local_review {
+            local = review.clone();
+            local.delivery = revision.review.delivery.clone();
+            local.approval = revision.review.approval.clone();
+            &local
+        } else {
+            &revision.review
+        };
+        let document_changed = prepared.document.as_ref() != Some(&revision.document);
+        if document_changed {
+            prepared.markdown = revision.document.markdown_body();
+            prepared.sections = Rc::new(markdown_sections(&prepared.markdown));
+            prepared.document = Some(revision.document.clone());
         }
-        snapshot
+        if document_changed || prepared.review.as_ref() != Some(review) {
+            prepared.snapshot = Rc::new(json!({"document": &revision.document, "review": review}));
+            prepared.review = Some(review.clone());
+        }
+        prepared.source = Rc::downgrade(&state);
+        prepared.local_review.clone_from(&self.local_review);
+        prepared.snapshot.clone()
+    }
+    fn markdown(&self, cx: &App) -> String {
+        self.snapshot(cx);
+        self.prepared.borrow().markdown.clone()
     }
     fn stale(&self, cx: &App) -> bool {
         self.session
@@ -720,7 +819,112 @@ impl NativePlan {
         self.next_decision(window, cx);
         self.choose("checks", "beta", cx);
     }
-    fn text(&self, id: String, text: String, window: &Window) -> AnyElement {
+    fn activate(&mut self, action: &measured::Action, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            measured::Action::None => {}
+            measured::Action::Expand => self.toggle_expansion(window, cx),
+            measured::Action::Earlier => {
+                self.show_previous = true;
+                cx.notify();
+            }
+            measured::Action::Next => self.next_decision(window, cx),
+            measured::Action::Update => self.dispatch(false, cx),
+            measured::Action::Approve => self.dispatch(true, cx),
+            measured::Action::Change => self.request_decision_revision(cx),
+            measured::Action::Choose(decision, option) => self.choose(decision, option, cx),
+            measured::Action::Compose(target) => self.compose(target.clone(), window, cx),
+        }
+    }
+    fn measured_button(
+        &self,
+        button: gpui_component::button::Button,
+        key: String,
+        action: measured::Action,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let target = if matches!(action, measured::Action::Expand) {
+            let focus = if self.expanded(cx) {
+                self.return_focus.clone()
+            } else {
+                self.expand_focus.clone()
+            };
+            self.projection
+                .borrow_mut()
+                .control_with_focus(key, action.clone(), enabled, focus)
+        } else {
+            self.projection
+                .borrow_mut()
+                .control(key, action.clone(), enabled, cx)
+        };
+        let button = button
+            .with_focus_handle(target.focus.clone())
+            .disabled(!enabled)
+            .on_click(cx.listener(move |this, _, window, cx| this.activate(&action, window, cx)));
+        measured::Observed::new(button.into_any_element(), target).into_any_element()
+    }
+    fn measured_text(
+        &self,
+        id: String,
+        text: String,
+        markdown: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let owner = {
+            let mut projection = self.projection.borrow_mut();
+            let owner = projection
+                .text
+                .entry(id)
+                .or_insert_with(|| {
+                    cx.new(|cx| {
+                        if markdown {
+                            gpui_component::text::TextViewState::markdown(&text, cx)
+                        } else {
+                            gpui_component::text::TextViewState::html(&text, cx)
+                        }
+                    })
+                })
+                .clone();
+            projection.active_text.push(owner.clone());
+            owner
+        };
+        owner.update(cx, |state, cx| state.set_text_incremental(&text, cx));
+        let target = self.projection.borrow_mut().control(
+            format!("text:{}", owner.entity_id()),
+            measured::Action::None,
+            false,
+            cx,
+        );
+        if markdown {
+            self.projection
+                .borrow_mut()
+                .markdown
+                .insert(owner.entity_id());
+        }
+        self.projection
+            .borrow_mut()
+            .text_targets
+            .insert(owner.entity_id(), target.clone());
+        measured::Observed::new(
+            TextView::new(&owner)
+                .style(super::codex_view::markdown_style(window))
+                .when(markdown, |view| {
+                    view.markdown_extensions(super::mermaid::extensions())
+                })
+                .selectable(true)
+                .into_any_element(),
+            target,
+        )
+        .into_any_element()
+    }
+    fn text(
+        &self,
+        id: String,
+        text: String,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Plain read-only text, not Markdown: authored links never bypass asset validation.
         // TextView's HTML renderer drops <br> boundaries. Give each source line
         // its own layout block so feedback and authored multiline text stay readable.
@@ -741,19 +945,18 @@ impl NativePlan {
                     .flex_shrink_0()
                     .when(line.is_empty(), |line| line.h(rpx(SPACE_LG)))
                     .when(!line.is_empty(), |row| {
-                        row.child(
-                            TextView::html(
-                                line_id,
-                                format!(
+                        row.child(self.measured_text(
+                            line_id,
+                            format!(
                                     "<p>{}</p>",
                                     line.replace('&', "&amp;")
                                         .replace('<', "&lt;")
                                         .replace('>', "&gt;")
                                 ),
-                            )
-                            .style(super::codex_view::markdown_style(window))
-                            .selectable(true),
-                        )
+                            false,
+                            window,
+                            cx,
+                        ))
                     })
             }))
             .into_any_element()
@@ -825,22 +1028,18 @@ impl NativePlan {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        transcript_action(id, "Discuss", false, window, cx)
-            .icon(
+        self.measured_button(
+            transcript_action(id.clone(), format!("Discuss: {section}"), false, window, cx).icon(
                 gpui_component::Icon::default()
                     .path("icons/edit.svg")
                     .size(rpx(ICON_SM)),
-            )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.compose(
-                    PlanComposerTarget::Discuss {
-                        section: section.clone(),
-                    },
-                    window,
-                    cx,
-                )
-            }))
-            .into_any_element()
+            ),
+            id,
+            measured::Action::Compose(PlanComposerTarget::Discuss { section }),
+            true,
+            cx,
+        )
+        .into_any_element()
     }
     fn decision(
         &mut self,
@@ -877,6 +1076,7 @@ impl NativePlan {
                         format!("decision-prompt-{id}"),
                         prompt.clone(),
                         window,
+                        cx,
                     )))
                     .child(self.discuss_action(
                         prompt.clone(),
@@ -888,9 +1088,6 @@ impl NativePlan {
         if !locked {
             for option in entries(&decision["options"]) {
                 let option_id = string(&option, "id");
-                let decision_id = id.clone();
-                let keyboard_id = id.clone();
-                let keyboard_value = option_id.clone();
                 let debug_id = option_id.clone();
                 let recommended = decision["default"].as_str() == Some(option_id.as_str());
                 let label = format!(
@@ -898,28 +1095,36 @@ impl NativePlan {
                     string(&option, "label"),
                     if recommended { " · recommended" } else { "" }
                 );
-                body =
-                    body.child(
-                        question_choice(
-                            format!("option-{id}-{option_id}"),
-                            label,
-                            string(&option, "description"),
-                            false,
-                            selected == Some(option_id.as_str()),
-                        )
-                        .debug_selector(move || format!("native-plan-option-{debug_id}"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.choose(&decision_id, &option_id, cx)
-                        }))
-                        .on_key_down(cx.listener(
-                            move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    this.choose(&keyboard_id, &keyboard_value, cx);
-                                    cx.stop_propagation();
-                                }
-                            },
-                        )),
-                    );
+                let key = format!("option:{id}:{option_id}");
+                let target = self.projection.borrow_mut().control(
+                    key,
+                    measured::Action::Choose(id.clone(), option_id.clone()),
+                    true,
+                    cx,
+                );
+                let action = target.action.clone();
+                let keyboard_action = action.clone();
+                let choice = question_choice(
+                    format!("option-{id}-{option_id}"),
+                    label,
+                    string(&option, "description"),
+                    false,
+                    selected == Some(option_id.as_str()),
+                )
+                .track_focus(&target.focus)
+                .debug_selector(move || format!("native-plan-option-{debug_id}"))
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.activate(&action, window, cx)),
+                )
+                .on_key_down(cx.listener(
+                    move |this, event: &gpui::KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.activate(&keyboard_action, window, cx);
+                            cx.stop_propagation();
+                        }
+                    },
+                ));
+                body = body.child(measured::Observed::new(choice.into_any_element(), target));
             }
         }
         if locked || own.is_some() {
@@ -931,43 +1136,43 @@ impl NativePlan {
                         format!("decision-answer-{id}"),
                         resolved_answer(decision, &snapshot["review"]),
                         window,
+                        cx,
                     )),
             );
         }
         let target = id.clone();
         body = body.child(
             div().flex().child(
-                transcript_action(
-                    format!("decision-custom-{id}"),
-                    if own.is_some() {
-                        "Edit my answer"
-                    } else {
-                        "Write my own answer"
-                    },
-                    false,
-                    window,
-                    cx,
-                )
-                .icon(
-                    gpui_component::Icon::default()
-                        .path("icons/edit.svg")
-                        .size(rpx(ICON_SM)),
-                )
-                .debug_selector({
-                    let id = id.clone();
-                    move || format!("native-plan-custom-{id}")
-                })
-                .disabled(locked)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.compose(
-                        PlanComposerTarget::CustomAnswer {
-                            decision_id: target.clone(),
-                            prompt: prompt.clone(),
+                self.measured_button(
+                    transcript_action(
+                        format!("decision-custom-{id}"),
+                        if own.is_some() {
+                            "Edit my answer"
+                        } else {
+                            "Write my own answer"
                         },
+                        false,
                         window,
                         cx,
                     )
-                })),
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path("icons/edit.svg")
+                            .size(rpx(ICON_SM)),
+                    )
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("native-plan-custom-{id}")
+                    })
+                    .disabled(locked),
+                    format!("custom:{id}"),
+                    measured::Action::Compose(PlanComposerTarget::CustomAnswer {
+                        decision_id: target,
+                        prompt,
+                    }),
+                    !locked,
+                    cx,
+                ),
             ),
         );
         let scroll = if self.expanded(cx) {
@@ -987,16 +1192,34 @@ impl NativePlan {
             .entry(id.clone())
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
-        body.id(format!("plan-decision-{id}"))
-            .debug_selector(move || format!("native-plan-decision-{id}"))
-            .track_focus(&focus)
-            .anchor_scroll(Some(anchor))
-            .into_any_element()
+        let target = self.projection.borrow_mut().control_with_focus(
+            format!("decision:{id}"),
+            measured::Action::None,
+            true,
+            focus.clone(),
+        );
+        measured::Observed::new(
+            body.id(format!("plan-decision-{id}"))
+                .debug_selector(move || format!("native-plan-decision-{id}"))
+                .track_focus(&focus)
+                .anchor_scroll(Some(anchor))
+                .into_any_element(),
+            target,
+        )
+        .into_any_element()
     }
 }
 
 impl Render for NativePlan {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.projection.borrow_mut().begin();
+        self.projection.borrow_mut().scroll = Some(if self.expanded(cx) {
+            self.scroll.clone()
+        } else {
+            self.transcript_scroll
+                .clone()
+                .unwrap_or_else(|| self.scroll.clone())
+        });
         let snapshot = self.snapshot(cx);
         let doc = &snapshot["document"];
         let expanded = self.expanded(cx);
@@ -1043,33 +1266,38 @@ impl Render for NativePlan {
                     )),
             )
             .child(
-                transcript_action(
-                    "plan-expand",
-                    if expanded {
-                        "Conversation"
-                    } else {
-                        "Open plan"
-                    },
-                    false,
-                    window,
-                    cx,
-                )
-                .icon(
-                    gpui_component::Icon::default()
-                        .path(if expanded {
-                            "icons/unified.svg"
+                self.measured_button(
+                    transcript_action(
+                        "plan-expand",
+                        if expanded {
+                            "Conversation"
                         } else {
-                            "icons/zen.svg"
-                        })
-                        .size(rpx(ICON_SM)),
-                )
-                .debug_selector(|| "native-plan-expand".into())
-                .with_focus_handle(if expanded {
-                    self.return_focus.clone()
-                } else {
-                    self.expand_focus.clone()
-                })
-                .on_click(cx.listener(|this, _, window, cx| this.toggle_expansion(window, cx))),
+                            "Open plan"
+                        },
+                        false,
+                        window,
+                        cx,
+                    )
+                    .icon(
+                        gpui_component::Icon::default()
+                            .path(if expanded {
+                                "icons/unified.svg"
+                            } else {
+                                "icons/zen.svg"
+                            })
+                            .size(rpx(ICON_SM)),
+                    )
+                    .debug_selector(|| "native-plan-expand".into())
+                    .with_focus_handle(if expanded {
+                        self.return_focus.clone()
+                    } else {
+                        self.expand_focus.clone()
+                    }),
+                    "expand".into(),
+                    measured::Action::Expand,
+                    true,
+                    cx,
+                ),
             );
         let mut body = div()
             .flex()
@@ -1084,22 +1312,24 @@ impl Render for NativePlan {
                 .child(div().text_size(rpx(TEXT_TITLE)).child(string(doc, "title")))
                 .child(
                     div().flex().child(
-                        transcript_action(
-                            "plan-show-previous",
-                            "Read earlier revision",
-                            false,
-                            window,
+                        self.measured_button(
+                            transcript_action(
+                                "plan-show-previous",
+                                "Read earlier revision",
+                                false,
+                                window,
+                                cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/chev-down.svg")
+                                    .size(rpx(ICON_SM)),
+                            ),
+                            "earlier".into(),
+                            measured::Action::Earlier,
+                            true,
                             cx,
-                        )
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/chev-down.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_previous = true;
-                            cx.notify();
-                        })),
+                        ),
                     ),
                 );
         } else {
@@ -1143,6 +1373,7 @@ impl Render for NativePlan {
                                     format!("final-answer-{id}"),
                                     answer.to_owned(),
                                     window,
+                                    cx,
                                 )),
                         );
                     }
@@ -1168,62 +1399,60 @@ impl Render for NativePlan {
                         )
                         .when(unanswered > 0, |row| {
                             row.child(
-                                transcript_action(
-                                    "plan-next-decision",
-                                    "Next unanswered decision",
-                                    false,
-                                    window,
+                                self.measured_button(
+                                    transcript_action(
+                                        "plan-next-decision",
+                                        "Next unanswered decision",
+                                        false,
+                                        window,
+                                        cx,
+                                    )
+                                    .icon(
+                                        gpui_component::Icon::default()
+                                            .path("icons/chev-down.svg")
+                                            .size(rpx(ICON_SM)),
+                                    )
+                                    .disabled(stale || self.send_pending),
+                                    "next".into(),
+                                    measured::Action::Next,
+                                    !stale && !self.send_pending,
                                     cx,
-                                )
-                                .icon(
-                                    gpui_component::Icon::default()
-                                        .path("icons/chev-down.svg")
-                                        .size(rpx(ICON_SM)),
-                                )
-                                .disabled(stale || self.send_pending)
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.next_decision(window, cx)
-                                    }),
                                 ),
                             )
                         }),
                 );
             }
-            let markdown =
-                serde_json::from_value::<grove_core::rich_plan::PlanDocument>(doc.clone())
-                    .map(|d| d.markdown_body())
-                    .unwrap_or_default();
+            let sections = self.prepared.borrow().sections.clone();
             let mut rendered = HashSet::new();
-            for (index, (title, markdown)) in markdown_sections(&markdown).into_iter().enumerate() {
-                body = body
-                    .child(div().flex().justify_end().child(self.discuss_action(
-                        title.clone(),
-                        format!("plan-discuss-{index}"),
-                        window,
-                        cx,
-                    )))
-                    .child(
-                        TextView::markdown(
+            for (index, (title, markdown)) in sections.iter().cloned().enumerate() {
+                let mut section =
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(SPACE_SM))
+                        .child(self.measured_text(
                             format!(
                                 "plan-markdown-{}-{}-{index}",
                                 self.plan_id, self.revision_id
                             ),
                             markdown,
-                        )
-                        .style(super::codex_view::markdown_style(window))
-                        .markdown_extensions(super::mermaid::extensions())
-                        .selectable(true),
-                    );
+                            true,
+                            window,
+                            cx,
+                        ));
                 for decision in &decisions {
                     if decision["section"]
                         .as_str()
                         .is_some_and(|section| section == title)
                     {
                         rendered.insert(string(decision, "id"));
-                        body = body.child(self.decision(decision, &snapshot, window, cx));
+                        section = section.child(self.decision(decision, &snapshot, window, cx));
                     }
                 }
+                body = body.child(section.child(div().flex().flex_wrap().child(
+                    self.discuss_action(title, format!("plan-discuss-{index}"), window, cx),
+                )));
             }
             if doc["markdown"].is_null() {
                 body = body.child(self.legacy_assets(window, cx));
@@ -1254,6 +1483,7 @@ impl Render for NativePlan {
                                 format!("summary-{}", string(decision, "id")),
                                 resolved_answer(decision, &snapshot["review"]),
                                 window,
+                                cx,
                             )),
                     );
                 }
@@ -1310,26 +1540,34 @@ impl Render for NativePlan {
                     .debug_selector(|| "native-plan-action-row".into())
                     .flex()
                     .child(
-                        transcript_action(
-                            "plan-update",
-                            "Update plan with decisions",
-                            true,
-                            window,
+                        self.measured_button(
+                            transcript_action(
+                                "plan-update",
+                                "Update plan with decisions",
+                                true,
+                                window,
+                                cx,
+                            )
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/arrow-up.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
+                            .debug_selector(|| "native-plan-update".into())
+                            .disabled(
+                                unanswered > 0
+                                    || self.composer_pending
+                                    || self.send_pending
+                                    || review_locked(&snapshot),
+                            ),
+                            "update".into(),
+                            measured::Action::Update,
+                            unanswered == 0
+                                && !self.composer_pending
+                                && !self.send_pending
+                                && !review_locked(&snapshot),
                             cx,
-                        )
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/arrow-up.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .debug_selector(|| "native-plan-update".into())
-                        .disabled(
-                            unanswered > 0
-                                || self.composer_pending
-                                || self.send_pending
-                                || review_locked(&snapshot),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.dispatch(false, cx))),
+                        ),
                     ),
             );
         } else if !stale {
@@ -1341,54 +1579,67 @@ impl Render for NativePlan {
                     .gap(rpx(SPACE_LG))
                     .when(doc["finalized_from"].is_object(), |row| {
                         row.child(
+                            self.measured_button(
+                                transcript_action(
+                                    "plan-change-decisions",
+                                    "Change decisions",
+                                    false,
+                                    window,
+                                    cx,
+                                )
+                                .icon(
+                                    gpui_component::Icon::default()
+                                        .path("icons/edit.svg")
+                                        .size(rpx(ICON_SM)),
+                                )
+                                .debug_selector(|| "native-plan-change-decisions".into())
+                                .disabled(
+                                    self.composer_pending
+                                        || self.send_pending
+                                        || review_locked(&snapshot),
+                                ),
+                                "change".into(),
+                                measured::Action::Change,
+                                !self.composer_pending
+                                    && !self.send_pending
+                                    && !review_locked(&snapshot),
+                                cx,
+                            ),
+                        )
+                    })
+                    .child(
+                        self.measured_button(
                             transcript_action(
-                                "plan-change-decisions",
-                                "Change decisions",
-                                false,
+                                "plan-approve",
+                                if approval == "sent" {
+                                    "Approved & sent"
+                                } else {
+                                    "Approve & implement"
+                                },
+                                true,
                                 window,
                                 cx,
                             )
                             .icon(
                                 gpui_component::Icon::default()
-                                    .path("icons/edit.svg")
+                                    .path("icons/check.svg")
                                     .size(rpx(ICON_SM)),
                             )
-                            .debug_selector(|| "native-plan-change-decisions".into())
+                            .debug_selector(|| "native-plan-approve".into())
                             .disabled(
                                 self.composer_pending
                                     || self.send_pending
-                                    || review_locked(&snapshot),
-                            )
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.request_decision_revision(cx)),
+                                    || approval_error.is_some()
+                                    || matches!(approval, "queued" | "sent" | "uncertain"),
                             ),
-                        )
-                    })
-                    .child(
-                        transcript_action(
-                            "plan-approve",
-                            if approval == "sent" {
-                                "Approved & sent"
-                            } else {
-                                "Approve & implement"
-                            },
-                            true,
-                            window,
+                            "approve".into(),
+                            measured::Action::Approve,
+                            !self.composer_pending
+                                && !self.send_pending
+                                && approval_error.is_none()
+                                && !matches!(approval, "queued" | "sent" | "uncertain"),
                             cx,
-                        )
-                        .icon(
-                            gpui_component::Icon::default()
-                                .path("icons/check.svg")
-                                .size(rpx(ICON_SM)),
-                        )
-                        .debug_selector(|| "native-plan-approve".into())
-                        .disabled(
-                            self.composer_pending
-                                || self.send_pending
-                                || approval_error.is_some()
-                                || matches!(approval, "queued" | "sent" | "uncertain"),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.dispatch(true, cx))),
+                        ),
                     ),
             );
         }
@@ -1574,11 +1825,93 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+        // Warm rendering reuses the exact snapshot and prepared document. A
+        // local answer invalidates review presentation without reparsing sections.
+        cx.update(|_, cx| {
+            plan.update(cx, |view, cx| {
+                let first = view.snapshot(cx);
+                let sections = view.prepared.borrow().sections.clone();
+                assert!(Rc::ptr_eq(&first, &view.snapshot(cx)));
+                view.local_review = Some(grove_core::rich_plan::ReviewState {
+                    answers: HashMap::from([("access".into(), "admin".into())]),
+                    ..Default::default()
+                });
+                let answered = view.snapshot(cx);
+                assert!(!Rc::ptr_eq(&first, &answered));
+                assert_eq!(answered["review"]["answers"]["access"], "admin");
+                assert!(Rc::ptr_eq(&sections, &view.prepared.borrow().sections));
+                view.local_review = None;
+                assert!(view.snapshot(cx)["review"]["answers"]
+                    .as_object()
+                    .unwrap()
+                    .is_empty());
+                let original = view.session.read(cx).state.saved.rich_plans.revisions[0]
+                    .document
+                    .markdown
+                    .clone();
+                view.session.update(cx, |session, _| {
+                    session.state.saved.rich_plans.revisions[0]
+                        .document
+                        .markdown = Some("## Replacement\nFresh document".into());
+                });
+                // Same plan/revision IDs and no observer notification: mutable
+                // session access must still invalidate the identity fast path.
+                let replaced = view.snapshot(cx);
+                assert_eq!(
+                    replaced["document"]["markdown"],
+                    "## Replacement\nFresh document"
+                );
+                assert!(!Rc::ptr_eq(&sections, &view.prepared.borrow().sections));
+                assert!(Rc::ptr_eq(&replaced, &view.snapshot(cx)));
+                view.session.update(cx, |session, _| {
+                    session.state.saved.rich_plans.revisions[0]
+                        .document
+                        .markdown = original;
+                });
+                assert!(!Rc::ptr_eq(&replaced, &view.snapshot(cx)));
+            });
+        });
         assert!(cx.debug_bounds("native-plan-update").is_some());
         assert!(cx.debug_bounds("native-plan-approve").is_none());
         assert!(cx
             .debug_bounds("native-plan-input-well-own_answers:access")
             .is_none());
+        let notifications = Rc::new(std::cell::Cell::new(0));
+        let observed = notifications.clone();
+        let subscription = cx.update(|_, cx| {
+            cx.observe(&plan, move |_, cx| {
+                let _ = cx;
+                observed.set(observed.get() + 1);
+            })
+        });
+        let session = cx.update(|_, cx| plan.read(cx).session.clone());
+        cx.update(|_, cx| {
+            session.update(cx, |session, cx| {
+                session.state.model = Some("unrelated-model-update".into());
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            notifications.get(),
+            0,
+            "unrelated updates must not invalidate plans"
+        );
+        cx.update(|_, cx| {
+            session.update(cx, |session, cx| {
+                session.state.saved.rich_plans.revisions[0]
+                    .review
+                    .answer_drafts
+                    .insert("access".into(), "Draft from actor".into());
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        assert!(
+            notifications.get() > 0,
+            "review updates must invalidate the plan"
+        );
+        drop(subscription);
         let button = cx.debug_bounds("native-plan-custom-access").unwrap();
         cx.simulate_click(button.center(), gpui::Modifiers::default());
         cx.run_until_parked();

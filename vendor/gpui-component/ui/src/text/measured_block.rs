@@ -1,4 +1,4 @@
-//! Exact measured paragraph extents with lazy offscreen rendering. The outer
+//! Exact measured paragraph and static table extents with lazy offscreen rendering. The outer
 //! transcript retains its ordinary scroll geometry and selectable text owner.
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -31,6 +31,7 @@ struct Measurement {
     is_last: bool,
     text_style: TextStyle,
     paragraph_gap: gpui::Rems,
+    table_style: Option<Box<(gpui::StyleRefinement, gpui::StyleRefinement)>>,
     rem_size: Pixels,
     viewport_width: Pixels,
     size: Size<Pixels>,
@@ -50,17 +51,8 @@ impl MeasuredBlock {
     /// Dynamic Markdown extensions and images keep their existing eager layout.
     /// Plain prose has no external source of geometry changes between renders.
     pub(super) fn eligible(node: &BlockNode, node_cx: &NodeContext) -> bool {
-        let BlockNode::Paragraph(paragraph) = node else {
-            return false;
-        };
-        !paragraph.children.iter().any(|child| {
-            child.image.is_some()
-                || child.marks.iter().any(|(_, mark)| {
-                    mark.link
-                        .as_ref()
-                        .is_some_and(|link| node_cx.markdown_extensions.may_render_link(&link.url))
-                })
-        })
+        matches!(node, BlockNode::Paragraph(_) | BlockNode::Table(_))
+            && super::measured_body::stable_block(node, &node_cx.markdown_extensions)
     }
 
     pub(super) fn new(
@@ -88,6 +80,9 @@ impl MeasuredBlock {
             && measured.is_last == self.options.is_last
             && measured.text_style == *text_style
             && measured.paragraph_gap == self.node_cx.style.paragraph_gap
+            && measured.table_style.as_deref().is_none_or(|(table, cell)| {
+                table == &self.node_cx.style.table && cell == &self.node_cx.style.table_cell
+            })
             && measured.rem_size == window.rem_size()
             && measured.viewport_width == window.viewport_size().width
             && (Arc::ptr_eq(&measured.blocks, &self.blocks)
@@ -224,6 +219,12 @@ impl Element for MeasuredBlock {
             is_last: self.options.is_last,
             text_style: layout.text_style.clone(),
             paragraph_gap: self.node_cx.style.paragraph_gap,
+            table_style: matches!(&self.blocks[self.options.ix], BlockNode::Table(_)).then(|| {
+                Box::new((
+                    self.node_cx.style.table.clone(),
+                    self.node_cx.style.table_cell.clone(),
+                ))
+            }),
             rem_size: window.rem_size(),
             viewport_width: window.viewport_size().width,
             size: measured_size,

@@ -8,6 +8,8 @@ use gpui::{
 use std::cell::RefCell;
 
 pub(super) struct MessageFrame {
+    pub rich_messages: Rc<RichMessageIndex>,
+    pub review_display: Rc<RefCell<HashMap<usize, Option<String>>>>,
     pub state: Rc<codex::Snapshot>,
     pub prepared: Rc<PreparedTranscript>,
     pub initial_transcript: bool,
@@ -58,6 +60,7 @@ pub(super) struct SlotLayout {
 }
 #[derive(Clone, Copy)]
 enum UserControl {
+    Fork(bool),
     Edit,
     Copy,
 }
@@ -129,83 +132,54 @@ fn user_control_proxy(
     index: usize,
     item: codex::TranscriptItem,
 ) -> AnyElement {
-    let suffix = match target.kind {
-        UserControl::Edit => "edit",
-        UserControl::Copy => "copy",
-    };
-    let id = ElementId::from(gpui::SharedString::from(format!(
-        "{}:{suffix}-proxy",
-        target.source_key
-    )));
     let key = target.source_key.clone();
     let kind = target.kind;
-    let mut div = div()
-        .id(id.clone())
-        .track_focus(&target.focus)
-        .tab_index(0)
-        .role(gpui::Role::Button)
-        .aria_label(match kind {
-            UserControl::Edit => "Edit sent message",
-            UserControl::Copy => "Copy message",
-        })
-        .on_key_down(move |event, window, cx| {
-            if action_key(event) {
-                let _ = view.update(cx, |view, cx| match kind {
-                    UserControl::Edit => view.request_edit(index, window, cx),
-                    UserControl::Copy => view.copy_message(
-                        key.clone(),
-                        reference_prompt_copy(&codex::item_text(item.as_ref())),
-                        cx,
-                    ),
-                });
-                cx.stop_propagation();
-            }
-        });
+    let mut div =
+        div()
+            .track_focus(&target.focus)
+            .tab_index(0)
+            .on_key_down(move |event, window, cx| {
+                if action_key(event) {
+                    let _ = view.update(cx, |view, cx| match kind {
+                        UserControl::Fork(restore_user) => {
+                            if !view.transcript_only() && !view.session.read(cx).state.status.busy()
+                            {
+                                cx.emit(CodexViewEvent::ForkRequested(index, restore_user));
+                            }
+                        }
+                        UserControl::Edit => view.request_edit(index, window, cx),
+                        UserControl::Copy => view.copy_message(
+                            key.clone(),
+                            reference_prompt_copy(&codex::item_text(item.as_ref())),
+                            cx,
+                        ),
+                    });
+                    cx.stop_propagation();
+                }
+            });
     ControlAlias {
         layout,
         proxy: FocusProxy {
-            id,
+            focus: target.focus.clone(),
             interactivity: std::mem::take(div.interactivity()),
-            hitbox: None,
         },
     }
     .into_any_element()
 }
 
-/// Reuse GPUI's focus, accessibility, tab-stop and hover registration on the
-/// slot's dispatch node. Geometry is already known; another Taffy root would
-/// only repeat work for an otherwise empty offscreen source target.
+/// Offscreen aliases retain keyboard routing without pointer hitboxes or hover
+/// state. Visible, focused and accessible rows use the original renderer.
 struct FocusProxy {
-    id: ElementId,
+    focus: FocusHandle,
     interactivity: gpui::Interactivity,
-    hitbox: Option<gpui::Hitbox>,
 }
 impl FocusProxy {
-    fn prepaint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-        self.hitbox = window.with_global_id(self.id.clone(), |id, window| {
-            self.interactivity.prepaint(
-                Some(id),
-                None,
-                bounds,
-                bounds.size,
-                window,
-                cx,
-                |_, _, hitbox, _, _| hitbox,
-            )
-        });
+    fn prepaint(&mut self, _: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        window.set_focus_handle(&self.focus, cx);
     }
     fn paint(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-        window.with_global_id(self.id.clone(), |id, window| {
-            self.interactivity.paint(
-                Some(id),
-                None,
-                bounds,
-                self.hitbox.as_ref(),
-                window,
-                cx,
-                |_, _, _| {},
-            );
-        });
+        self.interactivity
+            .paint(None, None, bounds, None, window, cx, |_, _, _| {});
     }
 }
 
@@ -262,6 +236,15 @@ impl MeasuredTranscriptSlot {
                 cache.focus = view.message_focus.get(&key).cloned();
                 cache.controls.clear();
                 if user {
+                    if let Some(focus) =
+                        view.message_focus.get(&format!("fork:{}:true", self.index))
+                    {
+                        cache.controls.push(ControlTarget {
+                            focus: focus.clone(),
+                            source_key: key.clone(),
+                            kind: UserControl::Fork(true),
+                        });
+                    }
                     for (suffix, kind) in [("edit", UserControl::Edit), ("copy", UserControl::Copy)]
                     {
                         if let Some(focus) = view.message_focus.get(&format!("{key}:{suffix}")) {
@@ -303,23 +286,11 @@ impl MeasuredTranscriptSlot {
         let html_id = item["id"]
             .as_str()
             .map_or_else(|| format!("message-{}", self.index), str::to_owned);
-        let dynamic = view.html.read(cx).has_linked(&html_id)
-            || self
-                .frame
-                .state
-                .saved
-                .rich_plans
-                .revisions
-                .iter()
-                .any(|plan| plan.message_id == html_id)
-            || self
-                .frame
-                .state
-                .saved
-                .rich_plans
-                .errors
-                .iter()
-                .any(|error| error.message_id == html_id);
+        let dynamic =
+            view.html.read(cx).has_linked(&html_id) || self.frame.rich_messages.contains(&html_id);
+        // User attachment thumbnails have fixed geometry and no independent
+        // controls. Their source identity, width and rem already invalidate
+        // this measurement; image decoding cannot change the row's extent.
         dynamic
             || (self.frame.state.status.busy()
                 && self.index + 1 == self.frame.state.saved.items.len())
@@ -345,11 +316,6 @@ impl MeasuredTranscriptSlot {
                 .focus
                 .as_ref()
                 .is_some_and(|focus| focus.contains_focused(window, cx))
-            || item["content"].as_array().is_some_and(|parts| {
-                parts
-                    .iter()
-                    .any(|part| part["url"].is_string() || part["image_url"].is_string())
-            })
     }
     fn correct(&self, window: &Window) {
         let mut cache = self.cache.borrow_mut();
@@ -534,35 +500,9 @@ impl Element for MeasuredTranscriptSlot {
                 layout.projection = Some(projection);
             }
             if let Some(focus) = cache.focus.as_ref() {
-                let view = self.view.clone();
-                let key = cache.hover_key.clone();
-                let proxy_id = if self.frame.state.saved.items[self.index]["type"] == "userMessage"
-                {
-                    "codex-message-block"
-                } else {
-                    "codex-item"
-                };
-                let proxy = div()
-                    .id((proxy_id, self.index))
-                    .size_full()
-                    .track_focus(focus)
-                    .tab_index(0)
-                    .on_hover(move |hovered, _, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            if *hovered {
-                                view.message_hover.insert(key.clone());
-                            } else {
-                                view.message_hover.remove(&key);
-                            }
-                            cx.notify();
-                        });
-                    });
-                let mut proxy = proxy;
-                let interactivity = std::mem::take(proxy.interactivity());
                 let mut proxy = FocusProxy {
-                    id: (proxy_id, self.index).into(),
-                    interactivity,
-                    hitbox: None,
+                    focus: focus.clone(),
+                    interactivity: gpui::Interactivity::default(),
                 };
                 proxy.prepaint(bounds, window, cx);
                 layout.proxy = Some(proxy);
@@ -673,8 +613,8 @@ pub(super) fn force_header_eager() -> bool {
     }
 }
 
-/// Response footers have a fixed chrome height. Their original Copy button
-/// remains a keyboard stop when the offscreen control tree is not materialized.
+/// Response footers have a fixed chrome height. Their original Copy and Fork
+/// buttons remain keyboard stops when the offscreen tree is not materialized.
 pub(super) struct MeasuredResponseFooter {
     view: WeakEntity<CodexView>,
     frame: Rc<MessageFrame>,
@@ -686,6 +626,7 @@ pub(super) struct FooterLayout {
     element: Option<AnyElement>,
     proxy: Option<FocusProxy>,
     copy: AnyElement,
+    fork: Option<AnyElement>,
 }
 impl MeasuredResponseFooter {
     pub fn new(
@@ -740,16 +681,9 @@ impl Element for MeasuredResponseFooter {
         let key = group.key.clone();
         let prepared = self.frame.prepared.clone();
         let group_index = self.group;
-        let control_id = ElementId::from(gpui::SharedString::from(format!(
-            "{}:copy-proxy",
-            group.key
-        )));
         let mut target = div()
-            .id(control_id.clone())
             .track_focus(&self.copy_focus)
             .tab_index(0)
-            .role(gpui::Role::Button)
-            .aria_label("Copy entire response")
             .on_key_down(move |event, _, cx| {
                 if action_key(event) {
                     let _ = view.update(cx, |view, cx| {
@@ -765,19 +699,41 @@ impl Element for MeasuredResponseFooter {
         let mut copy = ControlAlias {
             layout: id,
             proxy: FocusProxy {
-                id: control_id,
+                focus: self.copy_focus.clone(),
                 interactivity: std::mem::take(target.interactivity()),
-                hitbox: None,
             },
         }
         .into_any_element();
         copy.request_layout(window, cx);
+        let fork_key = format!("fork:{}:false", group.end);
+        let fork = self
+            .view
+            .update(cx, |view, cx| {
+                view.ensure_control_focus(&fork_key, window, cx)
+            })
+            .ok()
+            .map(|focus| {
+                let mut fork = user_control_proxy(
+                    id,
+                    &ControlTarget {
+                        focus,
+                        source_key: fork_key,
+                        kind: UserControl::Fork(false),
+                    },
+                    self.view.clone(),
+                    group.end,
+                    serde_json::Value::Null.into(),
+                );
+                fork.request_layout(window, cx);
+                fork
+            });
         (
             id,
             FooterLayout {
                 element: None,
                 proxy: None,
                 copy,
+                fork,
             },
         )
     }
@@ -819,31 +775,16 @@ impl Element for MeasuredResponseFooter {
                 layout.element = Some(element);
             }
         } else {
-            let view = self.view.clone();
-            let key = group.key.clone();
-            let id = ElementId::from(gpui::SharedString::from(group.key.clone()));
-            let mut div = div()
-                .id(id.clone())
-                .track_focus(&self.focus)
-                .tab_index(0)
-                .on_hover(move |hovered, _, cx| {
-                    let _ = view.update(cx, |view, cx| {
-                        if *hovered {
-                            view.message_hover.insert(key.clone());
-                        } else {
-                            view.message_hover.remove(&key);
-                        }
-                        cx.notify();
-                    });
-                });
             let mut proxy = FocusProxy {
-                id,
-                interactivity: std::mem::take(div.interactivity()),
-                hitbox: None,
+                focus: self.focus.clone(),
+                interactivity: gpui::Interactivity::default(),
             };
             proxy.prepaint(bounds, window, cx);
             layout.proxy = Some(proxy);
             layout.copy.prepaint(window, cx);
+            if let Some(fork) = &mut layout.fork {
+                fork.prepaint(window, cx);
+            }
         }
     }
     fn paint(
@@ -862,6 +803,9 @@ impl Element for MeasuredResponseFooter {
         if let Some(proxy) = layout.proxy.as_mut() {
             proxy.paint(bounds, window, cx);
             layout.copy.paint(window, cx);
+            if let Some(fork) = &mut layout.fork {
+                fork.paint(window, cx);
+            }
         }
     }
 }
@@ -1159,9 +1103,8 @@ impl Element for MeasuredWorkHeader {
                     }
                 });
             let mut proxy = FocusProxy {
-                id,
+                focus: self.focus.clone(),
                 interactivity: std::mem::take(target.interactivity()),
-                hitbox: None,
             };
             proxy.prepaint(bounds, window, cx);
             layout.proxy = Some(proxy);

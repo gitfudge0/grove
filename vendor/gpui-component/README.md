@@ -218,3 +218,20 @@ Applied to `ui/src` (source, not manifests):
     its own icon family, including input context menus. Text formatting and
     keybindings remain unchanged, and applications without the hook retain the
     original renderer. Grove registers its shared shortcut hint at startup.
+
+19. **Reuse measured offscreen text-only Markdown tables.**
+    Static table cells participate in measured-body and individual-block projection,
+    including tables beside diagrams or code controls in a dynamic document,
+    retaining selection ownership and keyed horizontal scroll state. Cells with
+    images or extension-owned links remain eager, as do custom blocks, focused
+    content and active selection. Width, typography and zoom changes invalidate
+    measurements. Grove's mixed table/attachment transcript fixture compares
+    cached and eager geometry, selection, narrow widths and zoom for both providers.
+
+20. **Expose local selection state to retained native projections.**
+    `TextViewState::has_view_selection` is public so Grove's measured plan
+    element can keep the full tree while a selectable owner holds a local
+    selection. This is an O(1) state check; it does not extract or copy text.
+    Window-level selection, focus, accessibility and inspector fallbacks remain
+    separate guards. Static text projections preserve their original owners;
+    dynamic Markdown sections keep their live subtree and controls.

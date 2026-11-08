@@ -338,7 +338,7 @@ impl TextViewState {
     }
 
     /// Independent of the window-level selection.
-    pub(super) fn has_view_selection(&self) -> bool {
+    pub fn has_view_selection(&self) -> bool {
         self.select_all
             || self.multi_click_selection.is_some()
             || self.selected_text_override.is_some()

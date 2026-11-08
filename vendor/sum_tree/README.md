@@ -19,5 +19,11 @@ The source files were copied from that commit. Changes made here:
   the unused `tracing` dependency. The `proptest` dependency keeps Zed's exact
   git revision for the optional `test-support` API.
 
-The crate's data structure algorithms and public API are unchanged. Update
-this provenance and change list if the vendored source is modified again.
+- Added a strictly increasing-key append path to `insert_or_replace`. GPUI
+  rebuilds ordered focus entries every frame; this avoids repeatedly copying
+  the tree prefix. Equal and out-of-order keys retain the original replacement
+  algorithm. Mixed insert/remove operations and shared snapshots are checked
+  against `BTreeMap`, in addition to the upstream data-structure tests.
+
+The public API is unchanged. Update this provenance and change list if the
+vendored source is modified again.

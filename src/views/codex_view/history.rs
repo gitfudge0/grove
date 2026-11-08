@@ -12,6 +12,12 @@ pub(super) struct TurnHistory {
 }
 
 impl TurnHistory {
+    #[cfg(test)]
+    pub(super) fn expand_all_for_test(&mut self, items: &[codex::TranscriptItem]) {
+        self.set_start(0, items);
+        self.expanded = true;
+    }
+
     fn latest(entries: &[MessageMinimapEntry]) -> usize {
         if entries.len() <= HISTORY_BATCH_TURNS {
             0

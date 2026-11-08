@@ -361,6 +361,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ordered_and_mixed_updates_preserve_values_and_shared_snapshots() {
+        use std::collections::BTreeMap;
+        let mut map = TreeMap::default();
+        let mut expected = BTreeMap::new();
+        let mut snapshots = Vec::new();
+        // Cross several tree levels, including negative keys and empty trees.
+        for key in -512..1024 {
+            assert_eq!(
+                map.insert_or_replace(key, key * 2),
+                expected.insert(key, key * 2)
+            );
+            if key % 127 == 0 {
+                snapshots.push((map.clone(), expected.clone()));
+            }
+        }
+        // Replace the last key (not an append), then prepend and replace
+        // interior keys. Old clones must keep their original values.
+        for key in [1023, -1024, -512, 0, 511, 1024] {
+            assert_eq!(map.insert_or_replace(key, -key), expected.insert(key, -key));
+        }
+        let mut random = 0x6d2b79f5u32;
+        for step in 0..4000 {
+            random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+            let key = (random % 4096) as i32 - 2048;
+            if step % 3 == 0 {
+                assert_eq!(map.remove(&key), expected.remove(&key));
+            } else {
+                assert_eq!(map.insert_or_replace(key, step), expected.insert(key, step));
+            }
+            if step % 97 == 0 {
+                assert_eq!(
+                    map.iter().collect::<Vec<_>>(),
+                    expected.iter().collect::<Vec<_>>()
+                );
+                assert_eq!(map.get(&key), expected.get(&key));
+            }
+        }
+        assert_eq!(
+            map.iter().collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+        for (snapshot, expected) in snapshots {
+            assert_eq!(
+                snapshot.iter().collect::<Vec<_>>(),
+                expected.iter().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn test_basic() {
         let mut map = TreeMap::default();
         assert_eq!(map.iter().collect::<Vec<_>>(), vec![]);

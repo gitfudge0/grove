@@ -1,9 +1,16 @@
 /// Deterministic GPUI structural workload using NoopTextSystem font metrics.
-/// The separate native workload below uses actual CoreText and bundled fonts.
+/// The separate native workloads use platform text shaping and bundled fonts.
 /// Neither CPU workload measures compositor/GPU presentation or displayed FPS.
 mod performance {
     use super::*;
     use std::time::Instant;
+
+    // Manual draws must release GPUI's element arena before the next draw.
+    // Test-support automatic draws already do this in App::flush_effects.
+    fn draw(cx: &mut gpui::VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+    }
 
     fn samples() -> usize {
         std::env::var("GROVE_PERF_SAMPLES")
@@ -126,13 +133,11 @@ mod performance {
             .count();
         if state.status.busy() && !tools.is_empty() {
             assert!(state.work_started.is_some() && state.turn_id.is_some());
-            assert!(
-                state
-                    .saved
-                    .work_periods
-                    .last()
-                    .is_some_and(|period| period.end_item.is_none())
-            );
+            assert!(state
+                .saved
+                .work_periods
+                .last()
+                .is_some_and(|period| period.end_item.is_none()));
             assert_eq!(
                 shimmer, 1,
                 "Working fixture must retain the newest active tool presentation"
@@ -168,6 +173,12 @@ mod performance {
             view.update(cx, |view, cx| {
                 if workload == "real" {
                     view.expanded.insert(work_key_at(&original, last_prose));
+                }
+                if std::env::var_os("GROVE_PERF_EXPAND_ALL").is_some() {
+                    view.turn_history.expand_all_for_test(&original.saved.items);
+                    for index in 0..original.saved.items.len() {
+                        view.expanded.insert(work_key_at(&original, index));
+                    }
                 }
                 view.session.update(cx, |session, cx| {
                     session.state = original.as_ref().clone().into();
@@ -270,7 +281,7 @@ mod performance {
                 let update_elapsed = start.elapsed();
                 let first_start = Instant::now();
                 cx.update(|window, cx| {
-                    let _ = window.draw(cx);
+                    window.draw(cx).clear();
                 });
                 let first_elapsed = first_start.elapsed();
                 draw(cx);
@@ -280,7 +291,7 @@ mod performance {
                 cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
                 let frame_start = Instant::now();
                 cx.update(|window, cx| {
-                    let _ = window.draw(cx);
+                    window.draw(cx).clear();
                 });
                 let elapsed = frame_start.elapsed();
                 if operation == "append" {
@@ -318,13 +329,14 @@ mod performance {
                 expected_last
             );
             assert!(session.state.error.is_none());
-            assert!(
-                view.selection_views
-                    .values()
-                    .any(|owner| !owner.read(cx).source().is_empty())
-            );
+            assert!(view
+                .selection_views
+                .values()
+                .any(|owner| !owner.read(cx).source().is_empty()));
         });
     }
+    #[cfg(target_os = "linux")]
+    include!("performance_linux.rs");
     #[cfg(target_os = "macos")]
     include!("performance_native.rs");
     #[cfg(target_os = "macos")]

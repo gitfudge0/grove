@@ -57,6 +57,8 @@ change:
 }
 ```
 
+Keep finalization metadata in the JSON envelope, not in the readable Markdown. Show previous answers as labeled prose or a table. Grove presents locally generated plan-update and change-decisions requests as readable transcript summaries while retaining their exact provider payloads.
+
 Lead with the outcome and scope, make decisions and risks visible, and state
 concrete success criteria. Choose representations that suit the question:
 before/after tables for behavior changes, a concise flow for sequencing, and

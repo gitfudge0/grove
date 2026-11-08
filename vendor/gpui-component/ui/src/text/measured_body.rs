@@ -97,7 +97,7 @@ pub(super) fn window_selection_active(window: &Window, cx: &App) -> bool {
     })
 }
 
-fn stable_block(block: &BlockNode, extensions: &MarkdownExtensions) -> bool {
+pub(super) fn stable_block(block: &BlockNode, extensions: &MarkdownExtensions) -> bool {
     let paragraph = match block {
         BlockNode::Paragraph(paragraph)
         | BlockNode::Heading {
@@ -115,9 +115,23 @@ fn stable_block(block: &BlockNode, extensions: &MarkdownExtensions) -> bool {
         | BlockNode::HorizontalRule { .. }
         | BlockNode::Definition { .. }
         | BlockNode::Unknown => return true,
-        // Images, custom renderers and tables retain their dynamic native layout.
+        // Text-only table cells have stable intrinsic geometry too. Horizontal
+        // scroll state lives in keyed state and is restored when visible; cells
+        // with images or extension-owned links must retain their live subtree.
+        BlockNode::Table(table) => {
+            return table.children.iter().all(|row| {
+                row.children
+                    .iter()
+                    .all(|cell| stable_paragraph(&cell.children, extensions))
+            });
+        }
+        // Images and custom renderers retain their dynamic native layout.
         _ => return false,
     };
+    stable_paragraph(paragraph, extensions)
+}
+
+fn stable_paragraph(paragraph: &super::node::Paragraph, extensions: &MarkdownExtensions) -> bool {
     !paragraph.children.iter().any(|child| {
         child.image.is_some()
             || child.marks.iter().any(|(_, mark)| {
@@ -269,6 +283,44 @@ impl Element for MeasuredBody {
             || window_selection
             || state.focus_handle.contains_focused(window, cx)
             || window.is_inspector_picking(cx);
+        // Diagnostic only: stderr logging deliberately invalidates timing comparisons.
+        #[cfg(any(test, feature = "grove-test-support"))]
+        if std::env::var_os("GROVE_PERF_BODY_REUSE").is_some() {
+            let reason = if !state.body_measurement_supported() {
+                "unsupported"
+            } else if let Some(old) = &state.measured_layout {
+                if !old.stable {
+                    "unstable"
+                } else if !old.supported {
+                    "old-unsupported"
+                } else if !Arc::ptr_eq(&old.blocks, &state.parsed_content.document.blocks) {
+                    "blocks"
+                } else if old.extensions != state.markdown_extensions.revision() {
+                    "extensions"
+                } else if old.style != state.text_view_style {
+                    "style"
+                } else if old.style.code_block != state.text_view_style.code_block {
+                    "code-style"
+                } else if old.style.table != state.text_view_style.table {
+                    "table-style"
+                } else if old.style.table_cell != state.text_view_style.table_cell {
+                    "cell-style"
+                } else if old.text_style != window.text_style() {
+                    "text-style"
+                } else if old.rem_size != window.rem_size() {
+                    "rem"
+                } else if old.viewport_width != window.viewport_size().width {
+                    "viewport"
+                } else if force_eager {
+                    "interaction"
+                } else {
+                    "reused"
+                }
+            } else {
+                "unmeasured"
+            };
+            eprintln!("BODY_REUSE {:?} {}", self.state.entity_id(), reason);
+        }
         let cached_size = (!force_eager).then_some(current_extent).flatten();
         if let Some(size) = cached_size {
             let id = request_extent(size, window);

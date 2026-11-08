@@ -40,6 +40,7 @@ use std::{
 
 mod history;
 mod measured_slot;
+mod measured_tool;
 use history::TurnHistory;
 #[path = "model_picker.rs"]
 mod model_picker;
@@ -286,10 +287,44 @@ fn hash_transcript_value(value: &serde_json::Value, hasher: &mut impl Hasher) {
 /// replace the source snapshot; local mutations fork it synchronously.
 /// Optimistic bubbles are a separate cache input.
 struct TranscriptRenderCache {
+    rich_messages: Rc<RichMessageIndex>,
+    work: WorkIndex,
+    review_display: Rc<std::cell::RefCell<HashMap<usize, Option<String>>>>,
     source: Rc<codex::Snapshot>,
     optimistic: Vec<serde_json::Value>,
     state: Rc<codex::Snapshot>,
     prepared: Rc<PreparedTranscript>,
+}
+
+/// Rich attachments can change without changing transcript item identity. Keep
+/// their lookup beside the snapshot cache, not in item-only preparation.
+#[derive(Default)]
+struct RichMessageIndex {
+    plans: HashMap<String, Vec<usize>>,
+    errors: HashMap<String, Vec<usize>>,
+}
+impl RichMessageIndex {
+    fn new(store: &grove_core::rich_plan::PlanStore) -> Self {
+        let mut result = Self::default();
+        for (index, plan) in store.revisions.iter().enumerate() {
+            result
+                .plans
+                .entry(plan.message_id.clone())
+                .or_default()
+                .push(index);
+        }
+        for (index, error) in store.errors.iter().enumerate() {
+            result
+                .errors
+                .entry(error.message_id.clone())
+                .or_default()
+                .push(index);
+        }
+        result
+    }
+    fn contains(&self, message: &str) -> bool {
+        self.plans.contains_key(message) || self.errors.contains_key(message)
+    }
 }
 
 /// Derived solely from transcript items and thread identity; metadata-only
@@ -303,6 +338,120 @@ struct PreparedTranscript {
     response_ends: Vec<Option<usize>>,
     response_prose: Vec<Option<usize>>,
     minimap_entries: Vec<MessageMinimapEntry>,
+    nearest_user: Vec<usize>,
+    next_nonuser: Vec<usize>,
+}
+
+/// Snapshot metadata is independent of item identity (work may finish without
+/// changing an item). Interval priority follows the original reverse-vector lookup,
+/// including overlapping/out-of-order persisted periods.
+struct WorkIndex {
+    period: Vec<Option<usize>>,
+    active: Vec<bool>,
+    active_start: usize,
+    latest_tool: Option<usize>,
+}
+impl WorkIndex {
+    fn new(state: &codex::Snapshot, prepared: &PreparedTranscript) -> Self {
+        let n = state.saved.items.len();
+        let active_start = active_work_start(state);
+        let latest_tool = state
+            .saved
+            .items
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(index, item)| *index >= active_start && is_tool_item(item))
+            .map(|(index, _)| index);
+        let mut starts: Vec<_> = state
+            .saved
+            .work_periods
+            .iter()
+            .enumerate()
+            .map(|(index, period)| (period.start_item, index))
+            .collect();
+        starts.sort_unstable();
+        let mut pending = starts.into_iter().peekable();
+        let mut candidates = std::collections::BinaryHeap::new();
+        let mut latest: Option<usize> = None;
+        let mut period = Vec::with_capacity(n + 1);
+        let mut active = Vec::with_capacity(n + 1);
+        for index in 0..=n {
+            while pending.peek().is_some_and(|(start, _)| *start <= index) {
+                let Some((_, ordinal)) = pending.next() else {
+                    break;
+                };
+                candidates.push(ordinal);
+                latest = Some(latest.map_or(ordinal, |old| old.max(ordinal)));
+            }
+            while candidates.peek().is_some_and(|ordinal| {
+                state.saved.work_periods[*ordinal]
+                    .end_item
+                    .is_some_and(|end| index >= end)
+            }) {
+                candidates.pop();
+            }
+            period.push(candidates.peek().copied());
+            active.push(
+                state.status.busy()
+                    && index >= active_start
+                    && latest
+                        .is_none_or(|ordinal| state.saved.work_periods[ordinal].end_item.is_none()),
+            );
+        }
+        debug_assert_eq!(prepared.nearest_user.len(), n + 1);
+        Self {
+            period,
+            active,
+            active_start,
+            latest_tool,
+        }
+    }
+    fn key(prepared: &PreparedTranscript, index: usize) -> String {
+        format!("work-{}", prepared.nearest_user[index])
+    }
+    fn tool_visible(&self, state: &codex::Snapshot, index: usize) -> bool {
+        !state.status.busy() || index < self.active_start || self.latest_tool == Some(index)
+    }
+    fn header(
+        &self,
+        state: &codex::Snapshot,
+        prepared: &PreparedTranscript,
+        index: usize,
+    ) -> Option<(String, String, bool)> {
+        if state
+            .saved
+            .items
+            .get(index)
+            .is_some_and(|item| item["type"] == "userMessage")
+        {
+            return None;
+        }
+        let period = self.period[index].map(|ordinal| &state.saved.work_periods[ordinal]);
+        let start = period.map_or(prepared.nearest_user[index], |period| period.start_item);
+        let end = period
+            .and_then(|period| period.end_item)
+            .unwrap_or(state.saved.items.len());
+        let first = prepared
+            .next_nonuser
+            .get(start)
+            .copied()
+            .filter(|first| *first < end)
+            .or_else(|| self.active[index].then_some(state.saved.items.len()))?;
+        if first != index {
+            return None;
+        }
+        let duration = if self.active[index] {
+            state.work_started.map(|start| start.elapsed().as_secs())
+        } else {
+            period.and_then(|period| period.duration_ms.map(|ms| ms / 1000))
+        };
+        Some((
+            Self::key(prepared, index),
+            work_duration_label(self.active[index], duration),
+            self.active[index],
+        ))
+    }
 }
 
 impl std::ops::Deref for TranscriptRenderCache {
@@ -359,7 +508,11 @@ impl TranscriptRenderCache {
             }
             Rc::new(Self::prepare(&state, content))
         });
+        let work = WorkIndex::new(&state, &prepared);
         Self {
+            work,
+            rich_messages: Rc::new(RichMessageIndex::new(&source.saved.rich_plans)),
+            review_display: Rc::default(),
             source,
             optimistic,
             state,
@@ -390,7 +543,26 @@ impl TranscriptRenderCache {
             }
         }
         let minimap_entries = message_minimap_entries(items);
+        let mut nearest_user = Vec::with_capacity(items.len() + 1);
+        let mut latest_user = 0;
+        for (index, item) in items.iter().enumerate() {
+            if item["type"] == "userMessage" {
+                latest_user = index;
+            }
+            nearest_user.push(latest_user);
+        }
+        nearest_user.push(latest_user);
+        let mut next_nonuser = vec![items.len(); items.len() + 1];
+        for index in (0..items.len()).rev() {
+            next_nonuser[index] = if items[index]["type"] == "userMessage" {
+                next_nonuser[index + 1]
+            } else {
+                index
+            };
+        }
         PreparedTranscript {
+            nearest_user,
+            next_nonuser,
             content,
             task_key,
             stream_keys,
@@ -1106,6 +1278,7 @@ pub struct CodexView {
     reference_remove_focus: FocusHandle,
     selection_views: HashMap<String, Entity<TextViewState>>,
     message_slots: HashMap<String, Rc<std::cell::RefCell<measured_slot::Measurement>>>,
+    tool_slots: HashMap<String, Rc<std::cell::RefCell<measured_tool::Measurement>>>,
     work_header_slots: HashMap<String, Rc<std::cell::RefCell<measured_slot::HeaderMeasurement>>>,
     selection_dismissed: Option<TextSelectionSnapshot>,
     selection_root_observed: bool,
@@ -1696,6 +1869,7 @@ impl CodexView {
             reference_remove_focus: cx.focus_handle(),
             selection_views: HashMap::new(),
             message_slots: HashMap::new(),
+            tool_slots: HashMap::new(),
             work_header_slots: HashMap::new(),
             selection_dismissed: None,
             selection_root_observed: false,
@@ -3728,6 +3902,143 @@ impl CodexView {
             .into_any_element()
     }
 
+    fn render_tool_row(
+        &mut self,
+        detail_index: usize,
+        state: &codex::Snapshot,
+        shimmer: bool,
+        focus: &FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        #[cfg(test)]
+        let _phase = measured_slot::phases::Section::tool();
+        #[cfg(test)]
+        measured_tool::MATERIALIZED.with(|count| count.set(count.get() + 1));
+        let tool = state.saved.items[detail_index].as_ref();
+        let tool_key = tool_expansion_key(tool, detail_index);
+        let tool_expanded = self.expanded.contains(&tool_key);
+        let keyboard_key = tool_key.clone();
+        let failed = tool_failed(tool);
+        let activity = tool_activity_summary(tool, tool_is_running(&state, detail_index));
+        let mut label_run = window.text_style().to_run(activity.len());
+        label_run.font.family = crate::fonts::UI_FAMILY.into();
+        let label_width = truncation_safe_label_width(
+            &activity,
+            rpx(TEXT_SMALL).to_pixels(window.rem_size()),
+            &label_run,
+            window.text_system(),
+        );
+        let mut detail_row = div()
+            .id(("codex-tool-detail-row", detail_index))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(rpx(SPACE_SM))
+            .child(
+                super::components::inline_disclosure(
+                    "codex-toggle-tool",
+                    if tool_expanded {
+                        "Collapse tool call"
+                    } else {
+                        "Expand tool call"
+                    },
+                )
+                .id(("codex-toggle-tool", detail_index))
+                .debug_selector(move || format!("codex-toggle-tool-{detail_index}"))
+                .w_full()
+                .justify_start()
+                .gap(rpx(SPACE_SM))
+                .track_focus(focus)
+                .tab_index(0)
+                .focus_visible(|style| style.bg(c::BG_HOVER()))
+                .when(tool_expanded, |style| style.text_color(c::FG()))
+                .aria_label(tool_activity_summary(
+                    tool,
+                    tool_is_running(&state, detail_index),
+                ))
+                .child(
+                    div()
+                        .id(("codex-tool-icon", detail_index))
+                        .debug_selector(move || format!("codex-tool-icon-{detail_index}"))
+                        .size(rpx(ICON_SM))
+                        .flex_shrink_0()
+                        .child(crate::icons::icon(
+                            tool_activity_icon(tool),
+                            ICON_SM,
+                            if failed { c::FORM_ERROR() } else { c::FG_DIM() },
+                        )),
+                )
+                .child(
+                    div()
+                        .id(("codex-tool-row-label", detail_index))
+                        .debug_selector(move || format!("codex-tool-row-label-{detail_index}"))
+                        .w(label_width)
+                        .min_w_0()
+                        .truncate()
+                        .text_size(rpx(TEXT_SMALL))
+                        .text_color(if tool_expanded { c::FG() } else { c::FG_DIM() })
+                        .group_hover("neutral-control", |text| text.text_color(c::FG()))
+                        .child(shimmer_label(
+                            ("codex-tool-detail-shimmer", detail_index).into(),
+                            activity,
+                            shimmer,
+                            cx,
+                        )),
+                )
+                .aria_expanded(tool_expanded)
+                .child(
+                    crate::icons::icon(
+                        if tool_expanded {
+                            "chev-down"
+                        } else {
+                            "chev-right"
+                        },
+                        ICON_SM,
+                        c::FG_DIM(),
+                    )
+                    .flex_shrink_0(),
+                )
+                .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") && !event.is_held {
+                        this.toggle_expansion(&keyboard_key, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_expansion(&tool_key, cx))),
+            );
+        if tool_expanded {
+            let copy = tool_detail(tool);
+            detail_row = detail_row.child(
+                div()
+                    .id(("codex-tool-detail", detail_index))
+                    .debug_selector(move || format!("codex-tool-detail-{detail_index}"))
+                    .max_h(rpx(TOOL_DETAIL_MAX_H))
+                    .overflow_y_scroll()
+                    .p(rpx(SPACE_LG))
+                    .rounded(rpx(RADIUS_CONTROL))
+                    .bg(c::BG_RAIL())
+                    .flex()
+                    .flex_col()
+                    .gap(rpx(SPACE_SM))
+                    .child(copy_control("codex-copy-tool", "Copy tool call", copy))
+                    .child(
+                        TextView::markdown(
+                            ("codex-group-tool-text", detail_index),
+                            format!(
+                                "```text\n{}\n```",
+                                tool_detail(tool).replace("```", "` ` `")
+                            ),
+                        )
+                        .style(markdown_style(window))
+                        .selectable(true),
+                    ),
+            );
+        }
+        detail_row.into_any_element()
+    }
+
     fn render_message_row(
         &mut self,
         index: usize,
@@ -3796,6 +4107,17 @@ impl CodexView {
                     .bg(c::BG_RAIL())
             });
         let text = if tool { tool_detail(item) } else { text };
+        let text = if kind == "userMessage" {
+            frame
+                .review_display
+                .borrow_mut()
+                .entry(index)
+                .or_insert_with(|| state.saved.rich_plans.response_display_text(&text))
+                .clone()
+                .unwrap_or(text)
+        } else {
+            text
+        };
         let copy = if kind == "userMessage" {
             reference_prompt_copy(&text)
         } else {
@@ -4127,35 +4449,32 @@ impl CodexView {
             let linked = html_entity.update(cx, |html, cx| html.linked(&html_message, window, cx));
             row = row.children(linked);
             if kind == "agentMessage" && !self.history_readonly {
-                let plans: Vec<_> = self
-                    .session
-                    .read(cx)
-                    .state
-                    .saved
-                    .rich_plans
-                    .revisions
-                    .iter()
-                    .filter(|plan| plan.message_id == html_message)
-                    .map(|plan| {
-                        (
-                            plan.document.plan_id.clone(),
-                            plan.document.revision_id.clone(),
-                        )
-                    })
-                    .collect();
-                for (plan_id, revision_id) in plans {
-                    let key = (plan_id, revision_id);
+                for index in frame
+                    .rich_messages
+                    .plans
+                    .get(&html_message)
+                    .into_iter()
+                    .flatten()
+                {
+                    let plan = &state.saved.rich_plans.revisions[*index];
+                    let key = (
+                        plan.document.plan_id.clone(),
+                        plan.document.revision_id.clone(),
+                    );
                     row = row.child(super::native_plan::inline(
                         &self.native_plans[&key],
                         window,
                         cx,
                     ));
                 }
-                let errors = state.saved.rich_plans.errors.clone();
-                for error in errors
+                for index in frame
+                    .rich_messages
+                    .errors
+                    .get(&html_message)
                     .into_iter()
-                    .filter(|error| error.message_id == html_message)
+                    .flatten()
                 {
+                    let error = &state.saved.rich_plans.errors[*index];
                     if let Some(limit) = &error.size_limit {
                         let recovery_roots: Vec<std::path::PathBuf> = state
                             .saved
@@ -4226,7 +4545,7 @@ impl CodexView {
                                     .text_color(c::FORM_ERROR())
                                     .child(format!("Couldn’t open native plan: {}", error.error)),
                             )
-                            .child(div().text_color(c::FG_DIM()).child(error.source))
+                            .child(div().text_color(c::FG_DIM()).child(error.source.clone()))
                             .child(
                                 transcript_action(
                                     format!("retry-native-plan-{message_id}"),
@@ -5169,6 +5488,7 @@ impl Render for CodexView {
             self.pending_history_jump = None;
             self.message_slots.clear();
             self.work_header_slots.clear();
+            self.tool_slots.clear();
             self.selection_views.clear();
             self.selection_dismissed = None;
             if self
@@ -5266,6 +5586,7 @@ impl Render for CodexView {
         {
             self.message_slots.clear();
             self.work_header_slots.clear();
+            self.tool_slots.clear();
             return div()
                 .id("codex-conversation")
                 .size_full()
@@ -5311,7 +5632,10 @@ impl Render for CodexView {
         let mut rendered_selection_keys = HashSet::new();
         let mut rendered_slot_keys = HashSet::new();
         let mut rendered_header_keys = HashSet::new();
+        let mut rendered_tool_keys = HashSet::new();
         let message_frame = Rc::new(measured_slot::MessageFrame {
+            rich_messages: transcript.rich_messages.clone(),
+            review_display: transcript.review_display.clone(),
             state: state.clone(),
             prepared: transcript.prepared.clone(),
             initial_transcript,
@@ -5405,7 +5729,9 @@ impl Render for CodexView {
             {
                 continue;
             }
-            if let Some((key, label, active)) = work_header_at(&state, index) {
+            if let Some((key, label, active)) =
+                transcript.work.header(&state, &transcript.prepared, index)
+            {
                 message_child += 1;
                 let expanded = self.expanded.contains(&key);
                 let focus_key = format!(
@@ -5480,8 +5806,10 @@ impl Render for CodexView {
             }
             // Keep completed commentary with the work it describes; the answer stays inline.
             if work_commentary(&state, index)
-                && !self.expanded.contains(&work_key_at(&state, index))
-                && !work_is_active_at(&state, index)
+                && !self
+                    .expanded
+                    .contains(&WorkIndex::key(&transcript.prepared, index))
+                && !transcript.work.active[index]
             {
                 continue;
             }
@@ -5534,9 +5862,10 @@ impl Render for CodexView {
                     .enumerate()
                     .filter(|(offset, _)| {
                         let item_index = index + offset;
-                        self.expanded.contains(&work_key_at(&state, item_index))
-                            || (tool_visible(&state, item_index)
-                                && work_is_active_at(&state, item_index))
+                        self.expanded
+                            .contains(&WorkIndex::key(&transcript.prepared, item_index))
+                            || (transcript.work.tool_visible(&state, item_index)
+                                && transcript.work.active[item_index])
                     })
                     .map(|(offset, item)| (index + offset, item))
                     .collect::<Vec<_>>();
@@ -5609,9 +5938,11 @@ impl Render for CodexView {
                             .items
                             .get(end)
                             .is_some_and(|item| is_tool_item(item))
-                            && tool_visible(&state, end)
-                            && (work_is_active_at(&state, end)
-                                || self.expanded.contains(&work_key_at(&state, end))),
+                            && transcript.work.tool_visible(&state, end)
+                            && (transcript.work.active[end]
+                                || self
+                                    .expanded
+                                    .contains(&WorkIndex::key(&transcript.prepared, end))),
                         |group| group.mb(-rpx(SPACE_2XL)),
                     )
                     .w_full()
@@ -5664,149 +5995,41 @@ impl Render for CodexView {
                 if expanded || tools.len() == 1 {
                     for (detail_index, tool) in tools {
                         #[cfg(test)]
-                        let _phase = measured_slot::phases::Section::tool();
-                        #[cfg(test)]
                         measured_slot::observe_tool_detail(
-                            detail_index >= active_work_start(&state),
+                            detail_index >= transcript.work.active_start,
                         );
                         let tool_key = tool_expansion_key(tool, detail_index);
-                        let tool_expanded = self.expanded.contains(&tool_key);
-                        let keyboard_key = tool_key.clone();
-                        let failed = tool_failed(tool);
-                        let activity =
-                            tool_activity_summary(tool, tool_is_running(&state, detail_index));
-                        let mut label_run = window.text_style().to_run(activity.len());
-                        label_run.font.family = crate::fonts::UI_FAMILY.into();
-                        let label_width = truncation_safe_label_width(
-                            &activity,
-                            rpx(TEXT_SMALL).to_pixels(window.rem_size()),
-                            &label_run,
-                            window.text_system(),
+                        let focus_key = format!(
+                            "tool-row:{}:{detail_index}:{tool_key}",
+                            state.saved.thread_id.as_deref().unwrap_or_default()
                         );
-                        let mut detail_row = div()
-                            .id(("codex-tool-detail-row", detail_index))
-                            .flex()
-                            .flex_col()
-                            .gap(rpx(SPACE_SM))
-                            .child(
-                                super::components::inline_disclosure(
-                                    "codex-toggle-tool",
-                                    if tool_expanded {
-                                        "Collapse tool call"
-                                    } else {
-                                        "Expand tool call"
-                                    },
-                                )
-                                .id(("codex-toggle-tool", detail_index))
-                                .debug_selector(move || format!("codex-toggle-tool-{detail_index}"))
-                                .w_full()
-                                .justify_start()
-                                .gap(rpx(SPACE_SM))
-                                .tab_index(0)
-                                .focus_visible(|style| style.bg(c::BG_HOVER()))
-                                .when(tool_expanded, |style| style.text_color(c::FG()))
-                                .aria_label(tool_activity_summary(
-                                    tool,
-                                    tool_is_running(&state, detail_index),
-                                ))
-                                .child(
-                                    div()
-                                        .id(("codex-tool-icon", detail_index))
-                                        .debug_selector(move || {
-                                            format!("codex-tool-icon-{detail_index}")
-                                        })
-                                        .size(rpx(ICON_SM))
-                                        .flex_shrink_0()
-                                        .child(crate::icons::icon(
-                                            tool_activity_icon(tool),
-                                            ICON_SM,
-                                            if failed { c::FORM_ERROR() } else { c::FG_DIM() },
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .id(("codex-tool-row-label", detail_index))
-                                        .debug_selector(move || {
-                                            format!("codex-tool-row-label-{detail_index}")
-                                        })
-                                        .w(label_width)
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(rpx(TEXT_SMALL))
-                                        .text_color(if tool_expanded {
-                                            c::FG()
-                                        } else {
-                                            c::FG_DIM()
-                                        })
-                                        .group_hover("neutral-control", |text| {
-                                            text.text_color(c::FG())
-                                        })
-                                        .child(shimmer_label(
-                                            ("codex-tool-detail-shimmer", detail_index).into(),
-                                            activity,
-                                            work_is_active_at(&state, detail_index)
-                                                && tool_visible(&state, detail_index),
-                                            cx,
-                                        )),
-                                )
-                                .aria_expanded(tool_expanded)
-                                .child(
-                                    crate::icons::icon(
-                                        if tool_expanded {
-                                            "chev-down"
-                                        } else {
-                                            "chev-right"
-                                        },
-                                        ICON_SM,
-                                        c::FG_DIM(),
-                                    )
-                                    .flex_shrink_0(),
-                                )
-                                .on_key_down(cx.listener(
-                                    move |this, event: &gpui::KeyDownEvent, _, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                            && !event.is_held
-                                        {
-                                            this.toggle_expansion(&keyboard_key, cx);
-                                            cx.stop_propagation();
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| this.toggle_expansion(&tool_key, cx),
-                                )),
-                            );
-                        if tool_expanded {
-                            let copy = tool_detail(tool);
-                            detail_row = detail_row.child(
-                                div()
-                                    .id(("codex-tool-detail", detail_index))
-                                    .debug_selector(move || {
-                                        format!("codex-tool-detail-{detail_index}")
-                                    })
-                                    .max_h(rpx(TOOL_DETAIL_MAX_H))
-                                    .overflow_y_scroll()
-                                    .p(rpx(SPACE_LG))
-                                    .rounded(rpx(RADIUS_CONTROL))
-                                    .bg(c::BG_RAIL())
-                                    .flex()
-                                    .flex_col()
-                                    .gap(rpx(SPACE_SM))
-                                    .child(copy_control("codex-copy-tool", "Copy tool call", copy))
-                                    .child(
-                                        TextView::markdown(
-                                            ("codex-group-tool-text", detail_index),
-                                            format!(
-                                                "```text\n{}\n```",
-                                                tool_detail(tool).replace("```", "` ` `")
-                                            ),
-                                        )
-                                        .style(markdown_style(window))
-                                        .selectable(true),
-                                    ),
-                            );
-                        }
-                        group = group.child(detail_row);
+                        let focus = self.ensure_control_focus(&focus_key, window, cx);
+                        let shimmer = transcript.work.active[detail_index]
+                            && transcript.work.tool_visible(&state, detail_index);
+                        let eager = self.expanded.contains(&tool_key)
+                            || tool_is_running(&state, detail_index)
+                            || shimmer
+                            || self.transcript_only()
+                            || window.is_a11y_active()
+                            || gpui_component::text::has_active_text_selection(window, cx)
+                            || window.is_inspector_picking(cx)
+                            || measured_tool::force_eager();
+                        let row = if eager {
+                            self.render_tool_row(detail_index, &state, shimmer, &focus, window, cx)
+                        } else {
+                            rendered_tool_keys.insert(focus_key.clone());
+                            let cache = self.tool_slots.entry(focus_key).or_default().clone();
+                            measured_tool::MeasuredTool::new(
+                                cx.entity().downgrade(),
+                                state.clone(),
+                                detail_index,
+                                tool_key,
+                                focus,
+                                cache,
+                            )
+                            .into_any_element()
+                        };
+                        group = group.child(row);
                     }
                 }
                 message_child += 1;
@@ -5891,6 +6114,7 @@ impl Render for CodexView {
         if self.transcript_only() {
             self.message_slots.clear();
             self.work_header_slots.clear();
+            self.tool_slots.clear();
             // Stay pinned through layout growth until a wheel gesture starts browsing.
             // Returning to the bottom resumes following without affecting the composer.
             if self.preview_follow_latest {
@@ -5917,6 +6141,8 @@ impl Render for CodexView {
             .retain(|key, _| rendered_selection_keys.contains(key));
         self.message_slots
             .retain(|key, _| rendered_slot_keys.contains(key));
+        self.tool_slots
+            .retain(|key, _| rendered_tool_keys.contains(key));
         self.work_header_slots
             .retain(|key, _| rendered_header_keys.contains(key));
         let minimap = self.render_message_minimap(minimap_entries, &minimap_anchors, window, cx);
@@ -10130,8 +10356,16 @@ fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, Stri
     } else {
         period.and_then(|period| period.duration_ms.map(|ms| ms / 1000))
     };
+    Some((
+        work_key_at(state, index),
+        work_duration_label(active, duration),
+        active,
+    ))
+}
+
+fn work_duration_label(active: bool, duration: Option<u64>) -> String {
     let verb = if active { "Working" } else { "Worked" };
-    let label = duration.map_or_else(
+    duration.map_or_else(
         || verb.into(),
         |seconds| {
             let minutes = seconds / 60;
@@ -10143,8 +10377,7 @@ fn work_header_at(state: &codex::Snapshot, index: usize) -> Option<(String, Stri
                 format!("{verb} for {minutes}m")
             }
         },
-    );
-    Some((work_key_at(state, index), label, active))
+    )
 }
 
 /// Only parent commentary and tools belong to the work disclosure.
@@ -15079,11 +15312,81 @@ mod tests {
         state.saved.rich_plans = serde_json::from_value(json!({"revisions":[{
             "message_id":"plan-message", "source":"plan.grove-plan.json", "assets":[],
             "document":{"schema_version":1,"plan_id":"invites","revision_id":"r1","title":"Invite teammates",
-                "markdown":"# Invite teammates\n\nAdd workspace invitations with explicit access rules.\n\n## Access\nChoose the policy before implementation.\n\n## Verification\nCheck creation, acceptance and revocation.",
+                "markdown":"# Invite teammates\n\nAdd workspace invitations with explicit access rules.\n\n## Access\nChoose the policy before implementation.\n\n## Verification\nCheck creation, acceptance and revocation.\n\n| State | Expected result |\n| --- | --- |\n| Valid invitation | Access matches the chosen role |\n| Expired invitation | Joining is blocked and renewal is available |",
                 "decisions":[{"id":"access","section":"Access","prompt":"Who can invite?","options":[{"id":"admins","label":"Admins only","description":"Restrict membership changes"}]}]}
         }]})).unwrap();
         state.saved.items = vec![json!({"id":"plan-message","type":"agentMessage","status":"completed","text":"Here is the plan."})].into();
         state
+    }
+
+    fn plan_request_snapshot(provider: codex::Provider) -> Snapshot {
+        let mut state = decision_plan_snapshot(provider);
+        state.saved.rich_plans.revisions[0]
+            .review
+            .own_answers
+            .insert("access".into(), "Workspace owners and team leads".into());
+        let (id, _) = state
+            .saved
+            .rich_plans
+            .prepare_delivery("invites", "r1")
+            .unwrap()
+            .unwrap();
+        state.saved.rich_plans.confirm_delivery(id);
+        let mut finalized = state.saved.rich_plans.revisions[0].clone();
+        finalized.document.revision_id = "r2".into();
+        finalized.document.decisions.clear();
+        finalized.document.finalized_from = Some(grove_core::rich_plan::PlanFinalization {
+            revision_id: "r1".into(),
+            answers: [("access".into(), "Workspace owners and team leads".into())].into(),
+        });
+        finalized.review = grove_core::rich_plan::ReviewState::default();
+        finalized.review.request_decision_revision = true;
+        state.saved.rich_plans.revisions.push(finalized);
+        let (_, payload) = state
+            .saved
+            .rich_plans
+            .prepare_delivery("invites", "r2")
+            .unwrap()
+            .unwrap();
+        state.saved.items = vec![json!({"id":"decision-request", "type":"userMessage", "content":[{"type":"inputText", "text":payload}]})].into();
+        state
+    }
+
+    #[gpui::test]
+    fn plan_requests_render_human_summaries_for_codex_and_claude(cx: &mut gpui::TestAppContext) {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let (view, cx, _, _) = fixture(cx);
+            let state = plan_request_snapshot(provider);
+            let raw = codex::item_text(state.saved.items[0].as_ref());
+            cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state = state.into();
+                        cx.notify();
+                    });
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            view.read_with(cx, |view, cx| {
+                let rendered = view
+                    .selection_views
+                    .values()
+                    .map(|owner| owner.read(cx).source().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(rendered.contains("Change plan decisions"), "{rendered}");
+                assert!(rendered.contains("Who can invite?"));
+                assert!(rendered.contains("Workspace owners and team leads"));
+                assert!(!rendered.contains("```json"));
+                assert!(!rendered.contains("Original decision definitions"));
+                assert_eq!(
+                    codex::item_text(view.session.read(cx).state.saved.items[0].as_ref()),
+                    raw
+                );
+                assert!(raw.contains("Original decision definitions"));
+            });
+        }
     }
 
     #[gpui::test]
@@ -15274,7 +15577,8 @@ mod tests {
                 ..Default::default()
             }, |window,cx| {
                 window.set_window_title("Grove plans QA");
-                let session=cx.new(|cx|CodexSession::from_connection(decision_plan_snapshot(codex::Provider::Codex),connection,cx));
+                let state = if std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_some() { plan_request_snapshot(codex::Provider::Codex) } else { decision_plan_snapshot(codex::Provider::Codex) };
+                let session=cx.new(|cx|CodexSession::from_connection(state,connection,cx));
                 let view=cx.new(|cx|CodexView::new(session,window,cx));
                 chat=Some(view.clone());
                 cx.new(|cx|gpui_component::Root::new(view,window,cx))
@@ -15288,7 +15592,7 @@ mod tests {
                     cx.update_window(window.into(),|_,window,cx| {
                         window.resize(gpui::size(gpui::px(width),gpui::px(900.)));
                         window.set_rem_size(gpui::px(rem));
-                        if custom {chat.update(cx,|view,cx| {
+                        if custom && std::env::var_os("GROVE_PLAN_REQUEST_CAPTURE").is_none() {chat.update(cx,|view,cx| {
                             view.begin_plan_composer(super::super::native_plan::NativePlanEvent::Compose {
                                 plan_id:"invites".into(),revision_id:"r1".into(),target:super::super::native_plan::PlanComposerTarget::CustomAnswer{decision_id:"access".into(),prompt:"Who can invite?".into()}
                             },window,cx);
@@ -16667,6 +16971,181 @@ mod tests {
         });
     }
     #[gpui::test]
+    fn tables_beside_code_controls_preserve_geometry_and_keyboard_copy(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture_with_navigation(cx, true);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            let text = format!("```rust\nlet answer = 42;\n```\n\n{}", (0..12).map(|i|
+                format!("## Decision {i}\n\n| Access | Expiry | Method | Acceptance | Audit | Scope |\n| --- | --- | --- | --- | --- | --- |\n| Member with a longer description | Seven days | Email and link | Immediate | Retained | Prototype only |\n\n")
+            ).collect::<String>());
+            cx.update(|_, cx| view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = provider;
+                    session.state.saved.thread_id = Some(format!("table-code-{provider:?}"));
+                    session.state.saved.items = vec![json!({"id":"answer", "type":"agentMessage", "text":text, "phase":"final_answer", "groveCompleted":true})].into();
+                    session.state.status = Status::Idle;
+                    cx.notify();
+                });
+                cx.notify();
+            }));
+            for width in [1000., 420.] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+                for _ in 0..4 {
+                    cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                    draw(cx);
+                }
+                let extent = view.read_with(cx, |view, _| view.scroll.max_offset());
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.scroll.scroll_to_bottom();
+                        cx.notify();
+                    })
+                });
+                draw(cx);
+                cx.update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        assert!(
+                            !view
+                                .selection_views
+                                .values()
+                                .next()
+                                .unwrap()
+                                .read(cx)
+                                .supports_layout_projection(),
+                            "code controls keep the containing body live"
+                        );
+                        view.message_focus
+                            .iter()
+                            .find(|(key, _)| key.contains(":code:"))
+                            .unwrap()
+                            .1
+                            .focus(window, cx);
+                    })
+                });
+                draw(cx);
+                cx.simulate_keystrokes("enter");
+                draw(cx);
+                assert_eq!(
+                    cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
+                        .unwrap()
+                        .trim(),
+                    "let answer = 42;"
+                );
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        for owner in view.selection_views.values() {
+                            owner.update(cx, |owner, cx| owner.select_all(cx));
+                        }
+                        cx.notify();
+                    })
+                });
+                draw(cx);
+                view.read_with(cx, |view, cx| {
+                    assert_eq!(view.scroll.max_offset(), extent);
+                    let selected = view
+                        .selection_views
+                        .values()
+                        .next()
+                        .unwrap()
+                        .read(cx)
+                        .selected_text();
+                    assert!(
+                        selected.contains("Decision 11") && selected.contains("Prototype only")
+                    );
+                });
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.selection_views.clear();
+                        view.message_slots.clear();
+                        cx.notify();
+                    })
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn mixed_table_attachment_history_reuses_geometry_and_preserves_selection(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|_, cx| view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = provider;
+                    session.state.saved.thread_id = Some(format!("tables-{provider:?}"));
+                    session.state.saved.items = (0..40).map(|i| json!({
+                        "id":format!("table-{i}"), "type":if i % 4 == 0 {"userMessage"} else {"agentMessage"},
+                        "content":[{"type":"text","text":"Seven days with an attached screenshot"},{"type":"image","url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jM1sAAAAASUVORK5CYII="}],
+                        "text":format!("| Decision {i} | Answer |\n| --- | --- |\n| Default access with a long explanation | Member access with enough text to wrap at narrow widths |\n| Expiration | Seven days |"),
+                        "phase":"final_answer", "groveCompleted":true,
+                    })).collect();
+                    session.state.status = Status::Idle;
+                    cx.notify();
+                });
+                cx.notify();
+            }));
+            for (width, rem) in [(1000., 16.), (420., 16.), (420., 22.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+                cx.update(|_, cx| gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem));
+                for _ in 0..4 {
+                    cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                    draw(cx);
+                }
+                measured_slot::MATERIALIZED.with(|count| count.set(0));
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                draw(cx);
+                assert!(measured_slot::MATERIALIZED.with(Cell::get) < 15);
+                let extent = view.read_with(cx, |view, _| view.scroll.max_offset());
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.scroll.scroll_to_bottom();
+                        cx.notify();
+                    })
+                });
+                draw(cx);
+                view.read_with(cx, |view, cx| {
+                    assert_eq!(view.scroll.max_offset(), extent);
+                    assert_eq!(view.selection_views.len(), 40);
+                    assert!(view
+                        .selection_views
+                        .values()
+                        .all(|owner| owner.read(cx).supports_layout_projection()));
+                });
+                // Selecting every retained owner forces the original layout path.
+                // Its height and text must agree with the measured offscreen path.
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        for owner in view.selection_views.values() {
+                            owner.update(cx, |owner, cx| owner.select_all(cx));
+                        }
+                        cx.notify();
+                    })
+                });
+                draw(cx);
+                view.read_with(cx, |view, cx| {
+                    assert_eq!(view.scroll.max_offset(), extent);
+                    assert!(view
+                        .selection_views
+                        .values()
+                        .all(|owner| owner.read(cx).selected_text().contains("Seven days")));
+                });
+                // Discard selected view owners before measuring the next size.
+                cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.selection_views.clear();
+                        view.message_slots.clear();
+                        cx.notify();
+                    })
+                });
+            }
+        }
+    }
+
+    #[gpui::test]
     fn measured_message_slots_preserve_geometry_owners_and_focus_for_both_providers(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -16684,6 +17163,15 @@ mod tests {
         }
         let _reset = ResetEager;
         let (view, cx, _, _) = fixture_with_navigation(cx, true);
+        let fork_events = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = fork_events.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&view, move |_, event, _| {
+                if let CodexViewEvent::ForkRequested(boundary, restore_user) = event {
+                    observed.borrow_mut().push((*boundary, *restore_user));
+                }
+            })
+        });
         cx.update(|_, cx| cx.set_reduce_motion(true));
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             cx.update(|_, cx| view.update(cx, |view, cx| {
@@ -16757,9 +17245,9 @@ mod tests {
                     });
                 });
                 slot_draw(cx);
-                // Existing order is source -> Edit -> Copy -> Worked button;
+                // Existing order is source -> Fork -> Edit -> Copy -> Worked button;
                 // no extra header-container stop may be introduced.
-                for _ in 0..3 {
+                for _ in 0..4 {
                     cx.simulate_keystrokes("tab");
                     slot_draw(cx);
                 }
@@ -16784,8 +17272,8 @@ mod tests {
                     expected_max,
                     "expanding and collapsing a reified header restores exact flow geometry"
                 );
-                // Only the original footer Copy control is a Tab stop. Its
-                // proxy reifies the actual action before keyboard activation.
+                // Footer Copy and Fork retain their original Tab order.
+                // Proxies reify the actual actions before keyboard activation.
                 let (footer_key, response_text) = view.read_with(cx, |view, _| {
                     let group = &view
                         .transcript_cache
@@ -16827,24 +17315,34 @@ mod tests {
                     measured_slot::MATERIALIZED.with(Cell::get) < 20,
                     "one response's copy feedback must not reify the entire transcript"
                 );
-                // The following offscreen user row exposes the same Edit and
-                // Copy destinations, without an extra source-container stop.
+                // Footer Fork precedes the following user Fork/Edit/Copy;
+                // no extra source-container stop is introduced.
                 assert!(
                     cx.debug_bounds("codex-edit-message-4").is_none(),
                     "target user row must stay culled until Tab reaches its real Edit destination"
                 );
-                for suffix in ["edit", "copy"] {
+                for key in [
+                    "fork:4:false".to_owned(),
+                    "fork:4:true".to_owned(),
+                    format!("slot-{provider:?}:slot-4:edit"),
+                    format!("slot-{provider:?}:slot-4:copy"),
+                ] {
                     cx.simulate_keystrokes("tab");
                     slot_draw(cx);
                     cx.update(|window, cx| {
                         view.read_with(cx, |view, _| {
                             assert!(
-                                view.message_focus[&format!("slot-{provider:?}:slot-4:{suffix}")]
-                                    .is_focused(window),
-                                "offscreen user controls must preserve forward Tab order: {suffix}"
+                                view.message_focus[&key].is_focused(window),
+                                "offscreen user controls must preserve forward Tab order: {key}"
                             );
                         });
                     });
+                    if key.starts_with("fork:") {
+                        fork_events.borrow_mut().clear();
+                        cx.simulate_keystrokes("enter");
+                        slot_draw(cx);
+                        assert_eq!(&*fork_events.borrow(), &[(4, key == "fork:4:true")]);
+                    }
                 }
                 cx.simulate_keystrokes("space");
                 slot_draw(cx);
@@ -16854,6 +17352,8 @@ mod tests {
                 );
                 for key in [
                     format!("slot-{provider:?}:slot-4:edit"),
+                    "fork:4:true".to_owned(),
+                    "fork:4:false".to_owned(),
                     format!("{footer_key}:copy"),
                     header_focus_key.clone(),
                 ] {
@@ -17092,8 +17592,16 @@ mod tests {
                     reasoning_group
                 );
                 assert!(
-                    cx.debug_bounds("codex-toggle-tool-1").is_some(),
-                    "tool controls retain their original eager rendering"
+                    cx.debug_bounds("codex-toggle-tool-1").is_none(),
+                    "completed offscreen tool rows reuse geometry before keyboard entry"
+                );
+                measured_tool::MATERIALIZED.with(|count| count.set(0));
+                cx.update(|_, cx| view.update(cx, |_, cx| cx.notify()));
+                frame(cx);
+                assert_eq!(
+                    measured_tool::MATERIALIZED.with(Cell::get),
+                    0,
+                    "warm offscreen completed tools must not build or shape their summaries"
                 );
                 let work_key = format!("work-header:tool-test-{provider:?}:1:work-0");
                 cx.update(|window, cx| {
@@ -17446,6 +17954,135 @@ mod tests {
                 window.blur();
             });
         }
+    }
+
+    #[test]
+    fn work_index_matches_legacy_helpers_for_both_providers() {
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for busy in [false, true] {
+                for pattern in 0..24 {
+                    let mut state = snapshot();
+                    state.saved.provider = provider;
+                    state.status = if busy {
+                        codex::Status::Working
+                    } else {
+                        codex::Status::Idle
+                    };
+                    state.work_started = None;
+                    state.saved.items = (0..40).map(|i| json!({
+                        "id": format!("item-{i}"),
+                        "type": if (i + pattern) % 9 < 2 { "userMessage" }
+                            else if i % 5 == 0 { "agentMessage" } else { "commandExecution" }
+                    })).collect();
+                    // Deliberately unordered and overlapping: preserve reverse-vector
+                    // priority instead of assuming normalized persisted work periods.
+                    if pattern % 2 == 0 {
+                        state.saved.work_periods = vec![
+                            codex::WorkPeriod {
+                                start_item: 20,
+                                end_item: None,
+                                duration_ms: None,
+                                subagents: vec![],
+                            },
+                            codex::WorkPeriod {
+                                start_item: 0,
+                                end_item: Some(15),
+                                duration_ms: Some(47000),
+                                subagents: vec![],
+                            },
+                            codex::WorkPeriod {
+                                start_item: 8,
+                                end_item: Some(27),
+                                duration_ms: Some(126000),
+                                subagents: vec![],
+                            },
+                        ];
+                    } else {
+                        state.saved.work_periods.clear();
+                    }
+                    let cache = TranscriptRenderCache::new(Rc::new(state.clone()), vec![]);
+                    for history_start in [0, 7, 23, 40] {
+                        for index in history_start..=state.saved.items.len() {
+                            assert_eq!(
+                                WorkIndex::key(&cache.prepared, index),
+                                work_key_at(&state, index)
+                            );
+                            assert_eq!(cache.work.active[index], work_is_active_at(&state, index));
+                            assert_eq!(
+                                cache.work.tool_visible(&state, index),
+                                tool_visible(&state, index)
+                            );
+                            assert_eq!(
+                                cache.work.header(&state, &cache.prepared, index),
+                                work_header_at(&state, index)
+                            );
+                        }
+                    }
+                    // Work completion changes metadata without changing item identity.
+                    let mut completed = state;
+                    completed.status = codex::Status::Done;
+                    let next =
+                        TranscriptRenderCache::refreshed(Rc::new(completed), vec![], Some(&cache));
+                    assert!(Rc::ptr_eq(&cache.prepared, &next.prepared));
+                    assert!(next.work.active.iter().all(|active| !active));
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual indexed work lookup CPU comparison"]
+    fn work_index_long_tool_benchmark() {
+        let mut state = snapshot();
+        state.saved.items = std::iter::once(json!({"type":"userMessage"}))
+            .chain((0..4000).map(|i| json!({"id":format!("tool-{i}"),"type":"commandExecution"})))
+            .collect();
+        let preparation = std::time::Instant::now();
+        let cache = TranscriptRenderCache::new(Rc::new(state.clone()), vec![]);
+        let preparation_ms = preparation.elapsed().as_secs_f64() * 1000.;
+        let mut old = Vec::new();
+        let mut new = Vec::new();
+        for _ in 0..7 {
+            let start = std::time::Instant::now();
+            for index in 0..state.saved.items.len() {
+                std::hint::black_box(work_key_at(&state, index));
+                std::hint::black_box(work_header_at(&state, index));
+            }
+            old.push(start.elapsed().as_secs_f64() * 1000.);
+            let start = std::time::Instant::now();
+            for index in 0..state.saved.items.len() {
+                std::hint::black_box(WorkIndex::key(&cache.prepared, index));
+                std::hint::black_box(cache.work.header(&state, &cache.prepared, index));
+            }
+            new.push(start.elapsed().as_secs_f64() * 1000.);
+        }
+        println!(
+            "WORK_INDEX_PERF {}",
+            json!({"items":state.saved.items.len(),"preparation_ms":preparation_ms,"legacy_ms":old,"indexed_ms":new,"scope":"work key/header lookup CPU only; not native frame presentation"})
+        );
+    }
+
+    #[test]
+    fn rich_message_index_refreshes_without_transcript_edits() {
+        let source = Rc::new(snapshot());
+        let before = TranscriptRenderCache::new(source.clone(), Vec::new());
+        assert!(!before.rich_messages.contains("plan-message"));
+        let mut updated = source.as_ref().clone();
+        updated.saved.rich_plans.errors = serde_json::from_value(json!([{
+            "message_id": "plan-message", "source": "missing.grove-plan.json",
+            "error": "missing"
+        }, {
+            "message_id": "other-message", "source": "other.grove-plan.json",
+            "error": "missing"
+        }]))
+        .unwrap();
+        let after = TranscriptRenderCache::refreshed(Rc::new(updated), Vec::new(), Some(&before));
+        assert!(Rc::ptr_eq(&before.prepared, &after.prepared));
+        assert_eq!(after.rich_messages.errors["plan-message"], vec![0]);
+        assert_eq!(after.rich_messages.errors["other-message"], vec![1]);
+        assert!(!before.rich_messages.contains("plan-message"));
+        let removed = TranscriptRenderCache::refreshed(source, Vec::new(), Some(&after));
+        assert!(!removed.rich_messages.contains("plan-message"));
     }
 
     #[gpui::test]

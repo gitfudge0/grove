@@ -3,6 +3,73 @@
 Commands run from the repository root unless noted. Historical records below
 are context for investigation, never fresh test results or product requirements.
 
+## Mixed-content transcript rendering
+
+Plan snapshots and Markdown sections are cached by accepted document/review
+content; unrelated session updates no longer notify every retained plan. Generated
+review-message summaries are cached within the owning snapshot. Static tables
+reuse measured body/block geometry, including tables beside live code controls;
+fixed-size user attachment thumbnails no longer force their entire row eager.
+Native HTML, diagrams and interactive controls retain their existing safeguards.
+
+Linux debug GPUI CPU replay (NoopTextSystem, seven warm samples per operation,
+fixed saved inputs, 1000×900 test viewport) compared the task-start binary with
+the final changes. These are CPU render/layout/paint timings, not displayed FPS,
+GPU/compositor measurements, or live provider-boundary measurements:
+
+| Workload | Baseline scroll p95 | Updated scroll p95 |
+| --- | ---: | ---: |
+| Saved conversation, 736 items | 304.85 ms | 221.94 ms |
+| Twelve active plans | 830.52 ms | 706.44 ms |
+| Mixed Markdown without plan controls | 423.27 ms | 305.34 ms |
+| Plain prose, 200 items | 67.19 ms | 68.18 ms |
+
+The saved-conversation reduction is 27.2%, below the proposed 30% p95 target.
+The small plain-prose difference is inconclusive with this sample size. First
+mount for the saved conversation fell from 2786 to 2451 ms (one sample each).
+Further native frame-time attribution is still needed before declaring scrolling
+smooth at the display refresh budget; full interactive-row virtualization has
+not been introduced merely to reach the relative target.
+
+Passed: 24 core plan tests; focused plan/approval/composer/preview checks; plan
+snapshot reuse and selective-notification checks; mixed table/attachment cached
+versus eager geometry and selection at narrow/default widths and changed zoom;
+tables beside code controls with offscreen keyboard copy; streaming/manual
+scrolling, static replacement, attachment sizing, transcript cache and HTML-return
+checks; all 33 UI conformance checks. Codex and Claude are verified through local
+native/transport fixtures only, not live provider sessions.
+
+Linux native plan captures were inspected in dark/light themes with a table and
+custom-answer composer. The requested narrow/zoom captures retained the same
+pixel dimensions, and the zoom capture matched the normal image, so native
+narrow/zoom appearance remains unverified despite the passing simulated checks.
+The broader offscreen Tab-order test fails at the same assertion on the task-start
+binary and the updated build; the new dedicated keyboard-copy check passed.
+Live Codex and Claude scrolling/frame delivery, presented FPS, macOS and Windows
+remain untested. Direct dependency-crate tests could not run from the excluded
+workspace package; the changed table paths were exercised by Grove's integration
+fixtures instead. The optimized local build, Linux bundle and installation
+completed successfully; the user's running app was not restarted.
+
+## Readable plan request summaries
+
+Journaled plan-update and change-decisions requests render question/answer
+summaries instead of protocol JSON, without changing stored or provider text.
+Core checks cover exact-payload matching, custom-answer escaping, reloads, and
+reopened decisions. Codex and Claude native fixtures verify readable transcript
+text and unchanged source payloads. Linux light/dark captures were inspected;
+live provider delivery, native narrow/zoom geometry, and macOS/Windows rendering
+remain unverified for this presentation change.
+
+## Plan discussion association
+
+Section discussion actions now follow their grouped content and decisions and
+name the target section. Eight plan fixtures (including Codex and Claude
+composer/reference checks), 33 conformance checks, and the Linux native capture
+test passed. Dark and light Linux captures were inspected for action placement.
+Live Codex and Claude delivery, native narrow/zoom geometry, long-heading layout,
+and macOS/Windows rendering remain unverified for this change.
+
 ## Claude slash-command payloads
 
 Claude submissions beginning with `/` preserve the command and its arguments
@@ -652,3 +719,71 @@ checks also passed. Immediate answer/focus/disabled transitions retain existing
 input-feedback behavior; earlier revision disclosure is immediate.
 The final `./install.sh` local-profile build and bundle succeeded, installing the
 Linux executable and desktop launcher under the user's local application paths.
+
+## Long transcript performance (2026-11-09, in progress)
+
+The current optimization work retains prepared plan content, measured offscreen
+plan/tool geometry and real keyboard actions, caches rich-message/work indexes,
+and retains mounted diagram previews independently of the shared raster cache.
+An ordered-insertion fast path in the existing vendored sum_tree reduces focus
+registration costs; its 11 tests passed, including retained-snapshot and mixed
+insertion/replacement/removal parity with BTreeMap.
+
+Linux native CPU scene-build measurements expose the **entire** history and use
+normal view invalidation rather than a full-window refresh. At the compositor's
+actual 569.6 × 679.2 logical viewport, 21-sample medians for 1/12/48 rich plans
+were 6.92/14.16/45.55 ms, versus 9.27/76.18/311.78 ms with offscreen-plan reuse
+disabled in the same optimized test binary. These are scene-construction times,
+not GPU/compositor FPS; long histories still materially exceed short histories.
+Earlier 48-plan measurements that exposed only the latest 20 turns are not full
+history evidence. Offscreen-diagram reuse subsequently reduced the same-binary 48-plan median
+from 44.41 to 30.57 ms (p95 53.19 to 36.91 ms).
+
+Four offscreen-plan fixtures passed for **Codex and Claude**, covering real
+control order/actions and dynamic diagrams. The new diagram geometry/keyboard
+fixture and all 18 Mermaid tests passed. Earlier transcript selection, footer,
+minimap, tool, index and conformance checks passed; the current targeted pass covered 78 application tests, including both-provider
+message/tool behavior, plans, diagrams, selection, streaming, minimap and all
+33 conformance checks. This was not a full application test run. Native wheel-event checks on 1/48-plan histories
+preserved all items and returned exactly to the initial scroll position. A
+before/after native screenshot for the sum_tree change had zero differing pixels;
+this is one viewport, not comprehensive visual or interaction certification.
+
+Live **Codex** plan-finalization transport passed generation, selected/custom
+answers, duplicate suppression, persisted reload and stale approval gating;
+readiness was checked without sending implementation approval. Live **Claude**
+was attempted but blocked by expired OAuth. Neither result establishes live
+widget-to-provider coverage for all transcript components. Linux native mixed-content benchmarks completed, but compositor smoothness,
+remaining native interaction states, changed-width/theme/zoom appearance, and
+macOS/Windows remain unverified. The final local-profile production build and
+`./install.sh` succeeded; the installed executable matched the built executable
+by SHA-256. The running user app was not restarted.
+Temporary logs and workloads are in `.grove-artifacts/performance-followup/`.
+
+
+Offscreen message/footer/work-header keyboard aliases now avoid pointer and
+hover registration. The 2,000-message median fell from 152.19 to 106.13 ms in
+successive optimized matrices; 200 messages fell from 15.90 to 9.31 ms. These
+were separate runs with ambient system load, not compositor FPS measurements.
+The saved 736-item session measured 14.71 ms collapsed and 40.23 ms with all work
+groups expanded. A 1,000-tool history measured 16.46 ms; 2,000-paragraph and
+2,000-line-code bodies measured 14.29 and 20.41 ms. Short/long parity is **not
+achieved**. Full-history layout/dispatch traversal remains a material cost even
+when only a few message bodies are materialized per frame.
+
+The latest native wheel runs processed 120 events/frames in each 1/48-plan
+history, moved to -1440 logical pixels and returned exactly to zero without item
+loss. Median CPU draw time was 8.08/28.98 ms (p95 9.68/34.02). Matched native
+captures for the message-alias change and for a ready diagram scrolled offscreen
+and back had zero differing pixels. Additional plan viewport captures also
+matched. This covers Linux dark-theme captures at the actual compositor viewport,
+not all themes, widths, focus/hover states or physical display presentation.
+
+A fixed-height layout experiment preserved scroll extents and passed the
+both-provider message regression, but its small 3–5% CPU change was inconclusive
+against run-to-run variation; it was reverted. Earlier kernel sampling lost too
+many events to support percentages; retained findings use native timing,
+opt-in phase measurements and debugger stacks instead. Upstream GPUI view-cache
+and variable-height-list implementations informed the investigation; no new GPUI
+version or blind upstream patch was adopted. The next unresolved work is bounding
+full-history framework traversal and verifying actual presentation smoothness.

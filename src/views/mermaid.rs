@@ -11,6 +11,11 @@ use gpui::{
 use gpui_component::text::{
     markdown_ast, MarkdownExtensions, MarkdownNode, MarkdownParseContext, TextView,
 };
+mod measured;
+#[cfg(test)]
+pub(super) fn take_materialization_count() -> usize {
+    measured::MATERIALIZED.with(|n| n.replace(0))
+}
 mod pele;
 
 struct RenderOptions {
@@ -63,6 +68,38 @@ impl CacheEntry {
     }
 }
 static CACHE: Mutex<VecDeque<CacheEntry>> = Mutex::new(VecDeque::new());
+
+#[derive(Default)]
+struct RetainedPreview(Option<CacheEntry>);
+impl RetainedPreview {
+    fn resolve(
+        &mut self,
+        source: &str,
+        theme: u64,
+        clock: u64,
+        render: impl FnOnce() -> Rendered,
+    ) -> Rendered {
+        if let Some(entry) = &self.0 {
+            if entry.matches(source, theme, clock) {
+                return entry.result.clone();
+            }
+        }
+        self.0 = None;
+        let result = render();
+        // Pending and failed requests must continue consulting the shared
+        // scheduler: a saturated queue also returns Failed and can recover.
+        if matches!(result, Rendered::Ready(..)) {
+            self.0 = Some(CacheEntry {
+                source: source.to_owned(),
+                theme_generation: theme,
+                clock_generation: clock,
+                result: result.clone(),
+                detail: false,
+            });
+        }
+        result
+    }
+}
 
 #[derive(Default)]
 struct FullscreenUi {
@@ -189,10 +226,24 @@ fn render(node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement 
     let Some(diagram) = node.data::<Diagram>() else {
         return div().into_any_element();
     };
-    let result = rendered(&diagram.source, false, cx);
+    // Retain resolved previews with the mounted Markdown block, independently
+    // of the bounded shared raster cache. Otherwise more than 24 diagrams can
+    // evict one another and repeatedly fall back to source while scrolling.
+    let preview = window.use_keyed_state(("mermaid-preview", diagram.offset), cx, |_, _| {
+        RetainedPreview::default()
+    });
+    let result = preview.update(cx, |preview, cx| {
+        preview.resolve(
+            &diagram.source,
+            grove_core::theme::generation(),
+            diagram_clock(&diagram.source),
+            || rendered(&diagram.source, false, cx),
+        )
+    });
     match result {
         Rendered::Ready(image, ratio, width) => {
-            ready_view(diagram, image, ratio, width, window, cx).into_any_element()
+            measured::DiagramElement(ready_view(diagram, image, ratio, width, window, cx))
+                .into_any_element()
         }
         Rendered::Pending | Rendered::Failed => source_view(diagram, window),
     }
@@ -319,6 +370,7 @@ fn ready_view(
             controls: std::array::from_fn(|_| cx.focus_handle()),
             fullscreen: false,
             return_focus: None,
+            measurement: Default::default(),
         }
     });
     viewer.update(cx, |viewer, _| {
@@ -354,6 +406,7 @@ struct DiagramViewer {
     controls: [FocusHandle; 4],
     fullscreen: bool,
     return_focus: Option<FocusHandle>,
+    measurement: measured::Cache,
 }
 impl DiagramViewer {
     fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -390,6 +443,7 @@ impl DiagramViewer {
                 controls: std::array::from_fn(|_| cx.focus_handle()),
                 fullscreen: true,
                 return_focus: Some(return_focus),
+                measurement: Default::default(),
             });
             let focus = expanded.read(cx).focus.clone();
             focus.focus(window, cx);
@@ -745,6 +799,183 @@ fn rasterize_with_detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MountedPreviewFixture {
+        image: Arc<Image>,
+        seed: bool,
+        changed: bool,
+        stale_generation: bool,
+        held: Vec<Arc<Image>>,
+    }
+    impl Render for MountedPreviewFixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.held.clear();
+            let mut body = div().flex().flex_col();
+            for index in 0..MAX_CACHE_ENTRIES + 1 {
+                let source = format!("flowchart LR\nfixture_{index}-->end_{}", self.changed);
+                let diagram = Diagram {
+                    source: source.clone(),
+                    markdown: format!("```mermaid\n{source}\n```"),
+                    offset: index,
+                };
+                if self.seed {
+                    let mut cache = CACHE.lock().unwrap();
+                    cache.retain(|entry| entry.source != source);
+                    if cache.len() >= MAX_CACHE_ENTRIES {
+                        cache.pop_front();
+                    }
+                    cache.push_back(CacheEntry {
+                        source: source.clone(),
+                        theme_generation: grove_core::theme::generation(),
+                        clock_generation: diagram_clock(&source),
+                        result: Rendered::Ready(self.image.clone(), 2., 100.),
+                        detail: false,
+                    });
+                }
+                let child = window.with_element_namespace(("fixture-block", index), |window| {
+                    if self.stale_generation {
+                        let preview =
+                            window.use_keyed_state(("mermaid-preview", index), cx, |_, _| {
+                                RetainedPreview::default()
+                            });
+                        preview.update(cx, |preview, _| {
+                            if let Some(entry) = &mut preview.0 {
+                                entry.theme_generation = entry.theme_generation.wrapping_add(1);
+                                entry.clock_generation = entry.clock_generation.wrapping_add(1);
+                            }
+                        });
+                    }
+                    let child =
+                        super::render(&MarkdownNode::new("grove-mermaid", diagram), window, cx);
+                    let preview = window.use_keyed_state(("mermaid-preview", index), cx, |_, _| {
+                        RetainedPreview::default()
+                    });
+                    let Some(CacheEntry {
+                        result: Rendered::Ready(image, _, _),
+                        ..
+                    }) = &preview.read(cx).0
+                    else {
+                        panic!("actual renderer fell back instead of retaining mounted preview")
+                    };
+                    self.held.push(image.clone());
+                    child
+                });
+                body = body.child(child);
+            }
+            self.seed = false;
+            self.stale_generation = false;
+            body
+        }
+    }
+
+    #[gpui::test]
+    fn mounted_renderer_reuses_previews_after_shared_cache_eviction(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let mut fixture = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|_| MountedPreviewFixture {
+                image: Arc::new(Image::from_bytes(ImageFormat::Png, vec![])),
+                seed: true,
+                changed: false,
+                stale_generation: false,
+                held: Vec::new(),
+            });
+            fixture = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let fixture = fixture.unwrap();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let held = cx.update(|_, cx| fixture.read(cx).held.clone());
+        assert_eq!(held.len(), MAX_CACHE_ENTRIES + 1);
+        CACHE
+            .lock()
+            .unwrap()
+            .retain(|entry| !entry.source.contains("fixture_"));
+        cx.update(|window, cx| {
+            fixture.update(cx, |_, cx| cx.notify());
+            let _ = window.draw(cx);
+            assert!(fixture
+                .read(cx)
+                .held
+                .iter()
+                .zip(&held)
+                .all(|(a, b)| Arc::ptr_eq(a, b)));
+        });
+        assert!(
+            !CACHE
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.source.contains("fixture_")),
+            "warm render must not reschedule evicted rasters"
+        );
+        for stale_generation in [false, true] {
+            cx.update(|window, cx| {
+                fixture.update(cx, |view, cx| {
+                    view.image = Arc::new(Image::from_bytes(ImageFormat::Png, vec![]));
+                    view.changed = true;
+                    view.stale_generation = stale_generation;
+                    view.seed = true;
+                    cx.notify();
+                });
+                let _ = window.draw(cx);
+                let view = fixture.read(cx);
+                assert!(
+                    view.held
+                        .iter()
+                        .all(|image| Arc::ptr_eq(image, &view.image)),
+                    "source or generation changes must resolve the current raster"
+                );
+            });
+        }
+        CACHE
+            .lock()
+            .unwrap()
+            .retain(|entry| !entry.source.contains("fixture_"));
+    }
+
+    #[test]
+    fn mounted_previews_survive_cache_eviction_and_refresh_changed_inputs() {
+        let image = Arc::new(Image::from_bytes(ImageFormat::Png, vec![]));
+        let mut previews: Vec<_> = (0..MAX_CACHE_ENTRIES + 1)
+            .map(|index| {
+                let mut preview = RetainedPreview::default();
+                preview.resolve(&format!("diagram-{index}"), 7, 10, || {
+                    Rendered::Ready(image.clone(), 2., 100.)
+                });
+                preview
+            })
+            .collect();
+        // Model a fully evicted shared cache: no mounted block may consult its
+        // raster fallback again, even with more blocks than the cache can hold.
+        for (index, preview) in previews.iter_mut().enumerate() {
+            let result = preview.resolve(&format!("diagram-{index}"), 7, 10, || {
+                panic!("retained preview must not request another raster")
+            });
+            assert!(matches!(result, Rendered::Ready(held, _, _) if Arc::ptr_eq(&held, &image)));
+        }
+        for (source, theme, clock) in [("changed", 7, 10), ("changed", 8, 10), ("changed", 8, 11)] {
+            let preview = &mut previews[0];
+            assert!(matches!(
+                preview.resolve(source, theme, clock, || Rendered::Pending),
+                Rendered::Pending
+            ));
+            assert!(matches!(
+                preview.resolve(source, theme, clock, || Rendered::Failed),
+                Rendered::Failed
+            ));
+            assert!(matches!(
+                preview.resolve(source, theme, clock, || Rendered::Ready(
+                    image.clone(),
+                    2.,
+                    100.
+                )),
+                Rendered::Ready(..)
+            ));
+        }
+    }
 
     #[test]
     fn palette_changes_invalidate_diagrams_even_within_one_appearance() {
