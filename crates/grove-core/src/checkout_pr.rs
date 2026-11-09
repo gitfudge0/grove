@@ -224,7 +224,7 @@ impl PullRequest {
 }
 
 // Tempfiles prevent pipe deadlocks and cap reads. Every child has a deadline.
-fn gh(path: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn gh(path: &Path, args: &[&str]) -> Result<String, String> {
     let mut out = tempfile::tempfile().map_err(|_| "Could not prepare GitHub status")?;
     let mut err = tempfile::tempfile().map_err(|_| "Could not prepare GitHub status")?;
     let executable = crate::agent::resolve_executable("gh")

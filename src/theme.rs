@@ -319,6 +319,50 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
+/// Ordered commit-density colors on the card surface. Resolve every frame so
+/// switching themes updates every cell and its legend together.
+pub fn CONTRIBUTION_HEATMAP() -> [Hsla; 5] {
+    contribution_heatmap(FIELD_FILL().into(), BLUE().into(), FG().into()).map(Into::into)
+}
+
+fn contribution_heatmap(surface: Rgba, info: Rgba, foreground: Rgba) -> [Rgba; 5] {
+    let empty = mix(surface, foreground, 0.06);
+    let mut endpoint = mix(info, foreground, 0.65);
+    if contrast(empty, endpoint) < 7.0 {
+        // Some light palettes deliberately use a soft foreground. Extend the
+        // activity hue toward the higher-contrast neutral instead of allowing
+        // the top density levels to collapse into the same color.
+        let black = gpui::rgb(0x000000);
+        let white = gpui::rgb(0xffffff);
+        let pole = if contrast(empty, black) > contrast(empty, white) {
+            black
+        } else {
+            white
+        };
+        let mut amount = 0.65;
+        while contrast(empty, endpoint) < 7.0 && amount < 1.0 {
+            amount = (amount + 0.05_f32).min(1.0);
+            endpoint = mix(info, pole, amount);
+        }
+    }
+    let max = contrast(empty, endpoint);
+    [1.0_f32, 3.0, 4.0, 5.5, 7.0].map(|target| {
+        if target == 1.0 {
+            return empty;
+        }
+        let (mut lo, mut hi) = (0.0, 1.0);
+        for _ in 0..24 {
+            let mid = (lo + hi) / 2.0;
+            if contrast(empty, mix(empty, endpoint, mid)) < target.min(max) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        mix(empty, endpoint, hi)
+    })
+}
+
 fn alpha_rgba(c: Rgba, a: f32) -> Rgba {
     Rgba { a, ..c }
 }
@@ -938,6 +982,33 @@ mod tests {
     impl Drop for ActiveThemeGuard {
         fn drop(&mut self) {
             theme::set(self.0.clone());
+        }
+    }
+
+    #[test]
+    fn contribution_colors_are_distinct_and_legible_across_all_app_themes() {
+        for item in grove_core::app_theme::CATALOG {
+            let chrome = ResolvedChrome::from_theme(&item.terminal());
+            let colors = contribution_heatmap(
+                chrome.color(ChromeRole::Field).into(),
+                chrome.color(ChromeRole::Info).into(),
+                chrome.color(ChromeRole::Foreground).into(),
+            );
+            let contrasts = colors.map(|color| contrast(colors[0], color));
+            for level in 1..5 {
+                assert!(
+                    contrasts[level] >= 2.99,
+                    "{} level {level}: {}",
+                    item.label,
+                    contrasts[level]
+                );
+                assert!(
+                    contrasts[level] > contrasts[level - 1] + 0.4,
+                    "{} collapsed levels: {:?}",
+                    item.label,
+                    contrasts
+                );
+            }
         }
     }
 

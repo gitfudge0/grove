@@ -3818,6 +3818,13 @@ impl Sidebar {
         }
         if !self.is_zen() || self.checkout_panel.expanded {
             panel = panel.child(card);
+            if self.dashboard_open {
+                panel = panel.child(
+                    div()
+                        .mt(rpx(SPACE_2XL))
+                        .child(self.render_contributions(window, cx)),
+                );
+            }
         } else {
             self.branch_entry = None;
             self.branch_peek = None;

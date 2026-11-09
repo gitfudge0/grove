@@ -9,6 +9,7 @@ mod change_review;
 mod change_tools;
 mod checkout_panel;
 mod content;
+mod contributions;
 mod files;
 mod global_navigation;
 mod grid;
@@ -389,6 +390,7 @@ pub struct Sidebar {
     worktree_source_generation: u64,
     worktree_source: String,
     checkout_panel: checkout_panel::CheckoutPanel,
+    contributions: contributions::Contributions,
     descriptions: change_description::Descriptions,
     reviews: change_review::Reviews,
     files_active: bool,
@@ -650,6 +652,7 @@ impl Sidebar {
             worktree_source_generation: 0,
             worktree_source: String::new(),
             checkout_panel: checkout_panel::CheckoutPanel::default(),
+            contributions: contributions::Contributions::default(),
             descriptions: change_description::Descriptions::default(),
             reviews: change_review::Reviews::default(),
             files_active: false,

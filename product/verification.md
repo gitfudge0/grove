@@ -1,5 +1,58 @@
 # Verification and known gaps
 
+## Home account contributions
+
+Four-month follow-up: the inclusive UTC window now starts four calendar months
+before today; 9px cells keep the grid within the compact card. A direct query
+hit GitHub resource limits, so daily fields are now loaded in 40-day batches.
+Each batch repeats the full-window totals and account identity; inconsistent
+or errored batches are rejected. Four core tests, an authenticated 124-day live
+fetch, three focused UI/theme tests and all 33 conformance checks passed. Native
+Linux Dark/Light rest captures at 0.6 zoom showed the complete four-month grid
+and summaries fitting the card. Formatting, artifact policy and the optimized
+build passed. Native default-zoom/narrow-width interactions, manual refresh and
+macOS/Windows remain untested for this follow-up.
+
+Refresh-motion follow-up: the header uses shared Working and drawn-check marks
+with account/action-scoped receipt tokens, the shared confirmation hold and
+expiry, and a fixed action width. The contribution GPUI fixture now checks
+unchanged action bounds across loading, success and restored rest plus the
+reduced-motion static Working marker. Three focused tests, four shared receipt
+tests and all 33 conformance checks passed. Native Linux timed captures observed
+rotating work marks, success and restored rest in Dark, and static Working and
+success marks with Reduce motion in Light, using real account loading at 0.6
+zoom. Pointer-triggered manual refresh, the precise check-draw progression and
+macOS/Windows remain untested.
+
+Shorter-card follow-up: metrics are now two inline rows, Refresh is in the
+heading, and the coverage note moved to the account-scope tooltip. Native Linux
+rest captures in Grove Dark/Light at 0.6 zoom were inspected; the card was about
+40% shorter in the matching captures. Three focused tests (including all theme
+ramps), all 33 conformance checks, formatting, artifact policy and the optimized
+build passed. Scope-tooltip hover and moved Refresh keyboard/pointer interactions
+remain untested, as do macOS/Windows.
+
+The Home-only account card uses live GitHub.com contribution totals through the
+signed-in GitHub CLI account. Three core tests cover calendar-month boundaries,
+summary/streak calculations, commit-only daily aggregation and rejected partial
+responses; a separate authenticated live fetch passed. The final focused UI
+suite passed three tests, including a density-level check, all 21 catalog theme
+ramps (distinct levels and at least 3:1 occupied/empty contrast), and a Home-only
+sign-in-state layout fixture at 1280px and 760px. All 33 conformance checks and
+the optimized local build passed. An initial UI test build ran out of disk;
+disposable compiler caches were cleared before the successful rerun.
+
+Linux native rest captures use the final compact 10px cells, 2px gaps and live
+account data at 0.6 UI zoom. All 21 catalog themes were
+inspected together in a native panel contact sheet, with individual full-window
+captures retained in the task's ignored artifacts. Grove Dark, Grove Light and
+Tokyo Night Day were also inspected individually with the whole card visible. The installed local binary
+matches the final tested build. Native default-zoom/narrow-width interaction,
+day-tooltip hover, Refresh keyboard/pointer behavior and macOS/Windows remain
+untested. The compositor rejected attempted QA window resizing; those attempts
+are not native width coverage. Codex and Claude live sessions were not exercised;
+this feature uses GitHub account data independently of either provider.
+
 ## Two-layer composer QA
 
 The two-layer native composer retains the existing model/effort/speed card and

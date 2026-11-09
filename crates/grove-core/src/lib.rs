@@ -18,6 +18,7 @@ mod claude_transcript;
 pub mod codex;
 pub mod commit_agent;
 pub mod composer_catalog;
+pub mod contributions;
 pub mod controls;
 pub mod describe_skill;
 pub mod diff;

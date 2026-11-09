@@ -473,3 +473,26 @@ Adjacent transcript provider warnings collapse into one transparent, keyboard-ac
 The Dashboard headline reads “Ship fast. Break faster.” The composer starts at 31% of the available Dashboard height, moving the headline and following content together.
 
 Composer popup surfaces (context, access, model/effort/speed, and project/worktree menus) use the short-rise motion: a 6px approach with an opacity transition over MOTION_BASE_MS, followed by a MOTION_FAST_MS dismissal. Dismissal releases logical ownership immediately and retains non-actionable exit content only for that interval. Reopening supersedes old cleanup; reduced motion opens and closes immediately without animation frames.
+
+## Home account activity
+
+Home alone shows a separate account contribution card below Checkout. It uses
+the GitHub.com account authenticated through GitHub CLI, across repositories,
+independent of the selected local project. The inclusive UTC window starts four
+calendar months before today and ends today. Summaries show commits, PRs opened,
+repositories with contributed commits, longest commit streak within the window,
+and busiest commit day. The four leading metrics use two compact inline rows;
+Refresh sits in the heading and contribution coverage is explained by the account
+scope tooltip. Counts follow GitHub contribution rules and granted
+account access; unavailable data must never masquerade as zero activity.
+
+The heatmap counts commits only. Theme-owned density colors and the legend
+resolve together on theme changes; occupied levels maintain at least 3:1
+contrast against the empty-day color across the supported app theme catalog.
+Missing days outside the window stay blank. Day tooltips supply exact dates and
+counts. Background refresh is bounded and manual refresh is disabled while
+loading. Refresh uses the shared rotating Working ring and drawn success check,
+with the shared confirmation hold, token-guarded expiry, and reduced-motion
+static marks. Failures restore the retry action without a success receipt. The
+header reserves stable action width throughout the cycle. Static data updates
+preserve scroll without decorative cell animation.
