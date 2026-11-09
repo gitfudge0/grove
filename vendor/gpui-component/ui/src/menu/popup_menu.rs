@@ -285,6 +285,7 @@ pub struct PopupMenu {
 
     parent_menu: Option<WeakEntity<Self>>,
     scrollable: bool,
+    passive: bool,
     external_link_icon: bool,
     scroll_handle: ScrollHandle,
     submenu_anchor: (Anchor, Pixels),
@@ -311,6 +312,7 @@ impl PopupMenu {
             check_side: Side::Left,
             bounds: Bounds::default(),
             scrollable: false,
+            passive: false,
             scroll_handle: ScrollHandle::default(),
             external_link_icon: true,
             size: Size::default(),
@@ -320,6 +322,11 @@ impl PopupMenu {
             priority: 1,
             _subscriptions: vec![],
         }
+    }
+
+    /// Retained exit surfaces must not own focus, dispatch actions or dismiss newer menus.
+    pub fn set_passive(&mut self, passive: bool) {
+        self.passive = passive;
     }
 
     pub fn build(
@@ -1146,20 +1153,22 @@ impl PopupMenu {
             .rounded(radius)
             .items_center()
             .selected(self.highlighted_index() == Some(ix) || item.is_checked())
-            .on_hover(cx.listener(move |this, hovered, _, cx| {
-                if *hovered {
-                    this.keyboard_navigation = false;
-                    this.selected_index = Some(ix);
-                } else if !this.keyboard_navigation
-                    && !is_submenu
-                    && this.selected_index == Some(ix)
-                {
-                    // TODO: Better handle the submenu unselection when hover out
-                    this.selected_index = None;
-                }
+            .when(!self.passive, |item| {
+                item.on_hover(cx.listener(move |this, hovered, _, cx| {
+                    if *hovered {
+                        this.keyboard_navigation = false;
+                        this.selected_index = Some(ix);
+                    } else if !this.keyboard_navigation
+                        && !is_submenu
+                        && this.selected_index == Some(ix)
+                    {
+                        // TODO: Better handle the submenu unselection when hover out
+                        this.selected_index = None;
+                    }
 
-                cx.notify();
-            }))
+                    cx.notify();
+                }))
+            })
             .when_some(item.a11y_label(), |this, label| this.aria_label(label));
 
         match item {
@@ -1188,7 +1197,7 @@ impl PopupMenu {
                 disabled,
                 ..
             } => this
-                .when(!disabled, |this| {
+                .when(!disabled && !self.passive, |this| {
                     this.on_click(
                         cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
                     )
@@ -1222,7 +1231,7 @@ impl PopupMenu {
                 let action = action.as_ref().map(|action| action.boxed_clone());
                 let key = self.render_key_binding(action, window, cx);
 
-                this.when(!disabled, |this| {
+                this.when(!disabled && !self.passive, |this| {
                     this.on_click(
                         cx.listener(move |this, _, window, cx| this.on_click(ix, window, cx)),
                     )
@@ -1383,20 +1392,22 @@ impl Render for PopupMenu {
         v_flex()
             .id("popup-menu")
             .role(Role::Menu)
-            .key_context(CONTEXT)
-            .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::select_up))
-            .on_action(cx.listener(Self::select_down))
-            .on_action(cx.listener(Self::select_left))
-            .on_action(cx.listener(Self::select_right))
-            .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(Self::dismiss))
-            .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
+            .when(!self.passive, |menu| {
+                menu.key_context(CONTEXT)
+                    .track_focus(&self.focus_handle)
+                    .on_action(cx.listener(Self::select_up))
+                    .on_action(cx.listener(Self::select_down))
+                    .on_action(cx.listener(Self::select_left))
+                    .on_action(cx.listener(Self::select_right))
+                    .on_action(cx.listener(Self::confirm))
+                    .on_action(cx.listener(Self::dismiss))
+                    .on_mouse_down_out(cx.listener(Self::on_mouse_down_out))
+            })
             .popover_style(cx)
             .when_some(self.menu_style, |this, style| this.rounded(style.radius))
             .text_color(cx.theme().popover_foreground)
             .relative()
-            .occlude()
+            .when(!self.passive, |menu| menu.occlude())
             .child(
                 v_flex()
                     .id("items")

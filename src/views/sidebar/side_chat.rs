@@ -283,7 +283,10 @@ mod tests {
             cx.debug_bounds("side-chat-message-0").is_some(),
             "assistant Markdown is mounted in the transcript"
         );
-        let main_composer = cx.debug_bounds("codex-composer").unwrap();
+        // The lower context strip is the outer border of the two-layer composer.
+        let main_composer = cx
+            .debug_bounds("codex-composer-context")
+            .unwrap_or_else(|| cx.debug_bounds("codex-composer").unwrap());
         let card = cx.debug_bounds("side-chat-card").unwrap();
         assert!(
             (main_composer.bottom() - card.bottom()).abs() <= gpui::px(1.),
@@ -405,7 +408,9 @@ mod tests {
                         let _ = window.draw(cx);
                     });
                 }
-                let main = cx.debug_bounds("codex-composer").unwrap();
+                let main = cx
+                    .debug_bounds("codex-composer-context")
+                    .unwrap_or_else(|| cx.debug_bounds("codex-composer").unwrap());
                 let side = cx.debug_bounds("side-chat-card").unwrap();
                 assert!(
                     (main.bottom() - side.bottom()).abs() <= gpui::px(1.),

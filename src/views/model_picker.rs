@@ -4,7 +4,6 @@ use crate::settings::SettingsState;
 use serde_json::Value;
 
 const PICKER_W: f32 = 360.0;
-const PICKER_H: f32 = 280.0;
 const RAIL_W: f32 = 44.0;
 const RAIL_ACTIVE_W: f32 = 2.0;
 const RAIL_TARGET_H: f32 = 32.0;
@@ -36,6 +35,7 @@ pub(super) enum PickerEvent {
     Dismiss,
 }
 pub(super) struct ModelPicker {
+    pub(super) passive: bool,
     saved: codex::SavedSession,
     allow_switch: bool,
     selected: Option<String>,
@@ -51,7 +51,6 @@ pub(super) struct ModelPicker {
     row_focus: HashMap<String, (FocusHandle, FocusHandle)>,
     retry_focus: [FocusHandle; 2],
     legacy_focus: FocusHandle,
-    scroll: gpui::ScrollHandle,
     _search_events: Subscription,
 }
 impl gpui::EventEmitter<PickerEvent> for ModelPicker {}
@@ -92,8 +91,6 @@ impl ModelPicker {
         let events = cx.subscribe(&search, |this, _, _: &InputEvent, cx| {
             this.cursor = 0;
             this.keyboard_cursor = false;
-            this.scroll
-                .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
             cx.notify();
         });
         let mut catalogs = [Catalog::Loading, Catalog::Loading];
@@ -108,6 +105,7 @@ impl ModelPicker {
             .iter()
             .any(|favorite| allow_switch || favorite.provider == state.saved.provider);
         let picker = Self {
+            passive: false,
             saved: state.saved.clone(),
             allow_switch,
             selected: state.model.clone().or_else(|| state.resolved_model.clone()),
@@ -127,7 +125,6 @@ impl ModelPicker {
             row_focus: HashMap::new(),
             retry_focus: std::array::from_fn(|_| cx.focus_handle()),
             legacy_focus: cx.focus_handle(),
-            scroll: gpui::ScrollHandle::new(),
             _search_events: events,
         };
         picker.search.focus_handle(cx).focus(window, cx);
@@ -230,21 +227,28 @@ impl ModelPicker {
             .collect()
     }
     fn change_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
+        if self.passive {
+            return;
+        }
         self.filter = filter;
         self.cursor = 0;
         self.keyboard_cursor = false;
         self.legacy_open = false;
-        self.scroll
-            .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
         cx.notify();
     }
     fn choose(&self, model: &Model, cx: &mut Context<Self>) {
+        if self.passive {
+            return;
+        }
         let advertised = matches!(&self.catalogs[index(model.provider)],Catalog::Ready(models) if models.iter().any(|m|m.id==model.id));
         if advertised && (self.allow_switch || model.provider == self.saved.provider) {
             cx.emit(PickerEvent::Select(model.provider, model.id.clone()));
         }
     }
     fn key(&mut self, event: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.passive {
+            return;
+        }
         let visible = self.visible(cx);
         let search_focused = self.search.focus_handle(cx).is_focused(window);
         let list_focused = self.focus.contains_focused(window, cx);
@@ -286,11 +290,6 @@ impl ModelPicker {
                             }
                         }
                     }
-                    let y = -(self.cursor as f32 * (MODEL_ROW_H + SPACE_XS) - MODEL_ROW_H).max(0.);
-                    self.scroll.set_offset(gpui::point(
-                        gpui::px(0.),
-                        rpx(y).to_pixels(window.rem_size()),
-                    ));
                 }
                 cx.stop_propagation();
                 cx.notify();
@@ -313,13 +312,6 @@ impl Render for ModelPicker {
         let width = PICKER_W.min(f32::from(window.viewport_size().width) / scale - SPACE_3XL);
         let search_navigation = self.keyboard_cursor
             && (self.search.focus_handle(cx).is_focused(window) || self.focus.is_focused(window));
-        let name_width = width
-            - 2.0 / scale // Panel hairlines stay unscaled at changed rem zoom.
-            - RAIL_W
-            - SPACE_LG * 4.0
-            - ICON_SM
-            - CHROME_CONTROL_H
-            - SPACE_LG * 2.0;
         let mut rail = div()
             .debug_selector(|| "model-provider-rail".into())
             .w(rpx(RAIL_W))
@@ -354,41 +346,38 @@ impl Render for ModelPicker {
             }
             let active = self.filter == filter;
             rail = rail.child(
-                header_control_with_tooltip("model-provider", name, move |window, cx| {
-                    tooltip(name, window).build(window, cx)
-                })
-                .id(("model-provider", i))
-                .debug_selector(move || format!("model-provider-{i}"))
-                .role(gpui::Role::RadioButton)
-                .aria_selected(active)
-                .track_focus(&self.rail_focus[i])
-                .tab_index(0)
-                .w(rpx(RAIL_TARGET_H))
-                .h(rpx(RAIL_TARGET_H))
-                .relative()
-                .when(active, |r| {
-                    r.bg(c::BG_HOVER()).child(
-                        div()
-                            .absolute()
-                            .left(-rpx(SPACE_MD))
-                            .top(rpx(SPACE_LG))
-                            .w(rpx(RAIL_ACTIVE_W))
-                            .h(rpx(SPACE_3XL))
-                            .rounded(rpx(RADIUS_FULL))
-                            .bg(c::FG_MUTE()),
-                    )
-                })
-                .focus_visible(|r| r.bg(c::BG()))
-                .child(crate::icons::icon(glyph, ICON_LG, c::FG_DIM()))
-                .on_click(cx.listener(move |this, _, _, cx| this.change_filter(filter, cx)))
-                .on_key_down(cx.listener(
-                    move |this, event: &gpui::KeyDownEvent, _, cx| {
+                header_control("model-provider", name)
+                    .id(("model-provider", i))
+                    .debug_selector(move || format!("model-provider-{i}"))
+                    .role(gpui::Role::RadioButton)
+                    .aria_selected(active)
+                    .track_focus(&self.rail_focus[i])
+                    .tab_index(0)
+                    .tab_stop(!self.passive)
+                    .w(rpx(RAIL_TARGET_H))
+                    .h(rpx(RAIL_TARGET_H))
+                    .relative()
+                    .when(active, |r| {
+                        r.bg(c::BG_HOVER()).child(
+                            div()
+                                .absolute()
+                                .left(-rpx(SPACE_MD))
+                                .top(rpx(SPACE_LG))
+                                .w(rpx(RAIL_ACTIVE_W))
+                                .h(rpx(SPACE_3XL))
+                                .rounded(rpx(RADIUS_FULL))
+                                .bg(c::FG_MUTE()),
+                        )
+                    })
+                    .focus_visible(|r| r.bg(c::BG()))
+                    .child(crate::icons::icon(glyph, ICON_LG, c::FG_DIM()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.change_filter(filter, cx)))
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
                         if action_key(event) {
                             this.change_filter(filter, cx);
                             cx.stop_propagation();
                         }
-                    },
-                )),
+                    })),
             );
         }
         let mut rows = div()
@@ -396,12 +385,10 @@ impl Render for ModelPicker {
             .debug_selector(|| "model-picker-rows".into())
             .track_focus(&self.focus)
             .tab_index(0)
+            .tab_stop(!self.passive)
             .role(gpui::Role::ListBox)
             .aria_label("Available models")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
+            .flex_shrink_0()
             .p(rpx(SPACE_LG))
             .flex()
             .flex_col()
@@ -418,23 +405,10 @@ impl Render for ModelPicker {
                 .entry(format!("{:?}:{}", model.provider, model.id))
                 .or_insert_with(|| (cx.focus_handle(), cx.focus_handle()))
                 .clone();
-            let full_name = format!("{} · {}", model.name, model.provider.label());
             let picked = model.clone();
             let keyboard = model.clone();
-            let toggled = model.clone();
             let favorite_pointer = model.clone();
             let favorite_keyboard = model.clone();
-            let name_style = gpui::TextStyle {
-                font_family: crate::fonts::UI_FAMILY.into(),
-                ..Default::default()
-            };
-            let name_run = name_style.to_run(model.name.len());
-            let truncated = truncation_safe_label_width(
-                &model.name,
-                rpx(TEXT_BODY).to_pixels(window.rem_size()),
-                &name_run,
-                window.text_system(),
-            ) > rpx(name_width).to_pixels(window.rem_size());
             rows = rows.child(
                 header_control_frame(
                     format!("model-select-{i}"),
@@ -446,6 +420,7 @@ impl Render for ModelPicker {
                 .track_focus(&focus.0)
                 .aria_selected(selected)
                 .tab_index(0)
+                .tab_stop(!self.passive)
                 .w_full()
                 .h_auto()
                 .min_h(rpx(MODEL_ROW_H))
@@ -478,11 +453,6 @@ impl Render for ModelPicker {
                                 .text_size(rpx(TEXT_BODY))
                                 .line_height(rpx(MODEL_NAME_LINE_H))
                                 .truncate()
-                                .when(truncated, |name| {
-                                    name.tooltip(move |window, cx| {
-                                        tooltip(full_name.clone(), window).build(window, cx)
-                                    })
-                                })
                                 .child(model.name.clone()),
                         )
                         .child(
@@ -511,23 +481,12 @@ impl Render for ModelPicker {
                         }),
                 )
                 .child(
-                    header_control_with_tooltip(
+                    header_control(
                         "model-favorite",
                         if favorite {
                             "Remove favorite"
                         } else {
                             "Add favorite"
-                        },
-                        move |window, cx| {
-                            tooltip(
-                                format!(
-                                    "{} {} favorite",
-                                    if favorite { "Remove" } else { "Add" },
-                                    toggled.name
-                                ),
-                                window,
-                            )
-                            .build(window, cx)
                         },
                     )
                     .id(("model-favorite", i))
@@ -538,6 +497,7 @@ impl Render for ModelPicker {
                     ))
                     .debug_selector(move || format!("model-favorite-{i}"))
                     .tab_index(0)
+                    .tab_stop(!self.passive)
                     .role(gpui::Role::CheckBox)
                     .track_focus(&focus.1)
                     .aria_toggled(if favorite {
@@ -551,7 +511,10 @@ impl Render for ModelPicker {
                         ICON_SM,
                         c::FG_DIM(),
                     ))
-                    .on_click(cx.listener(move |_, _, _, cx| {
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.passive {
+                            return;
+                        }
                         SettingsState::update(cx, |store| {
                             store.toggle_model_favorite(
                                 favorite_pointer.provider,
@@ -562,7 +525,10 @@ impl Render for ModelPicker {
                         cx.notify();
                     }))
                     .on_key_down(cx.listener(
-                        move |_, event: &gpui::KeyDownEvent, _, cx| {
+                        move |this, event: &gpui::KeyDownEvent, _, cx| {
+                            if this.passive {
+                                return;
+                            }
                             if action_key(event) {
                                 SettingsState::update(cx, |store| {
                                     store.toggle_model_favorite(
@@ -625,6 +591,7 @@ impl Render for ModelPicker {
                                 .w_auto()
                                 .track_focus(&self.retry_focus[index(provider)])
                                 .tab_index(0)
+                                .tab_stop(!self.passive)
                                 .gap(rpx(SPACE_SM))
                                 .child(crate::icons::icon("refresh", ICON_SM, c::FG_DIM()))
                                 .child("Retry")
@@ -711,6 +678,7 @@ impl Render for ModelPicker {
                 .min_h(rpx(MODEL_ROW_H))
                 .track_focus(&self.legacy_focus)
                 .tab_index(0)
+                .tab_stop(!self.passive)
                 .gap(rpx(SPACE_SM))
                 .child(crate::icons::icon(
                     if self.legacy_open {
@@ -743,9 +711,6 @@ impl Render for ModelPicker {
             .w(rpx(width))
             .h_auto()
             .min_h(rpx(RAIL_TARGET_H * 3.0 + SPACE_SM * 2.0 + SPACE_MD * 2.0))
-            .max_h(rpx(PICKER_H).to_pixels(window.rem_size()).min(
-                window.viewport_size().height - rpx(APPBAR_TOTAL_H).to_pixels(window.rem_size()),
-            ))
             .rounded(rpx(RADIUS_PANEL))
             .border_1()
             .border_color(c::BORDER())
@@ -753,10 +718,10 @@ impl Render for ModelPicker {
             .text_size(rpx(TEXT_SMALL))
             .flex()
             .overflow_hidden()
-            .occlude()
-            .capture_key_down(cx.listener(Self::key))
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(PickerEvent::Dismiss)))
+            .when(!self.passive, |picker| picker.occlude()
+                .capture_key_down(cx.listener(Self::key))
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(PickerEvent::Dismiss))))
             .child(rail)
             .child(
                 div()
@@ -832,6 +797,52 @@ mod tests {
             let _ = window.draw(cx);
         });
     }
+    #[gpui::test]
+    fn picker_shows_every_model_without_internal_scrolling(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SettingsState::new(grove_core::storage::Store::default()));
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let picker = cx.new(|cx| {
+                let mut picker = ModelPicker::new(&state(), false, window, cx);
+                picker.catalogs[0] = Catalog::Ready(
+                    (0..8)
+                        .map(|i| Model {
+                            provider: codex::Provider::Codex,
+                            id: format!("model-{i}"),
+                            name: format!("Model {i}"),
+                            legacy: false,
+                        })
+                        .collect(),
+                );
+                picker
+            });
+            gpui_component::Root::new(picker, window, cx).bordered(false)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(1200.)));
+        draw(cx);
+        let panel = cx.debug_bounds("provider-model-picker").unwrap();
+        let last = cx.debug_bounds("model-picker-row-7").unwrap();
+        assert!(
+            panel.size.height > gpui::px(280.),
+            "long catalog grows beyond the old cap"
+        );
+        assert!(
+            last.top() >= panel.top() && last.bottom() <= panel.bottom(),
+            "last model is visible without scrolling"
+        );
+        let before = last;
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: panel.center(),
+            delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-200.))),
+            modifiers: gpui::Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        });
+        draw(cx);
+        assert_eq!(cx.debug_bounds("model-picker-row-7").unwrap(), before);
+    }
+
     #[gpui::test]
     fn picker_defaults_to_favorites_only_with_scoped_saved_favorites(
         cx: &mut gpui::TestAppContext,

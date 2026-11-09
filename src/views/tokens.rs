@@ -167,3 +167,6 @@ pub const FORM_HEADING_MARGIN: f32 = 26.;
 
 /// Compact dropdown geometry shared by native and vendor menus.
 pub const MENU_ROW_H: f32 = 28.0;
+
+/// Centered project/worktree strip beneath the main composer.
+pub const COMPOSER_CONTEXT_WIDTH_FRACTION: f32 = 0.95;

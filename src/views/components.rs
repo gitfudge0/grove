@@ -665,6 +665,62 @@ pub fn dense_action_with_colors(
         .rounded(rpx(recipe.radius).to_pixels(window.rem_size()))
 }
 
+// Compact monograms are secondary to the adjacent full project name.
+const PROJECT_INITIALS_TEXT_SIZE: f32 = 9.0;
+
+/// Compact project identity using the project picker's capital-initial rule.
+pub fn project_initials_badge(name: &str) -> Div {
+    let initials = name
+        .split_whitespace()
+        .take(2)
+        .filter_map(|word| word.chars().next())
+        .flat_map(char::to_uppercase)
+        .collect::<String>();
+    div()
+        .size(rpx(ICON_20))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .border_1()
+        .border_color(c::BORDER_STRONG())
+        .bg(c::BG_HOVER())
+        .text_size(rpx(PROJECT_INITIALS_TEXT_SIZE))
+        .text_color(c::FG())
+        .child(initials)
+}
+
+/// Dense disclosure with foreground-only pointer/open feedback. Keyboard focus
+/// retains a separate ring; geometry stays owned by the dense action recipe.
+pub fn dense_disclosure_action(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<gpui::SharedString>,
+    window: &gpui::Window,
+    cx: &gpui::App,
+) -> gpui_component::button::Button {
+    use gpui_component::button::{ButtonCustomVariant, ButtonVariants};
+    dense_action_with_colors(
+        id,
+        label,
+        gpui::transparent_black(),
+        c::FG_DIM(),
+        gpui::transparent_black(),
+        window,
+        cx,
+    )
+    .custom(
+        ButtonCustomVariant::new(cx)
+            .color(gpui::transparent_black())
+            .foreground(c::FG_DIM())
+            .hover(gpui::transparent_black())
+            .hover_foreground(c::FG())
+            .active(gpui::transparent_black())
+            .shadow(false),
+    )
+    .focus_visible(|style| style.border_1().border_color(c::SEL_RING()))
+}
+
 /// Neutral selectable row for native question forms. The owner supplies interaction.
 pub fn question_choice(
     id: impl Into<gpui::ElementId>,
