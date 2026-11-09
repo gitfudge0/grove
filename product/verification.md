@@ -986,3 +986,34 @@ Thin catalog icons: native raster inspection at small sizes, light/dark themes a
 Standalone session-view icons and side-panel clearance: the Checkout native GPUI layout fixture passed with the card below the toolbar controls; compilation and artifact checks passed. Native visual inspection of hover/focus, wide/narrow layouts, themes and zoom remains untested, as do Side chat visual states and live Codex/Claude provider interactions.
 
 Sidebar worktree-group headings use the branch icon; activity-group status icons reuse the shared status renderer for Codex and Claude sessions. Native visual inspection, reduced-motion rendering, narrow widths, themes and zoom remain untested; live Codex and Claude status transitions were not exercised.
+
+## Main New session entry
+
+New session actions now open the Dashboard directly while preserving its draft.
+The alternate empty Codex/Claude conversation introduction and starter cards were removed.
+Live Codex and Claude provider checks and native interactive visual inspection are
+untested for this change; source and GPUI fixtures do not establish those boundaries.
+macOS and Windows are untested.
+
+Linux compilation, formatting, artifact policy and 33 UI conformance checks passed.
+The Codex/Claude empty-view fixture and both main-screen navigation fixtures passed.
+The broader new-session run exposed an obsolete switcher expectation (updated) and
+a sidebar fixture missing `global-nav-new-session`, consistent with the existing
+sidebar verification gap above. The Linux local installation succeeded.
+The corrected switcher navigation fixture passed on rerun. Installed and built
+Linux binaries matched by SHA-256.
+
+Main New Session layout restoration: restored the earlier Dashboard composition
+(composer at 31% of its viewport, destination tray attached, Activity below) and
+downward Activity entrance, while retaining the updated empty transcript session.
+Linux: 15 of 16 Dashboard fixtures passed, including Codex and Claude draft,
+worktree round-trip, sequential adoption, reduced motion, and placement checks.
+The unchanged standalone destination-control fixture failed its pointer-exit
+assertion (`[false, true]` rather than `[false, false]`); hover exit is unverified.
+The empty-session fixture passed for both Codex and Claude, and all 33 UI
+conformance checks passed. Native screenshot capture failed because this build
+has no HeadlessRenderer configured; visual inspection, themes/zoom and native
+interactive checks remain unverified. Live Codex and Claude provider boundaries
+and macOS/Windows remain untested. Formatting and artifact policy passed.
+The default Linux local build/install succeeded; installed and built binaries
+matched by SHA-256.

@@ -191,7 +191,7 @@ impl Shell {
         let sidebar_events =
             cx.subscribe_in(&sidebar, window, |this, _, event, window, cx| match event {
                 super::sidebar::SidebarEvent::NewSessionRequested => {
-                    this.open_session_picker(window, cx)
+                    this.open_new_session(window, cx)
                 }
                 super::sidebar::SidebarEvent::NewMultiProjectSessionRequested => {
                     if !this.shortcut_blocked_in(window, cx) {
@@ -812,30 +812,18 @@ impl Shell {
         }
     }
 
-    fn open_session_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.shortcut_blocked_in(window, cx) {
-            self.sidebar
-                .update(cx, super::sidebar::Sidebar::dismiss_project_context);
-            self.launcher
-                .update(cx, |launcher, cx| launcher.open_session_picker(window, cx));
-        }
-    }
-
     fn open_new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.shortcut_blocked_in(window, cx) {
-            self.sidebar
-                .update(cx, super::sidebar::Sidebar::dismiss_project_context);
-            self.launcher
-                .update(cx, |launcher, cx| launcher.open(window, cx));
+            self.sidebar.update(cx, |sidebar, cx| {
+                sidebar.dismiss_project_context(cx);
+                sidebar.open_dashboard(window, cx);
+            });
         }
     }
 
     fn new_session_from_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.close_switcher(window, cx);
-        self.sidebar
-            .update(cx, super::sidebar::Sidebar::dismiss_project_context);
-        self.launcher
-            .update(cx, |launcher, cx| launcher.open(window, cx));
+        self.open_new_session(window, cx);
     }
 
     fn switcher_key(
@@ -2134,148 +2122,42 @@ mod tests {
     }
 
     #[gpui::test]
-    fn new_session_sidebar_and_shortcuts_open_launcher_preserving_home_draft(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn new_session_opens_main_screen_preserving_draft(cx: &mut gpui::TestAppContext) {
         cx.update(init);
-        cx.update(|cx| cx.bind_keys(k::shell_bindings()));
         let (shell, cx) = cx.add_window_view(Shell::new);
         draw(cx);
         let composer = cx.debug_bounds("codex-composer-input").unwrap();
         cx.simulate_click(composer.center(), gpui::Modifiers::default());
-        cx.simulate_input("Keep my Home overview draft");
-        draw(cx);
-        for source in ["sidebar", "new-session"] {
-            let before = cx.update(|window, cx| {
-                if source == "sidebar" {
-                    Some(shell.read(cx).sidebar.read(cx).new_session_focus_for_test())
-                } else {
-                    window.focused(cx)
-                }
-            });
-            if source == "sidebar" {
-                let row = cx.debug_bounds("global-nav-new-session").unwrap();
-                cx.simulate_click(row.center(), gpui::Modifiers::default());
-            } else {
-                cx.simulate_keystrokes(&format!(
-                    "{}{}",
-                    k::platform_mod_prefix(),
-                    if source == "numbered" { "1" } else { "p" }
-                ));
-            }
-            draw(cx);
-            assert!(
-                cx.debug_bounds("worktree-launcher-panel").is_some(),
-                "{source}"
-            );
-            assert!(cx.debug_bounds("worktree-launcher-search").is_some());
-            assert!(cx.debug_bounds("dashboard-summary").is_some());
-            cx.update(|_, cx| {
-                let owner = shell.read(cx);
-                assert!(owner.launcher.read(cx).is_open());
-                let launcher = owner.launcher.read(cx);
-                assert_eq!(
-                    launcher.title_for_test(),
-                    if source == "new-session" {
-                        "Command palette"
-                    } else {
-                        "New session"
-                    }
-                );
-                if source != "new-session" {
-                    assert!(launcher
-                        .rows_for_test(cx)
-                        .iter()
-                        .all(|row| matches!(row, PaletteRow::Combo { .. })));
-                }
-                assert_eq!(
-                    owner
-                        .sidebar
-                        .read(cx)
-                        .dashboard_draft_for_test(cx)
-                        .as_deref(),
-                    Some("Keep my Home overview draft")
-                );
-                assert_eq!(owner.runtime.read(cx).registry.read(cx).len(), 0);
-            });
-            cx.simulate_keystrokes("escape");
-            draw(cx);
-            if source != "new-session" {
-                cx.update(|_, cx| {
-                    let launcher = shell.read(cx).launcher.read(cx);
-                    assert!(launcher.is_open());
-                    assert_eq!(launcher.title_for_test(), "Command palette");
-                });
-                cx.simulate_keystrokes("escape");
-                draw(cx);
-            }
-            cx.update(|window, cx| {
-                assert!(!shell.read(cx).launcher.read(cx).is_open());
-                assert_eq!(window.focused(cx), before);
-                assert_eq!(
-                    shell
-                        .read(cx)
-                        .sidebar
-                        .read(cx)
-                        .dashboard_draft_for_test(cx)
-                        .as_deref(),
-                    Some("Keep my Home overview draft")
-                );
-            });
-        }
-        // Opening the modal from another destination must not navigate to Home.
-        cx.simulate_keystrokes(&format!("{}3", k::platform_mod_prefix()));
-        draw(cx);
-        assert!(cx.debug_bounds("projects-destination").is_some());
-        let plus = cx.debug_bounds("global-nav-new-session").unwrap();
-        cx.simulate_click(plus.center(), gpui::Modifiers::default());
-        draw(cx);
-        assert!(cx.debug_bounds("worktree-launcher-panel").is_some());
-        cx.simulate_keystrokes("escape escape");
-        draw(cx);
-        assert!(cx.debug_bounds("projects-destination").is_some());
-        let plus = cx.debug_bounds("global-nav-new-session").unwrap();
-        cx.simulate_click(plus.center(), gpui::Modifiers::default());
-        draw(cx);
-        cx.simulate_keystrokes("enter");
+        cx.simulate_input("Keep my New session draft");
+        cx.update(|window, cx| shell.update(cx, |shell, cx| shell.open_new_session(window, cx)));
         draw(cx);
         assert!(cx.debug_bounds("dashboard-summary").is_some());
+        assert!(cx.debug_bounds("worktree-launcher-panel").is_none());
         cx.update(|_, cx| {
+            let shell = shell.read(cx);
             assert_eq!(
                 shell
-                    .read(cx)
                     .sidebar
                     .read(cx)
                     .dashboard_draft_for_test(cx)
                     .as_deref(),
-                Some("Keep my Home overview draft")
-            )
+                Some("Keep my New session draft")
+            );
+            assert_eq!(shell.runtime.read(cx).registry.read(cx).len(), 0);
         });
     }
 
     #[gpui::test]
-    fn new_session_landing_opens_launcher_over_home_overview(cx: &mut gpui::TestAppContext) {
+    fn new_session_landing_opens_main_screen(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             init(cx);
             cx.global_mut::<crate::settings::SettingsState>()
                 .store
                 .default_landing_page = grove_core::storage::LandingPage::NewSession;
         });
-        let (shell, cx) = cx.add_window_view(Shell::new);
+        let (_, cx) = cx.add_window_view(Shell::new);
         draw(cx);
-        assert!(cx.debug_bounds("worktree-launcher-panel").is_some());
-        assert!(cx.debug_bounds("dashboard-summary").is_some());
-        cx.update(|_, cx| {
-            let launcher = shell.read(cx).launcher.read(cx);
-            assert_eq!(launcher.title_for_test(), "New session");
-            assert!(launcher
-                .rows_for_test(cx)
-                .iter()
-                .all(|row| matches!(row, PaletteRow::Combo { .. })));
-        });
-        cx.simulate_keystrokes("escape escape");
-        draw(cx);
-        assert!(!cx.update(|_, cx| shell.read(cx).launcher.read(cx).is_open()));
+        assert!(cx.debug_bounds("worktree-launcher-panel").is_none());
         assert!(cx.debug_bounds("dashboard-summary").is_some());
     }
 
@@ -3902,7 +3784,7 @@ mod tests {
         cx.update(|_, cx| {
             let shell = shell.read(cx);
             assert!(!shell.switcher_open);
-            assert!(shell.launcher.read(cx).is_open());
+            assert!(!shell.launcher.read(cx).is_open());
         });
     }
 

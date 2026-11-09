@@ -1983,6 +1983,7 @@ impl Sidebar {
                 | Action::MarkReviewed(..)
                 | Action::MarkActivityDone(_)
         );
+        let grouping_control = matches!(&action, Action::GroupSessions(_) | Action::ToggleGrid);
         let danger = matches!(action, Action::ConfirmWorktreeRemoval);
         let primary = matches!(action, Action::DismissWorktreeRemoval);
         let confirm = matches!(
@@ -2042,7 +2043,7 @@ impl Sidebar {
                 }
             })
             .focus_visible(move |s| {
-                if hierarchy_row {
+                if grouping_control || hierarchy_row {
                     s.border_1().border_color(c::FG())
                 } else if project_session_row {
                     s.bg(if selected_session_row {

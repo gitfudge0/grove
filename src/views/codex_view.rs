@@ -1994,195 +1994,6 @@ impl CodexView {
         }
     }
 
-    fn use_starter(&mut self, prompt: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self.input.read(cx).value().to_string();
-        let draft = if current.is_empty() {
-            prompt.to_owned()
-        } else {
-            format!("{current}\n\n{prompt}")
-        };
-        self.input
-            .update(cx, |input, cx| input.set_value(draft.clone(), window, cx));
-        self.session
-            .update(cx, |session, cx| session.send(Action::Draft(draft), cx));
-        self.set_composer_collapsed(false, cx);
-        self.input.focus_handle(cx).focus(window, cx);
-        cx.notify();
-    }
-
-    fn launch_intro(&self, state: &codex::Snapshot) -> gpui::Stateful<gpui::Div> {
-        let (location, branch) = self
-            .checkout_context
-            .clone()
-            .unwrap_or_else(|| (state.saved.cwd.clone(), String::new()));
-        let identity = grove_core::session_meta::multi_project_identity(
-            &state.saved.project,
-            &state.saved.roots,
-        )
-        .unwrap_or_else(|| state.saved.project.clone());
-        div()
-            .id("codex-empty")
-            .debug_selector(|| "codex-empty".into())
-            .w_full()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_LG))
-            .mb(rpx(SPACE_2XL))
-            .child(
-                div()
-                    .id("codex-launch-context")
-                    .debug_selector(|| "codex-launch-context".into())
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_wrap()
-                    .gap(rpx(SPACE_2XL))
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
-                    .mb(rpx(SPACE_2XL))
-                    .children(
-                        [
-                            ("folder", identity),
-                            ("rail-tree", location),
-                            ("git-branch", branch),
-                        ]
-                        .into_iter()
-                        .filter(|(_, value)| !value.is_empty())
-                        .enumerate()
-                        .map(|(index, (glyph, value))| {
-                            div()
-                                .id(("codex-launch-identity", index))
-                                .min_w_0()
-                                .max_w_full()
-                                .flex_shrink_0()
-                                .whitespace_normal()
-                                .flex()
-                                .items_center()
-                                .gap(rpx(SPACE_SM))
-                                .aria_label(value.clone())
-                                .when(index > 0, |value| {
-                                    value
-                                        .border_l_1()
-                                        .border_color(c::BORDER_SOFT())
-                                        .pl(rpx(SPACE_2XL))
-                                })
-                                .child(crate::icons::icon(glyph, ICON_SM, c::FG_DIM()))
-                                .child(value)
-                        }),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(rpx(TEXT_DISPLAY))
-                    .child("What would you like to build?"),
-            )
-            .child(
-                div()
-                    .text_color(c::FG_DIM())
-                    .child("Ask a question, describe a change, or paste an image."),
-            )
-    }
-
-    fn launch_starters(&self, provider: &str, cx: &Context<Self>) -> gpui::Div {
-        let mut starters = div()
-            .id("codex-launch-starters")
-            .debug_selector(|| "codex-launch-starters".into())
-            .w_full()
-            .flex()
-            .flex_wrap()
-            .gap(rpx(SPACE_LG))
-            .mt(rpx(SPACE_LG));
-        for (id, glyph, title, description, prompt) in [
-            (
-                "codex-starter-understand",
-                "search",
-                "Understand this project",
-                "Map the code and explain where to start",
-                "Explain the main modules in this project and where I should start.",
-            ),
-            (
-                "codex-starter-change",
-                "edit",
-                "Make a change",
-                "Describe what should work differently",
-                "Help me make a change in this project. Ask me what should work differently before editing.",
-            ),
-            (
-                "codex-starter-review",
-                "diff",
-                "Review my changes",
-                "Look for bugs in the current diff",
-                "Review my uncommitted changes for bugs and regressions.",
-            ),
-        ] {
-            starters = starters.child(
-                header_control_frame(id, title, c::BG_HOVER())
-                    .debug_selector(move || id.into())
-                    .tab_index(0)
-                    .flex_1()
-                    .flex_basis(rpx(CHAT_MAX_W / 3.0 - SPACE_LG))
-                    .min_w_0()
-                    .h_auto()
-                    .p(rpx(SPACE_2XL))
-                    .border_1()
-                    .border_color(c::BORDER_SOFT())
-                    .rounded(rpx(RADIUS_CONTROL))
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .justify_start()
-                    .gap(rpx(SPACE_SM))
-                    .focus_visible(|style| style.bg(c::BG_HOVER()).border_color(c::BORDER_STRONG()))
-                    .aria_description(format!(
-                        "{description}. Adds an editable prompt without sending."
-                    ))
-                    .child(
-                        div()
-                            .id(gpui::SharedString::from(format!("{id}-title")))
-                            .debug_selector(move || format!("{id}-title"))
-                            .flex().items_center().gap(rpx(SPACE_SM))
-                            .child(crate::icons::icon(glyph, ICON_SM, c::FG_DIM()))
-                            .text_color(c::FG_DIM())
-                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .whitespace_normal()
-                            .text_color(c::FG_DIM())
-                            .group_hover("neutral-control", |text| text.text_color(c::FG()))
-                            .child(description),
-                    )
-                    .on_key_down(cx.listener(
-                        move |this, event: &gpui::KeyDownEvent, window, cx| {
-                            if action_key(event) {
-                                this.use_starter(prompt, window, cx);
-                                cx.stop_propagation();
-                            }
-                        },
-                    ))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.use_starter(prompt, window, cx);
-                    })),
-            );
-        }
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .gap(rpx(SPACE_2XL))
-            .child(starters)
-            .child(
-                div()
-                    .text_size(rpx(TEXT_MICRO))
-                    .text_color(c::FG_DIM())
-                    .child(format!(
-                        "{provider} works in this worktree using your CLI sign-in."
-                    )),
-            )
-    }
-
     fn sync_bubble_entrances(
         &mut self,
         state: &codex::Snapshot,
@@ -6216,6 +6027,58 @@ impl Render for CodexView {
                     .child(transcript)
             })
             .when(
+                focused_launch && self.dashboard_tray.is_none() && !self.transcript_only(),
+                |surface| {
+                    let project = grove_core::session_meta::multi_project_identity(
+                        &state.saved.project,
+                        &state.saved.roots,
+                    )
+                    .unwrap_or_else(|| state.saved.project.clone());
+                    let worktree = self
+                        .checkout_context
+                        .as_ref()
+                        .map(|(name, _)| name.clone())
+                        .unwrap_or_else(|| {
+                            std::path::Path::new(&state.saved.cwd)
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        });
+                    let identity = [project, worktree]
+                        .into_iter()
+                        .filter(|value| !value.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    surface.child(
+                        div()
+                            .id("codex-empty-intro")
+                            .debug_selector(|| "codex-empty-intro".into())
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .px(rpx(content_inset))
+                            .pt(rpx(SPACE_3XL))
+                            .gap(rpx(SPACE_LG))
+                            .text_center()
+                            .child(
+                                div()
+                                    .text_size(rpx(TEXT_DISPLAY))
+                                    .child("Ship fast. Break faster."),
+                            )
+                            .child(
+                                div()
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG_DIM())
+                                    .child(identity),
+                            ),
+                    )
+                },
+            )
+            .when(
                 focused_launch && self.dashboard_tray.is_none(),
                 gpui::StatefulInteractiveElement::overflow_y_scroll,
             )
@@ -6880,7 +6743,7 @@ impl Render for CodexView {
                     .overflow_y_scroll()
                     .track_scroll(&self.composer_rail_scroll)
                     .w_full()
-                    .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.my_auto().pt(rpx(SPACE_3XL)))
+                    .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.pt(rpx(SPACE_3XL)))
                     .px(rpx(content_inset))
                     // Match the transcript's reserved navigation gutter so both
                     // centered columns retain the same edges at every pane width.
@@ -6899,7 +6762,7 @@ impl Render for CodexView {
                             .flex_col()
                             .gap(rpx(SPACE_MD))
                             .when(has_review, |rail| rail.gap_0())
-                            .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_intro(&state)))
+
                             .when_some(notice_above, gpui::ParentElement::child)
                             .when_some(agent_controls, gpui::ParentElement::child)
                             .when_some(session_review, gpui::ParentElement::child)
@@ -7018,7 +6881,7 @@ impl Render for CodexView {
                                             .on_key_down(cx.listener(|this,event:&gpui::KeyDownEvent,_,cx|{if action_key(event){this.retry_dashboard_catalog(cx);cx.stop_propagation();}}))))
                                 } else {rail}
                             })
-                            .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_starters(provider, cx))),
+                            ,
                     ),
             );
         let exiting = self.menu.is_none()
@@ -18839,7 +18702,7 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("codex-provider-connection").is_none());
         assert!(cx.debug_bounds("codex-composer").is_some());
-        assert!(cx.debug_bounds("codex-launch-starters").is_some());
+        assert!(cx.debug_bounds("codex-launch-starters").is_none());
         view.update(cx, |view, cx| {
             view.session.update(cx, |session, cx| {
                 session.state.status = Status::Disconnected;
@@ -18894,7 +18757,7 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("codex-provider-connection").is_none());
         assert!(cx.debug_bounds("codex-composer").is_some());
-        assert!(cx.debug_bounds("codex-empty").is_some());
+        assert!(cx.debug_bounds("codex-empty").is_none());
         view.read_with(cx, |view, cx| {
             assert!(!view.draft_action_pending(cx));
             assert_eq!(
@@ -18914,67 +18777,20 @@ mod tests {
     }
 
     #[gpui::test]
-    fn focused_launch_starters_preserve_draft_and_never_submit(cx: &mut gpui::TestAppContext) {
-        let (view, cx, actions, _) = fixture(cx);
-        draw(cx);
-        assert!(cx.debug_bounds("codex-empty").is_some());
-        let starter = cx.debug_bounds("codex-starter-review").unwrap();
-        cx.update(|window, cx| {
+    fn empty_sessions_show_intro_above_bottom_composer(cx: &mut gpui::TestAppContext) {
+        let (view, cx, _, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
             view.update(cx, |view, cx| {
-                view.input.update(cx, |input, cx| {
-                    input.set_value("My existing request", window, cx);
-                });
+                view.session.update(cx, |session, cx| {
+                    session.state.saved.provider = provider;
+                    cx.notify();
+                })
             });
-        });
-        cx.simulate_click(starter.center(), gpui::Modifiers::default());
-        draw(cx);
-        view.read_with(cx, |view, cx| {
-            assert_eq!(
-                view.input.read(cx).value().as_ref(),
-                "My existing request\n\nReview my uncommitted changes for bugs and regressions."
-            );
-            assert!(view.submitted.is_none());
-        });
-        let sent = actions.try_iter().collect::<Vec<_>>();
-        assert!(!sent.is_empty());
-        assert!(sent.iter().all(|action| matches!(action, Action::Draft(_))));
-        cx.update(|window, cx| {
-            assert!(view.read(cx).input.focus_handle(cx).is_focused(window));
-            let session = view.read(cx).session.clone();
-            session.update(cx, |session, cx| {
-                session.state.saved.items.push(json!({"type":"userMessage", "id":"first", "content":[{"type":"text", "text":"Hello"}]}));
-                cx.notify();
-            });
-        });
-        draw(cx);
-        assert!(cx.debug_bounds("codex-empty").is_none());
-        assert!(cx.debug_bounds("codex-starter-review").is_none());
-        assert!(cx.debug_bounds("codex-composer").is_some());
-    }
-
-    #[gpui::test]
-    fn focused_launch_wraps_starters_inside_narrow_panes(cx: &mut gpui::TestAppContext) {
-        let (_view, cx, _, _) = fixture(cx);
-        for width in [400.0, 1280.0] {
-            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.0)));
             draw(cx);
-            let composer = cx.debug_bounds("codex-composer").unwrap();
-            let first = cx.debug_bounds("codex-starter-understand").unwrap();
-            let last = cx.debug_bounds("codex-starter-review").unwrap();
-            assert!(first.top() >= composer.bottom());
-            assert!(first.left() >= composer.left());
-            assert!(last.right() <= composer.right());
-            if width < 600.0 {
-                assert!(last.top() > first.top());
-            } else {
-                assert_eq!(last.top(), first.top());
-                assert_eq!(
-                    cx.debug_bounds("codex-starter-review-title").unwrap().top(),
-                    cx.debug_bounds("codex-starter-understand-title")
-                        .unwrap()
-                        .top()
-                );
-            }
+            assert!(cx.debug_bounds("codex-empty").is_none());
+            assert!(cx.debug_bounds("codex-empty-intro").is_some());
+            assert!(cx.debug_bounds("codex-starter-review").is_none());
+            assert!(cx.debug_bounds("codex-composer").is_some());
         }
     }
 

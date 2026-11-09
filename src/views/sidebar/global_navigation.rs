@@ -277,7 +277,9 @@ impl Sidebar {
                     .size(rpx(STEPPER_BTN_W))
                     .justify_center()
                     .aria_selected(choice == grouping)
-                    .when(choice == grouping, |row| row.text_color(c::FG()))
+                    .when(choice == grouping, |row| {
+                        row.bg(c::BG_HOVER()).text_color(c::FG())
+                    })
                     .child(icon(
                         glyph,
                         ICON_SM,
@@ -297,7 +299,9 @@ impl Sidebar {
                         .size(rpx(STEPPER_BTN_W))
                         .justify_center()
                         .aria_selected(self.is_grid())
-                        .when(self.is_grid(), |row| row.text_color(c::FG()))
+                        .when(self.is_grid(), |row| {
+                            row.bg(c::BG_HOVER()).text_color(c::FG())
+                        })
                         .child(icon(
                             "grid",
                             ICON_SM,
