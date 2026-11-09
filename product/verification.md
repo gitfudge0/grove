@@ -1049,9 +1049,33 @@ user application was not restarted. No release was created.
 
 The skill catalog now watches global and ancestor project skill sources in the
 background, including symlinks and plugin installations, and updates open Codex
-and Claude composers without reconnecting their conversations. Earlier checks
-and real provider catalog install/removal probes passed on the initial main-based
-implementation; these are not evidence for the rebased feature-branch build.
-Checks after integration onto `feat/new-sidebar`, installation, and native UI
-interaction verification are pending. Live catalog probes exercise the provider
+and Claude composers without reconnecting their conversations. After rebasing onto `feat/new-sidebar`, 11 catalog tests, two actor tests and
+live Codex/Claude global/project install-removal metadata checks passed. The
+Linux build/install passed. Native UI interaction verification remains pending;
+core Clippy reports 33 findings in existing feature-branch code. Live catalog probes exercise the provider
 metadata adapters, not the installed composer or an active model turn.
+
+## Checkout Git failure ownership
+
+The action-owned Git failure change was checked on Linux against parent
+`07143a0b8b9710d09295d6dd43c62b5b434b32bc`. Core Git tests passed 11/11,
+including an actual rejected push and divergent fast-forward-only pull against a
+local remote. Checkout tests passed 18/20; the Agents disclosure test and the
+later narrow-layout portion of the Checkout/PR test fail at the same assertions
+with the parent Checkout source restored (16/18 baseline tests pass). The added
+PR-confirmation ownership assertion executes before that existing narrow-layout
+failure. Conformance passed 33/33. These results do not establish a green full suite.
+
+The actual Sidebar Linux capture ran with frozen Codex and Claude sessions.
+Inspected screenshots show one failure and distinct recovery guidance beneath
+Pull for Codex in dark mode and Claude in light mode, including retained Pull
+context with zero remote commits. Requested window widths and zoom did not
+reliably reach the rendered frame: every capture remained 1424 by 1698 pixels.
+Narrow-width and zoom coverage remain unverified. The native accessibility tree
+was unavailable without an active accessibility client, so accessibility-based
+uniqueness assertions were not exercised. Full hover/focus/press, failure/retry,
+and confirmation interaction combinations remain unobserved in a native window.
+Codex and Claude live provider boundaries were untested; these are provider
+fixtures around provider-independent Git presentation. macOS and Windows remain
+untested. Raw Git stderr is intentionally withheld; no diagnostic disclosure is
+shown without distinct safe diagnostic content.
