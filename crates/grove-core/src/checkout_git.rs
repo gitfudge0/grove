@@ -57,6 +57,44 @@ pub enum GitAction {
     Publish { remote: String },
 }
 
+/// Return only app-authored copy. Raw stderr may contain remote credentials,
+/// hook secrets and terminal escapes and must never reach a display or clipboard.
+fn git_failure_message(args: &[&str], detail: &str) -> &'static str {
+    let detail = detail.to_ascii_lowercase();
+    if detail.contains("author identity unknown") || detail.contains("unable to auto-detect email")
+    {
+        "Configure your Git user.name and user.email before committing"
+    } else if detail.contains("gpg failed")
+        || detail.contains("failed to sign")
+        || detail.contains("signing failed")
+    {
+        "Commit signing failed. Check your Git signing configuration and retry"
+    } else if detail.contains("conflict") && matches!(args.first(), Some(&"merge" | &"revert")) {
+        "The operation has conflicts. Resolve or abort it in the checkout before continuing"
+    } else if args.first() == Some(&"commit") && !detail.contains("authentication") {
+        "Commit failed. Check your commit hooks, signing setup, and staged changes, then retry"
+    } else if detail.contains("authentication")
+        || detail.contains("permission denied")
+        || detail.contains("could not read username")
+        || detail.contains("repository not found")
+    {
+        "Git access failed. Check your authentication and repository permissions"
+    } else if args.first() == Some(&"pull")
+        && (detail.contains("not possible to fast-forward") || detail.contains("divergent"))
+    {
+        "Branches have diverged. Resolve the branch divergence before pulling again"
+    } else if args.first() == Some(&"push") && detail.contains("rejected") {
+        "Push was rejected. Review remote changes and repository push policies before retrying"
+    } else if detail.contains("could not resolve")
+        || detail.contains("unable to access")
+        || detail.contains("connection")
+    {
+        "Could not reach the remote. Check your network connection and retry"
+    } else {
+        "Git operation failed. Check repository access and refresh before retrying"
+    }
+}
+
 pub(crate) fn git(path: &Path, args: &[&str]) -> Result<String, String> {
     git_with_index(path, args, None)
 }
@@ -93,6 +131,7 @@ fn git_with_index_limit(
         .arg(path)
         .args(["-c", "credential.interactive=false"])
         .args(args)
+        .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
@@ -124,43 +163,7 @@ fn git_with_index_limit(
                     let _ = errors.seek(SeekFrom::Start(0));
                     let mut detail = String::new();
                     let _ = errors.take(65536).read_to_string(&mut detail);
-                    let detail = detail.to_ascii_lowercase();
-                    let message = if detail.contains("author identity unknown")
-                        || detail.contains("unable to auto-detect email")
-                    {
-                        "Configure your Git user.name and user.email before committing"
-                    } else if detail.contains("gpg failed")
-                        || detail.contains("failed to sign")
-                        || detail.contains("signing failed")
-                    {
-                        "Commit signing failed. Check your Git signing configuration and retry"
-                    } else if detail.contains("conflict")
-                        && matches!(args.first(), Some(&"merge" | &"revert"))
-                    {
-                        "The operation has conflicts. Resolve or abort it in the checkout before continuing"
-                    } else if args.first() == Some(&"commit") && !detail.contains("authentication")
-                    {
-                        "Commit failed. Check your commit hooks, signing setup, and staged changes, then retry"
-                    } else if detail.contains("authentication")
-                        || detail.contains("permission denied")
-                        || detail.contains("could not read username")
-                        || detail.contains("repository not found")
-                    {
-                        "Git access failed. Check your authentication and repository permissions"
-                    } else if detail.contains("rejected")
-                        || detail.contains("non-fast-forward")
-                        || detail.contains("not possible to fast-forward")
-                        || detail.contains("divergent")
-                    {
-                        "Branches have diverged or the push was rejected. Fetch and resolve changes before retrying"
-                    } else if detail.contains("could not resolve")
-                        || detail.contains("unable to access")
-                        || detail.contains("connection")
-                    {
-                        "Could not reach the remote. Check your network connection and retry"
-                    } else {
-                        "Git operation failed. Check repository access and refresh before retrying"
-                    };
+                    let message = git_failure_message(args, &detail);
                     return Err(message.into());
                 }
                 let mut output: File = output;
@@ -1169,6 +1172,35 @@ mod tests {
         .contains("changed"));
     }
     #[test]
+    fn failures_report_only_known_causes_and_never_raw_diagnostics() {
+        assert_eq!(
+            git_failure_message(&["push"], "remote: hook declined\n! [remote rejected]"),
+            "Push was rejected. Review remote changes and repository push policies before retrying"
+        );
+        for diagnostic in [
+            "fatal: unknown failure https://secret@example.test/repo?token=secret",
+            "fatal: rejected",
+            "\u{1b}[31mprivate hook output",
+        ] {
+            let message = git_failure_message(&["pull"], diagnostic);
+            assert!(!message.contains("diverged"));
+            assert!(!message.contains("secret"));
+            assert!(!message.contains('\u{1b}'));
+        }
+        assert!(
+            git_failure_message(&["pull"], "fatal: Authentication failed")
+                .contains("authentication")
+        );
+        assert!(
+            git_failure_message(&["pull"], "fatal: Could not resolve host").contains("network")
+        );
+        assert!(git_failure_message(&["merge"], "CONFLICT (content)").contains("conflicts"));
+        assert!(
+            git_failure_message(&["commit"], "gpg failed to sign the data").contains("signing")
+        );
+    }
+
+    #[test]
     fn local_publish_fetch_pull_and_push() {
         let dir = fixture();
         commit(dir.path());
@@ -1210,6 +1242,12 @@ mod tests {
             execute(dir.path(), &inspect(dir.path()).unwrap(), GitAction::Push)
                 .unwrap_err()
                 .contains("rejected")
+        );
+        let diverged =
+            execute(dir.path(), &inspect(dir.path()).unwrap(), GitAction::Pull).unwrap_err();
+        assert_eq!(
+            diverged,
+            "Branches have diverged. Resolve the branch divergence before pulling again"
         );
         run(dir.path(), &["reset", "--hard", "HEAD~1"]);
         execute(dir.path(), &inspect(dir.path()).unwrap(), GitAction::Fetch).unwrap();

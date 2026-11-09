@@ -1044,3 +1044,28 @@ HTML mock. Existing unrelated checkout edits were preserved.
 The final `./install.sh` local build/install succeeded on Linux. The installed
 `~/.local/bin/grove` and `target/local/grove` matched by SHA-256. The running
 user application was not restarted. No release was created.
+
+## Checkout Git failure ownership
+
+The action-owned Git failure change was checked on Linux against parent
+`07143a0b8b9710d09295d6dd43c62b5b434b32bc`. Core Git tests passed 11/11,
+including an actual rejected push and divergent fast-forward-only pull against a
+local remote. Checkout tests passed 18/20; the Agents disclosure test and the
+later narrow-layout portion of the Checkout/PR test fail at the same assertions
+with the parent Checkout source restored (16/18 baseline tests pass). The added
+PR-confirmation ownership assertion executes before that existing narrow-layout
+failure. Conformance passed 33/33. These results do not establish a green full suite.
+
+The actual Sidebar Linux capture ran with frozen Codex and Claude sessions.
+Inspected screenshots show one failure and distinct recovery guidance beneath
+Pull for Codex in dark mode and Claude in light mode, including retained Pull
+context with zero remote commits. Requested window widths and zoom did not
+reliably reach the rendered frame: every capture remained 1424 by 1698 pixels.
+Narrow-width and zoom coverage remain unverified. The native accessibility tree
+was unavailable without an active accessibility client, so accessibility-based
+uniqueness assertions were not exercised. Full hover/focus/press, failure/retry,
+and confirmation interaction combinations remain unobserved in a native window.
+Codex and Claude live provider boundaries were untested; these are provider
+fixtures around provider-independent Git presentation. macOS and Windows remain
+untested. Raw Git stderr is intentionally withheld; no diagnostic disclosure is
+shown without distinct safe diagnostic content.

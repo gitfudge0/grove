@@ -206,6 +206,8 @@ fn describe_changes_full_sidebar_linux_capture() {
                     ("clean", "grove-light", 1280., 16.),
                     ("working", "grove-dark", 1280., 16.),
                     ("narrow", "grove-light", 760., 20.),
+                    ("pull-error", "grove-dark", 1280., 16.),
+                    ("pull-error-narrow", "grove-light", 760., 20.),
                 ] {
                     cx.update_window(window.into(), |_, window, cx| {
                         grove_core::theme::set_by_name(theme);
@@ -235,6 +237,16 @@ fn describe_changes_full_sidebar_linux_capture() {
                         window.refresh();
                         let sidebar = sidebar.read(cx);
                         let mut metadata = std::fs::OpenOptions::new().create(true).append(true).open(output.join("group-measurements.txt")).unwrap();
+                        if matches!(state, "pull-error" | "pull-error-narrow") {
+                            if let Some(tree) = window.debug_a11y_tree_json() {
+                            let serialized = serde_json::to_string(&tree).unwrap();
+                            std::fs::write(output.join(format!("groups-{}-{state}-a11y.json", provider.label().to_lowercase())), &serialized).unwrap();
+                            assert_eq!(serialized.matches("Couldn’t pull: Branches have diverged").count(), 1, "one failure in actual Sidebar");
+                            assert_eq!(serialized.matches("Resolve the branch divergence before pulling again").count(), 1, "one recovery explanation in actual Sidebar");
+                            } else {
+                                writeln!(metadata, "Accessibility uniqueness check unavailable: no active accessibility tree").unwrap();
+                            }
+                        }
                         writeln!(metadata, "{} {state}: viewport {:?}, rem {:?}, theme {}; fixture {}", provider.label(), window.viewport_size(), window.rem_size(), grove_core::theme::current().name, sidebar.checkout_group_capture_state()).unwrap();
                     }).unwrap();
                     cx.background_executor().timer(Duration::from_millis(500)).await;
