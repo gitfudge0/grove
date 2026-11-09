@@ -1251,6 +1251,7 @@ impl Actor {
             && !matches!(
                 &action,
                 Action::Submit { .. }
+                    | Action::UpdateSkills(_)
                     | Action::Prompt(_)
                     | Action::Interrupt
                     | Action::Reconnect
@@ -1303,6 +1304,7 @@ impl Actor {
                 action,
                 Action::Reconnect
                     | Action::Stop { .. }
+                    | Action::UpdateSkills(_)
                     | Action::Draft(_)
                     | Action::SetTitle(_)
                     | Action::RegenerateTitle
@@ -1325,6 +1327,7 @@ impl Actor {
             Action::MarkReviewed { work_period } => {
                 self.state.mark_reviewed(work_period)?;
             }
+            Action::UpdateSkills(skills) => self.state.skills = skills,
             Action::Interaction { epoch, action } => {
                 if epoch != self.state.interaction_epoch {
                     return Err("This interaction belongs to a previous connection".into());
@@ -5329,6 +5332,28 @@ mod tests {
         assert_eq!(actor.turn_params(vec![])["serviceTierForTurn"], "default");
     }
 
+    #[test]
+    fn skill_metadata_refresh_preserves_conversation_and_draft() {
+        let mut actor = actor();
+        actor.state.saved.thread_id = Some("retained-thread".into());
+        actor.state.saved.draft = "unsent draft".into();
+        actor.state.status = Status::Working;
+        let skills = vec![json!({"name":"newly-installed","path":"/skills/new/SKILL.md"})];
+        actor.action(Action::UpdateSkills(skills.clone())).unwrap();
+        assert_eq!(actor.state.skills, skills);
+        assert!(actor
+            .input("$newly-installed", Vec::new())
+            .contains(&json!({
+                "type":"skill", "name":"newly-installed", "path":"/skills/new/SKILL.md"
+            })));
+        assert_eq!(
+            actor.state.saved.thread_id.as_deref(),
+            Some("retained-thread")
+        );
+        assert_eq!(actor.state.saved.draft, "unsent draft");
+        assert_eq!(actor.state.status, Status::Working);
+        assert!(actor.process.is_none());
+    }
     fn actor() -> Actor {
         let (_, actions) = mpsc::channel();
         let (updates, _) = crate::latest::channel();

@@ -1045,6 +1045,18 @@ The final `./install.sh` local build/install succeeded on Linux. The installed
 `~/.local/bin/grove` and `target/local/grove` matched by SHA-256. The running
 user application was not restarted. No release was created.
 
+## Installed skill discovery refresh
+
+The skill catalog now watches global and ancestor project skill sources in the
+background, including symlinks and plugin installations, and updates open Codex
+and Claude composers without reconnecting their conversations. After rebasing onto `feat/new-sidebar`, 11 catalog tests, two actor tests and
+live Codex/Claude global/project install-removal metadata checks passed. The
+GPUI queued-snapshot regression passed for both providers, preserving draft and
+thread identity. Linux build/install passed. Native UI interaction verification
+remains pending;
+core Clippy reports 33 findings in existing feature-branch code. Live catalog probes exercise the provider
+metadata adapters, not the installed composer or an active model turn.
+
 ## Checkout Git failure ownership
 
 The action-owned Git failure change was checked on Linux against parent
