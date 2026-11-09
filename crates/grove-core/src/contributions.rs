@@ -1,5 +1,5 @@
 //! Account-wide GitHub commit activity; independent of any local checkout.
-use chrono::{Datelike, Months, NaiveDate, Utc};
+use chrono::{Datelike, Local, Months, NaiveDate, TimeZone};
 use serde::Deserialize;
 use std::fmt::Write as _;
 
@@ -46,16 +46,35 @@ pub fn window(today: NaiveDate) -> Vec<NaiveDate> {
 // which also counts PRs, issues and reviews. No repository-list cap/pagination.
 const QUERY_DAYS: usize = 40;
 
-fn query(dates: &[NaiveDate], offset: usize) -> String {
+fn boundary<T: TimeZone>(date: NaiveDate, timezone: &T) -> Result<String, String> {
+    // Resolve each date separately so DST changes do not shift subsequent days.
+    timezone
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+        .earliest()
+        .map(|time| time.fixed_offset().to_rfc3339())
+        .ok_or_else(|| "Local midnight is unavailable for an activity date".into())
+}
+
+fn query<T: TimeZone>(dates: &[NaiveDate], offset: usize, timezone: &T) -> Result<String, String> {
     let mut q = String::from("query { viewer { login ");
-    if let (Some(start), Some(end)) = (dates.first(), dates.last()) {
-        let _ = write!(q, "summary: contributionsCollection(from: \"{start}T00:00:00Z\", to: \"{end}T23:59:59Z\") {{ totalCommitContributions totalPullRequestContributions totalRepositoriesWithContributedCommits }} ");
+    if let (Some(start), Some(end)) = (dates.first().filter(|_| offset == 0), dates.last()) {
+        let start = boundary(*start, timezone)?;
+        let end = boundary(end.succ_opt().unwrap(), timezone)?;
+        let end = (chrono::DateTime::parse_from_rfc3339(&end).unwrap()
+            - chrono::Duration::seconds(1))
+        .to_rfc3339();
+        let _ = write!(q, "summary: contributionsCollection(from: \"{start}\", to: \"{end}\") {{ totalCommitContributions totalPullRequestContributions totalRepositoriesWithContributedCommits }} ");
     }
     for (i, date) in dates.iter().enumerate().skip(offset).take(QUERY_DAYS) {
-        let _ = write!(q, "d{i}: contributionsCollection(from: \"{date}T00:00:00Z\", to: \"{date}T23:59:59Z\") {{ totalCommitContributions }} ");
+        let start = boundary(*date, timezone)?;
+        let end = boundary(date.succ_opt().unwrap(), timezone)?;
+        let end = (chrono::DateTime::parse_from_rfc3339(&end).unwrap()
+            - chrono::Duration::seconds(1))
+        .to_rfc3339();
+        let _ = write!(q, "d{i}: contributionsCollection(from: \"{start}\", to: \"{end}\") {{ totalCommitContributions }} ");
     }
     q.push_str("} }");
-    q
+    Ok(q)
 }
 
 pub fn parse(text: &str, dates: &[NaiveDate]) -> Result<Activity, String> {
@@ -99,20 +118,41 @@ pub fn parse(text: &str, dates: &[NaiveDate]) -> Result<Activity, String> {
 }
 
 pub fn load() -> Result<Activity, String> {
-    let dates = window(Utc::now().date_naive());
+    let dates = window(Local::now().date_naive());
     let mut merged = serde_json::Map::new();
-    for offset in (0..dates.len()).step_by(QUERY_DAYS) {
-        let q = format!("query={}", query(&dates, offset));
-        let text = crate::checkout_pr::gh(
-            &std::env::temp_dir(),
-            &["api", "graphql", "--hostname", "github.com", "-f", &q],
-        )
-        .map_err(|error| {
-            error
-                .replace("pull requests", "account activity")
-                .replace("repository access", "account access")
-        })?;
-        merge_batch(&mut merged, &text)?;
+    let responses = std::thread::scope(|scope| {
+        let requests = (0..dates.len())
+            .step_by(QUERY_DAYS)
+            .map(|offset| query(&dates, offset, &Local))
+            .collect::<Result<Vec<_>, _>>()?;
+        let handles: Vec<_> = requests
+            .into_iter()
+            .map(|query| {
+                scope.spawn(move || {
+                    let q = format!("query={query}");
+                    crate::checkout_pr::gh(
+                        &std::env::temp_dir(),
+                        &["api", "graphql", "--hostname", "github.com", "-f", &q],
+                    )
+                    .map_err(|error| {
+                        error
+                            .replace("pull requests", "account activity")
+                            .replace("repository access", "account access")
+                    })
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| "Activity request failed".to_owned())?
+            })
+            .collect::<Result<Vec<_>, String>>()
+    })?;
+    for response in responses {
+        merge_batch(&mut merged, &response)?;
     }
     parse(
         &serde_json::json!({"data":{"viewer":merged}}).to_string(),
@@ -148,6 +188,7 @@ pub fn weekday(date: NaiveDate) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use serde_json::json;
     #[test]
     fn calendar_window_clamps_month_ends_and_crosses_years() {
@@ -167,6 +208,17 @@ mod tests {
         (json!({"data":{"viewer":{"login":"account","summary":{"totalCommitContributions":10,"totalPullRequestContributions":4,"totalRepositoriesWithContributedCommits":3},"d0":{"totalCommitContributions":1},"d1":{"totalCommitContributions":2},"d2":{"totalCommitContributions":0},"d3":{"totalCommitContributions":5},"d4":{"totalCommitContributions":2}}}}).to_string(), dates)
     }
     #[test]
+    fn local_boundaries_use_offsets_across_utc_dates() {
+        use chrono::FixedOffset;
+        let date = NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let east = FixedOffset::east_opt(19800).unwrap();
+        let west = FixedOffset::west_opt(28800).unwrap();
+        assert_eq!(boundary(date, &east).unwrap(), "2026-11-09T00:00:00+05:30");
+        assert_eq!(boundary(date, &west).unwrap(), "2026-11-09T00:00:00-08:00");
+        let q = query(&[date], 0, &east).unwrap();
+        assert!(q.contains("2026-11-09T23:59:59+05:30"));
+    }
+    #[test]
     fn summaries_use_commit_days_and_separate_pr_totals() {
         let (text, dates) = fixture();
         let a = parse(&text, &dates).unwrap();
@@ -175,7 +227,7 @@ mod tests {
             (10, 4, 3, 2)
         );
         assert_eq!(a.busiest().unwrap().date, dates[3]);
-        let q = query(&dates, 0);
+        let q = query(&dates, 0, &Utc).unwrap();
         assert!(!q.contains("contributionCalendar"));
         assert!(!q.contains("repository("));
     }
@@ -197,8 +249,8 @@ mod tests {
     fn batches_cover_four_months_and_reject_account_changes() {
         let dates = window(NaiveDate::from_ymd_opt(2026, 11, 9).unwrap());
         for offset in (0..dates.len()).step_by(QUERY_DAYS) {
-            let q = query(&dates, offset);
-            assert!(q.contains("2026-07-09T00:00:00Z"));
+            let q = query(&dates, offset, &Utc).unwrap();
+            assert_eq!(q.contains("summary:"), offset == 0);
             for i in 0..dates.len() {
                 assert_eq!(
                     q.contains(&format!("d{i}:")),

@@ -478,11 +478,13 @@ Composer popup surfaces (context, access, model/effort/speed, and project/worktr
 
 Home alone shows a separate account contribution card below Checkout. It uses
 the GitHub.com account authenticated through GitHub CLI, across repositories,
-independent of the selected local project. The inclusive UTC window starts four
-calendar months before today and ends today. Summaries show commits, PRs opened,
+independent of the selected local project. The inclusive local-timezone window starts four
+calendar months before today and ends today. The visible range shows only dates,
+without a timezone suffix. Summaries show commits, PRs opened,
 repositories with contributed commits, longest commit streak within the window,
-and busiest commit day. The four leading metrics use two compact inline rows;
-Refresh sits in the heading and contribution coverage is explained by the account
+and busiest commit day. The four leading metrics use two compact inline rows.
+An icon-only Refresh sits at the right of the heading; the username sits
+directly below the title. Contribution coverage is explained by the account
 scope tooltip. Counts follow GitHub contribution rules and granted
 account access; unavailable data must never masquerade as zero activity.
 

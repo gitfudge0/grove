@@ -7,7 +7,7 @@ use grove_core::contributions::{self, Activity};
 const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const CELL_SIZE: f32 = 9.;
 const LEGEND_SIZE: f32 = 8.;
-const REFRESH_ACTION_W: f32 = 108.;
+const REFRESH_ACTION_W: f32 = 28.;
 const FEEDBACK_OWNER: &str = "github-account";
 const FEEDBACK_ACTION: &str = "contributions";
 
@@ -69,13 +69,6 @@ impl Sidebar {
             .as_ref()
             .map_or("Refresh", |f| f.label.as_str())
             .to_owned();
-        let refresh_color = feedback.as_ref().map_or(c::FG_DIM(), |f| {
-            if f.completed.is_some() {
-                c::STATUS_SUCCESS()
-            } else {
-                c::STATUS_INFO()
-            }
-        });
         let refresh_mark = feedback.as_ref().map_or_else(
             || icon("refresh", ICON_SM, c::FG_DIM()).into_any_element(),
             |f| super::action_feedback::mark("contribution-refresh-mark", f, ICON_SM, cx),
@@ -95,8 +88,15 @@ impl Sidebar {
                     .flex()
                     .justify_between()
                     .gap(rpx(SPACE_SM))
-                    .items_center()
-                    .child(div().text_size(rpx(TEXT_BODY)).child("Commit activity"))
+                    .items_start()
+                    .child(div().flex_1().min_w_0().flex().flex_col().gap(rpx(SPACE_XS))
+                        .child(div().debug_selector(|| "contribution-title".into()).text_size(rpx(TEXT_BODY)).child("Commit activity"))
+                        .when_some(self.contributions.result.as_ref().and_then(|r| r.as_ref().ok()), |header, activity| {
+                            header.child(div().id("contribution-account-scope").debug_selector(|| "contribution-account".into())
+                                .text_size(rpx(TEXT_MICRO)).text_color(c::FG_DIM()).truncate()
+                                .tooltip(|window, cx| tooltip("Account-wide GitHub contributions for the last four months in your local timezone. GitHub contribution rules and account access apply.", window).build(window, cx))
+                                .child(format!("@{}", activity.login)))
+                        }))
                     .child(
                         form_action(
                             "refresh-contributions",
@@ -108,15 +108,8 @@ impl Sidebar {
                         .debug_selector(|| "contribution-refresh-action".into())
                         .w(rpx(REFRESH_ACTION_W))
                         .icon_only()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(rpx(SPACE_SM))
-                                .text_color(refresh_color)
-                                .child(refresh_mark)
-                                .child(div().child(refresh_label)),
-                        )
+                        .child(refresh_mark)
+                        .tooltip("Refresh account activity")
                         .disabled(self.contributions.loading)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.load_contributions(cx);
@@ -126,12 +119,6 @@ impl Sidebar {
             );
         match &self.contributions.result {
             Some(Ok(activity)) => {
-                card = card.child(
-                    div().id("contribution-account-scope")
-                        .text_size(rpx(TEXT_MICRO)).text_color(c::FG_DIM()).truncate()
-                        .tooltip(|window, cx| tooltip("Account-wide GitHub contributions for the last four months (UTC). GitHub contribution rules and account access apply.", window).build(window, cx))
-                        .child(format!("@{} · All repositories · 4 months", activity.login)),
-                );
                 let metrics = [
                     (activity.commits.to_string(), "commits"),
                     (activity.pull_requests.to_string(), "PRs opened"),
@@ -170,7 +157,7 @@ impl Sidebar {
                             .text_size(rpx(TEXT_MICRO))
                             .text_color(c::FG_DIM())
                             .child(format!(
-                                "{} – {} · UTC",
+                                "{} – {}",
                                 first.date.format("%b %-d"),
                                 last.date.format("%b %-d")
                             )),
@@ -313,6 +300,25 @@ mod tests {
             });
             assert!(cx.debug_bounds("home-contributions").is_some());
         }
+        cx.update(|window, cx| {
+            sidebar.update(cx, |sidebar, _| {
+                sidebar.contributions.result = Some(Ok(Activity {
+                    login: "a-long-account-name-for-narrow-layout".into(),
+                    days: vec![],
+                    commits: 0,
+                    pull_requests: 0,
+                    repositories: 0,
+                    longest_streak: 0,
+                }));
+            });
+            let _ = window.draw(cx);
+        });
+        let title = cx.debug_bounds("contribution-title").unwrap();
+        let account = cx.debug_bounds("contribution-account").unwrap();
+        let refresh = cx.debug_bounds("contribution-refresh-action").unwrap();
+        assert!(account.top() >= title.bottom());
+        assert!(refresh.left() >= title.right());
+        assert!(refresh.top() < account.top());
         // Loading, success and restored action keep exactly the same hit bounds.
         let mut action_bounds = None;
         for state in 0..3 {

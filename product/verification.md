@@ -2,6 +2,22 @@
 
 ## Home account contributions
 
+Compact-header/local-time follow-up: the card now has an icon-only refresh at
+heading right and the username immediately below the title. The calendar window
+uses local today and sends each day's local midnight offset to GitHub (resolved
+per date for DST), retaining GitHub contribution rules. An initial UTC-normalized
+version failed the live sum check; preserving explicit local offsets passed the
+124-day authenticated fetch. Five core regressions passed, including positive
+and negative offsets; two UI tests (including long-account header geometry and
+stable refresh bounds) and all 33 conformance checks passed. A six-run alternating
+request-pattern comparison on the same 124 UTC dates/account measured serial
+9.711/10.443/9.946s versus concurrent single-summary 2.838/3.230/3.564s; medians
+9.946s and 3.230s. These are network-dependent loader measurements, not UI startup
+benchmarks. Native visual inspection and manual refresh/tooltip/keyboard checks
+remain unobserved because native computer-control APIs are unavailable in this
+session; macOS/Windows and DST-transition runtime checks remain untested. Codex
+and Claude live delivery were not exercised; this account card is provider independent.
+
 Four-month follow-up: the inclusive UTC window now starts four calendar months
 before today; 9px cells keep the grid within the compact card. A direct query
 hit GitHub resource limits, so daily fields are now loaded in 40-day batches.
