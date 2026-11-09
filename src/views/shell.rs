@@ -512,6 +512,14 @@ impl Shell {
                         "plus",
                     )),
             )
+            .when(!compact, |header| {
+                header.child(
+                    div().flex_1().min_w_0().child(
+                        self.sidebar
+                            .update(cx, |sidebar, cx| sidebar.header_workspace_control(cx)),
+                    ),
+                )
+            })
             .child(
                 self.header_action(
                     "sidebar-toggle",
@@ -538,14 +546,6 @@ impl Shell {
                     c::FG_DIM(),
                 )),
             )
-            .when(!compact, |header| {
-                header.child(
-                    div().flex_1().min_w_0().child(
-                        self.sidebar
-                            .update(cx, |sidebar, cx| sidebar.header_workspace_control(cx)),
-                    ),
-                )
-            })
             .child(
                 div()
                     .id("header-main-drag-region")

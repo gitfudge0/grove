@@ -1081,3 +1081,21 @@ Codex and Claude live provider boundaries were untested; these are provider
 fixtures around provider-independent Git presentation. macOS and Windows remain
 untested. Raw Git stderr is intentionally withheld; no diagnostic disclosure is
 shown without distinct safe diagnostic content.
+
+
+## Sidebar header ordering follow-up (2026-11-09)
+
+The workspace selector now follows the window controls, left-aligns its name
+and chevron, and yields trailing space to the sidebar expand/collapse control.
+This delivery did not exercise native screenshot, hover/focus, theme, narrow
+width or zoom appearance checks; native computer control is unavailable.
+Codex and Claude live provider checks are untested for this layout-only change;
+provider transport behavior is unchanged. macOS and Windows remain untested.
+
+Delivery checks: formatting, diff whitespace, repository artifact policy and all
+33 UI source conformance checks passed. The shell suite completed with 25 passed
+and 18 failed (header/settings selectors, rail geometry, collapse, shortcuts,
+Zen/grid and worktree input expectations); no baseline comparison established
+whether these failures predate this layout change. This is not a green suite.
+The final Linux local build/install succeeded; installed and built binaries
+matched by SHA-256. The running application was not restarted.

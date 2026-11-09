@@ -507,13 +507,13 @@ static marks. Failures restore the retry action without a success receipt. The
 header reserves stable action width throughout the cycle. Static data updates
 preserve scroll without decorative cell animation.
 
-The window chrome occupies the sidebar top only, with the workspace selector in place of the app title. Content uses the full window height. Navigation labels Home as New session, uses compact row spacing, and places Grid inside the session icon group. The workspace selector right-aligns its name and immediately adjacent down chevron, without a leading icon or Workspace suffix. New session uses the plus icon. Terminals belongs to the top navigation group, sharing its compact row spacing and icon-to-label gap. The section gap follows Terminals and its entries, before Sessions. Grove branding, including the bundled app icon, and Settings remain in the sidebar footer with the shared content inset. These static layout changes use immediate layout feedback.
+The window chrome occupies the sidebar top only, with the workspace selector in place of the app title. Content uses the full window height. Navigation labels Home as New session, uses compact row spacing, and places Grid inside the session icon group. The workspace selector follows the window controls and left-aligns its name and immediately adjacent down chevron, without a leading icon or Workspace suffix; the sidebar expand/collapse control follows it at the trailing edge. New session uses the plus icon. Terminals belongs to the top navigation group, sharing its compact row spacing and icon-to-label gap. The section gap follows Terminals and its entries, before Sessions. Grove branding, including the bundled app icon, and Settings remain in the sidebar footer with the shared content inset. These static layout changes use immediate layout feedback.
 
 Wide Checkout and adjacent Side chat panels begin below the pane toolbar icons with a compact gap; their inset follows the toolbar geometry rather than the sidebar window chrome. Top navigation icons, including Terminals, share the quiet foreground tint at rest.
 
 Session composers omit the lower checkout/branch strip. Known context usage appears within the trailing attachment and send/stop action group; unknown or zero-window usage stays hidden. This shared composer layout applies to Codex and Claude without changing usage data or action ownership.
 
-The workspace selector ends at the sidebar header’s small trailing inset, without a trailing flex spacer. Pointer hover changes its foreground only; keyboard focus retains its visible treatment.
+The workspace selector yields space to the sidebar expand/collapse control at the trailing inset. Pointer hover changes its foreground only; keyboard focus retains its visible treatment.
 
 The main composer uses compact top padding above its text. The queued-message count sits directly beside “Queued”, with queue actions retained at the trailing edge.
 
