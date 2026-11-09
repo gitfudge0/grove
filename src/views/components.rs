@@ -522,7 +522,7 @@ pub fn composer_surface() -> Div {
         .flex_col()
         .gap(rpx(SPACE_LG))
         .px(rpx(SPACE_2XL))
-        .pt(rpx(SPACE_3XL))
+        .pt(rpx(SPACE_LG))
         .pb(rpx(SPACE_2XL))
         .rounded(rpx(RADIUS_PANEL))
         .border_1()

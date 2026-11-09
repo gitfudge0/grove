@@ -268,7 +268,6 @@ fn structured_session_status(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarEvent {
     NewSessionRequested,
-    #[cfg(test)]
     SettingsRequested,
     NewMultiProjectSessionRequested,
 }
@@ -330,11 +329,11 @@ enum Action {
     SelectDiffFile(String),
     RefreshDiff,
     AddTerminal,
-    #[cfg(test)]
     OpenSettings,
     UpdateApp,
     NewMultiProjectSession,
     ToggleSidebar,
+    ToggleGrid,
     GroupSessions(global_navigation::SessionGrouping),
     RefreshSessionHistory,
     HistoryFilterMenu(bool),
@@ -1965,7 +1964,10 @@ impl Sidebar {
         );
         let project_disclosure = matches!(
             &action,
-            Action::ToggleProjectsDestination(_)
+            Action::GroupSessions(_)
+                | Action::ToggleGrid
+                | Action::OpenWorkspaces
+                | Action::ToggleProjectsDestination(_)
                 | Action::MarkReviewed(..)
                 | Action::MarkActivityDone(_)
         );
@@ -2957,6 +2959,7 @@ impl Sidebar {
             self.track_project_flyout_pointer(window.mouse_position(), window, cx);
         }
         match action {
+            Action::ToggleGrid => self.toggle_grid(window, cx),
             Action::ToggleSidebar => {
                 let from = self.animated_sidebar_width(window, cx);
                 let collapsed = !self.is_collapsed(cx);
@@ -3082,7 +3085,6 @@ impl Sidebar {
                 }
             }
             Action::Destination(destination) => self.open_destination(destination, window, cx),
-            #[cfg(test)]
             Action::OpenSettings => {
                 if self.navigation_available() {
                     cx.emit(SidebarEvent::SettingsRequested);
@@ -5265,7 +5267,8 @@ impl Sidebar {
                 .px(rpx(SIDEBAR_CONTENT_INSET))
                 .flex()
                 .items_center()
-                .gap(rpx(SPACE_SM))
+                .gap(rpx(SPACE_LG))
+                .text_color(c::FG_DIM())
                 .child(crate::icons::action_icon("terminal", ICON_LG))
                 .child(
                     div()
@@ -5273,7 +5276,7 @@ impl Sidebar {
                         .min_w_0()
                         .truncate()
                         .text_size(rpx(TEXT_TITLE))
-                        .text_color(c::FG_DIM())
+                        .text_color(c::FG())
                         .font_weight(gpui::FontWeight::NORMAL)
                         .debug_selector(|| "sidebar-terminals-heading".into())
                         .child("Terminals"),

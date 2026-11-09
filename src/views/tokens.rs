@@ -135,6 +135,8 @@ pub const APPBAR_TOP_INSET: f32 = SPACE_LG;
 /// Full chrome extent; APPBAR_H remains the usable control row height.
 pub const APPBAR_TOTAL_H: f32 = APPBAR_H + APPBAR_TOP_INSET;
 pub const CHROME_CONTROL_H: f32 = 24.0;
+/// Wide side cards clear the pane toolbar and retain a compact content gap.
+pub const SIDE_PANEL_TOP_INSET: f32 = SPACE_3XL + APPBAR_H + SPACE_LG;
 pub const TEXT_BRAND: f32 = 15.0;
 pub const RADIUS_CHROME: f32 = 8.0;
 pub const OPACITY_DISABLED: f32 = 0.58;

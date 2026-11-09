@@ -201,7 +201,6 @@ impl Shell {
                             .update(cx, |launcher, cx| launcher.open_multi_project(window, cx));
                     }
                 }
-                #[cfg(test)]
                 super::sidebar::SidebarEvent::SettingsRequested => {
                     this.sidebar
                         .update(cx, super::sidebar::Sidebar::dismiss_project_context);
@@ -460,6 +459,7 @@ impl Shell {
         };
         div()
             .id("app-header")
+            .relative()
             .debug_selector(|| "app-header".into())
             .h(rpx(APPBAR_TOTAL_H))
             .w_full()
@@ -468,7 +468,7 @@ impl Shell {
             .items_center()
             .gap(rpx(SPACE_LG))
             .pl(rpx(SPACE_LG))
-            .pr(rpx(SPACE_20))
+            .pr(rpx(SPACE_LG))
             .pt(rpx(APPBAR_TOP_INSET))
             .bg(c::BG_RAIL())
             .child(
@@ -540,18 +540,19 @@ impl Shell {
             )
             .when(!compact, |header| {
                 header.child(
-                    div()
-                        .debug_selector(|| "header-app-title".into())
-                        .flex_shrink_0()
-                        .text_size(rpx(TEXT_BRAND))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child("Grove"),
+                    div().flex_1().min_w_0().child(
+                        self.sidebar
+                            .update(cx, |sidebar, cx| sidebar.header_workspace_control(cx)),
+                    ),
                 )
             })
             .child(
                 div()
                     .id("header-main-drag-region")
-                    .flex_1()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .w(rpx(SPACE_LG))
                     .min_w_0()
                     .h_full()
                     .on_mouse_down(MouseButton::Left, |event, window, _| {
@@ -561,41 +562,6 @@ impl Shell {
                             window.start_window_move();
                         }
                     }),
-            )
-            .child(
-                self.header_action(
-                    "header-grid",
-                    if self.sidebar.read(cx).is_grid() {
-                        "Exit grid view"
-                    } else {
-                        "Open grid view"
-                    },
-                    |this, window, cx| {
-                        if !this.shortcut_blocked_in(window, cx) {
-                            this.sidebar
-                                .update(cx, |sidebar, cx| sidebar.toggle_grid(window, cx));
-                        }
-                    },
-                    cx,
-                )
-                .aria_selected(self.sidebar.read(cx).is_grid())
-                .child(icon("grid", ICON_LG, c::FG_DIM())),
-            )
-            .child(
-                self.header_action(
-                    "header-settings",
-                    "Settings",
-                    |this, window, cx| {
-                        if !this.shortcut_blocked_in(window, cx) {
-                            this.sidebar
-                                .update(cx, super::sidebar::Sidebar::dismiss_project_context);
-                            this.settings
-                                .update(cx, |settings, cx| settings.open(window, cx));
-                        }
-                    },
-                    cx,
-                )
-                .child(icon("cog", ICON_LG, c::FG_DIM())),
             )
     }
 
@@ -1833,8 +1799,18 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &k::ZoomReset, window, cx| {
                 this.set_zoom(0.0, window, cx);
             }))
-            .child(self.header(window, cx))
             .child(div().flex_1().min_h_0().child(self.sidebar.clone()))
+            .child(
+                div()
+                    .child(self.header(window, cx))
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w(rpx(self
+                        .sidebar
+                        .read(cx)
+                        .animated_sidebar_width(window, cx))),
+            )
             .when(
                 self.runtime
                     .read(cx)

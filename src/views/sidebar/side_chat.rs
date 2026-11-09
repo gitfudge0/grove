@@ -952,9 +952,7 @@ impl Sidebar {
                 .when(wide, |panel| panel.w(rpx(SIDE_CHAT_WIDTH)))
                 .relative()
                 .flex_shrink_0()
-                .when(wide, |panel| {
-                    panel.h_full().pt(rpx(APPBAR_TOTAL_H + SPACE_3XL))
-                })
+                .when(wide, |panel| panel.h_full())
                 .when(!wide, |panel| {
                     panel
                         .w_full()
@@ -964,6 +962,7 @@ impl Sidebar {
                         .track_scroll(&panel_scroll)
                 })
                 .p(rpx(SPACE_3XL))
+                .when(wide, |panel| panel.pt(rpx(SIDE_PANEL_TOP_INSET)))
                 .text_size(rpx(TEXT_BODY))
                 .text_color(c::FG_DIM())
                 .flex()
@@ -1442,7 +1441,7 @@ impl Sidebar {
         let panel = div().id("side-chat-panel").debug_selector(|| "side-chat-panel".into())
             .relative().flex_shrink_0().min_h_0()
             .when(!wide, |panel| panel.child(gpui::canvas(move |bounds, _, _| measured_height.set(bounds.size.height), |_, (), _, _| {}).absolute().inset_0()))
-            .when(wide, |panel| panel.w(rpx(SIDE_CHAT_WIDTH)).h_full().pt(rpx(APPBAR_TOTAL_H + SPACE_3XL)))
+            .when(wide, |panel| panel.w(rpx(SIDE_CHAT_WIDTH)).h_full().pt(rpx(SIDE_PANEL_TOP_INSET)))
             .when(!wide, |panel| panel.w_full().h(rpx(SIDE_CHAT_NARROW_HEIGHT)).max_h(gpui::relative(SIDE_CHAT_MAX_HEIGHT_FRACTION)).overflow_y_scroll().track_scroll(&panel_scroll).pt(rpx(SPACE_3XL)))
             .px(rpx(SPACE_3XL)).pb(if wide { super::super::codex_view::composer_bottom_inset(window) } else { rpx(SPACE_3XL).to_pixels(window.rem_size()) }).flex().flex_col()
             .text_size(rpx(TEXT_BODY)).text_color(c::FG())

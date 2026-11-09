@@ -137,9 +137,12 @@ pub fn svg_for_path(path: &str) -> Option<String> {
     Some(svg_for(name))
 }
 
+/// Shared outline weight in the catalog's 16-unit view box.
+const ICON_STROKE_WIDTH: f32 = 1.0;
+
 fn wrap_svg(inner: &str) -> String {
     format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="{ICON_STROKE_WIDTH}" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>"#
     )
 }
 
@@ -171,6 +174,9 @@ fn svg_for(name: &str) -> String {
         "person" => r#"<circle cx="8" cy="5" r="2.5"/><path d="M3 14v-1.5a5 5 0 0 1 10 0V14"/>"#,
         "history" => r#"<path d="M2 7a6 6 0 1 1 1.2 4M2 2v5h5M8 4v4l2.5 1.5"/>"#,
         "reset" => r#"<path d="M2.5 6a5.5 5.5 0 1 1 .5 5M2.5 2.5V6H6"/>"#,
+        "workspaces" => {
+            r#"<rect x="2" y="5" width="9" height="9" rx="1.5"/><path d="M5 5V2h9v9h-3"/>"#
+        }
         "home" => r#"<path d="m2 7 6-5 6 5v7H9.5v-4h-3v4H2z"/>"#,
         "plus" => r#"<path d="M8 3v10M3 8h10"/>"#,
         "reply" => r#"<path d="m6 3-4 4 4 4M2 7h7a5 5 0 0 1 5 5v1"/>"#,
@@ -206,7 +212,7 @@ fn svg_for(name: &str) -> String {
             r#"<circle cx="8" cy="8" r="6"/><path d="M6 6a2 2 0 1 1 3 1.73C8 8.3 8 8.5 8 9M8 11h.01"/>"#
         }
         "check" => r#"<path d="M3 8l4 4 6-7"/>"#,
-        "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z" fill="currentColor" stroke="none"/>"#,
+        "play" => r#"<path d="M4.5 3.5l8 4.5-8 4.5z"/>"#,
         "chev-down" => r#"<path d="M4 6l4 4 4-4"/>"#,
         "chev-up" => r#"<path d="M4 10l4-4 4 4"/>"#,
         "chev-right" => r#"<path d="M6 4l4 4-4 4"/>"#,
@@ -272,7 +278,7 @@ fn svg_for(name: &str) -> String {
             r#"<path d="M4 2.5v9.5"/><path d="M4 6h4M4 11h4"/><path d="M10.5 6h3M10.5 11h3"/>"#
         }
         "cog" => {
-            r#"<path fill="currentColor" stroke="none" fill-rule="evenodd" d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492M5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0"/><path fill="currentColor" stroke="none" fill-rule="evenodd" d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.376l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115z"/>"#
+            r#"<circle cx="8" cy="8" r="2.75"/><path d="M13.081 5.895L13.368 6.800L14.914 6.905L14.914 9.095L13.368 9.200L13.081 10.105L12.644 10.947L13.663 12.114L12.114 13.663L10.947 12.644L10.105 13.081L9.200 13.368L9.095 14.914L6.905 14.914L6.800 13.368L5.895 13.081L5.053 12.644L3.886 13.663L2.337 12.114L3.356 10.947L2.919 10.105L2.632 9.200L1.086 9.095L1.086 6.905L2.632 6.800L2.919 5.895L3.356 5.053L2.337 3.886L3.886 2.337L5.053 3.356L5.895 2.919L6.800 2.632L6.905 1.086L9.095 1.086L9.200 2.632L10.105 2.919L10.947 3.356L12.114 2.337L13.663 3.886L12.644 5.053Z"/>"#
         }
         "star" => {
             r#"<path d="m8 1.5 1.9 4.1 4.6.6-3.4 3.1.9 4.5-4-2.2-4 2.2.9-4.5L1.5 6.2l4.6-.6z"/>"#
@@ -322,8 +328,8 @@ fn svg_for(name: &str) -> String {
         }
         "zen" => r#"<path d="M5 2.5H2.5V5M11 2.5h2.5V5M5 13.5H2.5V11M11 13.5h2.5V11"/>"#,
         "grid" => {
-            // 2×2 filled squares — the agent-view grid icon.
-            r#"<g fill="currentColor" stroke="none"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></g>"#
+            // Four outline tiles share the catalog stroke weight.
+            r#"<g><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></g>"#
         }
         // Circular arrow — restart / relaunch.
         "restart" => r#"<path d="M13 8a5 5 0 1 1-1.7-3.75M13 2.5V5h-2.5"/>"#,
@@ -399,7 +405,7 @@ fn svg_for(name: &str) -> String {
         }
         // Four-point sparkle — initialize / new.
         "sparkle" => {
-            r#"<path d="M8 2.5c.6 2.6 1.9 3.9 4.5 4.5C9.9 7.6 8.6 8.9 8 11.5 7.4 8.9 6.1 7.6 3.5 7 6.1 6.4 7.4 5.1 8 2.5z" fill="currentColor" stroke="none"/>"#
+            r#"<path d="M8 2.5c.6 2.6 1.9 3.9 4.5 4.5C9.9 7.6 8.6 8.9 8 11.5 7.4 8.9 6.1 7.6 3.5 7 6.1 6.4 7.4 5.1 8 2.5z"/>"#
         }
         _ => "",
     };

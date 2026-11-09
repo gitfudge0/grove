@@ -37,7 +37,7 @@ impl From<LandingPage> for Destination {
     }
 }
 const NAVIGATION_ITEMS: [(Destination, &str, &str); 3] = [
-    (Destination::Home, "Home", "home"),
+    (Destination::Home, "New session", "plus"),
     (Destination::History, "History", "history"),
     (Destination::Projects, "Projects", "folder"),
 ];
@@ -126,7 +126,7 @@ impl Sidebar {
         }
         cx.notify();
     }
-    pub(super) fn animated_sidebar_width(&self, window: &Window, cx: &App) -> f32 {
+    pub(crate) fn animated_sidebar_width(&self, window: &Window, cx: &App) -> f32 {
         if !cx.reduce_motion() {
             if let Some((started, from, to)) = self.navigation_transition {
                 let progress = (started.elapsed().as_secs_f32() / (MOTION_BASE_MS as f32 / 1000.))
@@ -153,15 +153,9 @@ impl Sidebar {
         let mut nav = div()
             .flex()
             .flex_col()
-            .gap(rpx(SPACE_MD))
+            .gap(rpx(SPACE_XS))
             .px(rpx(SPACE_LG))
-            .pt(rpx(SPACE_LG))
-            .pb(rpx(SPACE_20))
-            .child(
-                div()
-                    .pb(rpx(SPACE_2XL))
-                    .child(self.header_workspace_control(cx)),
-            );
+            .pt(rpx(APPBAR_TOTAL_H + SPACE_LG));
         let settings = self
             .settings_panel
             .as_ref()
@@ -204,7 +198,14 @@ impl Sidebar {
                 })
                 .when(selected, |row| row.bg(c::BG_HOVER()).text_color(c::FG()))
                 .child(crate::icons::action_icon(glyph, ICON_LG))
-                .child(div().flex_1().min_w_0().truncate().child(label))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(c::FG())
+                        .child(label),
+                )
                 .child(
                     div()
                         .flex_shrink_0()
@@ -235,8 +236,16 @@ impl Sidebar {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .text_size(rpx(TEXT_SMALL))
-                    .text_color(c::FG_DIM())
+                    .text_size(rpx(if showing_history {
+                        TEXT_SMALL
+                    } else {
+                        TEXT_TITLE
+                    }))
+                    .text_color(if showing_history {
+                        c::FG_DIM()
+                    } else {
+                        c::FG()
+                    })
                     .truncate()
                     .child(if showing_history {
                         "History"
@@ -244,7 +253,7 @@ impl Sidebar {
                         "Sessions"
                     }),
             );
-            let mut group = super::super::components::preference_choices();
+            let mut group = div().flex().flex_shrink_0().gap(rpx(SPACE_XS));
             for (choice, label, glyph, key) in [
                 (SessionGrouping::Activity, "Activity", "list", "false"),
                 (
@@ -265,26 +274,34 @@ impl Sidebar {
                     .size(rpx(STEPPER_BTN_W))
                     .justify_center()
                     .aria_selected(choice == grouping)
-                    .when(choice == grouping, |row| {
-                        row.bg(c::BG_HOVER()).text_color(c::FG())
-                    })
-                    .child(icon(glyph, ICON_SM, c::FG_DIM())),
+                    .when(choice == grouping, |row| row.text_color(c::FG()))
+                    .child(icon(
+                        glyph,
+                        ICON_SM,
+                        if choice == grouping {
+                            c::FG()
+                        } else {
+                            c::FG_DIM()
+                        },
+                    )),
                 );
             }
             if !showing_history {
-                heading = heading
-                    .child(
-                        self.control(
-                            "global-nav-new-session",
-                            "New session",
-                            Action::Destination(Destination::NewSession),
-                            cx,
-                        )
-                        .debug_selector(|| "global-nav-new-session".into())
+                group = group.child(
+                    self.control("session-grid", "Grid view", Action::ToggleGrid, cx)
+                        .debug_selector(|| "session-grid".into())
                         .track_focus(&self.navigation_focus[3])
-                        .child(icon("plus", ICON_SM, c::FG_DIM())),
-                    )
-                    .child(group);
+                        .size(rpx(STEPPER_BTN_W))
+                        .justify_center()
+                        .aria_selected(self.is_grid())
+                        .when(self.is_grid(), |row| row.text_color(c::FG()))
+                        .child(icon(
+                            "grid",
+                            ICON_SM,
+                            if self.is_grid() { c::FG() } else { c::FG_DIM() },
+                        )),
+                );
+                heading = heading.child(group);
             }
         }
         let mut sessions = div()
@@ -317,7 +334,18 @@ impl Sidebar {
                         .text_color(c::FG_DIM())
                         .flex()
                         .items_center()
-                        .gap(rpx(SPACE_LG))
+                        .gap(rpx(SPACE_SM))
+                        .when(grouping == SessionGrouping::Activity, |heading| {
+                            heading.child(status_icon_sized(
+                                format!("session-group-{label}").into(),
+                                &label,
+                                ICON_SM,
+                                cx,
+                            ))
+                        })
+                        .when(grouping == SessionGrouping::Worktrees, |heading| {
+                            heading.child(icon("git-branch", ICON_SM, c::FG_DIM()))
+                        })
                         .child(div().flex_1().min_w_0().truncate().child(label.clone())),
                 );
             }
@@ -348,6 +376,9 @@ impl Sidebar {
         let terminal_section = div()
             .id("single-terminals-scroll")
             .debug_selector(|| "single-terminals-scroll".into())
+            .mt(rpx(SPACE_XS))
+            .mb(rpx(SPACE_20))
+            .flex_shrink_0()
             .max_h(gpui::relative(0.3))
             .overflow_y_scroll()
             .child(self.terminals(window, cx))
@@ -376,13 +407,31 @@ impl Sidebar {
                 .inset_0(),
             )
             .child(nav)
+            .child(terminal_section)
             .when(!showing_history, |rail| rail.child(heading))
             .child(if showing_history {
                 self.render_history_sidebar(window, cx)
             } else {
                 sessions.into_any_element()
             })
-            .child(terminal_section)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px(rpx(SIDEBAR_CONTENT_INSET))
+                    .h(rpx(HEAD_H))
+                    .gap(rpx(SPACE_SM))
+                    .child(
+                        gpui::img("icon/32x32.png")
+                            .size(rpx(ICON_LG))
+                            .flex_shrink_0(),
+                    )
+                    .child(div().flex_1().child("Grove"))
+                    .child(
+                        self.control("sidebar-settings", "Settings", Action::OpenSettings, cx)
+                            .child(icon("cog", ICON_LG, c::FG_DIM())),
+                    ),
+            )
             .when(!self.is_collapsed(cx), |rail| {
                 rail.child(
                     div()
@@ -498,29 +547,16 @@ impl Sidebar {
             .debug_selector(|| "header-workspace".into())
             .track_focus(&self.compact_workspace_focus)
             .w_full()
-            .justify_start()
+            .justify_end()
             .h(rpx(HEAD_H))
-            .px(rpx(SPACE_LG))
-            .gap(rpx(SPACE_LG))
+            .pl(rpx(SPACE_LG))
+            .pr_0()
+            .gap_0()
             .text_size(rpx(TEXT_TITLE))
             .text_color(c::FG_DIM())
-            .child(crate::icons::action_icon("folder", ICON_LG))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap(rpx(SPACE_SM))
-                    .child(div().min_w_0().truncate().child(name))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(rpx(TEXT_SMALL))
-                            .text_color(c::FG_MUTE())
-                            .child("· Workspace"),
-                    ),
-            );
+            .child(div().min_w_0().truncate().child(name))
+            .child(icon("chev-down", ICON_SM, c::FG_DIM()));
+
         if let Some(trigger) = trigger {
             row = row.child(
                 gpui::canvas(move |bounds, _, _| trigger.set(bounds), |_, (), _, _| {})

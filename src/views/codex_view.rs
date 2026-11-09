@@ -2627,7 +2627,6 @@ impl CodexView {
                     .child(crate::icons::icon("queue", ICON_MD, c::FG_MUTE()))
                     .child(
                         div()
-                            .flex_1()
                             .text_size(rpx(TEXT_SMALL))
                             .text_color(c::FG_DIM())
                             .child("Queued"),
@@ -2638,6 +2637,7 @@ impl CodexView {
                             .text_color(c::FG_MUTE())
                             .child(pending_count.to_string()),
                     )
+                    .child(div().flex_1())
                     .when(!state.status.busy() && count > 0, |header| {
                         header.child(
                             header_control_with_label_tooltip(
@@ -6916,10 +6916,10 @@ impl Render for CodexView {
                                     .gap(rpx(SPACE_LG))
                                     .when_some(model_control, |row, control| row.child(control))
                                     .when_some(access_control, |row, control| row.child(control))
-                                    .when_some(state.saved.context.filter(|usage| self.dashboard_tray.is_some() && usage.window > 0), |row, usage| row.child(context_meter(usage)))
                                     .child(div().flex_1())
                                     .child(
                                         div().flex().items_center().gap(rpx(SPACE_LG)).flex_shrink_0().ml_auto()
+                                    .when_some(state.saved.context.filter(|usage| usage.window > 0), |row, usage| row.child(context_meter(usage)))
                                     .child(
                                         composer_icon("codex-add", "Add context", "paperclip", add_disabled, false)
                                             .track_focus(&self.option_focus[3])
@@ -6963,24 +6963,6 @@ impl Render for CodexView {
                                     ),
                             )
                             )
-                            .when(self.dashboard_tray.is_none(), |column| column.child(
-                                div()
-                                    .id("codex-composer-context")
-                                    .debug_selector(|| "codex-composer-context".into())
-                                    .w(gpui::relative(COMPOSER_CONTEXT_WIDTH_FRACTION)).mx_auto().min_w_0().flex().flex_wrap().items_center().gap(rpx(SPACE_LG))
-                                    .px(rpx(SPACE_2XL)).py(rpx(SPACE_LG))
-                                    .rounded_b(rpx(RADIUS_PANEL))
-                                    .border_l_1().border_r_1().border_b_1().border_color(c::BORDER_SOFT())
-                                    .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
-                                    .child(crate::icons::icon("folder", ICON_SM, c::FG_DIM()))
-                                    .child(div().flex_1().min_w_0().truncate().child(
-                                        self.checkout_context.as_ref().map_or_else(
-                                            || state.saved.cwd.clone(),
-                                            |(location, branch)| if branch.is_empty() { location.clone() } else { format!("{location} / {branch}") },
-                                        )
-                                    ))
-                                    .when_some(state.saved.context.filter(|usage| usage.window > 0), |row, usage| row.child(context_meter(usage)))
-                            ))
                             .children(self.dashboard_tray.clone()))
                             .child(
                                 div()
@@ -6998,7 +6980,7 @@ impl Render for CodexView {
                                     .text_size(rpx(TEXT_MICRO))
                                     .line_height(gpui::phi())
                                     .text_color(c::FG_DIM())
-                                    .child(super::components::shortcut_hint(if self.plan_answer.as_ref().is_some_and(|answer| answer.saving.is_some()) {
+                                    .when(self.plan_answer.is_some() || stopping || self.submitted.is_some() || editing || busy, |hints| hints.child(super::components::shortcut_hint(if self.plan_answer.as_ref().is_some_and(|answer| answer.saving.is_some()) {
                                         "Saving answer…"
                                     } else if self.plan_answer.is_some() {
                                         "Enter to save answer"
@@ -7010,11 +6992,9 @@ impl Render for CodexView {
                                         "Enter to save"
                                     } else if busy && steer_available {
                                         if cfg!(target_os = "macos") { "Enter to queue · Cmd+Enter to steer" } else { "Enter to queue · Ctrl+Shift+Enter to steer" }
-                                    } else if busy {
-                                        "Enter to queue"
                                     } else {
-                                        "Enter to send"
-                                    }))
+                                        "Enter to queue"
+                                    })))
                             )
                             .when_some(notice_below, gpui::ParentElement::child)
                             .when(self.dashboard_tray.is_some(), |rail| {
@@ -19779,7 +19759,7 @@ mod tests {
         assert_eq!(user.right(), agent.right());
     }
     #[gpui::test]
-    fn context_meter_mounts_in_checkout_strip_only_when_usage_is_known(
+    fn context_meter_mounts_beside_composer_actions_only_when_usage_is_known(
         cx: &mut gpui::TestAppContext,
     ) {
         let (_view, cx, _, updates) = fixture(cx);
@@ -19796,7 +19776,11 @@ mod tests {
             .advance_clock(std::time::Duration::from_millis(40));
         draw(cx);
         let meter = cx.debug_bounds("codex-context-meter").unwrap();
-        let strip = cx.debug_bounds("codex-composer-context").unwrap();
+        assert!(cx.debug_bounds("codex-composer-context").is_none());
+        let strip = cx.debug_bounds("codex-composer").unwrap();
+        let add = cx.debug_bounds("codex-add").unwrap();
+        assert!(meter.right() <= add.left());
+        assert!(meter.top() < add.bottom() && meter.bottom() > add.top());
         assert!(meter.left() >= strip.left() && meter.right() <= strip.right());
         assert!(meter.top() >= strip.top() && meter.bottom() <= strip.bottom());
         let mut state = snapshot();

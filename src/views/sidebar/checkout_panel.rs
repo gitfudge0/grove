@@ -3763,7 +3763,7 @@ impl Sidebar {
                 panel.max_h(window.viewport_size().height * NARROW_HEIGHT_FRACTION)
             })
             .p(rpx(SPACE_3XL))
-            .when(wide, |panel| panel.pt(rpx(APPBAR_TOTAL_H + SPACE_3XL)))
+            .when(wide, |panel| panel.pt(rpx(SIDE_PANEL_TOP_INSET)))
             .overflow_y_scroll()
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && this.is_zen() && this.checkout_panel.expanded
@@ -6850,7 +6850,7 @@ mod tests {
         let checkout_toggle = cx.debug_bounds("session-panel-toggle").unwrap();
         assert!(checkout_toggle.right() < toggle.left());
         assert!((panel.right() - toggle.right() - gpui::px(SPACE_20)).abs() <= gpui::px(1.));
-        assert!(card.top() >= gpui::px(APPBAR_TOTAL_H + SPACE_3XL));
+        assert!(card.top() >= checkout_toggle.bottom() + gpui::px(SPACE_LG));
         let divider = cx.debug_bounds("checkout-divider").unwrap();
         assert!(divider.left() <= card.left() + gpui::px(SPACE_XS));
         assert!(divider.right() >= card.right() - gpui::px(SPACE_XS));
