@@ -289,12 +289,12 @@ fn fingerprint_roots(roots: &[std::path::PathBuf]) -> u64 {
         if real.is_dir() {
             let definition = real.join("SKILL.md");
             if definition.is_file() {
-                if let Ok(contents) = std::fs::read(definition) {
+                if let Ok(contents) = fs_err::read(definition) {
                     contents.hash(hash);
                 }
                 return;
             }
-            if let Ok(entries) = std::fs::read_dir(&real) {
+            if let Ok(entries) = fs_err::read_dir(&real) {
                 let mut entries: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
                 entries.sort();
                 for entry in entries {
@@ -310,7 +310,7 @@ fn fingerprint_roots(roots: &[std::path::PathBuf]) -> u64 {
             .extension()
             .is_some_and(|ext| ext == "md" || ext == "json" || ext == "toml")
         {
-            if let Ok(contents) = std::fs::read(real) {
+            if let Ok(contents) = fs_err::read(real) {
                 contents.hash(hash);
             }
         }
@@ -372,8 +372,8 @@ mod tests {
             let scope = Scope::new(&saved, &[]);
             cache.discover(scope.clone(), || Ok(result())).unwrap();
             let definition = temp.path().join(".agents/skills/new-skill/SKILL.md");
-            std::fs::create_dir_all(definition.parent().unwrap()).unwrap();
-            std::fs::write(&definition, "---\nname: new-skill\n---\nFirst").unwrap();
+            fs_err::create_dir_all(definition.parent().unwrap()).unwrap();
+            fs_err::write(&definition, "---\nname: new-skill\n---\nFirst").unwrap();
             let mut changed = result();
             changed.skills = vec![serde_json::json!({"name":"new-skill"})];
             assert_eq!(
@@ -384,7 +384,7 @@ mod tests {
                     .len(),
                 1
             );
-            std::fs::write(&definition, "---\nname: renamed-skill\n---\nSecond").unwrap();
+            fs_err::write(&definition, "---\nname: renamed-skill\n---\nSecond").unwrap();
             let mut changed = result();
             changed.skills = vec![serde_json::json!({"name":"renamed-skill"})];
             assert_eq!(
@@ -394,7 +394,7 @@ mod tests {
                     .skills[0]["name"],
                 "renamed-skill"
             );
-            std::fs::remove_file(definition).unwrap();
+            fs_err::remove_file(definition).unwrap();
             assert!(cache
                 .discover(scope, || Ok(result()))
                 .unwrap()
@@ -409,8 +409,8 @@ mod tests {
         let roots = [temp.path().to_path_buf()];
         let before = fingerprint_roots(&roots);
         let skill = temp.path().join("target/SKILL.md");
-        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
-        std::fs::write(skill, "---\nname: target\n---").unwrap();
+        fs_err::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs_err::write(skill, "---\nname: target\n---").unwrap();
         assert_ne!(before, fingerprint_roots(&roots));
     }
 
@@ -422,10 +422,10 @@ mod tests {
         let cwd = temp.path().to_str().unwrap();
         let before = skill_revision_with_args(cwd, &args, &[]);
         let skill = plugin.join("skills/new/SKILL.md");
-        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
-        std::fs::write(&skill, "---\nname: plugin-skill\n---").unwrap();
+        fs_err::create_dir_all(skill.parent().unwrap()).unwrap();
+        fs_err::write(&skill, "---\nname: plugin-skill\n---").unwrap();
         assert_ne!(before, skill_revision_with_args(cwd, &args, &[]));
-        std::fs::remove_file(skill).unwrap();
+        fs_err::remove_file(skill).unwrap();
         assert_ne!(before, skill_revision_with_args(cwd, &args, &[])); // directory install remains visible
     }
 
@@ -435,17 +435,17 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         let root = temp.path().join("skills");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::create_dir_all(&root).unwrap();
+        fs_err::create_dir_all(&source).unwrap();
+        fs_err::create_dir_all(&root).unwrap();
         std::os::unix::fs::symlink(&root, root.join("loop")).unwrap();
-        let before = fingerprint_roots(&[root.clone()]);
-        std::fs::write(source.join("SKILL.md"), "first").unwrap();
+        let before = fingerprint_roots(std::slice::from_ref(&root));
+        fs_err::write(source.join("SKILL.md"), "first").unwrap();
         std::os::unix::fs::symlink(&source, root.join("linked")).unwrap();
-        let installed = fingerprint_roots(&[root.clone()]);
+        let installed = fingerprint_roots(std::slice::from_ref(&root));
         assert_ne!(before, installed);
-        std::fs::write(source.join("SKILL.md"), "other").unwrap();
-        assert_ne!(installed, fingerprint_roots(&[root.clone()]));
-        std::fs::remove_file(root.join("linked")).unwrap();
+        fs_err::write(source.join("SKILL.md"), "other").unwrap();
+        assert_ne!(installed, fingerprint_roots(std::slice::from_ref(&root)));
+        fs_err::remove_file(root.join("linked")).unwrap();
         assert_eq!(before, fingerprint_roots(&[root]));
     }
 

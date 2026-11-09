@@ -34,20 +34,18 @@ fn check(provider: Provider) -> Result<(), String> {
         Provider::Codex => (
             checkout.path().join(".agents/skills"),
             std::env::var_os("CODEX_HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| home.join(".codex"))
+                .map_or_else(|| home.join(".codex"), std::path::PathBuf::from)
                 .join("skills"),
         ),
         Provider::Claude => (
             checkout.path().join(".claude/skills"),
             std::env::var_os("CLAUDE_CONFIG_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| home.join(".claude"))
+                .map_or_else(|| home.join(".claude"), std::path::PathBuf::from)
                 .join("skills"),
         ),
     };
-    std::fs::create_dir_all(&local_root).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&global_root).map_err(|e| e.to_string())?;
+    fs_err::create_dir_all(&local_root).map_err(|e| e.to_string())?;
+    fs_err::create_dir_all(&global_root).map_err(|e| e.to_string())?;
     let local = tempfile::Builder::new()
         .prefix("grove-live-local-")
         .tempdir_in(local_root)
@@ -67,7 +65,7 @@ fn check(provider: Provider) -> Result<(), String> {
         })
         .collect();
     for (dir, name) in [&local, &global].iter().zip(&names) {
-        std::fs::write(dir.path().join("SKILL.md"), format!("---\nname: {name}\ndescription: Temporary Grove discovery verification skill.\n---\nReturn the word verified.\n")).map_err(|e| e.to_string())?;
+        fs_err::write(dir.path().join("SKILL.md"), format!("---\nname: {name}\ndescription: Temporary Grove discovery verification skill.\n---\nReturn the word verified.\n")).map_err(|e| e.to_string())?;
         assert!(!initial.skills.iter().any(|skill| skill["name"] == *name));
     }
     let refreshed = composer_catalog::discover(saved.clone(), args.clone())?;
