@@ -12,7 +12,7 @@ fn dashboard_home_dir() -> String {
         .into_owned()
 }
 
-const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.25;
+const DASHBOARD_COMPOSER_TOP_FRACTION: f32 = 0.31;
 
 /// Preferences for a fresh dashboard draft after adopting the previous one.
 struct DashboardDefaults {
@@ -49,6 +49,13 @@ pub(crate) struct DestinationTray {
     pub(super) path: String,
     popup: Option<Entity<gpui_component::menu::PopupMenu>>,
     popup_events: Option<gpui::Subscription>,
+    popup_motion: motion::PopupMotion,
+    closing_popup: Option<(
+        Entity<gpui_component::menu::PopupMenu>,
+        gpui::Point<gpui::Pixels>,
+        bool,
+    )>,
+    popup_generation: u64,
     hovered: [bool; 2],
     open_selector: Option<usize>,
     position: gpui::Point<gpui::Pixels>,
@@ -72,13 +79,45 @@ impl DestinationTray {
             preserve_on_refresh: false,
             popup: None,
             popup_events: None,
+            popup_motion: motion::PopupMotion::default(),
+            closing_popup: None,
+            popup_generation: 0,
             hovered: [false; 2],
             open_selector: None,
             position: gpui::Point::default(),
             bounds: std::array::from_fn(|_| std::rc::Rc::default()),
         }
     }
+    fn close_popup(&mut self, cx: &mut Context<Self>) {
+        self.popup_generation = self.popup_generation.wrapping_add(1);
+        self.closing_popup = None;
+        if let Some(popup) = self.popup.take() {
+            if !cx.reduce_motion() {
+                self.closing_popup = Some((popup, self.position, self.open_selector == Some(1)));
+                self.popup_motion.hide(cx);
+                let generation = self.popup_generation;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(motion::PopupMotion::exit_duration())
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        if generation == this.popup_generation {
+                            this.closing_popup = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
+        self.open_selector = None;
+        self.popup_events = None;
+        cx.notify();
+    }
     fn open(&mut self, project: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.popup_generation = self.popup_generation.wrapping_add(1);
+        self.closing_popup = None;
+        self.popup_motion.show(cx);
         use gpui_component::menu::{PopupMenu, PopupMenuItem};
         let owner = cx.entity().downgrade();
         let projects = self.projects.clone();
@@ -88,43 +127,89 @@ impl DestinationTray {
         let focus = window.focused(cx);
         let popup = PopupMenu::build(window, cx, move |mut menu, window, _| {
             menu = crate::views::components::dropdown_menu(menu, window);
-            menu = menu
-                .scrollable(true)
-                .max_h(rpx(MODAL_SCROLL_MAX_H).to_pixels(window.rem_size()));
+            menu = menu.scrollable(false);
             if project {
+                menu = menu.check_side(gpui_component::Side::Right);
                 let home_owner = owner.clone();
                 menu = menu
                     .item(
-                        PopupMenuItem::new("No project")
-                            .checked(selected_project == NO_PROJECT)
-                            .on_click(move |_, _, cx| {
-                                let _ =
-                                    home_owner.update(cx, |_, cx| cx.emit(DestinationEvent::Home));
-                            }),
+                        PopupMenuItem::element(|_, _| {
+                            div()
+                                .id("destination-no-project")
+                                .aria_label("No project")
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(
+                                    div()
+                                        .size(rpx(ICON_20))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(icon("home", ICON_SM, c::FG_DIM())),
+                                )
+                                .child("No project")
+                        })
+                        .checked(selected_project == NO_PROJECT)
+                        .on_click(move |_, _, cx| {
+                            let _ = home_owner.update(cx, |_, cx| cx.emit(DestinationEvent::Home));
+                        }),
                     )
                     .separator();
                 for (idx, name, path) in projects {
                     let owner = owner.clone();
                     menu = menu.item(
-                        PopupMenuItem::new(name)
-                            .checked(idx == selected_project)
-                            .on_click(move |_, _, cx| {
-                                let _ = owner.update(cx, |_, cx| {
-                                    cx.emit(DestinationEvent::Project(idx, path.clone()));
-                                });
-                            }),
+                        PopupMenuItem::element(move |_, _| {
+                            div()
+                                .id(format!("destination-project-{idx}"))
+                                .aria_label(name.clone())
+                                .flex()
+                                .items_center()
+                                .gap(rpx(SPACE_SM))
+                                .child(super::super::components::project_initials_badge(&name))
+                                .child(name.clone())
+                        })
+                        .checked(idx == selected_project)
+                        .on_click(move |_, _, cx| {
+                            let _ = owner.update(cx, |_, cx| {
+                                cx.emit(DestinationEvent::Project(idx, path.clone()));
+                            });
+                        }),
                     );
                 }
-                menu = menu
-                    .separator()
-                    .item(PopupMenuItem::new("New project").on_click(move |_, _, cx| {
+                menu = menu.separator().item(
+                    PopupMenuItem::element(|_, _| {
+                        div()
+                            .id("destination-new-project")
+                            .aria_label("New project")
+                            .flex()
+                            .items_center()
+                            .gap(rpx(SPACE_SM))
+                            .child(
+                                div()
+                                    .size(rpx(ICON_20))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(icon("plus", ICON_SM, c::FG_DIM())),
+                            )
+                            .child("New project")
+                    })
+                    .on_click(move |_, _, cx| {
                         let _ = owner.update(cx, |_, cx| cx.emit(DestinationEvent::NewProject));
-                    }));
+                    }),
+                );
             } else {
+                menu = menu.check_side(gpui_component::Side::Right);
                 for (path, name) in worktrees {
                     let owner = owner.clone();
                     menu = menu.item(
                         PopupMenuItem::new(name)
+                            .icon(
+                                gpui_component::Icon::default()
+                                    .path("icons/git-branch.svg")
+                                    .size(rpx(ICON_SM)),
+                            )
                             .checked(path == selected_path)
                             .on_click(move |_, _, cx| {
                                 let _ = owner.update(cx, |_, cx| {
@@ -133,14 +218,18 @@ impl DestinationTray {
                             }),
                     );
                 }
-                menu = menu
-                    .separator()
-                    .item(
-                        PopupMenuItem::new("New worktree").on_click(move |_, _, cx| {
+                menu = menu.separator().item(
+                    PopupMenuItem::new("New worktree")
+                        .icon(
+                            gpui_component::Icon::default()
+                                .path("icons/plus.svg")
+                                .size(rpx(ICON_SM)),
+                        )
+                        .on_click(move |_, _, cx| {
                             let _ =
                                 owner.update(cx, |_, cx| cx.emit(DestinationEvent::NewWorktree));
                         }),
-                    );
+                );
             }
             menu
         });
@@ -154,9 +243,7 @@ impl DestinationTray {
             &popup,
             window,
             move |this, _, _: &gpui::DismissEvent, window, cx| {
-                this.popup = None;
-                this.open_selector = None;
-                this.popup_events = None;
+                this.close_popup(cx);
                 if let Some(focus) = &focus {
                     focus.focus(window, cx);
                 }
@@ -185,18 +272,18 @@ impl Render for DestinationTray {
             .id("dashboard-destination")
             .debug_selector(|| "dashboard-destination".into())
             .relative()
-            .mx(rpx(SPACE_2XL))
-            // Cancel the composer rail gap so this strip meets its bottom seam.
-            .mt(rpx(-SPACE_MD))
-            .pt_0()
-            .pb(rpx(SPACE_XS))
+            // Center a narrower context strip beneath the rounded writing surface.
+            .w(gpui::relative(COMPOSER_CONTEXT_WIDTH_FRACTION))
+            .mx_auto()
+            .mt_0()
+            .py(rpx(SPACE_SM))
             .px(rpx(SPACE_2XL))
             .rounded_b(rpx(RADIUS_PANEL))
             .border_l_1()
             .border_r_1()
             .border_b_1()
             .border_color(c::BORDER_SOFT())
-            .bg(c::BG_RAIL())
+            .bg(c::BG())
             .flex()
             .flex_wrap()
             .gap(rpx(SPACE_SM));
@@ -232,25 +319,20 @@ impl Render for DestinationTray {
                             .size_full(),
                     )
                     .child(
-                        super::super::components::dense_action_with_colors(
+                        super::super::components::dense_disclosure_action(
                             if is_project {
                                 "dashboard-project"
                             } else {
                                 "dashboard-worktree"
                             },
                             label.clone(),
-                            c::BG_RAIL(),
-                            foreground,
-                            c::BG_RAIL(),
                             window,
                             cx,
                         )
-                        .focus_visible(|style| style.bg(c::BG_HOVER()))
                         .when(self.open_selector == Some(idx), |button| {
-                            button.bg(c::BG_HOVER())
+                            button.text_color(c::FG())
                         })
                         .icon_only()
-                        .tooltip(label.clone())
                         .max_w(rpx(MODAL_W_SM))
                         .icon(gpui_component::Icon::default().path(format!("icons/{glyph}.svg")))
                         .child(
@@ -285,22 +367,44 @@ impl Render for DestinationTray {
                     .child(error.clone()),
             );
         }
-        if let Some(popup) = &self.popup {
+        let exiting = self.popup.is_none() && self.closing_popup.is_some() && !cx.reduce_motion();
+        let visible_popup = self
+            .popup
+            .clone()
+            .or_else(|| exiting.then(|| self.closing_popup.as_ref().unwrap().0.clone()));
+        if let Some(popup) = visible_popup {
+            let (position, worktree) = if exiting {
+                let closing = self.closing_popup.as_ref().unwrap();
+                popup.update(cx, |popup, _| popup.set_passive(true));
+                (closing.1, closing.2)
+            } else {
+                (self.position, self.open_selector == Some(1))
+            };
             tray = tray.child(gpui::deferred(
                 gpui::anchored()
                     .position_mode(gpui::AnchoredPositionMode::Window)
-                    .anchor(if self.open_selector == Some(1) {
+                    .anchor(if worktree {
                         gpui::Anchor::TopRight
                     } else {
                         gpui::Anchor::TopLeft
                     })
-                    .position(self.position)
+                    .position(position)
                     .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
                     .child(
-                        div()
-                            .id("dashboard-destination-menu")
-                            .debug_selector(|| "dashboard-destination-menu".into())
-                            .child(popup.clone()),
+                        self.popup_motion.render(
+                            div()
+                                .id(if exiting {
+                                    "dashboard-destination-menu-exit"
+                                } else {
+                                    "dashboard-destination-menu"
+                                })
+                                .when(!exiting, |surface| {
+                                    surface.debug_selector(|| "dashboard-destination-menu".into())
+                                })
+                                .child(popup),
+                            "destination-popup-rise",
+                            cx,
+                        ),
                     ),
             ));
         }
@@ -942,7 +1046,7 @@ impl Sidebar {
             .text_center()
             .text_size(rpx(TEXT_DISPLAY_LG))
             .font_weight(gpui::FontWeight::MEDIUM)
-            .child("Let's cook!");
+            .child("Ship fast. Break faster.");
         let mut recent = div()
             .id("dashboard-recent")
             .debug_selector(|| "dashboard-recent".into())
@@ -2207,6 +2311,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn destination_popup_rise_cleanup_cannot_unmount_a_new_menu(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let (tray, cx) = cx.add_window_view(|_, _| {
+            DestinationTray::new(
+                vec![(0, "Project".into(), "/checkout".into())],
+                0,
+                "/checkout".into(),
+            )
+        });
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(false);
+            tray.update(cx, |tray, cx| {
+                tray.open(true, window, cx);
+                tray.close_popup(cx);
+                assert!(tray.popup.is_none());
+                assert!(tray.closing_popup.is_some());
+                tray.open(false, window, cx);
+            });
+        });
+        cx.executor()
+            .advance_clock(motion::PopupMotion::exit_duration() * 2);
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            tray.update(cx, |tray, cx| {
+                assert!(tray.popup.is_some());
+                assert!(tray.open_selector == Some(1));
+                cx.set_reduce_motion(true);
+                tray.close_popup(cx);
+                assert!(tray.closing_popup.is_none());
+                tray.open(true, window, cx);
+                tray.close_popup(cx);
+                assert!(tray.closing_popup.is_none());
+            })
+        });
+    }
+
+    #[gpui::test]
     fn dashboard_destination_controls_size_to_content(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);
         let (tray, cx) = cx.add_window_view(|_, _| {
@@ -2239,6 +2380,10 @@ mod tests {
             assert!(worktree.size.width < gpui::px(200.));
         });
         let strip = cx.debug_bounds("dashboard-destination").unwrap();
+        assert_eq!(
+            strip.size.width,
+            gpui::px(1000. * COMPOSER_CONTEXT_WIDTH_FRACTION)
+        );
         let bounds = cx.update(|_, cx| {
             let tray = tray.read(cx);
             [tray.bounds[0].get(), tray.bounds[1].get()]
@@ -2246,6 +2391,10 @@ mod tests {
         assert_eq!(bounds[0].left(), strip.left() + gpui::px(SPACE_2XL + 1.));
         assert_eq!(bounds[1].right(), strip.right() - gpui::px(SPACE_2XL + 1.));
         for (idx, bounds) in bounds.iter().enumerate() {
+            assert!(
+                (f32::from(bounds.center().y - strip.center().y)).abs() <= 1.0,
+                "selector is vertically centered in the strip"
+            );
             cx.simulate_mouse_move(bounds.center(), None, gpui::Modifiers::default());
             cx.run_until_parked();
             cx.update(|window, cx| {

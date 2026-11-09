@@ -208,6 +208,55 @@ impl Presence {
     }
 }
 
+/// Interruptible short-rise presentation shared by composer popup owners.
+/// Owners release logical input ownership immediately and retain the exit surface
+/// only for the shared fast interval. Reopening invalidates the old cleanup timer.
+#[derive(Default)]
+pub struct PopupMotion {
+    presence: Presence,
+}
+impl PopupMotion {
+    pub fn show(&mut self, cx: &App) {
+        let revision = self.presence.revision;
+        self.presence = Presence::default();
+        self.presence.revision = revision;
+        self.presence.set(true, cx);
+    }
+    pub fn hide(&mut self, cx: &App) {
+        let from = self.presence.opacity();
+        self.presence.transition_duration = Duration::from_millis(MOTION_FAST_MS);
+        self.presence.from = if cx.reduce_motion() { 0. } else { from };
+        self.presence.to = 0.;
+        self.presence.started = std::time::Instant::now();
+        self.presence.revision = self.presence.revision.wrapping_add(1);
+    }
+    pub fn exit_duration() -> Duration {
+        Duration::from_millis(MOTION_FAST_MS)
+    }
+    pub fn render<E>(&self, element: E, id: &str, cx: &App) -> AnyElement
+    where
+        E: IntoElement + Styled + 'static,
+    {
+        if cx.reduce_motion() {
+            return element.into_any_element();
+        }
+        let from = self.presence.from;
+        let to = self.presence.to;
+        element
+            .relative()
+            .with_animation(
+                format!("{id}-{}", self.presence.revision),
+                Animation::new(self.presence.transition_duration).with_easing(ease_standard),
+                move |el, t| {
+                    let value = from + (to - from) * t;
+                    el.opacity(0.6 + 0.4 * value)
+                        .top(super::rpx(super::tokens::SPACE_MD * (1. - value)))
+                },
+            )
+            .into_any_element()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -1,5 +1,40 @@
 # Verification and known gaps
 
+## Two-layer composer QA
+
+The two-layer native composer retains the existing model/effort/speed card and
+Access picker. Add context routes files/images into the attachment pipeline and
+file, skill, and command prefixes into existing completion, preserving drafts.
+The trailing model popup now anchors to the trigger's right edge so effort label
+width changes do not move the slider during asynchronous updates.
+
+Linux X11 QA used the optimized local binary with a disposable GROVE_CONFIG_DIR.
+The Dashboard writing surface, joined destination strip, Add menu, reference
+insertion, and existing model card were inspected in Grove Dark, including the
+wrapping layout with Checkout open and a wider layout with it closed. The final focused composer rerun passed 40 tests with one ignored native fixture.
+The model popup regression, context-meter strip check, model-label zoom fixture, Access
+fixtures, and 33 conformance checks passed. Codex and Claude are verified by local
+GPUI fixtures; live prompt delivery remains untested. Native light appearance,
+full native zoom/keyboard-state coverage, and macOS/Windows remain untested.
+
+Composer refinements passed five Access fixtures (including Codex and Claude
+pointer selection), the destination sizing and project-picker draft-preservation
+fixtures, the popup keyboard/anchor fixture, and 33 conformance checks. Linux
+native inspection confirmed title-centered access icons, compact 16px text line
+boxes with no extra gap, muted descriptions, square writing-box corners,
+foreground-only toolbar/destination hover and open feedback, and project dropdown
+initial badges with Home/Add icons for No project/New project. The Claude restore
+fixture now clicks the rendered row bounds after scrolling rather than relying
+on an obsolete fixed offset. These checks do not establish live provider delivery.
+
+The task-jump regression `task_strip_docks_above_composer_toggles_and_jumps_to_task_start`
+fails at the same transcript-alignment assertion on task-start f00b80f6 and the
+updated build. It is excluded from the final focused composer rerun rather than
+reported as passing. An initial parallel run overflowed a test thread stack; the
+serial rerun uses RUST_MIN_STACK=16777216. A disk-full rebuild was retried after
+removing task-created temporary build output. The ordinary installed app was not
+replaced; delivery is the running isolated QA app.
+
 Commands run from the repository root unless noted. Historical records below
 are context for investigation, never fresh test results or product requirements.
 
@@ -787,3 +822,21 @@ opt-in phase measurements and debugger stacks instead. Upstream GPUI view-cache
 and variable-height-list implementations informed the investigation; no new GPUI
 version or blind upstream patch was adopted. The next unresolved work is bounding
 full-history framework traversal and verifying actual presentation smoothness.
+
+Composer follow-up: equal checkout-strip vertical padding passed the native destination bounds test, including vertical center alignment. Removed tooltips from composer toolbar, context meter, attachment/reference actions, model picker, and destination selectors while retaining accessible labels. The three model-picker tests and 33 conformance checks passed. Rebuilt the isolated Linux QA app and inspected wide/narrow Dark layouts and project hover with no tooltip. Live Codex/Claude delivery and other platforms were not exercised by this visual-only change.
+
+Project/worktree menu polish: reduced the project badge from 28px to 20px and its initials to the micro type role, with matching Home/Add leading slots. Added catalog branch icons to worktree options and Add to New worktree, retaining trailing selection checks. Final local build and artifact checks passed; both menus were inspected in the refreshed isolated Linux Dark QA app. No provider or other-platform checks were run for this visual-only follow-up.
+
+Composer order follow-up: moved model/effort/speed beside Add and Access beside Send/Stop, with popup anchors following the stable outer edges of their new groups. The final local build, asynchronous effort-reset regression, popup keyboard/anchor regression, and Codex/Claude access pointer-dispatch fixture passed. Inspected wide/narrow native Linux Dark layouts and the model card in the refreshed isolated QA app. Live provider delivery and other platforms were not tested.
+
+Latest composer grouping: model/effort/speed and Access are left aligned; Add and Send/Stop are grouped on the right, with Add anchored to its trailing edge. Project monogram lettering is 9px inside the existing 20px badge. The final local build, popup keyboard/anchor regression, Codex/Claude Add draft-preservation fixture, Codex/Claude access-dispatch fixture, and 33 conformance checks passed. Inspected native Linux Dark wide/narrow layouts and the smaller project monogram in the refreshed isolated QA app. Earlier detached QA launch attempts exited; the final app was launched in a retained process session and its window was inspected. Live provider behavior and other platforms remain untested.
+
+Full-height composer menus: removed internal scrolling and height caps from Add/Access, project/worktree destinations and the model catalog, including obsolete model scroll offsets. Four model-picker tests passed, including an eight-model catalog exceeding the old cap with the last row visible and stationary under wheel input. Claude Restore defaults was clicked without scrolling, popup routing passed, and 33 conformance checks passed. Rebuilt and launched isolated Linux QA and inspected the full worktree menu through New worktree. Very large menus exceeding a short viewport and other platforms remain unverified; full-height menus intentionally have no internal overflow fallback. Live Codex/Claude delivery was not exercised.
+
+Composer geometry follow-up: replaced Add plus with the catalog paperclip, restored all four writing-surface corners to the shared panel radius, and centered Dashboard/session context strips at 90% width. Built and inspected native isolated Linux Dark wide/narrow layouts and opened the paperclip context menu. The real-composer 90% width/centering regression, destination geometry fixture, Codex/Claude Add draft-preservation fixture, and 33 conformance checks passed. The first center assertion used a root-only strip fixture; the regression now measures the actual composer parent. Live Codex/Claude delivery, other appearances and platforms were not exercised.
+
+Popup motion and Dashboard polish: access icons now use ICON_MD with SPACE_LG gaps; the Dashboard composer starts at 28% and the heading is “Let's get it done.” Built a self-contained three-treatment motion exploration from native-export colors/font data and catalog SVGs, tested browser replay/dismissal/reopen/interruption/reduced-motion and narrow overflow, and opened it in the existing browser. The selected B short rise is implemented for composer context/access, model catalog/effort/speed and project/worktree popup surfaces: 140ms entrance, 80ms retained dismissal, source-scope/generation guards, and immediate reduced-motion endpoints. The context strip is centered at 95% width. Native PopupMenu exit instances omit input/focus listeners; effort exit rendering no longer recreates drag state. Full-height speed-card geometry and Side chat alignment fixtures now measure the approved no-scroll/two-layer layout.
+
+Final checks: 52 composer tests passed, one native-capture test was ignored, and the unrelated native-launch fixture and previously documented task-jump baseline failure were excluded from this focused run. Two popup lifecycle tests, four model-picker tests and 33 conformance checks passed; build, formatting and artifact checks passed. Refreshed the isolated Linux QA process with the final functional build. Codex and Claude fixture behavior is verified; live provider delivery and non-Linux coverage are untested. Native visual animation inspection remains unfinished: native computer-control APIs are unavailable in this session. Browser observation of the local mock in the user's browser was separately blocked by the file URL policy; the browser mock checks above ran before that restriction was observed, and no bypass was attempted.
+
+Dashboard copy/placement follow-up: changed the heading to “Ship fast. Break faster.” and moved the headline/composer/following content together by raising the viewport fraction from 28% to 31%. The local application build, formatting, diff and artifact checks passed; relaunched and verified the isolated QA process. The targeted placement test could not run because test-binary linking failed with the filesystem full; removed the failed temporary linker output. Native visual inspection remains unavailable. Live Codex and Claude behavior and other platforms were not exercised by this static copy/placement change.

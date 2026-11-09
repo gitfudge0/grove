@@ -3,10 +3,10 @@ use super::status::{self, StatusKind};
 use super::{
     components::{
         attached_validation, form_action, header_control, header_control_frame,
-        header_control_with_hover_tooltip, header_control_with_label_tooltip,
-        header_control_with_tooltip, preference_choices, project_field_well, question_choice,
-        question_disclosure, settings_control, shimmer_label, task_mark, task_meter, tooltip,
-        tooltip_content, transcript_action, truncation_safe_label_width, TaskPhase,
+        header_control_with_label_tooltip, header_control_with_tooltip, preference_choices,
+        project_field_well, question_choice, question_disclosure, settings_control, shimmer_label,
+        task_mark, task_meter, tooltip, tooltip_content, transcript_action,
+        truncation_safe_label_width, TaskPhase,
     },
     rpx,
     tokens::*,
@@ -575,7 +575,6 @@ impl TranscriptRenderCache {
     }
 }
 
-const STOP_HOVER_OPACITY: f32 = 0.8;
 /// Bottom of the session composer, including its canvas inset and hint row.
 /// The wide side conversation shares this baseline rather than the pane edge.
 pub(super) fn composer_bottom_inset(window: &Window) -> gpui::Pixels {
@@ -750,54 +749,45 @@ pub(super) fn composer_icon(
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
     let fill = if icon == "stop" { c::RED() } else { c::FG() };
-    header_control_with_hover_tooltip(
-        id,
-        label,
-        if disabled {
-            if primary {
-                fill
-            } else {
-                c::FIELD_FILL()
-            }
-        } else if primary {
-            if icon == "stop" {
-                c::RED().opacity(STOP_HOVER_OPACITY)
-            } else {
-                c::FG_DIM()
-            }
-        } else {
-            c::BG_HOVER()
-        },
-    )
-    .debug_selector(move || id.into())
-    .size(rpx(CHROME_CONTROL_H))
-    .rounded_full()
-    .tab_index(0)
-    .tab_stop(!disabled)
-    .when(primary, |button| button.bg(fill))
-    .aria_description(if disabled { "Unavailable" } else { label })
-    .when(!disabled, |button| {
-        button.focus_visible(|style| style.border_1().border_color(c::SEL_RING()))
-    })
-    .when(disabled, |button| {
-        button
-            .group("disabled-control")
-            .cursor_default()
-            .opacity(OPACITY_DISABLED)
-    })
-    .child(crate::icons::icon(
-        icon,
-        ICON_SM,
-        if primary { c::BG() } else { c::FG_DIM() },
-    ))
+    super::components::inline_disclosure(id, label)
+        .debug_selector(move || id.into())
+        .size(rpx(CHROME_CONTROL_H))
+        .rounded_full()
+        .tab_index(0)
+        .tab_stop(!disabled)
+        .when(primary, |button| button.bg(fill))
+        .aria_description(if disabled { "Unavailable" } else { label })
+        .when(!disabled, |button| {
+            button.focus_visible(|style| style.border_1().border_color(c::SEL_RING()))
+        })
+        .when(disabled, |button| {
+            button
+                .group("disabled-control")
+                .cursor_default()
+                .opacity(OPACITY_DISABLED)
+        })
+        .child(crate::icons::icon(
+            icon,
+            ICON_SM,
+            if primary { c::BG() } else { c::FG_DIM() },
+        ))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerMenu {
+    Add,
     Settings,
     Model,
     Effort,
     Access,
+}
+
+struct ClosingComposerPopup {
+    menu: ComposerMenu,
+    popup: Option<Entity<PopupMenu>>,
+    model_picker: Option<Entity<model_picker::ModelPicker>>,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    scope: String,
 }
 
 /// A drag belongs to the catalog and session that were visible at pointer-down.
@@ -1297,6 +1287,9 @@ pub struct CodexView {
     elicitation_drafts: HashMap<String, ElicitationDraft>,
     interaction_scope: String,
     menu: Option<ComposerMenu>,
+    popup_motion: super::motion::PopupMotion,
+    closing_popup: Option<ClosingComposerPopup>,
+    popup_generation: u64,
     popup: Option<Entity<PopupMenu>>,
     popup_subscription: Option<Subscription>,
     composer_menu_scope: Option<String>,
@@ -1311,8 +1304,8 @@ pub struct CodexView {
     card_focus: FocusHandle,
     card_reset_focus: FocusHandle,
     speed_focus: [FocusHandle; 3],
-    option_bounds: [Rc<Cell<gpui::Bounds<gpui::Pixels>>>; 3],
-    option_focus: [FocusHandle; 3],
+    option_bounds: [Rc<Cell<gpui::Bounds<gpui::Pixels>>>; 4],
+    option_focus: [FocusHandle; 4],
     file_suggestions: Vec<String>,
     picked_tokens: Vec<ComposerToken>,
     suggestion_index: usize,
@@ -1887,6 +1880,9 @@ impl CodexView {
             elicitation_drafts: HashMap::new(),
             interaction_scope: String::new(),
             menu: None,
+            popup_motion: super::motion::PopupMotion::default(),
+            closing_popup: None,
+            popup_generation: 0,
             popup: None,
             popup_subscription: None,
             composer_menu_scope: None,
@@ -6260,7 +6256,9 @@ impl Render for CodexView {
                     this.card_model_focus.focus(window, cx);
                     cx.stop_propagation();
                 } else if event.keystroke.key == "escape" && this.menu.is_some() {
-                    let index = if this.menu == Some(ComposerMenu::Access) {
+                    let index = if this.menu == Some(ComposerMenu::Add) {
+                        3
+                    } else if this.menu == Some(ComposerMenu::Access) {
                         2
                     } else {
                         0
@@ -6477,7 +6475,7 @@ impl Render for CodexView {
                         .debug_selector(move || format!("codex-image-{index}"))
                         .group("codex-image")
                         .child(
-                            header_control_with_label_tooltip(
+                            super::components::header_control(
                                 "codex-remove-image",
                                 "Remove attached image",
                             )
@@ -6854,6 +6852,15 @@ impl Render for CodexView {
             || rewind_drafts.is_some()
             || choices.is_some()
             || !self.queue_motion_rows.is_empty();
+        let mut options = self.option_triggers(&state, window, cx).into_iter();
+        let access_control = options.next();
+        let model_control = options.next();
+        let add_bounds = self.option_bounds[3].clone();
+        let add_disabled = self.plan_answer.is_some()
+            || self.submitted.is_some()
+            || self.pending_attachment_picker
+            || self.edit_request_pending
+            || state.saved.pending_edit.is_some();
         let mut surface =
             surface.child(
                 div()
@@ -6907,21 +6914,26 @@ impl Render for CodexView {
                                     .flex_wrap()
                                     .items_center()
                                     .gap(rpx(SPACE_LG))
-                                    .children(self.option_triggers(&state, window, cx))
+                                    .when_some(model_control, |row, control| row.child(control))
+                                    .when_some(access_control, |row, control| row.child(control))
+                                    .when_some(state.saved.context.filter(|usage| self.dashboard_tray.is_some() && usage.window > 0), |row, usage| row.child(context_meter(usage)))
                                     .child(div().flex_1())
-                                    .when_some(
-                                        state.saved.context.filter(|usage| usage.window > 0),
-                                        |row, usage| row.child(context_meter(usage)),
-                                    )
                                     .child(
                                         div().flex().items_center().gap(rpx(SPACE_LG)).flex_shrink_0().ml_auto()
-                                            .child(
-                                                composer_icon("codex-attach", "Attach files or images", "paperclip", self.plan_answer.is_some() || self.submitted.is_some() || self.edit_request_pending || state.saved.pending_edit.is_some(), false)
-                                                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                                                        if action_key(event) { this.attach_files(window, cx); cx.stop_propagation(); }
-                                                    }))
-                                                    .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx)))
-                                            )
+                                    .child(
+                                        composer_icon("codex-add", "Add context", "paperclip", add_disabled, false)
+                                            .track_focus(&self.option_focus[3])
+                                            .relative()
+                                            .child(gpui::canvas(move |rect, _, _| add_bounds.set(rect), |_, (), _, _| {}).absolute().size_full())
+                                            .when(self.menu == Some(ComposerMenu::Add), |button| button.text_color(c::FG()))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if !add_disabled { if this.menu == Some(ComposerMenu::Add) { this.close_menu(cx); } else { this.open_menu(ComposerMenu::Add, window, cx); } }
+                                            }))
+                                            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                                                if !add_disabled && action_key(event) { this.open_menu(ComposerMenu::Add, window, cx); cx.stop_propagation(); }
+                                            }))
+                                    )
+
                                             .when(self.plan_answer.is_some(), |row| row.child(
                                                 transcript_action("save-plan-answer", "Save answer", true, window, cx)
                                                     .debug_selector(|| "save-plan-answer".into())
@@ -6950,8 +6962,26 @@ impl Render for CodexView {
                                             ))
                                     ),
                             )
+                            )
+                            .when(self.dashboard_tray.is_none(), |column| column.child(
+                                div()
+                                    .id("codex-composer-context")
+                                    .debug_selector(|| "codex-composer-context".into())
+                                    .w(gpui::relative(COMPOSER_CONTEXT_WIDTH_FRACTION)).mx_auto().min_w_0().flex().flex_wrap().items_center().gap(rpx(SPACE_LG))
+                                    .px(rpx(SPACE_2XL)).py(rpx(SPACE_LG))
+                                    .rounded_b(rpx(RADIUS_PANEL))
+                                    .border_l_1().border_r_1().border_b_1().border_color(c::BORDER_SOFT())
+                                    .text_size(rpx(TEXT_SMALL)).text_color(c::FG_DIM())
+                                    .child(crate::icons::icon("folder", ICON_SM, c::FG_DIM()))
+                                    .child(div().flex_1().min_w_0().truncate().child(
+                                        self.checkout_context.as_ref().map_or_else(
+                                            || state.saved.cwd.clone(),
+                                            |(location, branch)| if branch.is_empty() { location.clone() } else { format!("{location} / {branch}") },
+                                        )
+                                    ))
+                                    .when_some(state.saved.context.filter(|usage| usage.window > 0), |row, usage| row.child(context_meter(usage)))
                             ))
-                            .children(self.dashboard_tray.clone())
+                            .children(self.dashboard_tray.clone()))
                             .child(
                                 div()
                                     .id("codex-composer-hints")
@@ -7003,30 +7033,106 @@ impl Render for CodexView {
                             .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.child(self.launch_starters(provider, cx))),
                     ),
             );
-        if let Some(menu) = self.menu {
+        let exiting = self.menu.is_none()
+            && self
+                .closing_popup
+                .as_ref()
+                .is_some_and(|popup| popup.scope == composer_scope(&state))
+            && !cx.reduce_motion();
+        if let Some(menu) = self
+            .menu
+            .or_else(|| exiting.then(|| self.closing_popup.as_ref().unwrap().menu))
+        {
             let popup = if menu == ComposerMenu::Settings {
-                Some(self.model_effort_card(&state, window, cx))
+                Some(self.model_effort_card(&state, exiting, window, cx))
             } else if menu == ComposerMenu::Model {
-                self.model_picker.clone().map(IntoElement::into_any_element)
+                if exiting {
+                    self.closing_popup
+                        .as_ref()
+                        .and_then(|p| p.model_picker.clone())
+                        .map(IntoElement::into_any_element)
+                } else {
+                    self.model_picker.clone().map(IntoElement::into_any_element)
+                }
             } else {
-                self.popup.clone().map(IntoElement::into_any_element)
+                if exiting {
+                    self.closing_popup
+                        .as_ref()
+                        .and_then(|p| p.popup.clone())
+                        .map(IntoElement::into_any_element)
+                } else {
+                    self.popup.clone().map(IntoElement::into_any_element)
+                }
             };
+            if exiting {
+                if let Some(popup) = self.closing_popup.as_ref().and_then(|p| p.popup.clone()) {
+                    popup.update(cx, |popup, _| popup.set_passive(true));
+                }
+                if let Some(picker) = self
+                    .closing_popup
+                    .as_ref()
+                    .and_then(|p| p.model_picker.clone())
+                {
+                    picker.update(cx, |picker, _| picker.passive = true);
+                }
+            }
             if let Some(popup) = popup {
-                let index = if menu == ComposerMenu::Access { 2 } else { 0 };
-                let bounds = self.option_bounds[index].get();
+                let index = match menu {
+                    ComposerMenu::Add => 3,
+                    ComposerMenu::Access => 2,
+                    _ => 0,
+                };
+                let bounds = if exiting {
+                    self.closing_popup.as_ref().unwrap().bounds
+                } else {
+                    self.option_bounds[index].get()
+                };
                 let gap = rpx(SPACE_LG).to_pixels(window.rem_size());
+                // Anchor each picker to the stable outer edge of its toolbar group.
+                let trailing = menu == ComposerMenu::Add;
                 return surface
                     .child(gpui::deferred(
                         gpui::anchored()
                             .position_mode(gpui::AnchoredPositionMode::Window)
-                            .anchor(gpui::Anchor::BottomLeft)
-                            .position(gpui::point(bounds.left(), bounds.top() - gap))
+                            .anchor(if trailing {
+                                gpui::Anchor::BottomRight
+                            } else {
+                                gpui::Anchor::BottomLeft
+                            })
+                            .position(gpui::point(
+                                if trailing {
+                                    bounds.right()
+                                } else {
+                                    bounds.left()
+                                },
+                                bounds.top() - gap,
+                            ))
                             .snap_to_window_with_margin(rpx(SPACE_LG).to_pixels(window.rem_size()))
                             .child(
-                                div()
-                                    .id("codex-options-popup")
-                                    .debug_selector(|| "codex-options-popup".into())
-                                    .child(popup),
+                                self.popup_motion.render(
+                                    div()
+                                        .id(if exiting {
+                                            "codex-options-popup-exit"
+                                        } else {
+                                            "codex-options-popup"
+                                        })
+                                        .when(!exiting, |surface| {
+                                            surface.debug_selector(|| "codex-options-popup".into())
+                                        })
+                                        .when(exiting, |surface| {
+                                            surface
+                                                .capture_any_mouse_down(|_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .capture_any_mouse_up(|_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .capture_key_down(|_, _, cx| cx.stop_propagation())
+                                        })
+                                        .child(popup),
+                                    "composer-popup-rise",
+                                    cx,
+                                ),
                             ),
                     ))
                     .into_any_element();
@@ -7749,7 +7855,44 @@ impl CodexView {
             }),
         }
     }
+    fn retain_popup_exit(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = self.menu else {
+            return;
+        };
+        self.popup_generation = self.popup_generation.wrapping_add(1);
+        self.closing_popup = None;
+        if cx.reduce_motion() || !self.composer_menu_valid(cx) {
+            return;
+        }
+        let index = match menu {
+            ComposerMenu::Add => 3,
+            ComposerMenu::Access => 2,
+            _ => 0,
+        };
+        self.closing_popup = Some(ClosingComposerPopup {
+            menu,
+            popup: self.popup.clone(),
+            model_picker: self.model_picker.clone(),
+            bounds: self.option_bounds[index].get(),
+            scope: composer_scope(&self.session.read(cx).state),
+        });
+        self.popup_motion.hide(cx);
+        let generation = self.popup_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(super::motion::PopupMotion::exit_duration())
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if generation == this.popup_generation {
+                    this.closing_popup = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
     fn close_menu(&mut self, cx: &mut Context<Self>) {
+        self.retain_popup_exit(cx);
         self.menu = None;
         self.popup = None;
         self.model_picker = None;
@@ -7764,10 +7907,23 @@ impl CodexView {
     }
     fn open_menu(&mut self, menu: ComposerMenu, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.session.read(cx).state.clone();
+        if menu == ComposerMenu::Add
+            && (self.plan_answer.is_some()
+                || self.submitted.is_some()
+                || self.pending_attachment_picker
+                || self.edit_request_pending
+                || self.edit_confirmation.is_some()
+                || state.saved.pending_edit.is_some())
+        {
+            return;
+        }
         if menu == ComposerMenu::Access && session_has_yolo_access(&state) {
             self.close_menu(cx);
             return;
         }
+        self.popup_generation = self.popup_generation.wrapping_add(1);
+        self.closing_popup = None;
+        self.popup_motion.show(cx);
         self.composer_menu_scope = Some(composer_scope(&state));
         self.composer_menu_launch_config = Some(
             cx.try_global::<crate::settings::SettingsState>()
@@ -7858,6 +8014,7 @@ impl CodexView {
         }
         let (choices, _) = Self::menu_choices(&state, menu);
         let selected = match menu {
+            ComposerMenu::Add => None,
             ComposerMenu::Model => state.model.as_deref().or(state.resolved_model.as_deref()),
             ComposerMenu::Settings | ComposerMenu::Effort => {
                 state.effort.as_deref().or(state.resolved_effort.as_deref())
@@ -7872,6 +8029,7 @@ impl CodexView {
         }
         .map(str::to_owned);
         let index = match menu {
+            ComposerMenu::Add => 3,
             ComposerMenu::Model => 0,
             ComposerMenu::Settings | ComposerMenu::Effort => 1,
             ComposerMenu::Access => 2,
@@ -7881,24 +8039,96 @@ impl CodexView {
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let width =
             COMPOSER_MENU_W.min(f32::from(window.viewport_size().width) / scale - SPACE_3XL);
-        let height = COMPOSER_MENU_MAX_H
-            .min(f32::from(window.viewport_size().height) / scale - APPBAR_TOTAL_H - SPACE_3XL);
         let popup = PopupMenu::build(window, cx, move |mut popup, window, _| {
             popup = crate::views::components::dropdown_menu(popup, window);
             popup = popup
                 .action_context(context)
-                .scrollable(true)
+                .scrollable(false)
                 .max_w(rpx(width).to_pixels(window.rem_size()))
-                .min_w(rpx(width).to_pixels(window.rem_size()))
-                .max_h(rpx(height).to_pixels(window.rem_size()));
+                .min_w(rpx(width).to_pixels(window.rem_size()));
+            if menu == ComposerMenu::Access {
+                popup = popup.check_side(gpui_component::Side::Right);
+            }
             for (value, label) in choices {
                 let owner = owner.clone();
                 let checked = selected.as_deref() == Some(value.as_str());
-                popup = popup.item(PopupMenuItem::new(label).checked(checked).on_click(
-                    move |_, window, cx| {
-                        let _ = owner.update(cx, |this, cx| this.choose_option(&value, window, cx));
-                    },
-                ));
+                let item = if menu == ComposerMenu::Access {
+                    let (title, description) = label.split_once(" · ").map_or_else(
+                        || {
+                            (
+                                label.clone(),
+                                "Use the provider's configured access rules".to_owned(),
+                            )
+                        },
+                        |(title, description)| (title.to_owned(), description.to_owned()),
+                    );
+                    let glyph = match value.as_str() {
+                        "read-only" | "plan" => "eye",
+                        "workspace-write" | "acceptEdits" => "edit",
+                        "full-access" | "bypassPermissions" => "lock-open",
+                        "__configured" => "reset",
+                        _ => "lock",
+                    };
+                    let row_id = format!("access-choice-{value}");
+                    PopupMenuItem::element(move |_, _| {
+                        div()
+                            .id(row_id.clone())
+                            .when(cfg!(test), |row| {
+                                row.debug_selector({
+                                    let id = row_id.clone();
+                                    move || id.clone().into()
+                                })
+                            })
+                            .flex_1()
+                            .min_w_0()
+                            .py(rpx(SPACE_MD))
+                            .flex()
+                            .flex_col()
+                            .gap_0()
+                            .aria_label(label.clone())
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_LG))
+                                    .child(crate::icons::icon(glyph, ICON_MD, c::FG_DIM()))
+                                    .child(
+                                        div()
+                                            .text_size(rpx(TEXT_BODY))
+                                            .line_height(rpx(SPACE_3XL))
+                                            .text_color(c::FG())
+                                            .child(title.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .ml(rpx(ICON_MD + SPACE_LG))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .line_height(rpx(SPACE_3XL))
+                                    .text_color(c::FG_MUTE())
+                                    .whitespace_normal()
+                                    .child(description.clone()),
+                            )
+                    })
+                    .checked(checked)
+                } else {
+                    PopupMenuItem::new(label).checked(checked)
+                };
+                let item = if menu == ComposerMenu::Add {
+                    item.icon(gpui_component::Icon::default().path(format!(
+                        "icons/{}.svg",
+                        match value.as_str() {
+                            "__attach" => "paperclip",
+                            "__reference" => "file",
+                            _ => "tool",
+                        }
+                    )))
+                } else {
+                    item
+                };
+                popup = popup.item(item.on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| this.choose_option(&value, window, cx));
+                }));
             }
             popup
         });
@@ -8152,7 +8382,12 @@ impl CodexView {
         cx.notify();
     }
 
-    fn speed_controls(&self, state: &codex::Snapshot, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn speed_controls(
+        &self,
+        state: &codex::Snapshot,
+        passive: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let selected = state.saved.composer.speed;
         let mut choices = preference_choices().w_full().bg(c::BG());
         for (index, speed) in [
@@ -8185,7 +8420,9 @@ impl CodexView {
                         unavailable.is_none(),
                     )
                     .debug_selector(move || format!("codex-speed-{index}"))
-                    .track_focus(&self.speed_focus[index])
+                    .when(!passive, |control| {
+                        control.track_focus(&self.speed_focus[index])
+                    })
                     .aria_description(unavailable.unwrap_or(
                         "Requested speed for the next turn; provider availability applies",
                     ))
@@ -8290,11 +8527,14 @@ impl CodexView {
     fn model_effort_card(
         &mut self,
         state: &codex::Snapshot,
+        passive: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let choices = Self::effort_choices(state);
-        self.sync_effort_visual(state, &choices, cx);
+        if !passive {
+            self.sync_effort_visual(state, &choices, cx);
+        }
         let selected = self.effort_index(state, &choices);
         let effort = selected.and_then(|index| choices.get(index)).map_or_else(
             || {
@@ -8309,20 +8549,14 @@ impl CodexView {
         let scale = f32::from(window.rem_size()) / crate::zoom::REM_BASE;
         let width =
             MODEL_EFFORT_CARD_W.min(f32::from(window.viewport_size().width) / scale - SPACE_3XL);
-        let margin = rpx(SPACE_LG).to_pixels(window.rem_size());
-        let trigger_top = self.option_bounds[0].get().top();
-        let available_height = if trigger_top > margin * 2.0 {
-            trigger_top - margin * 2.0
-        } else {
-            window.viewport_size().height - margin * 2.0
-        };
         let model_name = composer_model_name(state);
         let now = cx.background_executor().now();
         let fraction = self
             .effort_visual
             .as_ref()
             .map_or(0.0, |visual| visual.position(now));
-        if !cx.reduce_motion()
+        if !passive
+            && !cx.reduce_motion()
             && self
                 .effort_visual
                 .as_ref()
@@ -8448,6 +8682,7 @@ impl CodexView {
             .aria_numeric_value_step(1.0)
             .track_focus(&self.option_focus[1])
             .tab_index(0)
+            .tab_stop(!passive)
             .h(rpx(ICON_BTN_W))
             .w_full()
             .flex()
@@ -8492,11 +8727,9 @@ impl CodexView {
             .id("codex-model-effort-card")
             .debug_selector(|| "codex-model-effort-card".into())
             .role(gpui::Role::Group)
-            .track_focus(&self.card_focus)
+            .when(!passive, |control| control.track_focus(&self.card_focus))
             .aria_label("Model, reasoning effort and speed")
             .w(rpx(width))
-            .max_h(available_height)
-            .overflow_y_scroll()
             .p(rpx(SPACE_2XL))
             .rounded(rpx(RADIUS_PANEL))
             .border_1()
@@ -8507,13 +8740,15 @@ impl CodexView {
             .flex()
             .flex_col()
             .gap(rpx(SPACE_2XL))
-            .occlude()
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
-                if !this.option_bounds[0].get().contains(&event.position) {
-                    this.close_menu(cx);
-                }
-            }))
+            .when(!passive, |card| {
+                card.occlude()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
+                        if !this.option_bounds[0].get().contains(&event.position) {
+                            this.close_menu(cx);
+                        }
+                    }))
+            })
             .child(
                 div()
                     .flex()
@@ -8533,8 +8768,11 @@ impl CodexView {
                             format!("Choose model: {}", composer_model_name(state)),
                             c::BG_HOVER(),
                         )
-                        .track_focus(&self.card_model_focus)
+                        .when(!passive, |control| {
+                            control.track_focus(&self.card_model_focus)
+                        })
                         .tab_index(0)
+                        .tab_stop(!passive)
                         .flex_1()
                         .min_w_0()
                         .h_auto()
@@ -8581,13 +8819,16 @@ impl CodexView {
                         )),
                     )
                     .child(
-                        header_control_with_label_tooltip(
+                        super::components::header_control(
                             "codex-model-effort-reset",
                             "Reset model and effort to configured values",
                         )
                         .debug_selector(|| "codex-model-effort-reset".into())
-                        .track_focus(&self.card_reset_focus)
+                        .when(!passive, |control| {
+                            control.track_focus(&self.card_reset_focus)
+                        })
                         .tab_index(0)
+                        .tab_stop(!passive)
                         .focus_visible(|style| style.bg(c::BG_HOVER()))
                         .child(crate::icons::icon("reset", ICON_MD, c::FG_DIM()))
                         .on_click(cx.listener(|this, _, _, cx| this.reset_model_effort(cx)))
@@ -8602,7 +8843,7 @@ impl CodexView {
                     ),
             )
             .child(slider)
-            .child(self.speed_controls(state, cx))
+            .child(self.speed_controls(state, passive, cx))
             .into_any_element()
     }
 
@@ -8667,16 +8908,10 @@ impl CodexView {
                 access_icon,
                 access.clone(),
             ),
-        ] {
-            if index > 0 {
-                controls.push(
-                    div()
-                        .h(rpx(ICON_LG))
-                        .border_l_1()
-                        .border_color(c::BORDER_SOFT())
-                        .into_any_element(),
-                );
-            }
+        ]
+        .into_iter()
+        .rev()
+        {
             if menu == ComposerMenu::Access && session_has_yolo_access(state) {
                 controls.push(
                     div()
@@ -8712,29 +8947,7 @@ impl CodexView {
                 &label_run,
                 window.text_system(),
             );
-            let detail = if menu == ComposerMenu::Access
-                && state.saved.provider == codex::Provider::Codex
-                && state.access.is_none()
-            {
-                format!(
-                    "Sandbox: {}\nApprovals: {}",
-                    state
-                        .sandbox
-                        .as_ref()
-                        .map_or_else(|| "provider configured".into(), ToString::to_string),
-                    state
-                        .approval_policy
-                        .as_ref()
-                        .map_or_else(|| "provider configured".into(), ToString::to_string)
-                )
-            } else if menu == ComposerMenu::Access {
-                access.clone()
-            } else {
-                format!("{label}. Speed applies to the next turn; provider availability applies.")
-            };
-            let control = header_control_with_tooltip(id, name, move |window, cx| {
-                tooltip(detail.clone(), window).build(window, cx)
-            });
+            let control = super::components::inline_disclosure(id, name);
             controls.push(
                 control
                     .relative()
@@ -8747,16 +8960,16 @@ impl CodexView {
                     .w_auto()
                     .min_w_0()
                     .px(rpx(SPACE_SM))
-                    .gap(rpx(SPACE_MD))
+                    .gap(rpx(SPACE_SM))
                     .tab_index(0)
                     .text_color(c::FG_DIM())
                     .text_size(rpx(TEXT_SMALL))
                     .when(
                         self.menu == Some(menu)
                             || (menu == ComposerMenu::Settings && self.model_from_card),
-                        |button| button.bg(c::BG_HOVER()).text_color(c::FG()),
+                        |button| button.text_color(c::FG()),
                     )
-                    .focus_visible(|style| style.bg(c::BG_HOVER()))
+                    .focus_visible(|style| style.border_1().border_color(c::SEL_RING()))
                     .child(
                         div()
                             .flex_shrink_0()
@@ -8828,6 +9041,17 @@ impl CodexView {
     ) -> (Vec<(String, String)>, &'static str) {
         let mut choices = Vec::new();
         let title = match menu {
+            ComposerMenu::Add => {
+                return (
+                    vec![
+                        ("__attach".into(), "Files and images".into()),
+                        ("__reference".into(), "Reference a file or folder".into()),
+                        ("__skills".into(), "Skills".into()),
+                        ("__commands".into(), "Commands".into()),
+                    ],
+                    "Add context",
+                )
+            }
             ComposerMenu::Model => {
                 choices = state
                     .models
@@ -9273,6 +9497,47 @@ impl CodexView {
             self.close_menu(cx);
             return;
         }
+        if self.menu == Some(ComposerMenu::Add) {
+            let blocked = self.plan_answer.is_some()
+                || self.submitted.is_some()
+                || self.pending_attachment_picker
+                || self.edit_request_pending
+                || self.edit_confirmation.is_some()
+                || self.session.read(cx).state.saved.pending_edit.is_some();
+            self.close_menu(cx);
+            if blocked {
+                return;
+            }
+            if value == "__attach" {
+                self.attach_files(window, cx);
+            } else if matches!(value, "__reference" | "__skills" | "__commands") {
+                let trigger = match value {
+                    "__reference" => "@",
+                    "__skills" => "$",
+                    _ => "/",
+                };
+                let input = self.input.read(cx);
+                let prefix = if input.cursor() > 0
+                    && !input.value()[..input.cursor()].ends_with(char::is_whitespace)
+                {
+                    " "
+                } else {
+                    ""
+                };
+                let text = format!("{prefix}{trigger}");
+                self.input
+                    .update(cx, |input, cx| input.insert(text, window, cx));
+                let draft = self.input.read(cx).value().to_string();
+                self.session
+                    .update(cx, |session, cx| session.send(Action::Draft(draft), cx));
+                self.dismissed_suggestions = None;
+                self.set_composer_collapsed(false, cx);
+                self.refresh_files(cx);
+                self.input.focus_handle(cx).focus(window, cx);
+            }
+            cx.notify();
+            return;
+        }
         let return_to_card = self.model_from_card;
         self.popup_subscription = None;
         if value == "__configured" {
@@ -9287,7 +9552,9 @@ impl CodexView {
                     cx,
                 );
             });
-        } else if let Some(menu) = self.menu.take() {
+        } else if self.menu.is_some() {
+            self.retain_popup_exit(cx);
+            let menu = self.menu.take().unwrap();
             self.popup = None;
             let action = Action::Configure {
                 model: (menu == ComposerMenu::Model).then(|| value.to_owned()),
@@ -9564,7 +9831,7 @@ impl CodexView {
                                 .child(format!("Replying to {sources}")),
                         )
                         .child(
-                            header_control_with_label_tooltip(
+                            super::components::header_control(
                                 "codex-remove-reference",
                                 "Remove reference",
                             )
@@ -10746,7 +11013,6 @@ fn context_meter(usage: codex::ContextUsage) -> impl IntoElement {
         .gap(rpx(SPACE_SM))
         .text_size(rpx(TEXT_SMALL))
         .text_color(color)
-        .tooltip(move |window, cx| tooltip(detail.clone(), window).build(window, cx))
         .child(context_ring(percent as f32 / 100.0, color))
         .child(format!("{percent}%"))
 }
@@ -15704,6 +15970,7 @@ mod tests {
     #[gpui::test]
     fn speed_card_stays_above_composer_at_narrow_width_and_zoom(cx: &mut gpui::TestAppContext) {
         let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         for (width, rem) in [(1024.0, 16.0), (400.0, 16.0), (400.0, 24.0)] {
             cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(720.0)));
             cx.update(|window, cx| {
@@ -15726,10 +15993,18 @@ mod tests {
             let card = cx.debug_bounds("codex-options-popup").unwrap();
             let trigger = view.read_with(cx, |view, _| view.option_bounds[0].get());
             assert!(card.top() >= gpui::px(0.0), "card top {card:?}, rem={rem}");
-            assert!(
-                card.bottom() <= trigger.top(),
-                "card overlaps composer {card:?}, trigger={trigger:?}, rem={rem}"
-            );
+            let gap = cx.update(|window, _| rpx(SPACE_LG).to_pixels(window.rem_size()));
+            if card.size.height + gap <= trigger.top() {
+                assert!(
+                    card.bottom() <= trigger.top(),
+                    "card stays above its source when it fits"
+                );
+            } else {
+                assert!(
+                    card.bottom() <= gpui::px(720.0),
+                    "full-height card stays visible when it must overlap its source"
+                );
+            }
             assert!(
                 card.left() >= gpui::px(0.0) && card.right() <= gpui::px(width),
                 "card exceeds width {card:?}"
@@ -19504,10 +19779,12 @@ mod tests {
         assert_eq!(user.right(), agent.right());
     }
     #[gpui::test]
-    fn context_meter_mounts_left_of_attach_only_when_usage_is_known(cx: &mut gpui::TestAppContext) {
+    fn context_meter_mounts_in_checkout_strip_only_when_usage_is_known(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (_view, cx, _, updates) = fixture(cx);
         draw(cx);
-        assert!(cx.debug_bounds("codex-attach").is_some());
+        assert!(cx.debug_bounds("codex-add").is_some());
         assert!(cx.debug_bounds("codex-context-meter").is_none());
         let mut state = snapshot();
         state.saved.context = Some(codex::ContextUsage {
@@ -19519,9 +19796,9 @@ mod tests {
             .advance_clock(std::time::Duration::from_millis(40));
         draw(cx);
         let meter = cx.debug_bounds("codex-context-meter").unwrap();
-        let attach = cx.debug_bounds("codex-attach").unwrap();
-        assert!(meter.right() <= attach.left());
-        assert!((meter.center().y - attach.center().y).abs() < gpui::px(1.0));
+        let strip = cx.debug_bounds("codex-composer-context").unwrap();
+        assert!(meter.left() >= strip.left() && meter.right() <= strip.right());
+        assert!(meter.top() >= strip.top() && meter.bottom() <= strip.bottom());
         let mut state = snapshot();
         state.saved.context = Some(codex::ContextUsage { used: 1, window: 0 });
         updates.send(state).unwrap();
@@ -21912,6 +22189,123 @@ mod tests {
     }
 
     #[gpui::test]
+    fn composer_popup_rise_releases_ownership_and_cancels_stale_cleanup(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                cx.set_reduce_motion(false);
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, _| {
+                        session.state.saved.provider = provider;
+                        session.state.permission_modes = vec!["default".into(), "plan".into()];
+                    });
+                    view.open_menu(ComposerMenu::Access, window, cx);
+                });
+            });
+            draw(cx);
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.close_menu(cx);
+                    assert!(view.menu.is_none());
+                    assert!(view.popup.is_none());
+                    assert!(view.closing_popup.is_some());
+                    view.open_menu(ComposerMenu::Add, window, cx);
+                    assert!(view.closing_popup.is_none());
+                })
+            });
+            cx.executor()
+                .advance_clock(super::super::motion::PopupMotion::exit_duration() * 2);
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert!(
+                    view.menu == Some(ComposerMenu::Add),
+                    "old cleanup cannot close a reopened popup"
+                )
+            });
+            cx.update(|_, cx| view.update(cx, |view, cx| view.close_menu(cx)));
+            draw(cx);
+            cx.executor()
+                .advance_clock(super::super::motion::PopupMotion::exit_duration() * 2);
+            draw(cx);
+            view.read_with(cx, |view, _| assert!(view.closing_popup.is_none()));
+            cx.update(|window, cx| {
+                cx.set_reduce_motion(true);
+                view.update(cx, |view, cx| {
+                    view.open_menu(ComposerMenu::Settings, window, cx);
+                    view.close_menu(cx);
+                    assert!(
+                        view.closing_popup.is_none(),
+                        "reduced motion closes immediately"
+                    );
+                });
+            });
+        }
+        assert!(!actions
+            .try_iter()
+            .any(|action| matches!(action, Action::Configure { .. } | Action::Submit { .. })));
+    }
+
+    #[gpui::test]
+    fn composer_destination_strip_is_centered_at_ninety_five_percent(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, _, _) = fixture(cx);
+        cx.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.dashboard_tray = Some(cx.new(|_| {
+                    super::super::sidebar::dashboard::DestinationTray::picker_test_tray(
+                        "/unused".into(),
+                    )
+                }));
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let input = cx.debug_bounds("codex-composer").unwrap();
+        let strip = cx.debug_bounds("dashboard-destination").unwrap();
+        assert!(
+            (f32::from(strip.size.width)
+                - f32::from(input.size.width) * COMPOSER_CONTEXT_WIDTH_FRACTION)
+                .abs()
+                <= 1.0
+        );
+        assert!((f32::from(strip.center().x - input.center().x)).abs() <= 1.0);
+    }
+
+    #[gpui::test]
+    fn composer_add_context_preserves_draft_and_never_configures_or_sends(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session
+                        .update(cx, |session, _| session.state.saved.provider = provider);
+                    view.input.update(cx, |input, cx| {
+                        input.set_value("Keep this draft ", window, cx)
+                    });
+                    view.open_menu(ComposerMenu::Add, window, cx);
+                    view.choose_option("__reference", window, cx);
+                    assert_eq!(view.input.read(cx).value().as_ref(), "@Keep this draft ");
+                    assert!(view.menu.is_none());
+                    view.open_menu(ComposerMenu::Add, window, cx);
+                    view.choose_option("__commands", window, cx);
+                    assert_eq!(view.input.read(cx).value().as_ref(), "@ /Keep this draft ");
+                    view.open_menu(ComposerMenu::Settings, window, cx);
+                    assert!(view.menu == Some(ComposerMenu::Settings));
+                    view.close_menu(cx);
+                })
+            });
+            assert!(actions
+                .try_iter()
+                .all(|action| !matches!(action, Action::Configure { .. } | Action::Prompt { .. })));
+        }
+    }
+
+    #[gpui::test]
     fn model_labels_fit_across_zoom_for_both_providers(cx: &mut gpui::TestAppContext) {
         let (view, cx, _, _) = fixture(cx);
         for provider in [codex::Provider::Codex, codex::Provider::Claude] {
@@ -21953,6 +22347,7 @@ mod tests {
     #[gpui::test]
     fn composer_effort_card_commits_on_release_and_preserves_draft(cx: &mut gpui::TestAppContext) {
         let (view, cx, actions, _) = fixture(cx);
+        cx.update(|_, cx| cx.set_reduce_motion(true));
         cx.update(|window, cx| view.update(cx, |view, cx| {
             view.session.update(cx, |session, cx| {
                 session.state.models = vec![json!({"model":"test", "displayName":"Test model", "defaultReasoningEffort":"medium", "supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]})];
@@ -22547,7 +22942,12 @@ mod tests {
         cx.simulate_click(trigger.center(), gpui::Modifiers::default());
         draw(cx);
         let popup = cx.debug_bounds("codex-options-popup").unwrap();
-        let reset = gpui::point(popup.left() + gpui::px(45.), popup.bottom() - gpui::px(17.));
+        let reset_row = cx.debug_bounds("access-choice-__configured").unwrap();
+        let reset = reset_row.center();
+        assert!(
+            reset.y >= popup.top() && reset.y <= popup.bottom(),
+            "Restore defaults must be visible without scrolling"
+        );
         cx.simulate_mouse_move(reset, None, gpui::Modifiers::default());
         draw(cx);
         cx.simulate_click(reset, gpui::Modifiers::default());
