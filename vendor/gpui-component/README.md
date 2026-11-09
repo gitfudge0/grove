@@ -235,3 +235,8 @@ Applied to `ui/src` (source, not manifests):
     Window-level selection, focus, accessibility and inspector fallbacks remain
     separate guards. Static text projections preserve their original owners;
     dynamic Markdown sections keep their live subtree and controls.
+
+21. **Consume Escape when ending IME composition.**
+    Input Escape unmarks active IME text and consumes that press, matching its
+    existing completion/menu dismissal behavior. A containing view’s Escape
+    shortcut only receives a later unhandled press.

@@ -48,6 +48,13 @@ mod model_picker;
 mod table_sizing_tests;
 
 const CODE_COPY_FEEDBACK_MS: u64 = 1200;
+const STOP_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+struct StopConfirmation {
+    thread_id: Option<String>,
+    turn_id: String,
+    started: std::time::Instant,
+}
 
 /// Paint Markdown source without replacing text or changing editor mode. Leaf
 /// spans are ordered and disjoint, so nested emphasis composes correctly with
@@ -1332,6 +1339,9 @@ pub struct CodexView {
     bubble_entrances: Vec<BubbleEntrance>,
     animating_bubbles: HashMap<String, (std::time::Instant, Rc<Cell<bool>>)>,
     interrupt_requested_for_turn: Option<String>,
+    stop_confirmation: Option<StopConfirmation>,
+    stop_confirmation_timer: Option<gpui::Task<()>>,
+    conversation_focus: FocusHandle,
     images: Vec<String>,
     previews: HashMap<String, Arc<gpui::Image>>,
     pending_image_pastes: usize,
@@ -1735,8 +1745,10 @@ impl CodexView {
             input.create_decorations_collection(Vec::new(), cx)
         });
         let card_focus = cx.focus_handle();
+        let conversation_focus = cx.focus_handle().tab_stop(false);
         let mut subscriptions = vec![
             cx.observe_in(&session, window, |this, _, window, cx| {
+                this.validate_stop_confirmation(cx);
                 this.flush_dashboard_submission(window, cx);
                 this.sync_native_plans(window, cx);
                 this.sync_plan_answer(window, cx);
@@ -1780,6 +1792,7 @@ impl CodexView {
                         this.set_composer_collapsed(false, cx);
                     }
                     InputEvent::Change => {
+                        this.clear_stop_confirmation(cx);
                         if this.plan_answer.is_some() {
                             this.persist_plan_answer_draft(cx);
                             this.sync_plan_composer_pending(cx);
@@ -1842,6 +1855,11 @@ impl CodexView {
                 this.close_menu(cx);
             }
         }));
+        subscriptions.push(
+            cx.on_focus_out(&conversation_focus, window, |this, _, _, cx| {
+                this.clear_stop_confirmation(cx);
+            }),
+        );
         let mut view = Self {
             preview_child: None,
             history_readonly,
@@ -1925,6 +1943,9 @@ impl CodexView {
             bubble_entrances: Vec::new(),
             animating_bubbles: HashMap::new(),
             interrupt_requested_for_turn: None,
+            stop_confirmation: None,
+            stop_confirmation_timer: None,
+            conversation_focus,
             images,
             previews,
             pending_image_pastes: 0,
@@ -4912,7 +4933,80 @@ impl CodexView {
         };
         self.submit_mode(mode, window, cx);
     }
+    fn clear_stop_confirmation(&mut self, cx: &mut Context<Self>) {
+        self.stop_confirmation_timer = None;
+        if self.stop_confirmation.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn validate_stop_confirmation(&mut self, cx: &mut Context<Self>) {
+        let state = &self.session.read(cx).state;
+        if self.stop_confirmation.as_ref().is_some_and(|confirmation| {
+            confirmation.thread_id != state.saved.thread_id
+                || Some(&confirmation.turn_id) != state.turn_id.as_ref()
+                || !self.stop_escape_available(cx)
+                || confirmation.started.elapsed() >= STOP_CONFIRMATION_TIMEOUT
+        }) {
+            self.clear_stop_confirmation(cx);
+        }
+    }
+
+    fn stop_escape_available(&self, cx: &Context<Self>) -> bool {
+        let state = &self.session.read(cx).state;
+        if self.transcript_only()
+            || self.dashboard_tray.is_some()
+            || !state.status.busy()
+            || state.turn_id.is_none()
+            || self.interrupt_requested_for_turn.as_ref() == state.turn_id.as_ref()
+            || self.edit_confirmation.is_some()
+            || self.edit_request_pending
+            || state.saved.pending_edit.is_some()
+            || !state.approvals.is_empty()
+            || !state.elicitations.is_empty()
+            || !state.questions.is_empty()
+        {
+            return false;
+        }
+        true
+    }
+
+    fn stop_with_escape(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        if !self.stop_escape_available(cx) || event.keystroke.modifiers.modified() {
+            self.clear_stop_confirmation(cx);
+            return false;
+        }
+        // Auto-repeat must neither arm a new confirmation nor confirm one.
+        if event.is_held {
+            return true;
+        }
+        self.validate_stop_confirmation(cx);
+        if self.stop_confirmation.is_some() {
+            self.clear_stop_confirmation(cx);
+            self.interrupt(cx);
+        } else {
+            let state = &self.session.read(cx).state;
+            let Some(turn_id) = state.turn_id.clone() else {
+                return false;
+            };
+            self.stop_confirmation = Some(StopConfirmation {
+                thread_id: state.saved.thread_id.clone(),
+                turn_id,
+                started: std::time::Instant::now(),
+            });
+            self.stop_confirmation_timer = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(STOP_CONFIRMATION_TIMEOUT)
+                    .await;
+                let _ = this.update(cx, |this, cx| this.clear_stop_confirmation(cx));
+            }));
+            cx.notify();
+        }
+        true
+    }
+
     fn interrupt(&mut self, cx: &mut Context<Self>) {
+        self.clear_stop_confirmation(cx);
         let state = &self.session.read(cx).state;
         if !state.status.busy()
             || state.turn_id.is_none()
@@ -5044,6 +5138,7 @@ impl Render for CodexView {
                 self.selection_root_observed = true;
             }
         }
+        self.validate_stop_confirmation(cx);
         self.flush_dashboard_submission(window, cx);
         let source = self.input.read(cx).value().to_string();
         let generation = grove_core::theme::generation();
@@ -5396,6 +5491,7 @@ impl Render for CodexView {
             self.tool_slots.clear();
             return div()
                 .id("codex-conversation")
+                .track_focus(&self.conversation_focus)
                 .size_full()
                 .min_h_0()
                 .flex()
@@ -5985,8 +6081,13 @@ impl Render for CodexView {
             )
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
-                    this.selection_dismissed = window.text_selection_snapshot(cx);
-                    cx.notify();
+                    let selection = window.text_selection_snapshot(cx);
+                    if selection.is_some() && selection != this.selection_dismissed {
+                        this.selection_dismissed = selection;
+                        this.clear_stop_confirmation(cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
                 }
             }))
             .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
@@ -6001,6 +6102,7 @@ impl Render for CodexView {
             .children(selection_overlay);
         let mut surface = div()
             .id("codex-conversation")
+            .track_focus(&self.conversation_focus)
             .relative()
             .w_full()
             .when(self.dashboard_tray.is_none(), gpui::Styled::h_full)
@@ -6121,6 +6223,13 @@ impl Render for CodexView {
                 }
             }))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key != "escape"
+                    || event.keystroke.modifiers.modified()
+                    || this.menu.is_some()
+                    || this.model_from_card
+                {
+                    this.clear_stop_confirmation(cx);
+                }
                 if event.keystroke.key == "escape" && this.model_from_card {
                     this.model_from_card = false;
                     this.open_menu(ComposerMenu::Settings, window, cx);
@@ -6170,11 +6279,19 @@ impl Render for CodexView {
                 if event.keystroke.key == "escape"
                     && this.popup.is_none()
                     && trailing_trigger(&this.input.read(cx).value()).is_some()
+                    && this.dismissed_suggestions.as_deref()
+                        != Some(this.input.read(cx).value().as_ref())
                 {
                     this.menu = None;
+                    this.clear_stop_confirmation(cx);
                     this.dismissed_suggestions = Some(this.input.read(cx).value().to_string());
                     this.input.focus_handle(cx).focus(window, cx);
                     cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "escape" && this.stop_with_escape(event, cx) {
+                    window.prevent_default();
                     cx.stop_propagation();
                 }
             }));
@@ -6770,6 +6887,27 @@ impl Render for CodexView {
                             .when_some(rewind_drafts, gpui::ParentElement::child)
                             .when_some(choices, gpui::ParentElement::child)
                             .when(!self.queue_motion_rows.is_empty(), |rail| rail.child(queued))
+                            // Immediate keyboard feedback: arming/disarming must be visible at
+                            // the same input event, including with reduced motion.
+                            .when(self.stop_confirmation.is_some() || stopping, |rail| rail.child(
+                                div()
+                                    .id("codex-stop-confirmation")
+                                    .debug_selector(|| "codex-stop-confirmation".into())
+                                    .role(gpui::Role::Status)
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(rpx(SPACE_SM))
+                                    .py(rpx(SPACE_MD))
+                                    .text_size(rpx(TEXT_SMALL))
+                                    .text_color(c::FG())
+                                    .child(if stopping {
+                                        super::status::mark("escape-stopping", StatusKind::Working, ICON_SM, cx)
+                                    } else {
+                                        crate::icons::icon("stop", ICON_SM, c::FG_DIM()).into_any_element()
+                                    })
+                                    .child(div().flex_1().min_w_0().child(if stopping { "Stopping agent…" } else { "Press Esc again to stop the agent" }))
+                            ))
                             .child(div().w_full().flex().flex_col().flex_shrink_0()
                             .children(self.render_reference_preview(composer_attached, window, cx))
                             .child(
@@ -6851,12 +6989,10 @@ impl Render for CodexView {
                                     .text_size(rpx(TEXT_MICRO))
                                     .line_height(gpui::phi())
                                     .text_color(c::FG_DIM())
-                                    .when(self.plan_answer.is_some() || stopping || self.submitted.is_some() || editing || busy, |hints| hints.child(super::components::shortcut_hint(if self.plan_answer.as_ref().is_some_and(|answer| answer.saving.is_some()) {
+                                    .when(!stopping && (self.plan_answer.is_some() || self.submitted.is_some() || editing || busy), |hints| hints.child(super::components::shortcut_hint(if self.plan_answer.as_ref().is_some_and(|answer| answer.saving.is_some()) {
                                         "Saving answer…"
                                     } else if self.plan_answer.is_some() {
                                         "Enter to save answer"
-                                    } else if stopping {
-                                        "Stopping…"
                                     } else if self.submitted.is_some() {
                                         "Sending…"
                                     } else if editing {
@@ -7757,6 +7893,7 @@ impl CodexView {
         cx.notify();
     }
     fn open_menu(&mut self, menu: ComposerMenu, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_stop_confirmation(cx);
         let state = self.session.read(cx).state.clone();
         if menu == ComposerMenu::Add
             && (self.plan_answer.is_some()
@@ -21412,6 +21549,223 @@ mod tests {
         assert!(cx.debug_bounds("codex-send").is_some());
         assert!(cx.debug_bounds("codex-stop").is_none());
         assert!(cx.debug_bounds("codex-steer").is_none());
+    }
+
+    #[gpui::test]
+    fn double_escape_stops_once_and_preserves_drafts_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.saved.thread_id = Some(format!("escape-{provider:?}"));
+                        session.state.status = Status::Working;
+                        session.state.turn_id = Some(format!("turn-{provider:?}"));
+                        cx.notify();
+                    });
+                    view.input
+                        .update(cx, |input, cx| input.set_value("keep my draft", window, cx));
+                    view.input.focus_handle(cx).focus(window, cx);
+                })
+            });
+            draw(cx);
+            actions.try_iter().for_each(drop);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(
+                cx.debug_bounds("codex-stop-confirmation").is_some(),
+                "{provider:?}"
+            );
+            assert!(!actions.try_iter().any(|a| matches!(a, Action::Interrupt)));
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                is_held: true,
+                prefer_character_input: false,
+            });
+            assert!(!actions.try_iter().any(|a| matches!(a, Action::Interrupt)));
+            // The second press works from a toolbar control within the same pane.
+            cx.update(|window, cx| {
+                let focus = view.read(cx).option_focus[3].clone();
+                focus.focus(window, cx);
+            });
+            draw(cx);
+            cx.simulate_keystrokes("escape escape");
+            draw(cx);
+            assert_eq!(
+                actions
+                    .try_iter()
+                    .filter(|a| matches!(a, Action::Interrupt))
+                    .count(),
+                1,
+                "{provider:?}"
+            );
+            view.read_with(cx, |view, cx| {
+                assert_eq!(view.input.read(cx).value().as_ref(), "keep my draft");
+                assert!(view.stop_confirmation.is_none());
+                assert!(view.interrupt_requested_for_turn.is_some());
+            });
+            // Acknowledgement removes stopping feedback, without fabricating success early.
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.status = Status::Interrupted;
+                    session.state.turn_id = None;
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            assert!(cx.debug_bounds("codex-stop-confirmation").is_none());
+        }
+    }
+
+    #[gpui::test]
+    fn double_escape_clears_on_typing_timeout_focus_and_turn_change(cx: &mut gpui::TestAppContext) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.status = Status::Working;
+                        session.state.turn_id = Some("original".into());
+                        cx.notify();
+                    });
+                    view.input.focus_handle(cx).focus(window, cx);
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("escape");
+            cx.simulate_input("draft");
+            draw(cx);
+            assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_none()));
+            cx.simulate_keystrokes("escape");
+            cx.executor().advance_clock(STOP_CONFIRMATION_TIMEOUT);
+            cx.run_until_parked();
+            draw(cx);
+            assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_none()));
+            cx.simulate_keystrokes("escape");
+            cx.update(|window, _| window.blur());
+            draw(cx);
+            assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_none()));
+            cx.update(|window, cx| view.read(cx).input.focus_handle(cx).focus(window, cx));
+            draw(cx);
+            cx.simulate_keystrokes("escape");
+            view.update(cx, |view, cx| {
+                view.session.update(cx, |session, cx| {
+                    session.state.turn_id = Some("replacement".into());
+                    cx.notify();
+                })
+            });
+            draw(cx);
+            assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_none()));
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_some()));
+            assert!(
+                !actions.try_iter().any(|a| matches!(a, Action::Interrupt)),
+                "{provider:?}"
+            );
+            view.update(cx, |view, cx| view.clear_stop_confirmation(cx));
+        }
+    }
+
+    #[gpui::test]
+    fn double_escape_respects_menus_idle_and_held_keys_for_both_providers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.saved.provider = provider;
+                        session.state.status = Status::Idle;
+                        session.state.turn_id = None;
+                        cx.notify();
+                    });
+                    view.input.focus_handle(cx).focus(window, cx);
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("escape escape");
+            assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_none()));
+            cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.session.update(cx, |session, cx| {
+                        session.state.status = Status::Working;
+                        session.state.turn_id = Some(format!("menu-{provider:?}"));
+                        cx.notify();
+                    });
+                    view.open_menu(ComposerMenu::Add, window, cx);
+                })
+            });
+            draw(cx);
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            view.read_with(cx, |view, _| {
+                assert!(view.menu.is_none());
+                assert!(view.stop_confirmation.is_none());
+            });
+            cx.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                is_held: true,
+                prefer_character_input: false,
+            });
+            assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_none()));
+            assert!(!actions.try_iter().any(|a| matches!(a, Action::Interrupt)));
+        }
+    }
+
+    #[gpui::test]
+    fn double_escape_preserves_ime_and_fits_narrow_themes(cx: &mut gpui::TestAppContext) {
+        use gpui::EntityInputHandler as _;
+        let (view, cx, actions, _) = fixture(cx);
+        cx.update(|window, _| window.activate_window());
+        for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+            for (theme, width, rem) in [("grove-dark", 1000., 16.), ("grove-light", 400., 20.)] {
+                cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+                cx.update(|window, cx| {
+                    grove_core::theme::set_by_name(theme);
+                    c::sync_component_theme(cx);
+                    gpui_component::Theme::global_mut(cx).font_size = gpui::px(rem);
+                    window.set_rem_size(gpui::px(rem));
+                    cx.set_reduce_motion(true);
+                    view.update(cx, |view, cx| {
+                        view.clear_stop_confirmation(cx);
+                        view.session.update(cx, |session, cx| {
+                            session.state.saved.provider = provider;
+                            session.state.status = Status::Working;
+                            session.state.turn_id = Some("ime-turn".into());
+                            cx.notify();
+                        });
+                        view.input.update(cx, |input, cx| {
+                            input.set_value("", window, cx);
+                            input.replace_and_mark_text_in_range(None, "かな", None, window, cx);
+                        });
+                        view.input.focus_handle(cx).focus(window, cx);
+                    });
+                });
+                draw(cx);
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                assert!(view.read_with(cx, |view, _| view.stop_confirmation.is_none()));
+                cx.simulate_keystrokes("escape");
+                draw(cx);
+                let hint = cx.debug_bounds("codex-stop-confirmation").unwrap();
+                let composer = cx.debug_bounds("codex-composer").unwrap();
+                assert!(hint.left() >= composer.left() && hint.right() <= composer.right());
+                assert!(hint.bottom() <= composer.top());
+                assert!(!actions.try_iter().any(|a| matches!(a, Action::Interrupt)));
+            }
+        }
     }
 
     #[gpui::test]

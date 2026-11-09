@@ -1017,3 +1017,30 @@ interactive checks remain unverified. Live Codex and Claude provider boundaries
 and macOS/Windows remain untested. Formatting and artifact policy passed.
 The default Linux local build/install succeeded; installed and built binaries
 matched by SHA-256.
+
+## Double-Escape session interruption
+
+The active Codex/Claude conversation now arms a three-second confirmation on
+unmodified Esc, then sends the existing Interrupt action on a second distinct
+press. Linux GPUI fixtures passed for both providers: one interrupt only, draft
+preservation, held-key rejection, typing/timeout/focus/turn cancellation, menu
+precedence and IME dismissal. The narrow/light/increased-rem fixture measured
+the hint within the composer column, with Reduce motion. These are simulated
+GPUI input/layout checks, not desktop visual or live widget-to-provider evidence.
+Fourteen focused regressions and 35 additional checks passed, including all
+33 UI conformance checks, existing Stop behavior and composer popup routing.
+Formatting, whitespace and repository artifact checks passed.
+
+Live **Codex** production-adapter smoke passed a streamed turn, persisted resume,
+real interruption and recovery cleanup in disposable configuration/cwd. Live
+**Claude** initialized a session but its first model request failed because its
+OAuth session expired and could not be refreshed; interruption is **unverified**.
+Neither smoke drives Esc through the installed UI. Native visual inspection is
+unfinished because native control APIs are disabled and no native app surface
+is exposed. macOS/Windows and native theme/zoom/interaction appearance remain
+untested; Linux layout fixtures do not certify visual parity with the exploratory
+HTML mock. Existing unrelated checkout edits were preserved.
+
+The final `./install.sh` local build/install succeeded on Linux. The installed
+`~/.local/bin/grove` and `target/local/grove` matched by SHA-256. The running
+user application was not restarted. No release was created.

@@ -1553,6 +1553,8 @@ impl InputState {
 
         if self.ime_marked_range.is_some() {
             self.unmark_text(window, cx);
+            // This press belongs to composition, not an ancestor's Escape shortcut.
+            return;
         }
 
         if self.clean_on_escape {
