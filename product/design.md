@@ -10,7 +10,7 @@ Use the [project UI skill](../.agents/skills/grove-ui/SKILL.md) for implementati
 
 - Use semantic `c::*()` colors, not copied hex values or a PTY palette for app chrome. Neutral fills express selection, keyboard focus, and open state. Pointer hover has two treatments: bounded controls, navigation and selectable rows apply a neutral background highlight and strengthen the foreground; inline links and text disclosures strengthen only the foreground. Dashboard session/progress and activity disclosures, transcript work/tool disclosures, Tasks headings and session-header project/checkout links use foreground-only hover. Static metadata has no hover highlight. Keyboard focus retains its visible neutral treatment, and selected/open items may retain a neutral fill independently of pointer hover. Selected destinations and values retain a neutral background highlight and foreground color. Neutral interactive labels and action glyphs rest at supporting contrast and strengthen to the theme foreground on hover; in light themes this is a darker foreground. Semantic status, destructive and provider colors retain their roles, as do inverse primary actions and disabled states. Violet is reserved for agent identity, connection, and active-port roles; green means success, amber needs-you/warning, red error/destruction/interruption, and blue information or the explicit activity/effort roles below. Pair status colors with meaningful glyphs or text. On light surfaces, supporting status indicators accompany legible foreground copy; destructive copy uses the semantic error role.
 
-- Status displays outside conversation transcript content use the shared semantic presentation: a plain catalog mark with a matching semantic-color label, without a colored pill or backplate. Working uses a blue open ring (static with Reduce motion), success a green circle-check, needs-input an amber circle-dot, warning an amber circle-exclamation, and failed a red circle-cross. Idle, pending, unknown, canceled and stopped use distinct quiet neutral marks. Compact contexts may omit the visible label while preserving accessible meaning and the shared mark. Domain owners map their actual state explicitly; literal provider diagnostics, task progress, Git counts and actionable control semantics remain intact. Long diagnostic labels wrap beside a fixed leading icon slot.
+- Status displays outside conversation transcript content use the shared semantic presentation: a plain catalog mark with a matching semantic-color label, without a colored pill or backplate. Working uses a blue open ring (static with Reduce motion), success a green circle-check, needs-input an amber circle-dot, warning an amber circle-exclamation, and failed a red circle-cross. Idle, pending, unknown, canceled and stopped use distinct quiet neutral marks. Sidebar activity group headings show text without a status icon. Compact contexts may omit the visible label while preserving accessible meaning and the shared mark. Domain owners map their actual state explicitly; literal provider diagnostics, task progress, Git counts and actionable control semantics remain intact. Long diagnostic labels wrap beside a fixed leading icon slot.
 
 - Claude and Codex provider logos retain their brand colors in every placement, including compact status overlays: Claude uses its authored orange; the OpenAI Blossom used for Codex is black on light themes and white on dark themes. Provider marks never inherit status, selection, or muted text tints. Adjacent text and separate status marks retain their semantic roles.
 
@@ -518,3 +518,45 @@ Sidebar New session, History, Projects and Terminals labels use the primary fore
 Sidebar session-view controls are standalone icons without an enclosing border or selected background. Selection and pointer hover use foreground emphasis; keyboard focus remains independently visible.
 
 Sidebar activity group headings (Needs you, Review, Working and Ready) precede their labels with the shared semantic status mark at the small catalog size and standard small gap. Working uses the shared motion and reduced-motion treatment. Worktree group headings use the catalog branch icon at the same size and gap.
+
+## Session context panel
+
+Selected native Codex and Claude sessions show a Context card below Checkout,
+in the space used by Commit activity on Home. The card shows provider/model
+identity, occupancy, a compact measurement footer and relevant unavailable,
+loading, error, compaction or last-known states. It has no inner scroll area.
+The existing composer meter remains compact. Data and refresh actions belong to
+the selected provider session; switching sessions must never reuse another
+session’s measurement.
+
+Claude’s “What uses context” summary contains up to five top-level rows in this
+order: Messages, System prompt, Tools & MCP instructions, Memory files, and
+Skills & agents. Tools combines reported system-tool definitions, MCP-tool
+definitions and MCP instructions; Skills & agents combines their reported
+categories. Only known used categories enter these groups. Missing groups are
+omitted, while reported zero counts remain zero. Never add child attribution to
+its parent, count deferred/free/reserved tokens as used, or infer unreported
+categories. Codex shows occupancy without fabricated content attribution.
+
+Each summary row has its label and token count above a quiet progress bar,
+relative to current used context. Category percentages, child rows,
+expand/collapse controls, request/cumulative accounting, tool activity,
+compaction settings and compaction history are omitted. Missing, zero or
+inconsistent denominators omit the bar while retaining the reported count.
+Known zero with a positive denominator shows an empty bar. All summary rows
+stay visible. Static measurement updates use immediate feedback.
+
+The provider line leads with its brand icon. Routine full-measurement labels,
+remaining-token prose and generic context explanations are omitted. Estimated
+and restored/disconnected measurements retain meaningful provenance; freshness
+uses the compact 10px footer. Provider window, context occupancy, cumulative
+spending and account limits remain distinct.
+
+Occupancy updates when provider events arrive, including during tool/response
+work. For the selected connected Claude panel, a new occupancy generation
+triggers one full category measurement when the provider is idle; initial
+connection, model changes, reconnect and compaction also invalidate measurement
+freshness. No idle timer or redraw loop repeatedly invokes full counting.
+Pending queries coalesce, have a bounded timeout and reject obsolete replies.
+New occupancy clears old attribution rather than mixing snapshots. Manual
+Refresh remains available while idle; errors leave the conversation usable.

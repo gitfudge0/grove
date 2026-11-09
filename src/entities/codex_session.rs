@@ -57,6 +57,7 @@ enum DashboardLaunch {
 }
 
 pub struct CodexSession {
+    has_transport: bool,
     pub state: SessionSnapshot,
     pub catalog_loading: bool,
     pub catalog_error: Option<String>,
@@ -70,6 +71,10 @@ pub struct CodexSession {
     dashboard_launch: Option<DashboardLaunch>,
 }
 impl CodexSession {
+    pub fn has_transport(&self) -> bool {
+        self.has_transport
+    }
+
     /// A retained transcript for read-only History. No actor, capability
     /// discovery, transport polling, or disk writes are started.
     pub fn history(saved: SavedSession, _: &mut Context<Self>) -> Self {
@@ -78,6 +83,7 @@ impl CodexSession {
         let mut state = Snapshot::new(saved);
         state.status = codex::Status::Done;
         Self {
+            has_transport: false,
             state: state.into(),
             handle,
             _poll: Task::ready(()),
@@ -108,6 +114,7 @@ impl CodexSession {
             }
         });
         let mut session = Self {
+            has_transport: false,
             state: state.into(),
             handle,
             _poll: poll,
@@ -421,6 +428,7 @@ impl CodexSession {
             }
         });
         Self {
+            has_transport: true,
             state: state.into(),
             handle,
             _poll: poll,
@@ -985,6 +993,7 @@ mod dashboard_tests {
             activity_reporting: false,
             composer: codex::ComposerSettings::default(),
             context: None,
+            context_details: None,
         }
     }
 

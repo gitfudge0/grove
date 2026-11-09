@@ -70,3 +70,34 @@ failing or blocking the conversation. Configuration and message editing do not
 wait for these optional requests. Configurations, headers, and credentials are
 not copied from status inventories into notices. Codex CLIs without startup-status
 notifications do not provide this warning coverage.
+
+## Context measurements
+
+`SavedSession.context` retains used/window occupancy. Optional `context_details`
+preserves provider attribution, model, receipt time and measurement source.
+Fresh occupancy replaces old attribution so totals and breakdowns cannot silently
+refer to different requests. Claude’s optional `get_context_usage` query retains
+supported categories and child counts; reserved/free/deferred rows are not added
+to used context. Known legacy category names are supported without guessing the
+meaning of new categories. `RefreshContext` is a coalesced, bounded optional query;
+unsupported responses and timeouts leave the conversation usable. Its reply is
+accepted only for the current context generation/model. Codex uses its latest
+thread usage notification and does not invent content attribution.
+
+`context_usage_smoke` exercises the production adapter with disposable cwd and
+`GROVE_CONFIG_DIR`, separately for `claude` and `codex`. It reports numeric
+measurement coverage without printing prompts, tool payloads or credentials.
+
+Codex context details also retain optional `accounting` from `tokenUsage.last`
+and `tokenUsage.total`. Each counter remains optional so older payloads and
+reported zero values stay distinct. Input cache subcounts and reasoning output
+are preserved without recomputing the provider total. Model changes and
+compaction invalidate obsolete latest-request accounting. The Context card does not render request accounting or tool activity.
+
+The selected connected Claude panel requests one full measurement per new
+context generation after the provider becomes idle, also recovering restored or
+invalidated measurements. Busy sessions continue to receive occupancy events
+without repeated category queries. Idle time and redraws alone do not poll full
+counting. Errors/timeouts stay nonfatal; manual Refresh can retry. Category
+aggregation is presentation-only: original provider categories and child counts
+remain retained without fabricated attribution.

@@ -1,5 +1,53 @@
 # Verification and known gaps
 
+## Session context panel
+
+The simplified variant-C card shows occupancy for Codex and up to five used
+category bars for Claude: Messages, System prompt, Tools & MCP instructions,
+Memory files, and Skills & agents. Category percentages, nested details,
+request accounting and tool-activity diagnostics are omitted. Unknown/missing
+categories are not fabricated; zero remains distinct from missing data.
+
+Passed: three focused panel tests (including category aggregation, child-count
+exclusion, provider/session ownership, streamed occupancy, idle-only automatic
+measurement, equal-count new generations and pending-query coalescing), 27 core
+context tests (including stale replies, optional-query timeout/error, model and
+compaction behavior), and 33 UI conformance checks. The shared GPUI fixture uses
+normalized snapshot events to exercise Codex/Claude selection and query routing;
+it does not establish actual Claude wire behavior.
+
+Linux isolated native captures inspected both Codex and Claude at constrained
+380px card width in Dark and 300px card width in Light with increased rem zoom.
+These constrain the real card inside the compositor window; they do not establish
+full narrow-window navigation behavior. The five bars and fixed numeric column
+remained contained. The exploratory HTML is not a certified measured native
+reference; certification is unsupported on this Linux capture backend.
+
+Live production Rust adapters with disposable cwd/config: Codex 0.167.0 passed
+two turns, with occupancy changing 26154 → 32769 and measurement revision 3 → 4.
+Claude Code 2.1.220 returned an initial full measurement (6727 used tokens), then
+the first model turn failed because its OAuth session expired and could not be
+refreshed. Claude’s post-turn full-measurement freshness remains **unverified**
+until sign-in is restored. Other Claude category combinations and MCP attribution
+have fixture coverage rather than live coverage. Native-button-to-provider
+end-to-end behavior, pointer scrolling and macOS/Windows remain untested.
+
+Formatting, artifact policy and whitespace checks passed. The optimized local
+build/install passed and the installed binary matched the build byte for byte.
+
+## Sidebar activity group headings
+
+The first icon-removal attempt targeted selected-session headers rather than the
+sidebar activity group headings shown in the screenshot. That change was reverted;
+activity group headings now omit their status icon. Native visual inspection and
+live Codex/Claude provider checks remain untested (native computer-control APIs
+are unavailable). The earlier two Linux Codex/Claude shared-header fixtures used
+captured provider channels, not live providers.
+The correction passed formatting, repository artifact policy and all 33 UI
+conformance checks. Sidebar navigation fixtures passed 5 of 7 tests; two failed
+because the `global-nav-new-session` target was absent. Their cause has not been
+established, so the sidebar fixture suite is not fully verified.
+
 ## Home account contributions
 
 Compact-header/local-time follow-up: the card now has an icon-only refresh at

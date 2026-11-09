@@ -557,6 +557,7 @@ impl Sidebar {
                     .map(|defaults| defaults.composer.clone())
                     .unwrap_or_default(),
                 context: None,
+                context_details: None,
                 key,
                 project: project.map(|p| p.name).unwrap_or_default(),
                 cwd: checkout.clone(),

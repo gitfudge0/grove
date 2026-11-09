@@ -17,6 +17,165 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+/// Normalize the optional Claude diagnostic payload without treating absent data as zero.
+fn context_measurement(data: &Value) -> Option<(provider::ContextUsage, provider::ContextDetails)> {
+    use provider::{
+        ContextCategory, ContextCategoryKind, ContextDetails, ContextEntry, ContextMeasurement,
+        ContextUsage,
+    };
+    let usage = ContextUsage {
+        used: data["totalTokens"].as_u64()?,
+        window: data["maxTokens"].as_u64().filter(|window| *window > 0)?,
+    };
+    let entries = |values: &Value, label: &str, loaded: Option<bool>| -> Vec<ContextEntry> {
+        values
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| {
+                loaded.is_none_or(|loaded| entry["isLoaded"].as_bool().unwrap_or(true) == loaded)
+            })
+            .filter_map(|entry| {
+                let tokens = entry["tokens"].as_u64()?;
+                let name = entry[label].as_str()?;
+                let name = entry["serverName"]
+                    .as_str()
+                    .filter(|server| *server != name)
+                    .map_or_else(|| name.to_owned(), |server| format!("{server} / {name}"));
+                Some(ContextEntry {
+                    label: name,
+                    tokens,
+                })
+            })
+            .collect()
+    };
+    let categories = data["categories"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let label = row["name"].as_str()?.to_owned();
+            let tokens = row["tokens"].as_u64()?;
+            let id = row["id"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| label.to_ascii_lowercase().replace([' ', '-'], "_"));
+            let kind = match row["kind"].as_str() {
+                Some("used") => ContextCategoryKind::Used,
+                Some("free") => ContextCategoryKind::Free,
+                Some("buffer") => ContextCategoryKind::Buffer,
+                Some("deferred") => ContextCategoryKind::Deferred,
+                _ if row["isDeferred"] == true => ContextCategoryKind::Deferred,
+                _ if id == "free_space" => ContextCategoryKind::Free,
+                _ if matches!(
+                    id.as_str(),
+                    "autocompact_buffer" | "auto_compact_buffer" | "compact_buffer"
+                ) =>
+                {
+                    ContextCategoryKind::Buffer
+                }
+                _ if matches!(
+                    id.as_str(),
+                    "system_prompt"
+                        | "system_tools"
+                        | "mcp_tools"
+                        | "mcp_instructions"
+                        | "custom_agents"
+                        | "memory_files"
+                        | "skills"
+                        | "messages"
+                ) =>
+                {
+                    ContextCategoryKind::Used
+                }
+                _ => ContextCategoryKind::Unknown,
+            };
+            let mut children = match id.as_str() {
+                "mcp_tools_deferred" => entries(&data["mcpTools"], "name", Some(false)),
+                "system_tools_deferred" => {
+                    entries(&data["deferredBuiltinTools"], "name", Some(false))
+                }
+                "memory_files" => entries(&data["memoryFiles"], "path", None),
+                "mcp_tools" => entries(&data["mcpTools"], "name", Some(true)),
+                "mcp_instructions" => entries(&data["mcpInstructions"], "serverName", None),
+                "system_tools" => {
+                    let mut tools = entries(&data["systemTools"], "name", None);
+                    tools.extend(entries(&data["deferredBuiltinTools"], "name", Some(true)));
+                    tools
+                }
+                "system_prompt" => entries(&data["systemPromptSections"], "name", None),
+                "custom_agents" => entries(&data["agents"], "agentType", None),
+                "skills" => entries(&data["skills"]["skillFrontmatter"], "name", None),
+                _ => Vec::new(),
+            };
+            if id == "messages" {
+                for (key, label) in [
+                    ("toolCallTokens", "Tool calls"),
+                    ("toolResultTokens", "Tool results"),
+                    ("attachmentTokens", "Attachments"),
+                    ("assistantMessageTokens", "Assistant messages"),
+                    ("userMessageTokens", "User messages"),
+                    ("redirectedContextTokens", "Redirected context"),
+                    ("unattributedTokens", "Unattributed"),
+                ] {
+                    if let Some(tokens) = data["messageBreakdown"][key].as_u64() {
+                        children.push(ContextEntry {
+                            label: label.into(),
+                            tokens,
+                        });
+                    }
+                }
+            }
+            if id == "messages" {
+                for entry in data["messageBreakdown"]["toolCallsByType"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(name) = entry["name"].as_str() {
+                        for (key, suffix) in [("callTokens", "calls"), ("resultTokens", "results")]
+                        {
+                            if let Some(tokens) = entry[key].as_u64() {
+                                children.push(ContextEntry {
+                                    label: format!("By tool / {name} / {suffix}"),
+                                    tokens,
+                                });
+                            }
+                        }
+                    }
+                }
+                for mut entry in
+                    entries(&data["messageBreakdown"]["attachmentsByType"], "name", None)
+                {
+                    entry.label = format!("By attachment / {}", entry.label);
+                    children.push(entry);
+                }
+            }
+            Some(ContextCategory {
+                id,
+                label,
+                tokens,
+                kind,
+                entries: children,
+            })
+        })
+        .collect();
+    Some((
+        usage,
+        ContextDetails {
+            accounting: None,
+            model: data["model"].as_str().map(str::to_owned),
+            measured_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs()),
+            source: ContextMeasurement::Full,
+            categories,
+            auto_compact_enabled: data["isAutoCompactEnabled"].as_bool(),
+            auto_compact_threshold: data["autoCompactThreshold"].as_u64(),
+        },
+    ))
+}
+
 /// Only a bounded set of native CLI configuration options is accepted. Transport,
 /// persistence, cwd and lifecycle flags belong to Grove, never to user arguments.
 pub fn launch_options(args: &[String]) -> Result<(Vec<String>, Option<String>), String> {
@@ -934,6 +1093,7 @@ struct Actor {
     started: Instant,
     first_output: bool,
     mcp_polled_at: Option<Instant>,
+    context_query_started: Option<Instant>,
     mcp_status_supported: bool,
     reconfigure: bool,
     reset_configuration: bool,
@@ -1035,6 +1195,7 @@ impl Actor {
             started: Instant::now(),
             first_output: false,
             mcp_polled_at: None,
+            context_query_started: None,
             mcp_status_supported: true,
             reconfigure: false,
             reset_configuration: false,
@@ -1133,6 +1294,7 @@ impl Actor {
             // The UI consumes complete state, so intermediate protocol deltas
             // need not each clone the accumulated conversation. A bounded batch
             // also lets actions and publication run during continuous output.
+            self.poll_context_query();
             self.poll_mcp_status();
             if self.receive_batch() {
                 self.publish();
@@ -1242,6 +1404,21 @@ impl Actor {
             received = true;
         }
         received
+    }
+    fn poll_context_query(&mut self) {
+        if self.state.context_query_pending
+            && self
+                .context_query_started
+                .is_some_and(|started| started.elapsed() >= Duration::from_secs(15))
+        {
+            self.pending
+                .retain(|_, kind| !kind.starts_with("get_context_usage:"));
+            self.state.context_query_pending = false;
+            self.context_query_started = None;
+            self.state.context_query_error =
+                Some("Context measurement timed out. Try again.".into());
+            self.publish();
+        }
     }
     fn poll_mcp_status(&mut self) {
         if self.side_chat
@@ -1362,6 +1539,28 @@ impl Actor {
         process.capture.record(true, &value);
         Ok(())
     }
+    fn refresh_context(&mut self) {
+        if self.state.context_query_pending {
+            return;
+        }
+        self.state.context_query_error = None;
+        if self.process.is_none() || !self.initialized {
+            self.state.context_query_error = Some("Reconnect to measure context.".into());
+            return;
+        }
+        if self.state.status.busy() || self.state.compacting {
+            self.state.context_query_error =
+                Some("Wait for the current turn to finish before measuring context.".into());
+            return;
+        }
+        if let Err(error) = self.control(json!({"subtype":"get_context_usage"})) {
+            self.state.context_query_pending = false;
+            self.state.context_query_error = Some(error);
+            self.pending
+                .retain(|_, kind| !kind.starts_with("get_context_usage:"));
+            self.context_query_started = None;
+        }
+    }
     fn control(&mut self, request: Value) -> Result<(), String> {
         self.control_id += 1;
         let id = format!("grove-{}", self.control_id);
@@ -1371,13 +1570,22 @@ impl Actor {
                     .insert(id.clone(), (mode.into(), self.permission_mode_revision));
             }
         }
-        self.pending.insert(
-            id.clone(),
-            request["subtype"].as_str().unwrap_or_default().into(),
-        );
+        let subtype = if request["subtype"] == "get_context_usage" {
+            self.state.context_query_pending = true;
+            self.context_query_started = Some(Instant::now());
+            format!(
+                "get_context_usage:{}:{}",
+                self.state.context_revision,
+                self.state.resolved_model.as_deref().unwrap_or_default()
+            )
+        } else {
+            request["subtype"].as_str().unwrap_or_default().into()
+        };
+        self.pending.insert(id.clone(), subtype);
         self.write(json!({"type":"control_request","request_id":id,"request":request}))
     }
     fn start(&mut self) -> Result<(), String> {
+        self.state.context_measurement_live = false;
         // Every startup attempt retires steering state, including an early stop.
         self.redirect_pending = false;
         if self.stopping.load(Ordering::SeqCst) {
@@ -1465,6 +1673,8 @@ impl Actor {
         self.tracks_session_state = false;
         self.pending_completion = None;
         self.pending.clear();
+        self.state.context_query_pending = false;
+        self.state.context_revision = self.state.context_revision.wrapping_add(1);
         self.permission_changes.clear();
         self.permission_error = None;
         self.blocks.clear();
@@ -1611,7 +1821,10 @@ impl Actor {
             }
         }
         if self.process.is_none()
-            || self.pending.values().any(|kind| kind != "mcp_status")
+            || self
+                .pending
+                .values()
+                .any(|kind| kind != "mcp_status" && !kind.starts_with("get_context_usage:"))
             || self.in_flight.is_some()
             || !self.initialized
             || (self.tracks_session_state && !self.session_idle)
@@ -1694,6 +1907,8 @@ impl Actor {
         self.pid.store(process.child.id(), Ordering::SeqCst);
         self.process = Some(process);
         self.pending.clear();
+        self.state.context_query_pending = false;
+        self.state.context_revision = self.state.context_revision.wrapping_add(1);
         self.permission_changes.clear();
         self.blocks.clear();
         self.message_id.clear();
@@ -1789,6 +2004,7 @@ impl Actor {
         }
         saved.pending_edit = None;
         saved.context = None;
+        saved.context_details = None;
         if let Err(error) = provider::persist(&saved) {
             self.state.status = Status::Disconnected;
             return Err(format!(
@@ -1824,6 +2040,7 @@ impl Actor {
         result
     }
     fn submit_inner(&mut self, id: u64, text: String, images: Vec<String>) -> Result<(), String> {
+        self.state.context_revision = self.state.context_revision.wrapping_add(1);
         provider::validate_prompt(&text, &images)?;
         if !self.initialized || self.state.status.busy() || self.deferred.is_some() {
             return Err(
@@ -1966,6 +2183,8 @@ impl Actor {
         self.initial = None;
         self.args = args;
         self.pending.clear();
+        self.state.context_query_pending = false;
+        self.state.context_revision = self.state.context_revision.wrapping_add(1);
         self.permission_changes.clear();
         self.blocks.clear();
         self.message_id.clear();
@@ -2176,6 +2395,7 @@ impl Actor {
                 }
             }
             Action::Prompt(text) => self.submit(0, text, Vec::new())?,
+            Action::RefreshContext => self.refresh_context(),
             Action::Compact => {
                 if self.process.is_none() {
                     return Err(provider::COMPACT_DISCONNECTED.into());
@@ -2410,6 +2630,7 @@ impl Actor {
                 }
                 if let Some(model) = model {
                     if self.state.model.as_deref() != Some(model.as_str()) {
+                        self.state.context_revision = self.state.context_revision.wrapping_add(1);
                         self.state.effort = None;
                         self.state.saved.composer.effort = None;
                     }
@@ -3109,13 +3330,41 @@ impl Actor {
                     }
                     return Ok(());
                 }
-                if pending.as_deref() == Some("get_context_usage") {
-                    // Optional measurement: an error never fails the session.
+                if let Some(revision) = pending
+                    .as_deref()
+                    .and_then(|value| value.strip_prefix("get_context_usage:"))
+                {
+                    self.state.context_query_pending = self
+                        .pending
+                        .values()
+                        .any(|kind| kind.starts_with("get_context_usage:"));
+                    let current = format!(
+                        "{}:{}",
+                        self.state.context_revision,
+                        self.state.resolved_model.as_deref().unwrap_or_default()
+                    );
+                    if revision != current {
+                        return Ok(());
+                    }
                     if response["subtype"] == "success" {
                         let data = &response["response"];
-                        self.state.record_context(
-                            data["totalTokens"].as_u64(),
-                            data["maxTokens"].as_u64(),
+                        if let Some((usage, details)) = context_measurement(data) {
+                            self.state
+                                .record_context(Some(usage.used), Some(usage.window));
+                            self.state.saved.context_details = Some(details);
+                            self.state.context_query_error = None;
+                        } else {
+                            self.state.context_query_error =
+                                Some("Claude did not return a usable context measurement.".into());
+                        }
+                    } else {
+                        self.state.context_query_error = Some(
+                            response["error"]
+                                .as_str()
+                                .unwrap_or(
+                                    "Context details are unavailable with this Claude version.",
+                                )
+                                .into(),
                         );
                     }
                 } else if response["subtype"] == "error"
@@ -3165,7 +3414,12 @@ impl Actor {
                         }
                     }
                 }
-                if self.configuring && !self.pending.values().any(|kind| kind != "mcp_status") {
+                if self.configuring
+                    && !self
+                        .pending
+                        .values()
+                        .any(|kind| kind != "mcp_status" && !kind.starts_with("get_context_usage:"))
+                {
                     self.configuring = false;
                     self.state.status = Status::Idle;
                     if self.state.model.is_some() {
@@ -3260,6 +3514,11 @@ impl Actor {
             }
             "system" if value["subtype"] == "status" => {
                 self.state.compacting = value["status"] == "compacting";
+                if self.state.compacting {
+                    self.state.context_measurement_live = false;
+                    self.state.saved.context_details = None;
+                    self.state.context_revision = self.state.context_revision.wrapping_add(1);
+                }
                 if let Some(mode) = value["permissionMode"].as_str() {
                     // A later provider status supersedes even an in-flight ACK.
                     self.effective_permission_mode(mode);
@@ -3298,7 +3557,13 @@ impl Actor {
             }
             "system" if value["subtype"] == "init" => {
                 self.observe_mcp_servers(&value["mcp_servers"]);
-                self.state.resolved_model = value["model"].as_str().map(str::to_owned);
+                let model = value["model"].as_str().map(str::to_owned);
+                if self.state.resolved_model != model {
+                    self.state.context_measurement_live = false;
+                    self.state.context_revision = self.state.context_revision.wrapping_add(1);
+                    self.state.saved.context_details = None;
+                }
+                self.state.resolved_model = model;
                 if let Some(mode) = value["permissionMode"].as_str() {
                     self.effective_permission_mode(mode);
                 }
@@ -3544,7 +3809,15 @@ impl Actor {
                 let model = message["model"].as_str().unwrap_or_default();
                 if used > 0 && model != "<synthetic>" {
                     if !model.is_empty() {
+                        if self
+                            .context_model
+                            .as_deref()
+                            .is_some_and(|current| current != model)
+                        {
+                            self.state.saved.context = None;
+                        }
                         self.context_model = Some(model.to_owned());
+                        self.state.resolved_model = Some(model.to_owned());
                     }
                     self.state.record_context(Some(used), None);
                 }
@@ -3581,12 +3854,28 @@ impl Actor {
                         .and_then(|model| models.get(model))
                         .and_then(|entry| entry["contextWindow"].as_u64())
                         .or_else(|| {
-                            models
-                                .values()
-                                .filter_map(|entry| entry["contextWindow"].as_u64())
-                                .max()
+                            // Multiple entries can include subagents; never borrow a
+                            // larger child's capacity for the main conversation.
+                            if models.len() == 1 {
+                                models
+                                    .values()
+                                    .next()
+                                    .and_then(|entry| entry["contextWindow"].as_u64())
+                            } else {
+                                None
+                            }
                         });
-                    self.state.record_context(None, window);
+                    // A full query can report a lower effective compaction window.
+                    // A result's model capacity must not replace that denominator.
+                    if !self
+                        .state
+                        .saved
+                        .context_details
+                        .as_ref()
+                        .is_some_and(|details| details.source == provider::ContextMeasurement::Full)
+                    {
+                        self.state.record_context(None, window);
+                    }
                 }
                 let aborted = value["terminal_reason"]
                     .as_str()
@@ -7215,6 +7504,227 @@ mod tests {
             .unwrap()
             .contains("trusted-server"));
     }
+    fn rich_context_fixture() -> Value {
+        json!({"totalTokens":128000,"maxTokens":200000,"model":"claude-test", "isAutoCompactEnabled":true,
+            "categories":[
+                {"id":"messages","name":"Messages","tokens":94000,"kind":"used"},
+                {"id":"memory_files","name":"Memory files","tokens":6000,"kind":"used"},
+                {"id":"mcp_tools","name":"MCP tools","tokens":14000,"kind":"used"},
+                {"id":"skills","name":"Skills","tokens":2000,"kind":"used"},
+                {"id":"custom_agents","name":"Agents","tokens":12000,"kind":"used"},
+                {"id":"free_space","name":"Free space","tokens":62000,"kind":"free"},
+                {"id":"autocompact_buffer","name":"Auto-compaction buffer","tokens":10000,"kind":"buffer"},
+                {"id":"future_tools","name":"Future tools","tokens":5000,"kind":"deferred"}],
+            "memoryFiles":[{"path":"CLAUDE.md","tokens":6000}],
+            "mcpTools":[{"name":"search","serverName":"github","tokens":14000}],
+            "skills":{"skillFrontmatter":[{"name":"grove-ui","tokens":2000}]},
+            "agents":[{"agentType":"reviewer","tokens":12000}],
+            "messageBreakdown":{"toolResultTokens":68000,"assistantMessageTokens":20000,"userMessageTokens":6000,
+                "toolCallsByType":[{"name":"Read","callTokens":1000,"resultTokens":67000}],
+                "attachmentsByType":[{"name":"image","tokens":20}]}})
+    }
+    #[test]
+    fn rich_context_preserves_provider_attribution_and_recovers_old_sessions() {
+        let (usage, details) = context_measurement(&rich_context_fixture()).unwrap();
+        assert_eq!(usage.used, 128000);
+        assert_eq!(usage.window, 200000);
+        assert_eq!(details.source, provider::ContextMeasurement::Full);
+        assert_eq!(details.categories.len(), 8);
+        assert_eq!(details.categories[0].entries[0].label, "Tool results");
+        assert!(details.categories[0]
+            .entries
+            .iter()
+            .any(|entry| entry.label == "By tool / Read / results" && entry.tokens == 67000));
+        assert!(details.categories[0]
+            .entries
+            .iter()
+            .any(|entry| entry.label == "By attachment / image" && entry.tokens == 20));
+        assert_eq!(details.categories[1].entries[0].label, "CLAUDE.md");
+        assert_eq!(details.categories[2].entries[0].label, "github / search");
+        assert_eq!(details.categories[3].entries[0].label, "grove-ui");
+        assert_eq!(details.categories[4].entries[0].label, "reviewer");
+        assert_eq!(
+            details.categories[5].kind,
+            provider::ContextCategoryKind::Free
+        );
+        assert_eq!(
+            details.categories[6].kind,
+            provider::ContextCategoryKind::Buffer
+        );
+        assert_eq!(
+            details.categories[7].kind,
+            provider::ContextCategoryKind::Deferred
+        );
+        let mut saved = actor().state.saved;
+        saved.context = Some(usage);
+        saved.context_details = Some(details);
+        let encoded = serde_json::to_value(&saved).unwrap();
+        let recovered: SavedSession = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(recovered.context_details, saved.context_details);
+        let mut state = Snapshot::new(recovered);
+        assert!(!state.context_measurement_live);
+        state.record_context(Some(100), Some(200000));
+        assert!(state.context_measurement_live);
+        state.fail("disconnected".into());
+        assert!(!state.context_measurement_live);
+        let mut legacy = encoded;
+        legacy.as_object_mut().unwrap().remove("context_details");
+        let recovered: SavedSession = serde_json::from_value(legacy).unwrap();
+        assert!(recovered.context_details.is_none());
+    }
+    #[test]
+    fn rich_context_missing_optional_fields_and_invalid_measurements_are_distinct() {
+        let (usage, details) =
+            context_measurement(&json!({"totalTokens":0,"maxTokens":200000})).unwrap();
+        assert_eq!(usage.used, 0);
+        assert!(details.categories.is_empty());
+        assert_eq!(details.auto_compact_enabled, None);
+        for data in [
+            json!({"totalTokens":12}),
+            json!({"maxTokens":200000}),
+            json!({"totalTokens":12,"maxTokens":0}),
+        ] {
+            assert!(context_measurement(&data).is_none());
+        }
+        let (_, details) = context_measurement(&json!({"totalTokens":20,"maxTokens":100,
+            "categories":[{"name":"Future category","tokens":20}]}))
+        .unwrap();
+        assert_eq!(
+            details.categories[0].kind,
+            provider::ContextCategoryKind::Unknown
+        );
+    }
+    #[test]
+    fn rich_context_query_preserves_old_measurement_and_rejects_late_results() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Done;
+        actor.state.record_context(Some(100), Some(200000));
+        actor.action(Action::RefreshContext).unwrap();
+        assert!(actor.state.context_query_pending);
+        assert_eq!(actor.state.saved.context.unwrap().used, 100);
+        actor.action(Action::RefreshContext).unwrap(); // coalesced
+        let request = read(&mut reader);
+        actor
+            .message(
+                json!({"type":"control_response","response":{"subtype":"success",
+            "request_id":request["request_id"],"response":rich_context_fixture()}}),
+            )
+            .unwrap();
+        assert_eq!(
+            actor
+                .state
+                .saved
+                .context_details
+                .as_ref()
+                .unwrap()
+                .categories
+                .len(),
+            8
+        );
+        actor.action(Action::RefreshContext).unwrap();
+        let stale = read(&mut reader);
+        actor.state.record_context(Some(160000), Some(200000));
+        actor
+            .message(
+                json!({"type":"control_response","response":{"subtype":"success",
+            "request_id":stale["request_id"],"response":rich_context_fixture()}}),
+            )
+            .unwrap();
+        assert!(!actor.state.context_query_pending);
+        assert_eq!(actor.state.saved.context.unwrap().used, 160000);
+        assert!(actor
+            .state
+            .saved
+            .context_details
+            .as_ref()
+            .unwrap()
+            .categories
+            .is_empty());
+    }
+    #[test]
+    fn rich_context_legacy_categories_and_deferred_tools_keep_their_meaning() {
+        let (_, details) = context_measurement(&json!({"totalTokens":40,"maxTokens":100,
+            "categories":[{"name":"Skills","tokens":40},{"name":"Free space","tokens":50},
+                {"name":"Autocompact buffer","tokens":10},
+                {"id":"mcp_tools","name":"MCP tools","tokens":3,"kind":"used"},
+                {"id":"mcp_tools_deferred","name":"Deferred tools","tokens":7,"kind":"deferred"}],
+            "mcpTools":[{"name":"loaded","tokens":3,"isLoaded":true},
+                {"name":"deferred","tokens":7,"isLoaded":false}]}))
+        .unwrap();
+        assert_eq!(
+            details.categories[0].kind,
+            provider::ContextCategoryKind::Used
+        );
+        assert_eq!(
+            details.categories[1].kind,
+            provider::ContextCategoryKind::Free
+        );
+        assert_eq!(
+            details.categories[2].kind,
+            provider::ContextCategoryKind::Buffer
+        );
+        assert_eq!(details.categories[3].entries[0].label, "loaded");
+        assert_eq!(details.categories[4].entries[0].label, "deferred");
+    }
+    #[test]
+    fn rich_context_full_effective_window_survives_result_capacity_and_model_switches() {
+        let mut actor = actor();
+        let (usage, details) = context_measurement(&rich_context_fixture()).unwrap();
+        actor.state.saved.context = Some(usage);
+        actor.state.context_tokens = Some(usage.used);
+        actor.state.saved.context_details = Some(details);
+        actor.context_model = Some("claude-test".into());
+        actor.message(json!({"type":"result","is_error":false,"modelUsage":{"claude-test":{"contextWindow":1000000}}})).unwrap();
+        assert_eq!(actor.state.saved.context.unwrap().window, 200000);
+        actor.message(json!({"type":"assistant","message":{"id":"new","model":"new-model","content":[],"usage":{"input_tokens":3000}}})).unwrap();
+        assert!(actor.state.saved.context.is_none());
+        actor.message(json!({"type":"result","is_error":false,"modelUsage":{"child-a":{"contextWindow":1000000},"child-b":{"contextWindow":200000}}})).unwrap();
+        assert!(actor.state.saved.context.is_none());
+        assert!(actor
+            .state
+            .saved
+            .context_details
+            .as_ref()
+            .unwrap()
+            .categories
+            .is_empty());
+    }
+    #[test]
+    fn rich_context_query_errors_and_timeouts_never_fail_the_session() {
+        let mut actor = actor();
+        let mut reader = transport(&mut actor);
+        actor.initialized = true;
+        actor.state.status = Status::Done;
+        actor.action(Action::RefreshContext).unwrap();
+        let request = read(&mut reader);
+        actor
+            .message(
+                json!({"type":"control_response","response":{"subtype":"error",
+            "request_id":request["request_id"],"error":"not supported"}}),
+            )
+            .unwrap();
+        assert_eq!(
+            actor.state.context_query_error.as_deref(),
+            Some("not supported")
+        );
+        assert_eq!(actor.state.status, Status::Done);
+        assert!(actor.state.error.is_none());
+        actor.action(Action::RefreshContext).unwrap();
+        let _ = read(&mut reader);
+        actor.context_query_started = Some(Instant::now() - Duration::from_secs(16));
+        actor.poll_context_query();
+        assert!(!actor.state.context_query_pending);
+        assert!(actor
+            .state
+            .context_query_error
+            .as_deref()
+            .unwrap()
+            .contains("timed out"));
+        assert!(actor.state.error.is_none());
+    }
+
     #[test]
     fn assistant_usage_and_result_window_feed_the_context_meter() {
         let mut actor = actor();

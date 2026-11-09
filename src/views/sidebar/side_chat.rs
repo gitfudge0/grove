@@ -119,6 +119,7 @@ mod tests {
                 provider: grove_core::codex::Provider::Codex,
                 composer: Default::default(),
                 context: None,
+            context_details: None,
                 key: "side-chat-layout".into(),
                 project: "Side chat".into(),
                 cwd: path.clone(),

@@ -9,6 +9,7 @@ mod change_review;
 mod change_tools;
 mod checkout_panel;
 mod content;
+mod context_panel;
 mod contributions;
 mod files;
 mod global_navigation;
@@ -390,6 +391,7 @@ pub struct Sidebar {
     worktree_source: String,
     checkout_panel: checkout_panel::CheckoutPanel,
     contributions: contributions::Contributions,
+    context_panel: context_panel::ContextPanel,
     descriptions: change_description::Descriptions,
     reviews: change_review::Reviews,
     files_active: bool,
@@ -652,6 +654,7 @@ impl Sidebar {
             worktree_source: String::new(),
             checkout_panel: checkout_panel::CheckoutPanel::default(),
             contributions: contributions::Contributions::default(),
+            context_panel: context_panel::ContextPanel::default(),
             descriptions: change_description::Descriptions::default(),
             reviews: change_review::Reviews::default(),
             files_active: false,
@@ -8947,6 +8950,7 @@ for line in sys.stdin:
                     provider,
                     composer: grove_core::codex::ComposerSettings::default(),
                     context: None,
+                    context_details: None,
                     key: format!("settings-navigation-{}", id.raw()),
                     project: "demo".into(),
                     cwd: path.into(),
@@ -9132,6 +9136,7 @@ for line in sys.stdin:
                 provider: grove_core::codex::Provider::Codex,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
+            context_details: None,
                 key: "sidebar-progress-fixture".into(),
                 project: "demo".into(),
                 cwd: "/grove-spacing-main".into(),
@@ -10040,6 +10045,7 @@ for line in sys.stdin:
             provider,
             composer: grove_core::codex::ComposerSettings::default(),
             context: None,
+            context_details: None,
             key: "layout-fixture".into(),
             project: "Layout fixture".into(),
             cwd: path.into(),

@@ -935,6 +935,7 @@ impl Actor {
             saved.draft_images = images;
         }
         saved.context = None;
+        saved.context_details = None;
         if let Err(error) = persist(&saved) {
             self.state.status = Status::Disconnected;
             self.state.reconnecting = false;
@@ -1444,6 +1445,9 @@ impl Actor {
                 self.state.saved.composer.speed = Some(speed);
             }
             Action::ResetModelEffort => {
+                if let Some(details) = self.state.saved.context_details.as_mut() {
+                    details.accounting = None;
+                }
                 self.state.model = None;
                 self.state.effort = None;
                 self.state.saved.composer = ComposerSettings {
@@ -1460,6 +1464,9 @@ impl Actor {
                 self.reset_configuration = true;
             }
             Action::ResetConfiguration => {
+                if let Some(details) = self.state.saved.context_details.as_mut() {
+                    details.accounting = None;
+                }
                 self.state.model = None;
                 self.state.effort = None;
                 self.state.access = None;
@@ -1502,6 +1509,18 @@ impl Actor {
                     }
                 }
                 if let Some(model) = model {
+                    if self
+                        .state
+                        .saved
+                        .context_details
+                        .as_ref()
+                        .and_then(|details| details.model.as_deref())
+                        != Some(model.as_str())
+                    {
+                        if let Some(details) = self.state.saved.context_details.as_mut() {
+                            details.accounting = None;
+                        }
+                    }
                     // App-server effort overrides survive subsequent turns. Send the new
                     // model's default explicitly so a previous model's effort cannot leak.
                     self.state.effort = self
@@ -1684,6 +1703,7 @@ impl Actor {
                 return Ok(false);
             }
             Action::Reconnect => {
+                self.state.context_measurement_live = false;
                 if self.state.status.busy() {
                     return Err("Interrupt the current turn before reconnecting".into());
                 }
@@ -1698,6 +1718,10 @@ impl Actor {
             }
             Action::Prompt(text) => self.prompt(text)?,
             Action::Compact => self.compact()?,
+            Action::RefreshContext => {
+                self.state.context_query_error =
+                    Some("Codex does not report a content breakdown.".into());
+            }
             Action::PromptWithImages { text, images } => {
                 self.prompt_with_images(text, images, None)?;
             }
@@ -3635,6 +3659,7 @@ mod tests {
             activity_reporting: false,
             composer: ComposerSettings::default(),
             context: None,
+            context_details: None,
         }
     }
     #[test]
@@ -7910,6 +7935,131 @@ mod tests {
         fresh.apply(&usage("turn-1", 10_000, None));
         assert!(fresh.saved.context.is_none());
         assert_eq!(fresh.context_tokens, Some(10_000));
+    }
+    #[test]
+    fn context_token_accounting_preserves_subcounts_and_unknown_fields() {
+        let mut state = state();
+        let mut event = usage("turn-1", 21_684, Some(475_000));
+        event["params"]["tokenUsage"]["last"]["cachedInputTokens"] = json!(7168);
+        event["params"]["tokenUsage"]["last"]["cacheWriteInputTokens"] = json!(0);
+        assert!(state.apply(&event));
+        let accounting = state
+            .saved
+            .context_details
+            .as_ref()
+            .unwrap()
+            .accounting
+            .as_ref()
+            .unwrap();
+        let last = accounting.last.unwrap();
+        assert_eq!(last.input_tokens, Some(21_679));
+        assert_eq!(last.cached_input_tokens, Some(7168));
+        assert_eq!(last.cache_write_input_tokens, Some(0));
+        assert_eq!(last.output_tokens, Some(5));
+        assert_eq!(last.reasoning_output_tokens, Some(0));
+        assert_eq!(last.total_tokens, Some(21_684));
+        assert_eq!(
+            state.saved.context.unwrap().used,
+            21_684,
+            "subcounts must not be added again"
+        );
+        assert_eq!(accounting.total.as_ref().unwrap().cached_input_tokens, None);
+
+        let recovered: SavedSession =
+            serde_json::from_value(serde_json::to_value(&state.saved).unwrap()).unwrap();
+        assert_eq!(recovered.context_details, state.saved.context_details);
+        let mut old = serde_json::to_value(&state.saved).unwrap();
+        old["context_details"]
+            .as_object_mut()
+            .unwrap()
+            .remove("accounting");
+        let old: SavedSession = serde_json::from_value(old).unwrap();
+        assert!(old.context_details.unwrap().accounting.is_none());
+
+        let newer = json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1",
+            "tokenUsage":{"last":{"totalTokens":0,"inputTokens":0},"modelContextWindow":475000}}});
+        assert!(state.apply(&newer));
+        let accounting = state
+            .saved
+            .context_details
+            .as_ref()
+            .unwrap()
+            .accounting
+            .as_ref()
+            .unwrap();
+        assert_eq!(accounting.last.unwrap().input_tokens, Some(0));
+        assert_eq!(accounting.last.unwrap().cached_input_tokens, None);
+        assert!(
+            accounting.total.is_none(),
+            "a missing accumulated report must not reuse older totals"
+        );
+        assert_eq!(state.saved.context.unwrap().used, 0);
+    }
+
+    #[test]
+    fn context_token_accounting_is_retired_when_model_changes() {
+        let mut actor = actor();
+        actor.state.resolved_model = Some("old-model".into());
+        actor.message(usage("turn-1", 76000, Some(200000))).unwrap();
+        assert!(actor
+            .state
+            .saved
+            .context_details
+            .as_ref()
+            .unwrap()
+            .accounting
+            .is_some());
+        actor
+            .action(Action::Configure {
+                model: Some("new-model".into()),
+                effort: None,
+                access: None,
+            })
+            .unwrap();
+        assert!(actor
+            .state
+            .saved
+            .context_details
+            .as_ref()
+            .unwrap()
+            .accounting
+            .is_none());
+    }
+    #[test]
+    fn context_token_accounting_is_retired_during_compaction() {
+        let mut state = state();
+        assert!(state.apply(&usage("turn-1", 76000, Some(200000))));
+        assert!(state
+            .saved
+            .context_details
+            .as_ref()
+            .unwrap()
+            .accounting
+            .is_some());
+        assert!(state.apply(
+            &json!({"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1",
+            "item":{"id":"compact","type":COMPACTION_ITEM}}})
+        ));
+        assert!(state
+            .saved
+            .context_details
+            .as_ref()
+            .unwrap()
+            .accounting
+            .is_none());
+        assert!(state.apply(&usage("turn-1", 12000, Some(200000))));
+        assert_eq!(
+            state
+                .saved
+                .context_details
+                .unwrap()
+                .accounting
+                .unwrap()
+                .last
+                .unwrap()
+                .total_tokens,
+            Some(12000)
+        );
     }
     #[test]
     fn compact_tokens_and_labels_are_compact() {

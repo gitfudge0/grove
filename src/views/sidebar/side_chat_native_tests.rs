@@ -57,6 +57,7 @@ fn saved(path: &str, provider: grove_core::codex::Provider) -> grove_core::codex
         provider,
         composer: Default::default(),
         context: None,
+            context_details: None,
         key: "side-chat-native-capture".into(),
         project: "Side chat capture".into(),
         cwd: path.into(),

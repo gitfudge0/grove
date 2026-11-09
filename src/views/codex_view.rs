@@ -14890,6 +14890,7 @@ mod tests {
             provider: grove_core::codex::Provider::Codex,
             composer: grove_core::codex::ComposerSettings::default(),
             context: None,
+            context_details: None,
             work_periods: Vec::new(),
             key: "native-ui-test".into(),
             project: "Demo".into(),

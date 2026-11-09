@@ -3824,6 +3824,8 @@ impl Sidebar {
                         .mt(rpx(SPACE_2XL))
                         .child(self.render_contributions(window, cx)),
                 );
+            } else if let Some(context) = self.render_context_panel(window, cx) {
+                panel = panel.child(div().mt(rpx(SPACE_2XL)).child(context));
             }
         } else {
             self.branch_entry = None;
@@ -4653,6 +4655,7 @@ mod tests {
                 provider,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
+                context_details: None,
                 key: "conflict-fixture".into(),
                 project: "Fixture".into(),
                 cwd: "/fixture/checkout".into(),
@@ -4748,6 +4751,7 @@ mod tests {
                 provider,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
+                context_details: None,
                 key: "named-script-fixture".into(),
                 project: project.name.clone(),
                 cwd: path.clone(),
@@ -5641,6 +5645,7 @@ mod tests {
                 provider,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
+            context_details: None,
                 key: "agents-fixture".into(),
                 project: "Preview fixture".into(),
                 cwd: "/tmp/grove-agent-preview-fixture".into(),
@@ -5812,6 +5817,7 @@ mod tests {
                 provider,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
+                context_details: None,
                 key: "agents-fixture".into(),
                 project: "Unregistered fixture".into(),
                 cwd: "/tmp/grove-unregistered-agent-fixture".into(),
@@ -6135,6 +6141,7 @@ mod tests {
                 provider,
                 composer: grove_core::codex::ComposerSettings::default(),
                 context: None,
+                context_details: None,
                 key: "agents-fixture".into(),
                 project: "Checkout QA".into(),
                 cwd: fixture_path.clone(),

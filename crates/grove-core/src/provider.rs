@@ -375,6 +375,9 @@ pub struct SavedSession {
     /// Last known context-window occupancy, so a reopened session shows its meter.
     #[serde(default)]
     pub context: Option<ContextUsage>,
+    /// Optional attribution for the exact latest context measurement.
+    #[serde(default)]
+    pub context_details: Option<ContextDetails>,
 }
 /// A monotonic receipt protects newer results from stale review actions.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -519,6 +522,7 @@ impl SavedSession {
         fork.side_chats.clear();
         fork.rewind_drafts.clear();
         fork.context = None;
+        fork.context_details = None;
         fork.rich_plans.retain_messages(&fork.items);
         fork.edit_checkpoints.retain(|cp| cp.start_item < boundary);
         fork.work_periods
@@ -688,6 +692,7 @@ impl SavedSession {
             provider,
             composer: ComposerSettings::default(),
             context: None,
+            context_details: None,
             key,
             project,
             cwd,
@@ -743,6 +748,7 @@ impl SavedSession {
         saved.draft_images.clear();
         saved.draft_reference = None;
         saved.context = None;
+        saved.context_details = None;
         saved
     }
     /// Consume the accepted composer copy, preserving any newer text/attachment pair.
@@ -773,6 +779,84 @@ impl ContextUsage {
         }
         ((self.used as f64 / self.window as f64 * 100.0).round() as u32).min(100)
     }
+}
+/// Attribution is optional: a missing breakdown must never be reconstructed from spend.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextDetails {
+    /// Request accounting is not content attribution or context-window composition.
+    #[serde(default)]
+    pub accounting: Option<ContextTokenAccounting>,
+    pub model: Option<String>,
+    /// Local receipt time, in Unix seconds; persisted measurements are last-known data.
+    pub measured_at: u64,
+    pub source: ContextMeasurement,
+    pub categories: Vec<ContextCategory>,
+    pub auto_compact_enabled: Option<bool>,
+    /// Provider-reported threshold, in tokens; absent when not supplied.
+    pub auto_compact_threshold: Option<u64>,
+}
+/// Provider-reported accounting; cached/reasoning counts overlap input/output totals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextTokenAccounting {
+    pub last: Option<ContextTokenCounters>,
+    pub total: Option<ContextTokenCounters>,
+}
+/// Missing fields stay unknown, while an explicit zero remains a known count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextTokenCounters {
+    pub total_tokens: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_write_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_output_tokens: Option<u64>,
+}
+impl ContextTokenCounters {
+    fn from_provider_value(value: &Value) -> Option<Self> {
+        let counters = Self {
+            total_tokens: value["totalTokens"].as_u64(),
+            input_tokens: value["inputTokens"].as_u64(),
+            cached_input_tokens: value["cachedInputTokens"].as_u64(),
+            cache_write_input_tokens: value["cacheWriteInputTokens"].as_u64(),
+            output_tokens: value["outputTokens"].as_u64(),
+            reasoning_output_tokens: value["reasoningOutputTokens"].as_u64(),
+        };
+        (counters != Self::default()).then_some(counters)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextMeasurement {
+    ProviderUsage,
+    Full,
+    Estimate,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextCategory {
+    pub id: String,
+    pub label: String,
+    pub tokens: u64,
+    pub kind: ContextCategoryKind,
+    pub entries: Vec<ContextEntry>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCategoryKind {
+    Used,
+    Free,
+    Buffer,
+    Deferred,
+    Unknown,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextEntry {
+    pub label: String,
+    pub tokens: u64,
+}
+fn context_receipt_time() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 /// Inline error when clearing is requested while provider work is active.
 pub const CLEAR_BUSY: &str =
@@ -1197,6 +1281,12 @@ pub struct Snapshot {
     pub queue_uncertain: Vec<u64>,
     /// The provider is compacting the conversation context right now.
     pub compacting: bool,
+    pub context_query_pending: bool,
+    /// A context count was received on this connection, not only restored from disk.
+    pub context_measurement_live: bool,
+    pub context_query_error: Option<String>,
+    /// Reject context queries whose inputs changed while counting.
+    pub(crate) context_revision: u64,
     /// Grove asked for the next compaction, so it is labelled manual.
     pub(crate) compact_requested: bool,
     /// Latest context occupancy even when the window is still unknown.
@@ -1238,6 +1328,11 @@ pub(crate) fn next_interaction_epoch() -> u64 {
     EPOCH.fetch_add(1, Ordering::Relaxed)
 }
 impl Snapshot {
+    /// Revision of the inputs to a context measurement. UI consumers can coalesce
+    /// one optional query per observed revision instead of counting on redraw.
+    pub fn context_measurement_revision(&self) -> u64 {
+        self.context_revision
+    }
     /// Read capabilities from the same live state used by transport action gates.
     /// Keeping this derived avoids a second cache becoming stale on reconnect.
     pub fn capabilities(&self) -> ProviderCapabilities {
@@ -2039,6 +2134,10 @@ impl Snapshot {
             queue_steering: Vec::new(),
             queue_uncertain: Vec::new(),
             compacting: false,
+            context_query_pending: false,
+            context_measurement_live: false,
+            context_query_error: None,
+            context_revision: 0,
             compact_requested: false,
             context_tokens,
             settled_turns: Vec::new(),
@@ -2906,6 +3005,11 @@ impl Snapshot {
                 let running = message["method"] == "item/started";
                 let manual = running && std::mem::take(&mut self.compact_requested);
                 self.compacting = running;
+                if running {
+                    if let Some(details) = self.saved.context_details.as_mut() {
+                        details.accounting = None;
+                    }
+                }
                 self.upsert_compaction(
                     &p["item"]["id"],
                     running,
@@ -2922,6 +3026,12 @@ impl Snapshot {
                     return false;
                 }
                 self.record_context(used, p["tokenUsage"]["modelContextWindow"].as_u64());
+                if let Some(details) = self.saved.context_details.as_mut() {
+                    details.accounting = Some(ContextTokenAccounting {
+                        last: ContextTokenCounters::from_provider_value(last),
+                        total: ContextTokenCounters::from_provider_value(&p["tokenUsage"]["total"]),
+                    });
+                }
             }
             "item/started" | "item/completed" => {
                 if p["item"]["type"] == "agentMessage" {
@@ -3123,6 +3233,27 @@ impl Snapshot {
     /// Record the provider's latest context occupancy. A known `used` also completes the
     /// newest compaction divider that is still waiting for its post-compaction figure.
     pub(crate) fn record_context(&mut self, used: Option<u64>, window: Option<u64>) {
+        if used.is_some() {
+            self.context_measurement_live = true;
+        }
+        if used.is_some()
+            || window.is_some_and(|window| {
+                self.saved
+                    .context
+                    .is_some_and(|usage| usage.window != window)
+            })
+        {
+            self.context_revision = self.context_revision.wrapping_add(1);
+            self.saved.context_details = Some(ContextDetails {
+                accounting: None,
+                model: self.resolved_model.clone(),
+                measured_at: context_receipt_time(),
+                source: ContextMeasurement::ProviderUsage,
+                categories: Vec::new(),
+                auto_compact_enabled: None,
+                auto_compact_threshold: None,
+            });
+        }
         if let Some(used) = used {
             self.context_tokens = Some(used);
             if let Some(item) = self
@@ -3205,6 +3336,9 @@ impl Snapshot {
         self.turn_id = None;
         self.compacting = false;
         self.compact_requested = false;
+        self.context_query_pending = false;
+        self.context_measurement_live = false;
+        self.context_revision = self.context_revision.wrapping_add(1);
         self.approvals.clear();
         self.questions.clear();
         self.elicitations.clear();
@@ -3567,6 +3701,8 @@ pub enum Action {
     DraftReference(Option<ReferenceDraft>),
     /// Compact the conversation context (`/compact`); rejected while a turn is active.
     Compact,
+    /// Request supported provider context attribution without submitting a prompt.
+    RefreshContext,
     Interrupt,
     Approval(Value, bool),
     RespondApproval {

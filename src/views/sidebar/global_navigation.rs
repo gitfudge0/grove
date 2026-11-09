@@ -335,14 +335,6 @@ impl Sidebar {
                         .flex()
                         .items_center()
                         .gap(rpx(SPACE_SM))
-                        .when(grouping == SessionGrouping::Activity, |heading| {
-                            heading.child(status_icon_sized(
-                                format!("session-group-{label}").into(),
-                                &label,
-                                ICON_SM,
-                                cx,
-                            ))
-                        })
                         .when(grouping == SessionGrouping::Worktrees, |heading| {
                             heading.child(icon("git-branch", ICON_SM, c::FG_DIM()))
                         })
@@ -637,6 +629,7 @@ mod tests {
                         provider,
                         composer: Default::default(),
                         context: None,
+                        context_details: None,
                         key: key.into(),
                         project: "Example".into(),
                         cwd: "/grove-single-sidebar-example".into(),

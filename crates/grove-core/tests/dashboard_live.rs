@@ -39,6 +39,7 @@ fn draft(provider: Provider, cwd: &str) -> SavedSession {
         activity_reporting: false,
         composer: ComposerSettings::default(),
         context: None,
+        context_details: None,
     }
 }
 

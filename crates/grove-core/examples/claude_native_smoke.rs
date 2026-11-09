@@ -67,6 +67,7 @@ fn main() -> Result<(), String> {
         provider: grove_core::codex::Provider::Claude,
         composer: grove_core::codex::ComposerSettings::default(),
         context: None,
+        context_details: None,
         key: key.clone(),
         project: "Claude smoke".into(),
         cwd,

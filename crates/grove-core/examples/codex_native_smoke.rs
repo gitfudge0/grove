@@ -63,6 +63,7 @@ fn main() -> Result<(), String> {
         provider: grove_core::codex::Provider::Codex,
         composer: grove_core::codex::ComposerSettings::default(),
         context: None,
+        context_details: None,
         key: key.clone(),
         project: "Codex smoke".into(),
         cwd,
