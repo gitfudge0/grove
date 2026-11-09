@@ -82,6 +82,8 @@ Do not add tooltips by default. Add one explicitly when it supplies needed conte
 
 ## Alignment and responsive layout
 
+Window fitting is transient and rem-aware. Navigation automatically collapses when its preferred width would leave less than a readable transcript column. Checkout automatically closes when navigation, Checkout and that column cannot fit together; explicitly opened Side chat remains accessible in its existing narrow layout. Widening restores preferred visibility without changing saved sidebar width or collapse preferences. Existing panel controls allow reopening at the current width; the next resize reevaluates fitting. Resizing uses immediate layout feedback rather than decorative motion. Narrow transcript panes tighten transcript and composer insets together using allocated pane width, including split and grid views.
+
 Narrow Side chat, including checkout recovery, uses at most 40% of its containing pane height and retains scrolling access to its controls when short. Closing a narrow session panel starts from its actual allocated height. Attached status notices retain their intrinsic height so the composer stays within its pane.
 
 Markdown tables wrap cells in proportional columns. When column minimum widths exceed the available width, horizontal scrolling keeps every column reachable; minimum widths follow rem zoom.

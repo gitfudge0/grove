@@ -500,6 +500,7 @@ pub struct Sidebar {
     destination: global_navigation::Destination,
     history_canvas_destination: global_navigation::Destination,
     navigation_transition: Option<(Instant, f32, f32)>,
+    navigation_width_override: Option<f32>,
     navigation_focus: [FocusHandle; 4],
     session_history: Vec<grove_core::codex::SavedSession>,
     cli_session_history: Vec<grove_core::session_meta::ClosedCliSession>,
@@ -757,6 +758,7 @@ impl Sidebar {
             destination: global_navigation::Destination::Home,
             history_canvas_destination: global_navigation::Destination::Home,
             navigation_transition: None,
+            navigation_width_override: None,
             navigation_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             session_history: Vec::new(),
             cli_session_history: Vec::new(),
@@ -1608,8 +1610,15 @@ impl Sidebar {
     pub(crate) fn is_collapsed(&self, cx: &App) -> bool {
         cx.global::<SettingsState>().store.sidebar_collapsed
     }
+    pub(crate) fn navigation_collapsed(&self, window: &Window, cx: &App) -> bool {
+        let width = Self::logical_window_width(window);
+        self.is_collapsed(cx)
+            || (width < self.context_width(window, cx) + MODAL_W_LG
+                && self.navigation_width_override != Some(width))
+    }
+
     pub(crate) fn rail_width(&self, window: &Window, cx: &App) -> f32 {
-        if self.is_collapsed(cx) {
+        if self.navigation_collapsed(window, cx) {
             SIDEBAR_COLLAPSED_W
         } else {
             self.context_width(window, cx)
@@ -2965,7 +2974,9 @@ impl Sidebar {
             Action::ToggleGrid => self.toggle_grid(window, cx),
             Action::ToggleSidebar => {
                 let from = self.animated_sidebar_width(window, cx);
-                let collapsed = !self.is_collapsed(cx);
+                let collapsed = !self.navigation_collapsed(window, cx);
+                self.navigation_width_override =
+                    (!collapsed).then_some(Self::logical_window_width(window));
                 let to = if collapsed {
                     SIDEBAR_COLLAPSED_W
                 } else {

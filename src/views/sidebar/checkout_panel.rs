@@ -140,6 +140,7 @@ pub(super) struct CheckoutPanel {
     publish: Option<String>,
     pub(super) expanded: bool,
     pub(super) hidden: bool,
+    width_override: Option<f32>,
     pub(super) toggle_available: bool,
     pub(super) toggle_focus: Option<FocusHandle>,
     pub(super) side_chat_owner: Option<Selection>,
@@ -2527,7 +2528,11 @@ impl Sidebar {
     }
 
     pub(super) fn toggle_session_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let was_visible = !self.checkout_panel.hidden;
+        let width = Self::logical_window_width(window);
+        let auto_hidden = width - self.rail_width(window, cx) < CARD_WIDTH + MODAL_W_LG
+            && self.checkout_panel.width_override != Some(width);
+        let was_visible = !self.checkout_panel.hidden && !auto_hidden;
+        self.checkout_panel.width_override = Some(width);
         if self.files_active && self.files_owner == self.selection {
             self.files_active = false;
             self.checkout_panel.hidden = false;
@@ -2542,7 +2547,7 @@ impl Sidebar {
             cx.notify();
             return;
         }
-        self.checkout_panel.hidden = !self.checkout_panel.hidden;
+        self.checkout_panel.hidden = was_visible;
         if self.checkout_panel.hidden {
             self.dismiss_agent_peek(window, cx);
             self.dismiss_plan_peek(window, cx);
@@ -2769,6 +2774,9 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.checkout_panel.width_override != Some(Self::logical_window_width(window)) {
+            self.checkout_panel.width_override = None;
+        }
         self.checkout_panel.narrow_content = None;
         self.checkout_panel.agents_visible = false;
         self.checkout_panel.toggle_available = false;
@@ -2901,6 +2909,15 @@ impl Sidebar {
                 window.request_animation_frame();
                 return self.render_content_body(window, cx);
             }
+            self.checkout_panel.panel_motion = None;
+            return self.render_content_body(window, cx);
+        }
+        // Resize fitting is transient: preserve panel preferences and session state.
+        let available = Self::logical_window_width(window) - self.rail_width(window, cx);
+        if !self.is_zen()
+            && available < CARD_WIDTH + MODAL_W_LG
+            && self.checkout_panel.width_override != Some(Self::logical_window_width(window))
+        {
             self.checkout_panel.panel_motion = None;
             return self.render_content_body(window, cx);
         }
@@ -6769,6 +6786,16 @@ mod tests {
                 let _ = window.draw(cx);
             });
             let controls = cx.debug_bounds("side-container-controls").unwrap();
+            if width == 760. {
+                // Automatic fitting releases the transcript without persisting a close.
+                assert!(cx.debug_bounds("checkout-card").is_none());
+                assert!(!sidebar.read_with(cx, |sidebar, _| sidebar.checkout_panel.hidden));
+                let toggle = cx.debug_bounds("session-panel-toggle").unwrap();
+                cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+                cx.update(|window, cx| {
+                    let _ = window.draw(cx);
+                });
+            }
             assert!(cx.debug_bounds("checkout-summary").is_none());
             let panel = cx.debug_bounds("checkout-panel").unwrap();
             assert_eq!(panel.top(), gpui::px(0.));

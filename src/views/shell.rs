@@ -436,7 +436,7 @@ impl Shell {
     }
 
     fn header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let collapsed = self.sidebar.read(cx).is_collapsed(cx);
+        let collapsed = self.sidebar.read(cx).navigation_collapsed(window, cx);
         let fullscreen = window.is_fullscreen();
         let compact = f32::from(window.viewport_size().width)
             / (f32::from(window.rem_size()) / crate::zoom::REM_BASE)

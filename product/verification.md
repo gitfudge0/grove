@@ -1,5 +1,24 @@
 # Verification and known gaps
 
+## Responsive sidebar fitting and transcript insets
+
+Navigation and Checkout now yield space using rem-aware width budgets; explicit
+reopening remains available, and automatic fitting preserves saved preferences.
+Transcript/composer insets use the allocated transcript pane. This is an initial
+responsive pass, not verification of every transcript item at every width.
+
+The Linux compile check and local build/install passed. The initial GPUI test
+build exhausted disk space; clearing Grove build caches allowed the navigation
+fitting regression to pass. Final checks passed: navigation fitting/manual reopening,
+Checkout automatic fitting/manual controls, transcript/composer edge alignment
+for both Codex and Claude fixtures at 1200/600/400px and 16/20px rem, and all
+33 UI conformance tests. The installed Linux binary matched the local build
+by SHA-256. Native interactive inspection (hover/focus, repeated
+resize, themes and zoom) remains untested because native computer controls were
+unavailable in this session. Live Codex and Claude provider checks are untested;
+layout fixtures do not establish provider-boundary behavior. macOS and Windows
+remain untested.
+
 ## Session context panel
 
 The simplified variant-C card shows occupancy for Codex and up to five used

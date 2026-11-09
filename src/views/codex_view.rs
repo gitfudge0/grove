@@ -5638,6 +5638,14 @@ impl Render for CodexView {
             near_bottom,
             elapsed,
         });
+        // Use the allocated pane, rather than the entire app window (split/grid).
+        let pane_width = f32::from(self.transcript_bounds.get().size.width)
+            / (f32::from(window.rem_size()) / crate::zoom::REM_BASE);
+        let content_inset = if pane_width > 0. && pane_width < MODAL_W_LG {
+            SPACE_LG
+        } else {
+            SPACE_20
+        };
         let mut messages = div()
             .id("codex-messages")
             .debug_selector(|| "codex-messages".into())
@@ -5658,7 +5666,7 @@ impl Render for CodexView {
             .flex()
             .flex_col()
             .items_center()
-            .px(rpx(SPACE_20))
+            .px(rpx(content_inset))
             .py(rpx(SPACE_3XL))
             .gap(rpx(SPACE_20));
         if !self.transcript_only() && (history_start > 0 || self.turn_history.expanded) {
@@ -6873,11 +6881,11 @@ impl Render for CodexView {
                     .track_scroll(&self.composer_rail_scroll)
                     .w_full()
                     .when(focused_launch && self.dashboard_tray.is_none(), |rail| rail.my_auto().pt(rpx(SPACE_3XL)))
-                    .px(rpx(SPACE_20))
+                    .px(rpx(content_inset))
                     // Match the transcript's reserved navigation gutter so both
                     // centered columns retain the same edges at every pane width.
                     .when(!minimap_entries.is_empty(), |rail| {
-                        rail.pl(rpx(SPACE_20 + CHROME_CONTROL_H))
+                        rail.pl(rpx(content_inset + CHROME_CONTROL_H))
                     })
                     .pb(rpx(SPACE_3XL))
                     .flex()

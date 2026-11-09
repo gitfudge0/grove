@@ -137,6 +137,9 @@ impl Sidebar {
         self.rail_width(window, cx)
     }
     pub(super) fn global_rail(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.navigation_width_override != Some(Self::logical_window_width(window)) {
+            self.navigation_width_override = None;
+        }
         let width = self.animated_sidebar_width(window, cx);
         if self.navigation_transition.is_some_and(|(started, _, _)| {
             started.elapsed() < Duration::from_millis(MOTION_BASE_MS)
@@ -424,7 +427,7 @@ impl Sidebar {
                             .child(icon("cog", ICON_LG, c::FG_DIM())),
                     ),
             )
-            .when(!self.is_collapsed(cx), |rail| {
+            .when(!self.navigation_collapsed(window, cx), |rail| {
                 rail.child(
                     div()
                         .id("sidebar-divider")
@@ -736,6 +739,29 @@ mod tests {
         draw(cx);
         assert!(cx.debug_bounds("sidebar-scroll").is_some());
         assert!(cx.debug_bounds("history-list-scroll").is_none());
+    }
+
+    #[gpui::test]
+    fn automatic_navigation_fitting_preserves_preference_and_manual_access(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(init);
+        let (sidebar, cx) = cx.add_window_view(|window, cx| {
+            let runtime = cx.new(Runtime::new);
+            Sidebar::new(runtime, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(700.), gpui::px(800.)));
+        cx.update(|window, cx| {
+            cx.set_reduce_motion(true);
+            assert_eq!(sidebar.read(cx).rail_width(window, cx), 0.);
+            assert!(!cx.global::<SettingsState>().store.sidebar_collapsed);
+            sidebar.update(cx, |sidebar, cx| sidebar.toggle_sidebar(window, cx));
+            assert!(sidebar.read(cx).rail_width(window, cx) > 0.);
+        });
+        cx.simulate_resize(gpui::size(gpui::px(680.), gpui::px(800.)));
+        cx.update(|window, cx| assert_eq!(sidebar.read(cx).rail_width(window, cx), 0.));
+        cx.simulate_resize(gpui::size(gpui::px(1200.), gpui::px(800.)));
+        cx.update(|window, cx| assert!(sidebar.read(cx).rail_width(window, cx) > 0.));
     }
 
     #[gpui::test]
