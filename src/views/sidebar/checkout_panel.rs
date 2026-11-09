@@ -201,6 +201,7 @@ struct CheckoutOperation {
     network_action: Option<(&'static str, &'static str)>,
     network_target: Option<(String, u64)>,
     message: Option<String>,
+    failures: HashMap<&'static str, String>,
     commit_status: CommitUi,
     commit_job: u64,
     commit_job_path: Option<String>,
@@ -296,6 +297,7 @@ impl CheckoutPanel {
                         }
                         Err(error) => {
                             operation.commit_status = CommitUi::Failed;
+                            operation.failures.insert("commit", error.clone());
                             operation.message = Some(error);
                         }
                     }
@@ -657,6 +659,7 @@ impl Sidebar {
         let Some(Ok(expected)) = self.checkout_panel.state.clone() else {
             return;
         };
+        self.checkout_panel.operation.failures.remove("recovery");
         let feedback_token =
             self.begin_panel_feedback(&path, "recovery", "Preparing recovery…", cx);
         let generation = self.checkout_panel.generation;
@@ -694,6 +697,9 @@ impl Sidebar {
                 this.checkout_panel
                     .update_operation(&path, |panel, current| {
                         panel.operation.busy = false;
+                        if let Err(error) = &result {
+                            panel.operation.failures.insert("recovery", error.clone());
+                        }
                         if !current || panel.generation != generation {
                             return;
                         }
@@ -707,15 +713,18 @@ impl Sidebar {
                                             commit.subject.clone(),
                                         ));
                                     } else {
-                                        panel.operation.message = Some(
+                                        panel.operation.failures.insert(
+                                            "recovery",
                                             "No ordinary commit is available to revert".into(),
                                         );
                                         return;
                                     }
                                 } else {
                                     if files.is_empty() {
-                                        panel.operation.message =
-                                            Some("No tracked edits to discard".into());
+                                        panel.operation.failures.insert(
+                                            "recovery",
+                                            "No tracked edits to discard".into(),
+                                        );
                                         return;
                                     }
                                     panel.recovery = Some(CheckoutRecovery::Discard(snapshot));
@@ -760,6 +769,10 @@ impl Sidebar {
                 format!("Merged {}", main.branch),
             ),
         };
+        self.checkout_panel
+            .operation
+            .failures
+            .remove(feedback_action);
         let feedback_token = self.begin_panel_feedback(&path, feedback_action, &working, cx);
         let generation = self.checkout_panel.generation;
         self.checkout_panel.operation.revision =
@@ -797,6 +810,12 @@ impl Sidebar {
                     .update_operation(&path, |panel, current| {
                         panel.operation.busy = false;
                         panel.operation.message = result.as_ref().err().cloned();
+                        if let Err(error) = &result {
+                            panel
+                                .operation
+                                .failures
+                                .insert(feedback_action, error.clone());
+                        }
                         if current && panel.generation == generation {
                             panel.state = Some(state);
                             panel.checked_at = None;
@@ -1866,6 +1885,15 @@ impl Sidebar {
             GitAction::Publish { .. } => ("local", "Publishing…", "Branch published".to_owned()),
             _ => ("local", "Updating checkout…", "Checkout updated".to_owned()),
         };
+        let failure_action = match &action {
+            GitAction::Pull => "pull",
+            GitAction::Publish { .. } => "publish",
+            _ => "push",
+        };
+        self.checkout_panel
+            .operation
+            .failures
+            .remove(failure_action);
         let feedback_token = self.begin_panel_feedback(&path, feedback_action, working, cx);
         self.checkout_panel.operation.revision =
             self.checkout_panel.operation.revision.wrapping_add(1);
@@ -1910,6 +1938,12 @@ impl Sidebar {
                                 panel.main_checked_at = None;
                             }
                         }
+                        if let Err(error) = &result {
+                            panel
+                                .operation
+                                .failures
+                                .insert(failure_action, error.clone());
+                        }
                         panel.operation.message =
                             Some(result.map_or_else(|error| error, |()| String::new()));
                     });
@@ -1949,10 +1983,15 @@ impl Sidebar {
         if self.checkout_panel.operation.busy || self.checkout_panel.path.as_ref() != Some(&path) {
             return;
         }
+        self.checkout_panel.operation.failures.remove("commit");
         let provider = match self.checkout_commit_provider(cx) {
             Ok(provider) => provider,
             Err(error) => {
                 self.checkout_panel.operation.commit_status = CommitUi::Failed;
+                self.checkout_panel
+                    .operation
+                    .failures
+                    .insert("commit", error.clone());
                 self.checkout_panel.operation.message = Some(error);
                 cx.notify();
                 return;
@@ -2027,6 +2066,7 @@ impl Sidebar {
                                         panel.operation.commit_control = None;
                                         panel.operation.commit_job_path = None;
                                         panel.operation.commit_status = CommitUi::Failed;
+                                        panel.operation.failures.insert("commit", "Commit generation ended unexpectedly. Retry the commit.".into());
                                         panel.operation.message = Some("Commit generation ended unexpectedly. Retry the commit.".into());
                                     }
                                 });
@@ -2130,6 +2170,50 @@ impl Sidebar {
             .as_ref()
             .and_then(|state| state.as_ref().ok())
             .and_then(Clone::clone)
+    }
+
+    /// A failure belongs to its checkout operation, never to the current generic message.
+    /// Static replacement is intentional: error/working feedback follows the operation immediately.
+    fn checkout_failure(&self, action: &'static str, cx: &App) -> AnyElement {
+        if self.checkout_confirmation_open() {
+            return div().into_any_element();
+        }
+        self.checkout_failure_content(action, cx)
+    }
+
+    fn checkout_failure_content(&self, action: &'static str, cx: &App) -> AnyElement {
+        let Some(message) = self.checkout_panel.operation.failures.get(action) else {
+            return div().into_any_element();
+        };
+        let (summary, guidance) = checkout_failure_copy(action, message);
+        let id = format!("checkout-{action}-failure");
+        let selector = id.clone();
+        div()
+            .id(id.clone())
+            .debug_selector(move || selector.clone().into())
+            .role(gpui::Role::Status)
+            .pl(rpx(SPACE_2XL))
+            .pr(rpx(SPACE_2XL))
+            .py(rpx(SPACE_SM))
+            .min_w_0()
+            .text_size(rpx(TEXT_SMALL))
+            .whitespace_normal()
+            .child(crate::views::status::label(
+                id,
+                crate::views::status::StatusKind::Failed,
+                summary,
+                ICON_LG,
+                cx,
+            ))
+            .when_some(guidance, |el, guidance| {
+                el.child(
+                    div()
+                        .pl(rpx(ICON_LG + SPACE_SM))
+                        .text_color(c::FG_DIM())
+                        .child(guidance),
+                )
+            })
+            .into_any_element()
     }
 
     pub(super) fn render_checkout_confirmation(
@@ -2337,14 +2421,20 @@ impl Sidebar {
                 break;
             }
         }
-        if let Some(message) = &self.checkout_panel.operation.message {
-            form = form.child(
-                div()
-                    .id("checkout-operation-message")
-                    .role(gpui::Role::Status)
-                    .text_color(c::FG_DIM())
-                    .child(message.clone()),
-            );
+        let failure_action = if self.checkout_panel.publish.is_some() {
+            "publish"
+        } else if matches!(
+            self.checkout_panel.recovery,
+            Some(CheckoutRecovery::Main(..))
+        ) {
+            "main"
+        } else {
+            "recovery"
+        };
+        // PR merge owns pr_message; an older branch-recovery failure must not
+        // appear inside this unrelated confirmation.
+        if self.checkout_panel.pr_merge.is_none() {
+            form = form.child(self.checkout_failure_content(failure_action, cx));
         }
         form = form.child(actions);
 
@@ -2690,10 +2780,10 @@ impl Sidebar {
         self.checkout_panel.pr_error = None;
         let mut git = frozen_git.clone();
         git.branch = Some("feature/payment-retries-with-a-long-name".into());
-        git.dirty = state != "clean";
+        git.dirty = !matches!(state, "clean" | "pull-error" | "pull-error-narrow");
         git.upstream = Some("origin/feature/payment-retries".into());
         git.ahead = Some(0);
-        git.behind = Some(2);
+        git.behind = Some(if state == "pull-error-narrow" { 0 } else { 2 });
         self.checkout_panel.pr_identity = Some(git.target_identity());
         self.checkout_panel.state = Some(Ok(git));
         self.checkout_panel.summary = (state != "clean").then(|| summary.clone());
@@ -2709,6 +2799,17 @@ impl Sidebar {
             CommitUi::Idle
         };
         self.checkout_panel.operation.commit_job_path = Some(path.to_owned());
+        self.checkout_panel.operation.failures.clear();
+        self.checkout_panel.operation.message = None;
+        if matches!(state, "pull-error" | "pull-error-narrow") {
+            self.checkout_panel.operation.message = Some(
+                "Branches have diverged. Resolve the branch divergence before pulling again".into(),
+            );
+            self.checkout_panel.operation.failures.insert(
+                "pull",
+                "Branches have diverged. Resolve the branch divergence before pulling again".into(),
+            );
+        }
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -3031,6 +3132,7 @@ impl Sidebar {
                     .state
                     .as_ref()
                     .is_some_and(Result::is_ok)
+                    || !self.checkout_panel.operation.failures.is_empty()
                 {
                     has_git = true;
                     git_section = git_section.child(checkout_git_heading());
@@ -3121,6 +3223,7 @@ impl Sidebar {
                                 )),
                             ),
                     );
+                    git_section = git_section.child(self.checkout_failure("recovery", cx));
                     if let Some(state) = state.as_ref() {
                         let identity = state.target_identity();
                         if self.checkout_panel.pr_identity.as_ref() != Some(&identity) {
@@ -3206,23 +3309,95 @@ impl Sidebar {
                             self.checkout_panel.operation.commit_status,
                             CommitUi::Generating
                         );
-                    git_section = git_section.child(checkout_cycle_row("checkout-commit-publish", label, glyph, loading, self.checkout_panel.feedback.get(&path, "local"), window, cx)
-                .disabled(!enabled || self.checkout_panel.state_error.is_some() || self.checkout_panel.feedback.get(&path, "local").is_some_and(|f| f.completed.is_some()))
-                .with_focus_handle(self.checkout_panel.trigger_focus["commit"].clone())
-                .relative()
-                .child({ let bounds = self.checkout_panel.source_bounds["publish"].clone();
-                    gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {}).absolute().inset_0() })
-                .tooltip(self.checkout_panel.operation.message.clone().unwrap_or_else(|| {
-                    self.checkout_panel.state.as_ref().and_then(|state| state.as_ref().err()).cloned().unwrap_or_else(||
-                        "Generate a commit message and commit staged changes, or all nonignored changes when nothing is staged.".into())
-                }))
-                .on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                    if this.checkout_panel.state_error.is_some() { return; }
-                    if cancel { this.checkout_cancel_commit(cx); }
-                    else if dirty || retry { this.checkout_begin_commit(target.clone(), cx); }
-                    else if publish { this.checkout_menu(true, idx, target.clone(), event.position(), window, cx); }
-                    else { this.checkout_run(target.clone(), GitAction::Push, cx); }
-                })));
+                    git_section = git_section.child(
+                        checkout_cycle_row(
+                            "checkout-commit-publish",
+                            label,
+                            glyph,
+                            loading,
+                            self.checkout_panel.feedback.get(&path, "local"),
+                            window,
+                            cx,
+                        )
+                        .disabled(
+                            !enabled
+                                || self.checkout_panel.state_error.is_some()
+                                || self
+                                    .checkout_panel
+                                    .feedback
+                                    .get(&path, "local")
+                                    .is_some_and(|f| f.completed.is_some()),
+                        )
+                        .with_focus_handle(self.checkout_panel.trigger_focus["commit"].clone())
+                        .relative()
+                        .child({
+                            let bounds = self.checkout_panel.source_bounds["publish"].clone();
+                            gpui::canvas(move |rect, _, _| bounds.set(rect), |_, (), _, _| {})
+                                .absolute()
+                                .inset_0()
+                        })
+                        .on_click(cx.listener(
+                            move |this, event: &gpui::ClickEvent, window, cx| {
+                                if this.checkout_panel.state_error.is_some() {
+                                    return;
+                                }
+                                if cancel {
+                                    this.checkout_cancel_commit(cx);
+                                } else if dirty || retry {
+                                    this.checkout_begin_commit(target.clone(), cx);
+                                } else if publish {
+                                    this.checkout_menu(
+                                        true,
+                                        idx,
+                                        target.clone(),
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    );
+                                } else {
+                                    this.checkout_run(target.clone(), GitAction::Push, cx);
+                                }
+                            },
+                        )),
+                    );
+                    let current_action = if dirty || retry {
+                        "commit"
+                    } else if publish {
+                        "publish"
+                    } else if base_label == "Push commits" {
+                        "push"
+                    } else {
+                        ""
+                    };
+                    git_section = git_section.child(self.checkout_failure(current_action, cx));
+                    for (action, label, glyph) in [
+                        ("commit", "Commit changes", "git"),
+                        ("push", "Push commits", "git-push"),
+                        ("publish", "Publish branch", "git-publish"),
+                    ] {
+                        if action != current_action
+                            && self.checkout_panel.operation.failures.contains_key(action)
+                        {
+                            // Preserve the failed operation's context when current data
+                            // offers a different action. Recovery still uses current guards.
+                            git_section = git_section
+                                .child(
+                                    checkout_row(
+                                        match action {
+                                            "commit" => "checkout-commit-failed-context",
+                                            "push" => "checkout-push-failed-context",
+                                            _ => "checkout-publish-failed-context",
+                                        },
+                                        label,
+                                        glyph,
+                                        window,
+                                        cx,
+                                    )
+                                    .disabled(true),
+                                )
+                                .child(self.checkout_failure(action, cx));
+                        }
+                    }
                     if dirty {
                         has_changes = true;
                         let summary = self
@@ -3445,6 +3620,7 @@ impl Sidebar {
                     }
                     pr_section = self.render_checkout_pr(&path, state.as_ref(), window, cx);
                     if self.checkout_panel.feedback.get(&path, "pull").is_some()
+                        || self.checkout_panel.operation.failures.contains_key("pull")
                         || state
                             .as_ref()
                             .is_some_and(|s| s.behind.is_some_and(|n| n > 0))
@@ -3454,7 +3630,14 @@ impl Sidebar {
                         git_section = git_section.child(super::action_feedback::retained_row(
                             checkout_cycle_row(
                                 "checkout-pull",
-                                format!("Pull {count} remote commits"),
+                                if count == 0 {
+                                    "Pull remote commits".to_owned()
+                                } else {
+                                    format!(
+                                        "Pull {count} remote commit{}",
+                                        if count == 1 { "" } else { "s" }
+                                    )
+                                },
                                 "chev-down",
                                 false,
                                 self.checkout_panel.feedback.get(&path, "pull"),
@@ -3476,13 +3659,15 @@ impl Sidebar {
                             cx,
                         ));
                     }
+                    git_section = git_section.child(self.checkout_failure("pull", cx));
                     if let Some(Ok(Some(main))) = self.checkout_panel.main_state.clone() {
-                        if (main.behind > 0
-                            || self.checkout_panel.feedback.get(&path, "main").is_some())
-                            && !state.as_ref().is_some_and(|state| {
-                                state.upstream.as_deref()
-                                    == Some(format!("{}/{}", main.remote, main.branch).as_str())
-                            })
+                        if self.checkout_panel.operation.failures.contains_key("main")
+                            || ((main.behind > 0
+                                || self.checkout_panel.feedback.get(&path, "main").is_some())
+                                && !state.as_ref().is_some_and(|state| {
+                                    state.upstream.as_deref()
+                                        == Some(format!("{}/{}", main.remote, main.branch).as_str())
+                                }))
                         {
                             let request = main.clone();
                             let expected = state.clone();
@@ -3511,6 +3696,7 @@ impl Sidebar {
                                 })
                                 .disabled(
                                     self.checkout_panel.operation.busy
+                                        || state.is_none()
                                         || self
                                             .checkout_panel
                                             .feedback
@@ -3552,6 +3738,18 @@ impl Sidebar {
                         .and_then(|r| r.as_ref())
                         .is_none()
                     {
+                        if self.checkout_panel.operation.failures.contains_key("main") {
+                            git_section = git_section.child(
+                                checkout_row(
+                                    "checkout-main-failed",
+                                    "Merge main branch",
+                                    "git-branch",
+                                    window,
+                                    cx,
+                                )
+                                .disabled(true),
+                            );
+                        }
                         if let Some(feedback) = self.checkout_panel.feedback.get(&path, "main") {
                             git_section = git_section.child(super::action_feedback::retained_row(
                                 checkout_cycle_row(
@@ -3569,6 +3767,7 @@ impl Sidebar {
                             ));
                         }
                     }
+                    git_section = git_section.child(self.checkout_failure("main", cx));
                     if let Some(feedback) = self.checkout_panel.feedback.get(&path, "recovery") {
                         git_section = git_section.child(super::action_feedback::retained_row(
                             checkout_cycle_row(
@@ -3584,23 +3783,6 @@ impl Sidebar {
                             self.checkout_panel.feedback.get(&path, "recovery"),
                             cx,
                         ));
-                    }
-                    if let Some(message) =
-                        self.checkout_panel.operation.message.as_ref().filter(|m| {
-                            !m.is_empty()
-                                && !m.starts_with("Committed:")
-                                && *m != "Commit canceled."
-                                && !self.checkout_panel.operation.busy
-                        })
-                    {
-                        git_section = git_section.child(
-                            div()
-                                .px(rpx(SPACE_2XL))
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::STATUS_ERROR())
-                                .whitespace_normal()
-                                .child(message.clone()),
-                        );
                     }
                     let diagnostic = self
                         .checkout_panel
@@ -3631,33 +3813,6 @@ impl Sidebar {
                                 this.checkout_panel.main_checked_at = None;
                                 cx.notify();
                             })),
-                        );
-                    }
-                    if !self.checkout_confirmation_open()
-                        && self
-                            .checkout_panel
-                            .operation
-                            .message
-                            .as_ref()
-                            .is_some_and(|m| !m.is_empty())
-                        && matches!(
-                            self.checkout_panel.operation.commit_status,
-                            CommitUi::Failed | CommitUi::Idle
-                        )
-                    {
-                        git_section = git_section.child(
-                            div()
-                                .pl(rpx(CHECKOUT_LABEL_INSET))
-                                .pr(rpx(SPACE_2XL))
-                                .text_size(rpx(TEXT_SMALL))
-                                .text_color(c::FG_DIM())
-                                .child(
-                                    self.checkout_panel
-                                        .operation
-                                        .message
-                                        .clone()
-                                        .unwrap_or_default(),
-                                ),
                         );
                     }
                 }
@@ -3994,6 +4149,27 @@ impl Sidebar {
         self.checkout_panel.popup = Some(popup);
         cx.notify();
     }
+}
+
+/// Separate a concise cause from genuinely different recovery guidance.
+fn checkout_failure_copy(action: &str, message: &str) -> (String, Option<String>) {
+    let operation = match action {
+        "pull" => "pull",
+        "push" => "push",
+        "publish" => "publish branch",
+        "commit" => "commit",
+        "main" => "merge main branch",
+        _ => "complete branch recovery",
+    };
+    let (cause, guidance) = message
+        .split_once(". ")
+        .map_or((message, None), |(cause, rest)| {
+            (cause, (!rest.is_empty()).then(|| rest.to_owned()))
+        });
+    (
+        format!("Couldn’t {operation}: {}", cause.trim_end_matches('.')),
+        guidance,
+    )
 }
 
 fn commit_provider(
@@ -4950,6 +5126,70 @@ mod tests {
             CommitEvent::Progress(CommitPhase::Generating),
         );
         assert!(matches!(panel.operation.commit_status, CommitUi::Succeeded));
+    }
+
+    #[test]
+    fn git_failures_stay_with_the_action_and_checkout_through_other_work() {
+        let mut panel = CheckoutPanel::default();
+        panel.select_path(Some("/one".into()));
+        panel
+            .operation
+            .failures
+            .insert("pull", "Branches have diverged. Resolve divergence".into());
+        panel.operation.commit_job = 2;
+        panel.commit_event(
+            "/one",
+            2,
+            CommitEvent::Finished(Box::new((
+                Err("Signing failed. Check signing".into()),
+                Err("fixture".into()),
+            ))),
+        );
+        assert_eq!(panel.operation.failures.len(), 2);
+        panel.select_path(Some("/two".into()));
+        assert!(panel.operation.failures.is_empty());
+        panel.update_operation("/one", |panel, current| {
+            assert!(!current);
+            panel
+                .operation
+                .failures
+                .insert("push", "Push rejected".into());
+        });
+        assert!(panel.operation.failures.is_empty());
+        panel.select_path(Some("/one".into()));
+        assert_eq!(panel.operation.failures.len(), 3);
+        // Late commit events cannot overwrite the current attempt or another action.
+        panel.commit_event(
+            "/one",
+            1,
+            CommitEvent::Finished(Box::new((Err("stale".into()), Err("fixture".into())))),
+        );
+        assert_eq!(
+            panel.operation.failures["commit"],
+            "Signing failed. Check signing"
+        );
+        // Starting a Pull retry clears only that action; unrelated failures remain.
+        panel.operation.failures.remove("pull");
+        assert_eq!(panel.operation.failures.len(), 2);
+        assert!(panel.operation.failures.contains_key("push"));
+        assert!(panel.operation.failures.contains_key("commit"));
+    }
+
+    #[test]
+    fn git_failure_copy_names_the_operation_without_repeating_guidance() {
+        let (summary, guidance) = checkout_failure_copy(
+            "pull",
+            "Branches have diverged. Resolve the branch divergence before pulling again",
+        );
+        assert_eq!(summary, "Couldn’t pull: Branches have diverged");
+        assert_eq!(
+            guidance.as_deref(),
+            Some("Resolve the branch divergence before pulling again")
+        );
+        let (summary, guidance) =
+            checkout_failure_copy("publish", "Selected remote is unavailable");
+        assert!(summary.starts_with("Couldn’t publish branch:"));
+        assert!(guidance.is_none());
     }
 
     #[gpui::test]
@@ -7091,6 +7331,11 @@ mod tests {
         });
         cx.update(|_, cx| {
             sidebar.update(cx, |sidebar, cx| {
+                sidebar
+                    .checkout_panel
+                    .operation
+                    .failures
+                    .insert("recovery", "No tracked edits to discard".into());
                 let state = sidebar
                     .checkout_panel
                     .state
@@ -7134,6 +7379,7 @@ mod tests {
             let _ = window.draw(cx);
         });
         assert!(cx.debug_bounds("checkout-confirm-merge").is_some());
+        assert!(cx.debug_bounds("checkout-recovery-failure").is_none());
         assert!(cx.debug_bounds("checkout-card").is_some());
         assert!(sidebar.read_with(cx, |sidebar, _| sidebar.confirmation_open()));
         cx.simulate_keystrokes("tab");
