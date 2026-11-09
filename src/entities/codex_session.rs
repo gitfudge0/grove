@@ -63,6 +63,8 @@ pub struct CodexSession {
     pub catalog_error: Option<String>,
     pub handle: Handle,
     _poll: Task<()>,
+    _skill_watch: Option<Task<()>>,
+    refreshed_skills: Option<Vec<serde_json::Value>>,
     deferred: Option<std::sync::mpsc::Receiver<Action>>,
     catalog_generation: u64,
     catalog_scope: Option<Scope>,
@@ -87,6 +89,8 @@ impl CodexSession {
             state: state.into(),
             handle,
             _poll: Task::ready(()),
+            _skill_watch: None,
+            refreshed_skills: None,
             deferred: None,
             catalog_generation: 0,
             catalog_scope: None,
@@ -118,6 +122,8 @@ impl CodexSession {
             state: state.into(),
             handle,
             _poll: poll,
+            _skill_watch: None,
+            refreshed_skills: None,
             deferred: Some(receiver),
             catalog_generation: 0,
             catalog_scope: None,
@@ -154,6 +160,7 @@ impl CodexSession {
         if !self.is_deferred() {
             return;
         }
+        self.start_skill_watch(args.clone(), cx);
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.catalog_loading = true;
         if self.catalog_error.is_some() && self.state.error == self.catalog_error {
@@ -385,8 +392,9 @@ impl CodexSession {
             .map(str::trim)
             .find(|line| !line.is_empty())
             .map(|line| line.chars().take(80).collect::<String>());
-        let connection = codex::connect(saved.clone(), args);
+        let connection = codex::connect(saved.clone(), args.clone());
         *self = Self::from_connection(Snapshot::new(saved), connection, cx);
+        self.start_skill_watch(args, cx);
         self.dashboard_launch = Some(DashboardLaunch::Starting);
         self.dashboard_title_waiting = pending_title;
         if let Some(title) = &self.dashboard_title_waiting {
@@ -398,8 +406,10 @@ impl CodexSession {
     }
     pub fn new(saved: SavedSession, args: Vec<String>, cx: &mut Context<Self>) -> Self {
         let state = Snapshot::new(saved.clone());
-        let connection = codex::connect(saved, args);
-        Self::from_connection(state, connection, cx)
+        let connection = codex::connect(saved, args.clone());
+        let mut session = Self::from_connection(state, connection, cx);
+        session.start_skill_watch(args, cx);
+        session
     }
     pub(crate) fn from_connection(
         state: Snapshot,
@@ -432,6 +442,8 @@ impl CodexSession {
             state: state.into(),
             handle,
             _poll: poll,
+            _skill_watch: None,
+            refreshed_skills: None,
             deferred: None,
             catalog_generation: 0,
             catalog_scope: None,
@@ -442,10 +454,77 @@ impl CodexSession {
             dashboard_launch: None,
         }
     }
+    /// Poll only source metadata in the background; changed sources trigger one
+    /// shared metadata handshake, without interrupting the conversation transport.
+    fn start_skill_watch(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
+        self._skill_watch = Some(cx.spawn(async move |this, cx| {
+            let mut previous = None;
+            loop {
+                let Ok(saved) = this.read_with(cx, |this, _| this.state.saved.clone()) else {
+                    break;
+                };
+                let request = saved.clone();
+                let options = args.clone();
+                let old = previous.clone();
+                let (revision, catalog) = cx
+                    .background_spawn(async move {
+                        let revision = composer_catalog::skill_revision_with_args(
+                            &request.cwd,
+                            &options,
+                            &request.config_args,
+                        );
+                        let key = (Scope::new(&request, &options), revision);
+                        let catalog = if old.as_ref() != Some(&key) {
+                            Some(composer_catalog::discover(request, options))
+                        } else {
+                            None
+                        };
+                        (key, catalog)
+                    })
+                    .await;
+                let successful = catalog.as_ref().is_none_or(|result| result.is_ok());
+                if let Some(Ok(catalog)) = catalog {
+                    if this
+                        .update(cx, |this, cx| {
+                            if this.state.saved.cwd != saved.cwd
+                                || this.state.saved.provider != saved.provider
+                            {
+                                return;
+                            }
+                            if this.state.skills != catalog.skills {
+                                this.state.skills = catalog.skills.clone();
+                                if !this.is_deferred() {
+                                    this.refreshed_skills = Some(catalog.skills.clone());
+                                    let _ = this.handle.send(Action::UpdateSkills(catalog.skills));
+                                }
+                                cx.notify();
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                if successful {
+                    previous = Some(revision);
+                }
+                cx.background_executor()
+                    .timer(Duration::from_secs(if successful { 2 } else { 30 }))
+                    .await;
+            }
+        }));
+    }
     pub(crate) fn dashboard_submission_ready(&self) -> bool {
         self.dashboard_launch == Some(DashboardLaunch::Ready)
     }
     fn accept_snapshot(&mut self, mut state: Snapshot) {
+        if let Some(skills) = &self.refreshed_skills {
+            if &state.skills == skills {
+                self.refreshed_skills = None;
+            } else {
+                state.skills.clone_from(skills);
+            }
+        }
         if let Some(launch) = self.dashboard_launch {
             match state.status {
                 codex::Status::Idle
@@ -995,6 +1074,49 @@ mod dashboard_tests {
             context: None,
             context_details: None,
         }
+    }
+
+    #[gpui::test]
+    fn refreshed_skills_survive_queued_snapshots_until_actor_acknowledges(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            for provider in [codex::Provider::Codex, codex::Provider::Claude] {
+                let (handle, _actions) = Handle::channel();
+                let (_updates, receive) = std::sync::mpsc::channel();
+                let mut snapshot = Snapshot::new(saved(provider));
+                snapshot.saved.draft = "keep typing".into();
+                snapshot.saved.thread_id = Some("same-thread".into());
+                let session = cx.new(|cx| {
+                    CodexSession::from_connection(
+                        snapshot.clone(),
+                        codex::Connection {
+                            handle,
+                            updates: receive.into(),
+                        },
+                        cx,
+                    )
+                });
+                session.update(cx, |session, _| {
+                    let skills = vec![serde_json::json!({"name":"new-skill"})];
+                    session.refreshed_skills = Some(skills.clone());
+                    session.accept_snapshot(snapshot.clone());
+                    assert_eq!(session.state.skills, skills);
+                    assert_eq!(session.state.saved.draft, "keep typing");
+                    assert_eq!(
+                        session.state.saved.thread_id.as_deref(),
+                        Some("same-thread")
+                    );
+                    assert!(session.refreshed_skills.is_some());
+                    snapshot.skills = skills;
+                    session.accept_snapshot(snapshot.clone());
+                    assert!(session.refreshed_skills.is_none());
+                    snapshot.skills.clear();
+                    session.accept_snapshot(snapshot.clone());
+                    assert!(session.state.skills.is_empty());
+                });
+            }
+        });
     }
 
     #[gpui::test]

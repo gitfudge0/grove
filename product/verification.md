@@ -1044,3 +1044,14 @@ HTML mock. Existing unrelated checkout edits were preserved.
 The final `./install.sh` local build/install succeeded on Linux. The installed
 `~/.local/bin/grove` and `target/local/grove` matched by SHA-256. The running
 user application was not restarted. No release was created.
+
+## Installed skill discovery refresh
+
+The skill catalog now watches global and ancestor project skill sources in the
+background, including symlinks and plugin installations, and updates open Codex
+and Claude composers without reconnecting their conversations. Earlier checks
+and real provider catalog install/removal probes passed on the initial main-based
+implementation; these are not evidence for the rebased feature-branch build.
+Checks after integration onto `feat/new-sidebar`, installation, and native UI
+interaction verification are pending. Live catalog probes exercise the provider
+metadata adapters, not the installed composer or an active model turn.
