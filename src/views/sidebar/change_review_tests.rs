@@ -1,6 +1,7 @@
 //! Native production-reader fixtures. They use frozen source data and never
 //! start a provider or perform a GitHub write.
 use super::*;
+#[cfg(target_os = "linux")]
 use std::io::Write as _;
 
 pub(super) const FIXTURE_PATH: &str = "/grove-review-fixture";

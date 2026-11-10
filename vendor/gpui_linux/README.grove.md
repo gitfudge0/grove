@@ -18,3 +18,8 @@ its renderer. Glyph painting can occur while an X11 client callback holds the
 client borrow; querying that client again from the glyph path panics. The
 renderer-owned capability avoids the reentrant borrow without changing the GPU
 feature decision. Verify by launching the native app on X11 and drawing text.
+
+The dispatcher removes two copied `nightly_coverage` attributes from its
+`ChannelError` forwarding methods. This vendored crate does not define that
+feature; the unsupported annotations fail stable CI with dependency warnings
+denied. Removing them does not change runtime behavior.

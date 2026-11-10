@@ -10337,7 +10337,7 @@ for line in sys.stdin:
                     projects: vec![grove_core::storage::Project {
                         name: "Layout fixture".into(),
                         path: path.into(),
-                        scripts: Default::default(),
+                        scripts: grove_core::storage::ProjectScripts::default(),
                         archived: false,
                         worktree_dir: None,
                     }],
@@ -10373,7 +10373,7 @@ for line in sys.stdin:
                                         is_main: false,
                                     },
                                 ],
-                            )
+                            );
                         });
                         let mut sidebar = Sidebar::new(runtime, window, cx);
                         attach_removal_layout_session(

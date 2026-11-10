@@ -1,11 +1,11 @@
 //! Native review of validated, immutable session plan snapshots.
 mod measured;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn take_control_materialization_count() -> usize {
     measured::CONTROL_RENDERS.with(|n| n.replace(0))
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn take_materialization_count() -> usize {
     measured::MATERIALIZED.with(|count| count.replace(0))
 }

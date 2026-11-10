@@ -2,6 +2,7 @@
 //! start a provider or perform a GitHub write.
 use super::*;
 use gpui::AppContext as _;
+#[cfg(target_os = "linux")]
 use std::io::Write as _;
 
 const FIXTURE_PANEL_WIDTH: f32 = 280.;

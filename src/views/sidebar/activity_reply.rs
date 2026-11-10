@@ -695,6 +695,7 @@ mod tests {
     use std::sync::mpsc::Receiver;
 
     struct ReplyProbe {
+        #[cfg(target_os = "linux")]
         transport: Option<Receiver<ProviderAction>>,
         provider: Provider,
         sidebar: Entity<Sidebar>,
@@ -773,6 +774,7 @@ mod tests {
         });
         (
             ReplyProbe {
+                #[cfg(target_os = "linux")]
                 transport: None,
                 provider,
                 sidebar,

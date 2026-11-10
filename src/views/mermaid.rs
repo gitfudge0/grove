@@ -12,7 +12,7 @@ use gpui_component::text::{
     markdown_ast, MarkdownExtensions, MarkdownNode, MarkdownParseContext, TextView,
 };
 mod measured;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn take_materialization_count() -> usize {
     measured::MATERIALIZED.with(|n| n.replace(0))
 }
